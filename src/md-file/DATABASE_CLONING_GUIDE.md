@@ -1,6 +1,6 @@
 # Database Cloning Guide
 
-This guide explains how to clone all collections and data from the old database (`hrms_production`) to the new database (`zuno-hr-dubai`) while preserving all IDs and relationships.
+This guide explains how to clone all collections and data from the old database (`hrms_production`) to the new database (`zuno-hr-india`) while preserving all IDs and relationships.
 
 ## Overview
 
@@ -54,7 +54,7 @@ mongodb+srv://sachioncloud:Maples7123456789@cluster0.0ktur.mongodb.net/hrms_prod
 
 **New Database (Destination):**
 ```
-mongodb+srv://sachioncloud:Maples7123456789@cluster0.0ktur.mongodb.net/zuno-hr-dubai?retryWrites=true&w=majority&appName=Cluster0
+mongodb+srv://sachioncloud:Maples7123456789@cluster0.0ktur.mongodb.net/zuno-hr-india?retryWrites=true&w=majority&appName=Cluster0
 ```
 
 ## Collections That Will Be Cloned
@@ -102,7 +102,7 @@ Based on your project structure, the following collections will be cloned:
 ```
 🔌 Connecting to databases...
 ✅ Connected to OLD database (hrms_production)
-✅ Connected to NEW database (zuno-hr-dubai)
+✅ Connected to NEW database (zuno-hr-india)
 
 📋 Found 19 collections to clone
 

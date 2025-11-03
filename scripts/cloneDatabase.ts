@@ -1,9 +1,8 @@
 import mongoose from 'mongoose';
-import { config } from '../src/config';
 
 // Database connection strings
 const OLD_DB_URI = 'mongodb+srv://sachioncloud:Maples7123456789@cluster0.0ktur.mongodb.net/hrms_production?retryWrites=true&w=majority&appName=Cluster0';
-const NEW_DB_URI = 'mongodb+srv://sachioncloud:Maples7123456789@cluster0.0ktur.mongodb.net/zuno-hr-dubai?retryWrites=true&w=majority&appName=Cluster0';
+const NEW_DB_URI = 'mongodb+srv://sachioncloud:Maples7123456789@cluster0.0ktur.mongodb.net/zuno-hr-india?retryWrites=true&w=majority&appName=Cluster0';
 
 // Connection instances
 let oldConnection: mongoose.Connection;
@@ -37,12 +36,24 @@ class DatabaseCloner {
 
         try {
             // Connect to old database
-            oldConnection = await mongoose.createConnection(OLD_DB_URI);
-            console.log('✅ Connected to OLD database (hrms_production)');
+            oldConnection = mongoose.createConnection(OLD_DB_URI);
+            await new Promise((resolve, reject) => {
+                oldConnection.once('connected', () => {
+                    console.log('✅ Connected to OLD database (hrms_production)');
+                    resolve(true);
+                });
+                oldConnection.once('error', (err) => reject(err));
+            });
 
             // Connect to new database
-            newConnection = await mongoose.createConnection(NEW_DB_URI);
-            console.log('✅ Connected to NEW database (zuno-hr-dubai)');
+            newConnection = mongoose.createConnection(NEW_DB_URI);
+            await new Promise((resolve, reject) => {
+                newConnection.once('connected', () => {
+                    console.log('✅ Connected to NEW database (zuno-hr-india)');
+                    resolve(true);
+                });
+                newConnection.once('error', (err) => reject(err));
+            });
 
         } catch (error) {
             console.error('❌ Database connection failed:', error);
@@ -238,9 +249,12 @@ class DatabaseCloner {
     }
 }
 
+// Global cloner instance for process handlers
+let cloner: DatabaseCloner | null = null;
+
 // Main execution function
 async function main() {
-    const cloner = new DatabaseCloner();
+    cloner = new DatabaseCloner();
 
     try {
         await cloner.connectToDatabases();
@@ -259,20 +273,26 @@ async function main() {
         console.error('💥 Fatal error:', error);
         process.exit(1);
     } finally {
-        await cloner.disconnect();
+        if (cloner) {
+            await cloner.disconnect();
+        }
     }
 }
 
 // Handle process termination
 process.on('SIGINT', async () => {
     console.log('\n⚠️  Process interrupted. Cleaning up...');
-    await cloner.disconnect();
+    if (cloner) {
+        await cloner.disconnect();
+    }
     process.exit(0);
 });
 
 process.on('SIGTERM', async () => {
     console.log('\n⚠️  Process terminated. Cleaning up...');
-    await cloner.disconnect();
+    if (cloner) {
+        await cloner.disconnect();
+    }
     process.exit(0);
 });
 

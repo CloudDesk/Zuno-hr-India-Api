@@ -2,7 +2,7 @@ import mongoose from 'mongoose';
 
 // Database connection strings
 const OLD_DB_URI = 'mongodb+srv://sachioncloud:Maples7123456789@cluster0.0ktur.mongodb.net/hrms_production?retryWrites=true&w=majority&appName=Cluster0';
-const NEW_DB_URI = 'mongodb+srv://sachioncloud:Maples7123456789@cluster0.0ktur.mongodb.net/zuno-hr-dubai?retryWrites=true&w=majority&appName=Cluster0';
+const NEW_DB_URI = 'mongodb+srv://sachioncloud:Maples7123456789@cluster0.0ktur.mongodb.net/zuno-hr-india?retryWrites=true&w=majority&appName=Cluster0';
 
 async function cloneDatabase() {
     let oldConnection: mongoose.Connection | undefined;
