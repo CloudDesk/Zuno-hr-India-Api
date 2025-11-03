@@ -20,10 +20,10 @@
     "db:clone": "ts-node scripts/simpleCloneDatabase.ts",
     "db:clone:advanced": "ts-node scripts/cloneDatabase.ts",
     "set-project": "gcloud config set project cloud-desk-447206",
-    "hrms-build": "docker build -t zuno-hr-uae .",
-    "hrms-tag": "docker tag zuno-hr-uae gcr.io/cloud-desk-447206/zuno-hr-uae",
-    "hrms-push": "docker push gcr.io/cloud-desk-447206/zuno-hr-uae",
-    "hrms-deploy": "gcloud run deploy zuno-hr-uae --image gcr.io/cloud-desk-447206/zuno-hr-uae:latest --platform managed --region asia-south1 --allow-unauthenticated --port 5800  --execution-environment gen2",
+    "hrms-build": "docker build -t zuno-cd-hr-india .",
+    "hrms-tag": "docker tag zuno-cd-hr-india gcr.io/cloud-desk-447206/zuno-cd-hr-india",
+    "hrms-push": "docker push gcr.io/cloud-desk-447206/zuno-cd-hr-india",
+    "hrms-deploy": "gcloud run deploy zuno-cd-hr-india --image gcr.io/cloud-desk-447206/zuno-hr-india:latest --platform managed --region asia-south1 --allow-unauthenticated --port 5800  --execution-environment gen2",
     "full-deploy": "npm run set-project && npm run hrms-build && npm run hrms-tag && npm run hrms-push && npm run hrms-deploy"
   },
   "dependencies": {
