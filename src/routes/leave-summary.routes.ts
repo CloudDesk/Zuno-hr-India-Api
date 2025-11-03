@@ -1,0 +1,501 @@
+import { FastifyInstance } from 'fastify';
+import { Types } from 'mongoose';
+import { authenticate } from '../middleware/auth';
+
+const getLeaveSummarySchema = {
+  tags: ['Leave Summary'],
+  summary: 'Get leave summary for logged-in user',
+  security: [{ bearerAuth: [] }],
+  querystring: {
+    type: 'object',
+    properties: {
+      year: {
+        type: 'number',
+        description: 'Year for leave summary',
+        default: new Date().getFullYear(),
+      },
+    },
+  },
+  response: {
+    200: {
+      type: 'object',
+      properties: {
+        success: { type: 'boolean' },
+        data: {
+          type: 'object',
+          properties: {
+            userId: { type: 'string' },
+            year: { type: 'number' },
+            annual: {
+              type: 'object',
+              properties: {
+                alloted: { type: 'number' },
+                availed: { type: 'number' },
+                remaining: { type: 'number' },
+                leaveRequests: { type: 'array', items: { type: 'string' } },
+                allocationDate: { type: 'string', format: 'date-time' },
+                expiryDate: { type: 'string', format: 'date-time' },
+                originalExpiryDate: { type: 'string', format: 'date-time' },
+                manuallyAdjusted: { type: 'boolean' },
+              },
+            },
+            sick: {
+              type: 'object',
+              properties: {
+                alloted: { type: 'number' },
+                availed: { type: 'number' },
+                remaining: { type: 'number' },
+                leaveRequests: { type: 'array', items: { type: 'string' } },
+                allocationDate: { type: 'string', format: 'date-time' },
+                expiryDate: { type: 'string', format: 'date-time' },
+                originalExpiryDate: { type: 'string', format: 'date-time' },
+                manuallyAdjusted: { type: 'boolean' },
+              },
+            },
+            compOff: {
+              type: 'object',
+              properties: {
+                alloted: { type: 'number' },
+                availed: { type: 'number' },
+                remaining: { type: 'number' },
+                leaveRequests: { type: 'array', items: { type: 'string' } },
+                allocationDate: { type: 'string', format: 'date-time' },
+                expiryDate: { type: 'string', format: 'date-time' },
+                originalExpiryDate: { type: 'string', format: 'date-time' },
+                manuallyAdjusted: { type: 'boolean' },
+              },
+            },
+            lossOfPay: {
+              type: 'object',
+              properties: {
+                alloted: { type: 'number' },
+                availed: { type: 'number' },
+                remaining: { type: 'number' },
+                leaveRequests: { type: 'array', items: { type: 'string' } },
+              },
+            },
+            otherPaid: {
+              type: 'object',
+              properties: {
+                alloted: { type: 'number' },
+                availed: { type: 'number' },
+                remaining: { type: 'number' },
+                leaveRequests: { type: 'array', items: { type: 'string' } },
+              },
+            },
+            otherUnpaid: {
+              type: 'object',
+              properties: {
+                alloted: { type: 'number' },
+                availed: { type: 'number' },
+                remaining: { type: 'number' },
+                leaveRequests: { type: 'array', items: { type: 'string' } },
+              },
+            },
+            maternity: {
+              type: 'object',
+              properties: {
+                alloted: { type: 'number' },
+                availed: { type: 'number' },
+                remaining: { type: 'number' },
+                leaveRequests: { type: 'array', items: { type: 'string' } },
+                allocationDate: { type: 'string', format: 'date-time' },
+                expiryDate: { type: 'string', format: 'date-time' },
+                originalExpiryDate: { type: 'string', format: 'date-time' },
+                manuallyAdjusted: { type: 'boolean' },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+};
+
+const getMultipleUsersSummarySchema = {
+  tags: ['Leave Summary'],
+  summary: 'Get leave summaries for multiple users',
+  security: [{ bearerAuth: [] }],
+  querystring: {
+    type: 'object',
+    properties: {
+      userIds: {
+        type: 'string',
+        description: 'Comma-separated list of user IDs',
+      },
+      year: {
+        type: 'number',
+        description: 'Year for leave summary',
+        default: new Date().getFullYear(),
+      },
+    },
+    required: ['userIds'],
+  },
+  response: {
+    200: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          userId: {
+            type: 'object',
+            properties: {
+              _id: { type: 'string' },
+              name: { type: 'string' },
+              email: { type: 'string' },
+            },
+          },
+          year: { type: 'number' },
+          annual: {
+            type: 'object',
+            properties: {
+              alloted: { type: 'number' },
+              availed: { type: 'number' },
+              remaining: { type: 'number' },
+              leaveRequests: { type: 'array', items: { type: 'string' } },
+            },
+          },
+          sick: {
+            type: 'object',
+            properties: {
+              alloted: { type: 'number' },
+              availed: { type: 'number' },
+              remaining: { type: 'number' },
+              leaveRequests: { type: 'array', items: { type: 'string' } },
+            },
+          },
+          // ... other leave types similar to above
+        },
+      },
+    },
+    403: {
+      type: 'object',
+      properties: {
+        message: { type: 'string' },
+      },
+    },
+  },
+};
+
+const updateLeaveAllotmentSchema = {
+  tags: ['Leave Summary'],
+  summary: 'Update leave allotments for a user',
+  security: [{ bearerAuth: [] }],
+  body: {
+    type: 'object',
+    required: ['userId', 'year'],
+    properties: {
+      userId: {
+        type: 'string',
+        description: 'User ID to update leave allotments for',
+      },
+      year: {
+        type: 'number',
+        description: 'Year for leave allotments',
+        default: new Date().getFullYear(),
+      },
+
+      annual: {
+        type: 'number',
+        minimum: 0,
+        description: 'Annual leave days',
+      },
+      sick: {
+        type: 'number',
+        minimum: 0,
+        description: 'Sick leave days',
+      },
+      otherPaid: {
+        type: 'number',
+        minimum: 0,
+        description: 'Other paid leave days',
+      },
+      otherUnpaid: {
+        type: 'number',
+        minimum: 0,
+        description: 'Other unpaid leave days',
+      },
+      compOff: {
+        type: 'number',
+        minimum: 0,
+        description: 'Compensatory off days',
+      },
+      maternity: {
+        type: 'number',
+        minimum: 0,
+        description: 'Maternity leave days (UAE-specific)',
+      },
+      // UAE-specific: Optional allocation dates
+      annualAllocationDate: {
+        type: 'string',
+        format: 'date-time',
+        description: 'Allocation date for annual leave (UAE - auto sets expiry to +1 year)',
+      },
+      sickAllocationDate: {
+        type: 'string',
+        format: 'date-time',
+        description: 'Allocation date for sick leave (UAE)',
+      },
+      otherPaidAllocationDate: {
+        type: 'string',
+        format: 'date-time',
+        description: 'Allocation date for other paid leave (UAE)',
+      },
+      otherUnpaidAllocationDate: {
+        type: 'string',
+        format: 'date-time',
+        description: 'Allocation date for other unpaid leave (UAE)',
+      },
+      compOffAllocationDate: {
+        type: 'string',
+        format: 'date-time',
+        description: 'Allocation date for comp-off (UAE)',
+      },
+      maternityAllocationDate: {
+        type: 'string',
+        format: 'date-time',
+        description: 'Allocation date for maternity leave (UAE)',
+      },
+      // UAE-specific: Optional manual expiry dates
+      annualExpiryDate: {
+        type: 'string',
+        format: 'date-time',
+        description: 'Manual expiry date for annual leave (UAE)',
+      },
+      sickExpiryDate: {
+        type: 'string',
+        format: 'date-time',
+        description: 'Manual expiry date for sick leave (UAE)',
+      },
+      otherPaidExpiryDate: {
+        type: 'string',
+        format: 'date-time',
+        description: 'Manual expiry date for other paid leave (UAE)',
+      },
+      otherUnpaidExpiryDate: {
+        type: 'string',
+        format: 'date-time',
+        description: 'Manual expiry date for other unpaid leave (UAE)',
+      },
+      compOffExpiryDate: {
+        type: 'string',
+        format: 'date-time',
+        description: 'Manual expiry date for comp-off (UAE)',
+      },
+      maternityExpiryDate: {
+        type: 'string',
+        format: 'date-time',
+        description: 'Manual expiry date for maternity leave (UAE)',
+      }
+    },
+  },
+  response: {
+    200: {
+      type: 'object',
+      properties: {
+        success: { type: 'boolean' },
+        data: {
+          type: 'object',
+          properties: {
+            userId: { type: 'string' },
+            year: { type: 'number' },
+            annual: {
+              type: 'object',
+              properties: {
+                alloted: { type: 'number' },
+                availed: { type: 'number' },
+                remaining: { type: 'number' },
+              },
+            },
+            sick: {
+              type: 'object',
+              properties: {
+                alloted: { type: 'number' },
+                availed: { type: 'number' },
+                remaining: { type: 'number' },
+              },
+            },
+            otherPaid: {
+              type: 'object',
+              properties: {
+                alloted: { type: 'number' },
+                availed: { type: 'number' },
+                remaining: { type: 'number' },
+              },
+            },
+            otherUnpaid: {
+              type: 'object',
+              properties: {
+                alloted: { type: 'number' },
+                availed: { type: 'number' },
+                remaining: { type: 'number' },
+              },
+            },
+          },
+        },
+      },
+    },
+    400: {
+      type: 'object',
+      properties: {
+        success: { type: 'boolean', default: false },
+        error: {
+          type: 'object',
+          properties: {
+            message: { type: 'string' },
+          },
+        },
+      },
+    },
+    403: {
+      type: 'object',
+      properties: {
+        success: { type: 'boolean', default: false },
+        error: {
+          type: 'object',
+          properties: {
+            message: { type: 'string' },
+          },
+        },
+      },
+    },
+  },
+};
+
+export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void> {
+  fastify.get(
+    '/summary/:userId',
+    {
+      schema: getLeaveSummarySchema,
+      preHandler: [authenticate],
+    },
+    async (request, reply) => {
+      console.log('test');
+      const { year = new Date().getFullYear() } = request.query as { year?: number };
+      const userId = new Types.ObjectId((request.params as any).userId as string);
+      console.log(
+        userId, 'userId'
+      );
+      // Use formatted summary that returns country-specific fields
+      const summary = await request.container!.leaveSummaryService.getFormattedLeaveSummary(userId, year);
+      return reply.send({
+        success: true,
+        data: summary,
+      });
+    },
+  );
+
+  fastify.get(
+    '/leave-summaries',
+    {
+      schema: getMultipleUsersSummarySchema,
+      preHandler: [authenticate],
+    },
+    async (request, reply) => {
+      const { userIds, year = new Date().getFullYear() } = request.query as {
+        userIds: string;
+        year?: number;
+      };
+
+      const userIdList = userIds.split(',').map((id) => new Types.ObjectId(id.trim()));
+
+      const summaries = await request.container!.leaveSummaryService.getAllUserLeaveSummaries(userIdList, year);
+
+      return reply.send(summaries);
+    },
+  );
+
+  fastify.post(
+    '/allotments',
+    {
+      schema: updateLeaveAllotmentSchema,
+      preHandler: [authenticate],
+    },
+    async (request, reply) => {
+      try {
+        const {
+          userId,
+          year = new Date().getFullYear(),
+          annual,
+          sick,
+          otherPaid,
+          otherUnpaid,
+          compOff,
+          maternity,
+          annualAllocationDate,
+          sickAllocationDate,
+          otherPaidAllocationDate,
+          otherUnpaidAllocationDate,
+          compOffAllocationDate,
+          maternityAllocationDate,
+          annualExpiryDate,
+          sickExpiryDate,
+          otherPaidExpiryDate,
+          otherUnpaidExpiryDate,
+          compOffExpiryDate,
+          maternityExpiryDate,
+        } = request.body as {
+          userId: string;
+          year: number;
+          annual?: number;
+          sick?: number;
+          otherPaid?: number;
+          otherUnpaid?: number;
+          compOff?: number;
+          maternity?: number;
+          // UAE-specific allocation dates
+          annualAllocationDate?: string;
+          sickAllocationDate?: string;
+          otherPaidAllocationDate?: string;
+          otherUnpaidAllocationDate?: string;
+          compOffAllocationDate?: string;
+          maternityAllocationDate?: string;
+          // UAE-specific manual expiry dates
+          annualExpiryDate?: string;
+          sickExpiryDate?: string;
+          otherPaidExpiryDate?: string;
+          otherUnpaidExpiryDate?: string;
+          compOffExpiryDate?: string;
+          maternityExpiryDate?: string;
+        };
+
+        const updatedSummary = await request.container!.leaveSummaryService.updateLeaveAllotments(
+          new Types.ObjectId(userId),
+          year,
+          {
+            annual,
+            sick,
+            otherPaid,
+            otherUnpaid,
+            compOff,
+            maternity,
+            // Convert allocation date strings to Date objects if provided
+            annualAllocationDate: annualAllocationDate ? new Date(annualAllocationDate) : undefined,
+            sickAllocationDate: sickAllocationDate ? new Date(sickAllocationDate) : undefined,
+            otherPaidAllocationDate: otherPaidAllocationDate ? new Date(otherPaidAllocationDate) : undefined,
+            otherUnpaidAllocationDate: otherUnpaidAllocationDate ? new Date(otherUnpaidAllocationDate) : undefined,
+            compOffAllocationDate: compOffAllocationDate ? new Date(compOffAllocationDate) : undefined,
+            maternityAllocationDate: maternityAllocationDate ? new Date(maternityAllocationDate) : undefined,
+            // Convert expiry date strings to Date objects if provided (manual override)
+            annualExpiryDate: annualExpiryDate ? new Date(annualExpiryDate) : undefined,
+            sickExpiryDate: sickExpiryDate ? new Date(sickExpiryDate) : undefined,
+            otherPaidExpiryDate: otherPaidExpiryDate ? new Date(otherPaidExpiryDate) : undefined,
+            otherUnpaidExpiryDate: otherUnpaidExpiryDate ? new Date(otherUnpaidExpiryDate) : undefined,
+            compOffExpiryDate: compOffExpiryDate ? new Date(compOffExpiryDate) : undefined,
+            maternityExpiryDate: maternityExpiryDate ? new Date(maternityExpiryDate) : undefined,
+          }
+        );
+
+        return reply.send({
+          success: true,
+          data: updatedSummary,
+        });
+      } catch (error: any) {
+        return reply.status(error.statusCode || 400).send({
+          success: false,
+          error: { message: error.message },
+        });
+      }
+    },
+  );
+}

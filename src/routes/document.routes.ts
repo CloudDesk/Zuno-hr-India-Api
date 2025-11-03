@@ -1,0 +1,2128 @@
+import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { authenticate } from "../middleware/auth";
+import { filesUpload, zipFileUpload } from "../config/multer";
+import unzipper from "unzipper";
+import { User, IUser } from "../models/user.model";
+import path from "path";
+import { parseMultipartForm } from "../utilis/parseMultiPartForm";
+import { Document } from "../models/document.model";
+
+export interface IForm12BSubmission {
+    employeeId: string;
+    financialYear: string;
+    previousEmployer: {
+        name: string;
+        pan: string;
+        tan: string;
+    };
+    employmentPeriod: {
+        startDate: string | Date;
+        endDate: string | Date;
+    };
+    salaryEarned: number;
+    tdsDeducted: number;
+    taxDeclarationId: string;
+}
+
+export interface IForm12BBGenerate {
+    employeeId: string;
+    financialYear: string;
+    taxDeclarationId: string;
+
+}
+
+
+export interface IDocumentQuery {
+    access?: 'own' | 'team' | 'global';
+    employeeId?: string;
+    type?: 'Payslip' | 'TimesheetFile' | 'Form16' | 'Form12B' | 'Form12BB' | 'OfferLetter' | 'HikeLetter' | 'Certificate' | 'AdminUpload'
+    category?: 'Payroll' | 'Timesheet' | 'Tax' | 'EmployeeLifecycle' | 'Certification';
+    year?: number;
+    month?: number;
+    financialYear?: string;
+    page?: number;
+    limit?: number;
+    // Employee filters for managers/admins
+    department?: string;
+    role?: 'admin' | 'manager' | 'staff';
+    activeStatus?: boolean;
+    search?: string; // Combined search for name or email
+    designation?: string;
+    location?: string;
+    _id?: string;
+}
+
+// Define response type
+interface IApiResponse<T> {
+    success: boolean;
+    data?: T;
+    meta?: {
+        page: number;
+        limit: number;
+        total: number;
+        totalPages: number;
+    };
+    error?: { message: string };
+    message?: string;
+}
+interface ITimesheetGenerate {
+    userId: string;
+    month: number;
+    year: number;
+}
+interface PayslipGenerateRequest {
+    monthYear: string; // YYYY-MM
+    userIds?: string[];
+    filters?: {
+        departmentId?: string;
+        role?: string;
+        status?: string;
+        search?: string;
+    };
+}
+interface GetPayslipRequest {
+    month?: number;
+    year?: number;
+    userId: string;
+}
+interface getPayslipRequestBody {
+    userIds: string[],
+    month: number,
+    year: number
+}
+interface IPreviewStatusRequest {
+    Params: { id: string };
+    Body: { isPreviewEnabled: boolean };
+}
+
+export const documentRoutes = async (
+    fastify: FastifyInstance
+): Promise<void> => {
+
+    //generate timesheet
+    fastify.post("/timesheet/generate",
+        {
+            preHandler: [authenticate],
+            schema: {
+                body: {
+                    type: 'object',
+                    required: ['userId', 'month', 'year'],
+                    properties: {
+                        userId: { type: 'string' },
+                        month: { type: 'number', minimum: 1, maximum: 12 },
+                        year: { type: 'number', minimum: 2000, maximum: 2100 },
+                    },
+                },
+                response: {
+                    200: {
+                        type: 'object',
+                        required: ['success', 'data'],
+                        properties: {
+                            success: { type: 'boolean', const: true },
+                            data: {
+                                type: 'object',
+                                required: ['documentId', 'filePath'],
+                                properties: {
+                                    documentId: { type: 'string' },
+                                    filePath: { type: 'string', format: 'uri' }
+                                }
+                            }
+                        }
+                    },
+                    400: {
+                        type: 'object',
+                        required: ['success', 'error'],
+                        properties: {
+                            success: { type: 'boolean', const: false },
+                            error: {
+                                type: 'object',
+                                required: ['message'],
+                                properties: {
+                                    message: { type: 'string' }
+                                }
+                            }
+                        }
+                    }
+                }
+
+            },
+        },
+        async (request, reply) => {
+            try {
+                const { userId, month, year } = request.body as ITimesheetGenerate;
+                const timesheet = await request.container!.documentService.generateTimesheet(userId, month, year, request);
+                console.log(timesheet, "timesheetRoutes timesheet");
+                return reply.send({
+                    success: true,
+                    data: timesheet,
+                });
+            } catch (error) {
+                return reply.status(400).send({
+                    success: false,
+                    error: { message: (error as Error).message },
+                } as IApiResponse<never>);
+            }
+        }
+    )
+
+    // Generate payslip
+    fastify.post("/payslip/generate",
+        {
+            // onRequest: [authenticate],
+            schema: {
+                body: {
+                    type: 'object',
+                    required: ['monthYear'],
+                    properties: {
+                        monthYear: {
+                            type: 'string',
+                            pattern: '^\\d{4}-\\d{2}$',
+                            description: 'Month and Year in YYYY-MM format',
+                        },
+                        userIds: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: 'Optional array of user IDs',
+                        },
+                        filters: {
+                            type: 'object',
+                            description: 'Optional filter criteria for bulk payslip generation',
+                            properties: {
+                                departmentId: { type: 'string' },
+                                role: { type: 'string' },
+                                status: {
+                                    type: 'array',
+                                    items: { type: 'string' },
+                                    description: 'Statuses like Active, On Hold, Resigned',
+                                },
+                                search: { type: 'string' },
+                            },
+                            additionalProperties: false,
+                        },
+                    },
+                    oneOf: [
+                        { required: ['userIds'] },
+                        { required: ['filters'] },
+                    ],
+                },
+            },
+        },
+        async (request, reply) => {
+            try {
+                const { monthYear, userIds, filters } = request.body as PayslipGenerateRequest;
+                const [yearStr, monthStr] = monthYear.split('-');
+                const year = Number(yearStr);
+                const month = Number(monthStr);
+
+                if (year < 2024 || year > 2100 || month < 1 || month > 12) {
+                    return reply.status(400).send({
+                        success: false,
+                        error: { message: '❌ Invalid monthYear format or range.' },
+                    });
+                }
+                let finalUserIds: string[];
+                if (userIds) {
+                    finalUserIds = userIds;
+                } else {
+                    const finalFilters = {
+                        ...filters,
+                        status: Array.isArray(filters?.status) && filters.status.length > 0
+                            ? filters.status
+                            : ['Active'],
+                    };
+                    finalUserIds = await request.container!.payrollService.getUserIdsByFilters(finalFilters, monthYear, 'onlyCompleted');
+                }
+                console.log(finalUserIds, "finalUserIds")
+                if (!finalUserIds || finalUserIds.length === 0) {
+                    return reply.status(404).send({
+                        success: false,
+                        error: { message: 'No employees found for processing payslips.' },
+                    });
+                }
+
+                const salary = await request.container!.documentService.generatePayslip(
+                    month,
+                    year,
+                    finalUserIds
+                );
+
+                return reply.send({
+                    success: true,
+                    data: salary,
+                });
+            } catch (error: any) {
+                return reply.status(400).send({
+                    success: false,
+                    error: { message: error.message },
+                });
+            }
+        }
+    )
+
+    //My payslips
+    fastify.get(
+        '/my/payslips',
+        {
+            // onRequest: [authenticate],
+            schema: {
+                querystring: {
+                    type: 'object',
+                    properties: {
+                        month: { type: 'number', minimum: 1, maximum: 12 },
+                        year: { type: 'number', minimum: 2000, maximum: 2100 },
+                        userId: { type: 'string' },
+                    },
+                    required: ['userId'],
+                },
+            },
+        },
+        async (request, reply) => {
+            try {
+                const { month, year, userId } = request.query as GetPayslipRequest;
+                const safeMonth = typeof month === 'number' ? month : new Date().getMonth() + 1;
+                const safeYear = typeof year === 'number' ? year : new Date().getFullYear();
+                const ids = typeof userId === 'object' ? userId : [userId]
+                const result = await request.container!.documentService.getPayslipDocumentsForUsers(ids, safeMonth, safeYear);
+                console.log(result, "result my payslip")
+                return reply.send({
+                    success: true,
+                    data: result,
+                } as IApiResponse<any>);
+            } catch (error: any) {
+                return reply.status(400).send({
+                    success: false,
+                    error: { message: error.message },
+                } as IApiResponse<never>);
+            }
+        }
+    );
+
+    // Send payslips via email
+    fastify.post(
+        '/payslip/send',
+        {
+            onRequest: [authenticate],
+            schema: {
+                body: {
+                    type: 'object',
+                    required: ['monthYear'],
+                    properties: {
+                        monthYear: {
+                            type: 'string',
+                            pattern: '^\\d{4}-\\d{2}$',
+                        },
+                        userIds: {
+                            type: 'array',
+                            items: { type: 'string' },
+                        },
+                        filters: {
+                            type: 'object',
+                            properties: {
+                                departmentId: { type: 'string' },
+                                role: { type: 'string' },
+                                status: {
+                                    type: 'array',
+                                    items: { type: 'string' },
+                                },
+                                search: { type: 'string' },
+                            },
+                            additionalProperties: false,
+                        },
+                    },
+                    oneOf: [{ required: ['userIds'] }, { required: ['filters'] }],
+                },
+            },
+        },
+        async (request, reply) => {
+            try {
+                const { monthYear, userIds, filters } = request.body as PayslipGenerateRequest;
+                const [yearStr, monthStr] = monthYear.split('-');
+                const year = Number(yearStr);
+                const month = Number(monthStr);
+
+                if (year < 2024 || year > 2100 || month < 1 || month > 12) {
+                    return reply.status(400).send({
+                        success: false,
+                        error: { message: 'Invalid monthYear format or range.' },
+                    } as IApiResponse<never>);
+                }
+                console.log(month, year, userIds, "userIds req")
+                let finalUserIds: string[];
+                if (userIds) {
+                    finalUserIds = userIds;
+                } else {
+                    const finalFilters = {
+                        ...filters,
+                        status: Array.isArray(filters?.status) && filters.status.length > 0 ? filters.status : ['Active'],
+                    };
+                    finalUserIds = await request.container!.payrollService.getUserIdsByFilters(finalFilters, monthYear, 'onlyCompleted');
+                }
+
+                if (!finalUserIds.length) {
+                    return reply.status(404).send({
+                        success: false,
+                        error: { message: 'No employees found for processing payslips.' },
+                    } as IApiResponse<never>);
+                }
+                console.log(finalUserIds, "finalUserIds")
+                const payload = {
+                    month: month,
+                    year: year,
+                    recipients: finalUserIds
+                }
+                console.log(payload, "payload")
+                const result = await request.container!.documentService.sendPayslipDocuments(
+                    payload,
+                    request.user._id as string,
+                );
+                return reply.send({
+                    success: true,
+                    data: result,
+                } as IApiResponse<any>);
+            } catch (error: any) {
+                return reply.status(400).send({
+                    success: false,
+                    error: { message: error.message },
+                } as IApiResponse<never>);
+            }
+        }
+    );
+
+    // Get payslip records for specific users
+    fastify.post(
+        '/payslip/search',
+        {
+            // onRequest: [authenticate],
+            schema: {
+                body: {
+                    type: 'object',
+                    required: ['userIds', 'month', 'year'],
+                    properties: {
+                        userIds: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            minItems: 1,
+                            description: 'Array of user IDs to fetch payroll records for',
+                        },
+                        month: {
+                            type: 'number',
+                            minimum: 1,
+                            maximum: 12,
+                            description: 'Month for which payroll records are requested (1-12)',
+                        },
+                        year: {
+                            type: 'number',
+                            minimum: 2000,
+                            maximum: 2100,
+                            description: 'Year for which payroll records are requested (2000-2100)',
+                        },
+                    },
+                },
+                response: {
+                    200: {
+                        type: 'object',
+                        properties: {
+                            success: { type: 'boolean' },
+                            data: {
+                                type: 'array',
+                                items: {
+                                    type: 'object',
+                                    properties: {
+                                        _id: { type: 'string' }, // Document record ID
+                                        userId: { type: 'string' },
+                                        accessLevel: {
+                                            type: 'string',
+                                            enum: ['Public', 'Private']
+                                        },
+                                        status: {
+                                            type: 'string',
+                                            enum: ['Generated', 'Sent', 'Exported']
+                                        },
+                                        payslipUrl: { type: 'string', format: 'uri' },
+                                        isExport: { type: 'boolean' },
+                                        month: { type: 'number' },
+                                        year: { type: 'number' },
+                                        monthYear: { type: 'string', pattern: '^\\d{4}-\\d{2}$' },
+                                        // netSalary: { type: 'number' },
+                                        // grossSalary: { type: 'number' },
+                                        // totalDeductions: { type: 'number' },
+                                        // reimbursement: { type: 'number' },
+                                        // bonus: { type: 'number' }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    400: {
+                        type: 'object',
+                        properties: {
+                            success: { type: 'boolean', default: false },
+                            message: { type: 'string' }
+                        }
+                    }
+                },
+            }
+        },
+        async (request, reply) => {
+            console.log("inside /payslip/search route", request.body);
+            const { userIds, month, year } = request.body as getPayslipRequestBody;
+            console.log(typeof month, typeof year, 'month and year types');
+            const isUserIdsInvalid = !Array.isArray(userIds) || userIds.length === 0 || !userIds.every(id => typeof id === 'string');
+            const isMonthInvalid = typeof month !== 'number' || month < 1 || month > 12;
+            const isYearInvalid = typeof year !== 'number' || year < 2000 || year > 2100;
+
+            console.log({ isUserIdsInvalid, isMonthInvalid, isYearInvalid });
+            if (isUserIdsInvalid || isMonthInvalid || isYearInvalid) {
+                return {
+                    success: false,
+                    message: 'Invalid request body: userIds (non-empty array of strings), month (1–12), and year (2000–2100) are required.'
+                };
+            }
+
+            try {
+                const data = await request.container!.documentService.getPayslipDocumentsForUsers(userIds, month, year);
+                console.log(data, "response data")
+                return reply.send({ success: true, data: data });
+            } catch (error: any) {
+                return reply.status(400).send({ success: false, error: error.message });
+            }
+        }
+    );
+
+    //Admin: Upload Form 16 ZIP  
+    fastify.post(
+        '/form16/upload',
+        {
+            preHandler: [zipFileUpload],
+            schema: {
+                consumes: ['multipart/form-data'],
+                response: {
+                    200: {
+                        type: 'object',
+                        properties: {
+                            success: { type: 'boolean' },
+                            errors: {
+                                type: 'array',
+                                items: {
+                                    type: 'object',
+                                    properties: {
+                                        fileName: { type: 'string' },
+                                        error: { type: 'string' }
+                                    }
+                                }
+                            },
+                            validFiles: {
+                                type: 'array',
+                                items: {
+                                    type: 'object',
+                                    properties: {
+                                        fileName: { type: 'string' },
+                                        pan: { type: 'string' },
+                                        user: {
+                                            type: 'object',
+                                            properties: {
+                                                _id: { type: 'string' },
+                                                employeeId: { type: 'string' },
+                                                name: { type: 'string' },
+                                                email: { type: 'string' }
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            processed: {
+                                type: 'array',
+                                items: {
+                                    type: 'object',
+                                    properties: {
+                                        fileName: { type: 'string' },
+                                        pan: { type: 'string' },
+                                        documentId: { type: 'string' },
+                                        user: {
+                                            type: 'object',
+                                            properties: {
+                                                _id: { type: 'string' },
+                                                employeeId: { type: 'string' },
+                                                name: { type: 'string' },
+                                                email: { type: 'string' }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+        },
+        async (request, reply) => {
+            console.log("*******")
+            console.log(request.file)
+            console.log("*******")
+            console.log(request.files)
+            console.log("*******")
+            console.log("first")
+            try {
+                const file = (request as any).file;
+                console.log(file, "file");
+                const today = new Date();
+                const year = today.getFullYear();
+                const month = today.getMonth() + 1; // JS months are 0-based
+
+                const startYear = month >= 4 ? year : year - 1;
+                const endYear = startYear + 1;
+
+                const FY = `${startYear}-${endYear}`;
+
+                let financialYear: string;
+                if (
+                    typeof request.body === 'object' &&
+                    request.body !== null &&
+                    'financialYear' in request.body &&
+                    typeof (request.body as any).financialYear === 'string'
+                ) {
+                    financialYear = (request.body as any).financialYear;
+                } else {
+                    financialYear = FY;
+                }
+
+                if (!file || !file.buffer) {
+                    return reply.status(200).send({
+                        success: false,
+                        errors: [{ fileName: '', error: 'No ZIP file uploaded or file is empty.' }],
+                    });
+                }
+
+                const validationErrors: { fileName: string, error: string }[] = [];
+                const validFiles: { entry: any, pan: string, user: any, justFileName: string }[] = [];
+
+                try {
+                    const directory = await unzipper.Open.buffer(file.buffer);
+                    for (const entry of directory.files) {
+                        const fileName = entry.path;
+                        const justFileName = path.basename(fileName);
+
+                        // Skip directories and macOS resource fork files
+                        if (entry.type !== 'File' || justFileName.startsWith('._')) {
+                            continue;
+                        }
+
+                        // 1. Check PDF
+                        if (!justFileName.toLowerCase().endsWith('.pdf')) {
+                            validationErrors.push({ fileName: justFileName, error: 'Not a PDF file' });
+                            continue;
+                        }
+
+                        // 2. Check PAN format
+                        const panMatch = justFileName.match(/^([A-Z]{5}[0-9]{4}[A-Z]{1})\.pdf$/i);
+                        if (!panMatch) {
+                            validationErrors.push({ fileName: justFileName, error: 'Invalid PAN format' });
+                            continue;
+                        }
+                        const pan = panMatch[1].toUpperCase();
+
+                        // 3. Check PAN exists
+                        //get the document with category= Certification
+                        /*  const user = await User.findOne({ 'governmentIds.pan.number': new RegExp(`^${pan}$`, 'i') }).lean() as (IUser & { _id: any });
+                          if (!user) {
+                              validationErrors.push({ fileName: justFileName, error: 'PAN not found in system' });
+                              continue;
+                          }
+                              */
+                        const document = await Document.findOne({
+                            category: 'Certification',
+                            'metadata.certificate.certificateType': 'IdentityProof',
+                            'metadata.certificate.idDetails.idType': 'PAN',
+                            'metadata.certificate.idDetails.idNumber': new RegExp(`^${pan}$`, 'i')
+                        }).lean();
+                        console.log(document, "get Document")
+                        console.log("first")
+                        if (!document) {
+                            validationErrors.push({ fileName: justFileName, error: 'PAN not found in system' });
+                            continue;
+                        }
+
+                        // Fetch the user based on the document's employeeId
+                        const user = await User.findById(document.employeeId).lean() as (IUser & { _id: any });
+                        if (!user) {
+                            validationErrors.push({ fileName: justFileName, error: 'User not found for the given PAN' });
+                            continue;
+                        }
+
+                        // If all checks pass, add to validFiles
+                        validFiles.push({ entry, pan, user, justFileName });
+                    }
+                } catch (zipError) {
+                    request.log.error(zipError, 'Error processing ZIP file');
+                    return reply.status(200).send({
+                        success: false,
+                        errors: [{ fileName: '', error: 'Invalid or corrupt ZIP file.' }],
+                    });
+                }
+
+                if (validationErrors.length > 0) {
+                    // Optionally, map validFiles to a preview array for FE
+                    const validFilesPreview = validFiles.map(({ pan, user, justFileName }) => ({
+                        fileName: justFileName,
+                        pan,
+                        user: {
+                            _id: user._id,
+                            employeeId: user._id,
+                            name: user.name,
+                            email: user.email,
+                        }
+                    }));
+                    return reply.status(200).send({ success: false, errors: validationErrors, validFiles: validFilesPreview });
+                }
+
+                // If all valid, process validFiles as before
+                const processed: any[] = [];
+                for (const { entry, pan, user, justFileName } of validFiles) {
+                    const fileContent = await entry.buffer();
+                    const document = await request.container!.documentService.uploadForm16(user._id, user.name, pan, justFileName, fileContent, financialYear);
+                    processed.push({
+                        fileName: justFileName,
+                        pan,
+                        documentId: document._id,
+                        user: {
+                            _id: user._id,
+                            employeeId: user._id,
+                            name: user.name,
+                            email: user.email,
+                        },
+                    });
+                }
+
+                return reply.status(200).send({
+                    success: true,
+                    processed
+                });
+
+            } catch (error: any) {
+                request.log.error((error as Error).message || error);
+                return reply.status(500).send({
+                    success: false,
+                    error: 'Internal server error during Form 16 upload process.',
+                });
+            }
+        }
+    );
+
+    //Get Docs 
+    fastify.get<{ Querystring: IDocumentQuery }>(
+        '/',
+        {
+            onRequest: [authenticate],
+            schema: {
+                querystring: {
+                    type: 'object',
+                    properties: {
+                        access: { type: 'string', enum: ['own', 'team', 'global'], default: 'own' },
+                        employeeId: { type: 'string' },
+                        type: { type: 'string', enum: ['Payslip', 'TimesheetFile', 'Form16', 'Form12B', 'Form12BB', 'OfferLetter', 'HikeLetter', 'Certificate', 'AdminUpload'] },
+                        category: { type: 'string', enum: ['Payroll', 'Timesheet', 'Tax', 'EmployeeLifecycle', 'Certification'] },
+                        year: { type: 'integer' },
+                        month: { type: 'integer' },
+                        financialYear: { type: 'string' },
+                        page: { type: 'integer', minimum: 1, default: 1 },
+                        limit: { type: 'integer', minimum: 1, maximum: 100, default: 10 },
+                        department: { type: 'string' },
+                        role: { type: 'string', enum: ['admin', 'manager', 'staff'] },
+                        activeStatus: { type: 'boolean' },
+                        designation: { type: 'string' },
+                        location: { type: 'string' },
+                        search: { type: 'string' }
+                    },
+                },
+                response: {
+                    200: {
+                        type: 'object',
+                        properties: {
+                            success: { type: 'boolean' },
+                            data: {
+                                type: 'array',
+                                items: {
+                                    type: 'object',
+                                    properties: {
+                                        _id: { type: 'string' },
+                                        employeeId: {
+                                            type: 'object',
+                                            properties: {
+                                                _id: { type: 'string' },
+                                                name: { type: 'string' },
+                                                email: { type: 'string' }
+                                            }
+                                        },
+                                        type: {
+                                            type: 'string',
+                                            enum: ['Payslip', 'TimesheetFile', 'Form16', 'OfferLetter', 'HikeLetter', 'Certificate', 'Form12B', 'Form12BB', 'AdminUpload']
+                                        },
+                                        category: {
+                                            type: 'string',
+                                            enum: ['Payroll', 'Timesheet', 'Tax', 'EmployeeLifecycle', 'Certification']
+                                        },
+                                        tags: {
+                                            type: 'array',
+                                            items: { type: 'string' }
+                                        },
+                                        fileName: { type: 'string' },
+                                        filePath: { type: 'string' },
+                                        uploadDate: { type: 'string', format: 'date-time' },
+                                        uploadedBy: {
+                                            type: 'object',
+                                            properties: {
+                                                name: { type: 'string' },
+                                                email: { type: 'string' }
+                                            }
+                                        },
+                                        accessLevel: {
+                                            type: 'string',
+                                            enum: ['Public', 'Private', 'Role-Based']
+                                        },
+                                        status: {
+                                            type: 'string',
+                                            enum: ['Uploaded', 'Assigned', 'Acknowledged', 'Generated', 'Sent', 'Exported']
+                                        },
+                                        version: { type: 'number' },
+                                        expiryDate: { type: 'string', format: 'date-time' },
+                                        metadata: {
+                                            type: 'object',
+                                            properties: {
+                                                payslip: {
+                                                    type: 'object',
+                                                    properties: {
+                                                        payrollId: { type: 'string' },
+                                                        monthYear: { type: 'string' },
+                                                        month: { type: 'number' },
+                                                        year: { type: 'number' },
+                                                        netSalary: { type: 'number' },
+                                                        paySummary: {
+                                                            type: 'object',
+                                                            properties: {
+                                                                gross: { type: 'number' },
+                                                                net: { type: 'number' },
+                                                                deductions: { type: 'number' },
+                                                                bonus: { type: 'number' },
+                                                                reimbursement: { type: 'number' }
+                                                            }
+                                                        },
+                                                        isExport: { type: 'boolean' },
+                                                        emailHistory: {
+                                                            type: 'array',
+                                                            items: {
+                                                                type: 'object',
+                                                                properties: {
+                                                                    sentAt: { type: 'string', format: 'date-time' },
+                                                                    status: { type: 'string', enum: ['Sent', 'Failed'] },
+                                                                    sentBy: { type: 'string' },
+                                                                    recipientEmail: { type: 'string' },
+                                                                    errorMessage: { type: 'string' },
+                                                                    messageId: { type: 'string' }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                },
+                                                timesheet: {
+                                                    type: 'object',
+                                                    properties: {
+                                                        month: { type: 'number' },
+                                                        year: { type: 'number' }
+                                                    }
+                                                },
+                                                form16: {
+                                                    type: 'object',
+                                                    properties: {
+                                                        financialYear: { type: 'string' },
+                                                        pan: { type: 'string' },
+                                                        tdsAmount: { type: 'number' }
+                                                    }
+                                                },
+                                                offerLetter: {
+                                                    type: 'object',
+                                                    properties: {
+                                                        offerDate: { type: 'string', format: 'date-time' },
+                                                        joiningDate: { type: 'string', format: 'date-time' },
+                                                        designation: { type: 'string' },
+                                                        ctc: { type: 'number' }
+                                                    }
+                                                },
+                                                hikeLetter: {
+                                                    type: 'object',
+                                                    properties: {
+                                                        effectiveDate: { type: 'string', format: 'date-time' },
+                                                        newCtc: { type: 'number' },
+                                                        percentageIncrease: { type: 'number' }
+                                                    }
+                                                },
+                                                certificate: {
+                                                    type: 'object',
+                                                    properties: {
+                                                        certificateType: { type: 'string', enum: ['Academic', 'Experience', 'Skill', 'IdentityProof'] },
+                                                        title: { type: 'string' },
+                                                        issuingAuthority: { type: 'string' },
+                                                        issueDate: { type: 'string', format: 'date-time' },
+                                                        expiryDate: { type: 'string', format: 'date-time' },
+                                                        certificateId: { type: 'string' },
+                                                        idDetails: {
+                                                            type: 'object',
+                                                            properties: {
+                                                                idType: { type: 'string', enum: ['Aadhaar', 'PAN', 'Passport', 'DriverLicense', 'VoterID', 'Other'] },
+                                                                idNumber: { type: 'string' },
+                                                                country: { type: 'string' },
+                                                            }
+                                                        },
+                                                        skillDetails: {
+                                                            type: 'object',
+                                                            properties: {
+                                                                skillName: { type: 'string' },
+                                                                proficiencyLevel: {
+                                                                    type: 'string', enum: ['Beginner', 'Intermediate', 'Advanced', 'Expert']
+                                                                },
+                                                                category: {
+                                                                    type: 'string', enum: ['Technical', 'Soft']
+                                                                },
+                                                            }
+                                                        },
+                                                        academicDetails: {
+                                                            type: 'object',
+                                                            properties: {
+                                                                qualificationType: { type: 'string', enum: ['Secondary', 'HigherSecondary', 'Diploma', 'Bachelor', 'Master', 'Doctorate', 'Other'] },
+                                                                fieldOfStudy: { type: 'string' },
+                                                                grade: { type: 'string' },
+                                                                institution: { type: 'string' },
+                                                                yearOfCompletion: { type: 'number' }
+                                                            }
+                                                        },
+                                                        experienceDetails: {
+                                                            type: 'object',
+                                                            properties: {
+                                                                companyName: { type: 'string' },
+                                                                role: { type: 'string' },
+                                                                startDate: { type: 'string', format: 'date-time' },
+                                                                endDate: { type: 'string', format: 'date-time' },
+                                                                duration: { type: 'string' },
+                                                            }
+                                                        },
+                                                        verificationStatus: { type: 'string', enum: ['Pending', 'Verified', 'Rejected'] },
+                                                        verificationDetails: {
+                                                            type: 'object',
+                                                            properties: {
+                                                                verifiedBy: { type: 'string' },
+                                                                verifiedAt: { type: 'string', format: 'date-time' },
+                                                                comments: { type: 'string' },
+                                                            }
+                                                        }
+                                                    }
+                                                },
+                                                form12B: {
+                                                    type: 'object',
+                                                    properties: {
+                                                        previousEmployer: {
+                                                            type: 'object',
+                                                            properties: {
+                                                                name: { type: 'string' },
+                                                                pan: { type: 'string' },
+                                                                tan: { type: 'string' }
+                                                            }
+                                                        },
+                                                        employmentPeriod: {
+                                                            type: 'object',
+                                                            properties: {
+                                                                startDate: { type: 'string', format: 'date-time' },
+                                                                endDate: { type: 'string', format: 'date-time' }
+                                                            }
+                                                        },
+                                                        salaryEarned: { type: 'number' },
+                                                        tdsDeducted: { type: 'number' },
+                                                        financialYear: { type: 'string' },
+                                                        status: { type: 'string', enum: ['Pending', 'Approved', 'Rejected', 'ResubmissionRequested'] },
+                                                        isLocked: { type: 'boolean' }
+                                                    }
+                                                },
+                                                form12BB: {
+                                                    type: 'object',
+                                                    properties: {
+                                                        financialYear: { type: 'string' },
+                                                        regime: { type: 'string' },
+                                                        taxDeclarationId: { type: 'string' },
+                                                        totalIncome: { type: 'string' },
+                                                        deductions: { type: 'string' },
+                                                        taxPayable: { type: 'string' },
+                                                        isLocked: { type: 'boolean' },
+                                                        isPreviewEnabled: { type: 'boolean' },
+                                                        tdsPaid: { type: 'string' },
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        auditLog: {
+                                            type: 'array',
+                                            items: {
+                                                type: 'object',
+                                                properties: {
+                                                    action: {
+                                                        type: 'string',
+                                                        enum: ['Upload', 'View', 'Download', 'Send', 'Generate', 'Acknowledge', 'Verify']
+                                                    },
+                                                    performedBy: { type: 'string' },
+                                                    timestamp: { type: 'string', format: 'date-time' },
+                                                    details: { type: 'string' }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            meta: {
+                                type: 'object',
+                                properties: {
+                                    page: { type: 'number' },
+                                    limit: { type: 'number' },
+                                    total: { type: 'number' },
+                                    totalPages: { type: 'number' }
+                                },
+                                required: ['page', 'limit', 'total', 'totalPages']
+                            }
+                        },
+                        required: ['success', 'data', 'meta']
+                    },
+                    400: {
+                        type: 'object',
+                        properties: {
+                            success: { type: 'boolean' },
+                            error: { type: 'string' }
+                        },
+                        required: ['success', 'error']
+                    },
+                    403: {
+                        type: 'object',
+                        properties: {
+                            success: { type: 'boolean' },
+                            error: { type: 'string' }
+                        },
+                        required: ['success', 'error']
+                    }
+                }
+            }
+        },
+        async (request, reply) => {
+            console.log(request.query, "request query in route")
+            try {
+                const result = await request.container!.documentService.getDocuments(request, reply);
+                console.log(result.data, "result get docs")
+                return reply.send({
+                    success: true,
+                    data: result.data,
+                    meta: result.meta
+                });
+            } catch (error) {
+                return reply.status(400).send({
+                    success: false,
+                    error: (error as Error).message
+                });
+            }
+        }
+    );
+
+    //get by Doc Id
+    fastify.get<{ Params: { id: string } }>(
+        '/:id',
+        {
+            onRequest: [authenticate],
+            schema: {
+                params: {
+                    type: 'object',
+                    properties: {
+                        id: { type: 'string' }
+                    },
+                    required: ['id']
+                },
+                response: {
+                    200: {
+                        type: 'object',
+                        properties: {
+                            success: { type: 'boolean' },
+                            data: {
+                                type: 'object',
+                                properties: {
+                                    _id: { type: 'string' },
+                                    employeeId: {
+                                        type: 'object',
+                                        properties: {
+                                            _id: { type: 'string' },
+                                            name: { type: 'string' },
+                                            email: { type: 'string' }
+                                        },
+                                        required: ['_id', 'name', 'email']
+                                    },
+                                    type: { type: 'string', enum: ['Payslip', 'TimesheetFile', 'Form16', 'OfferLetter', 'HikeLetter', 'Certificate', 'Form12B', 'Form12BB', 'AdminUpload'] },
+                                    category: { type: 'string', enum: ['Payroll', 'Timesheet', 'Tax', 'EmployeeLifecycle', 'Certification'] },
+                                    tags: { type: 'array', items: { type: 'string' } },
+                                    fileName: { type: 'string' },
+                                    filePath: { type: 'string' },
+                                    uploadDate: { type: 'string', format: 'date-time' },
+                                    uploadedBy: {
+                                        type: 'object',
+                                        properties: {
+                                            _id: { type: 'string' },
+                                            name: { type: 'string' },
+                                            email: { type: 'string' }
+                                        },
+                                        required: ['_id', 'name', 'email']
+                                    },
+                                    accessLevel: { type: 'string', enum: ['Public', 'Private', 'Role-Based'] },
+                                    status: { type: 'string', enum: ['Uploaded', 'Assigned', 'Acknowledged', 'Generated', 'Sent', 'Exported'] },
+                                    version: { type: 'number' },
+                                    expiryDate: { type: ['string', 'null'], format: 'date-time' },
+                                    metadata: { type: 'object', additionalProperties: true },
+                                    auditLog: {
+                                        type: 'array',
+                                        items: {
+                                            type: 'object',
+                                            properties: {
+                                                action: { type: 'string', enum: ['Upload', 'View', 'Download', 'Send', 'Generate', 'Acknowledge', 'Verify'] },
+                                                performedBy: { type: 'string' },
+                                                timestamp: { type: 'string', format: 'date-time' },
+                                                details: { type: ['string', 'null'] }
+                                            },
+                                            required: ['action', 'performedBy', 'timestamp']
+                                        }
+                                    },
+                                    createdAt: { type: 'string', format: 'date-time' },
+                                    updatedAt: { type: 'string', format: 'date-time' },
+                                    __v: { type: 'number' }
+                                },
+                                required: ['_id', 'employeeId', 'type', 'category', 'tags', 'fileName', 'filePath', 'uploadDate', 'uploadedBy', 'accessLevel', 'status', 'version', 'metadata', 'auditLog', 'createdAt', 'updatedAt', '__v']
+                            }
+                        },
+                        required: ['success', 'data']
+                    },
+                    400: {
+                        type: 'object',
+                        properties: {
+                            success: { type: 'boolean' },
+                            error: { type: 'string' }
+                        },
+                        required: ['success', 'error']
+                    },
+                    401: {
+                        type: 'object',
+                        properties: {
+                            success: { type: 'boolean' },
+                            error: { type: 'string' }
+                        },
+                        required: ['success', 'error']
+                    },
+                    403: {
+                        type: 'object',
+                        properties: {
+                            success: { type: 'boolean' },
+                            error: { type: 'string' }
+                        },
+                        required: ['success', 'error']
+                    },
+                    404: {
+                        type: 'object',
+                        properties: {
+                            success: { type: 'boolean' },
+                            error: { type: 'string' }
+                        },
+                        required: ['success', 'error']
+                    }
+                }
+            }
+        },
+        async (request, reply) => {
+            console.log(request.params, 'request params in route');
+            const { id } = request.params;
+            try {
+                const result = await request.container!.documentService.getByIdDocuments(id, request);
+                request.log.info({ response: result }, 'Sending response to client');
+                return reply.send(result);
+            } catch (error: any) {
+                request.log.error({ error: error.message }, 'Error in getById route');
+                if (error.message === 'Invalid document ID') {
+                    return reply.status(400).send({
+                        success: false,
+                        error: error.message
+                    });
+                }
+                if (error.message === 'Document not found') {
+                    return reply.status(404).send({
+                        success: false,
+                        error: error.message
+                    });
+                }
+                return reply.status(500).send({
+                    success: false,
+                    error: 'Failed to retrieve document'
+                });
+            }
+        }
+    );
+
+    //upload Certifications
+    fastify.post('/certifications', {
+        preHandler: [filesUpload]
+    }, async (request, reply) => {
+        try {
+            console.log("*******")
+            console.log(request.file, "file");
+            console.log("*******")
+            console.log(request.files, "files")
+            console.log("*******")
+            console.log(request.body, "req body")
+            console.log("*******")
+            const { documentData, employeeId } = request.body as { documentData: string, employeeId: string };
+            const files = (request as any).files;
+
+            if (!files || files.length === 0) {
+                return reply.status(400).send({ success: false, error: 'No file uploaded.' });
+            }
+
+            if (!documentData || !employeeId) {
+                return reply.status(400).send({ success: false, error: 'Missing documentData or employeeId in the request body.' });
+            }
+
+            const parsedData = JSON.parse(documentData);
+            const file = files[0];
+            console.log(parsedData, "parsedData");
+            console.log(file, "file")
+            const newDocument = await request.container!.documentService.createCertificate(employeeId, parsedData, file);
+
+            return reply.status(201).send({
+                success: true,
+                data: newDocument
+            });
+
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            console.error('Error during certification upload:', errorMessage);
+            return reply.status(500).send({
+                success: false,
+                error: `Internal server error: ${errorMessage}`,
+            });
+        }
+    });
+
+    //update certifications
+    fastify.put<{ Params: { id: string } }>(
+        '/certifications/:id',
+        {
+            // onRequest: [authendicate],
+
+        },
+        async (request, reply) => {
+
+            const { body, files } = await parseMultipartForm(request);
+            console.log(body, "parseMultipartForm body");
+            console.log(files, "parseMultipartForm files");
+            console.log("first")
+
+            const { id } = request.params;
+            const { documentData, employeeId } = body as { documentData: string; employeeId: string };
+
+            console.log(id, "id ")
+            console.log(documentData, "documentData");
+            console.log(employeeId, "employeeId");
+            console.log(files, "files")
+            try {
+                // Validate employeeId
+                if (!employeeId) {
+                    return reply.status(400).send({ success: false, error: 'Invalid employee ID' });
+                }
+
+                // Parse documentData
+                let parsedData;
+                try {
+                    parsedData = JSON.parse(documentData);
+                } catch (err) {
+                    return reply.status(400).send({ success: false, error: 'Invalid documentData format' });
+                }
+
+                const file = files && files.length > 0 ? files[0] : null;
+                const updatedDocument = await request.container!.documentService.updateCertificate(id, parsedData, file, request);
+
+                return reply.status(200).send({ success: true, data: updatedDocument });
+            } catch (error: any) {
+                request.log.error({ error: error.message }, 'Error in update certifications route');
+                if (error.message === 'Invalid document ID') {
+                    return reply.status(400).send({ success: false, error: error.message });
+                }
+                if (error.message === 'Document not found') {
+                    return reply.status(404).send({ success: false, error: error.message });
+                }
+                if (error.message.includes('User') || error.message.includes('Certificate metadata') || error.message.includes('Document type') || error.message.includes('Document category')) {
+                    return reply.status(400).send({ success: false, error: error.message });
+                }
+                return reply.status(500).send({
+                    success: false,
+                    error: 'Failed to update certificate'
+                });
+            }
+
+        }
+    );
+    //verify certifications
+    fastify.patch('/certifications/:id/verify', {
+        preHandler: [authenticate]
+    }, async (request, reply) => {
+        try {
+            const adminUser = request.user;
+            if (adminUser?.role !== 'admin') {
+                return reply.status(403).send({ success: false, error: 'Forbidden: Only admins can verify documents.' });
+            }
+
+            const { id } = request.params as { id: string };
+            const { status, comments } = request.body as { status: 'Verified' | 'Rejected', comments: string };
+
+            if (!status || !['Verified', 'Rejected'].includes(status)) {
+                return reply.status(400).send({ success: false, error: 'Invalid status. Must be "Verified" or "Rejected".' });
+            }
+
+            const updatedDocument = await request.container!.documentService.verifyDocument(id, status, comments, adminUser._id.toString());
+
+            return reply.status(200).send({
+                success: true,
+                data: updatedDocument
+            });
+
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            console.error('Error during document verification:', errorMessage);
+            return reply.status(500).send({
+                success: false,
+                error: `Internal server error: ${errorMessage}`,
+            });
+        }
+    });
+
+    //delete certifications
+    fastify.delete('/:id', {
+        preHandler: [authenticate]
+    }, async (request, reply) => {
+        try {
+            console.log("inside delete route", request.params)
+            const { id } = request.params as { id: string };
+            const user = request.user;
+            const deletedDocument = await request.container!.documentService.deleteDocument(id, user._id.toString(), user.role);
+            return reply.status(200).send({
+                success: true,
+                data: deletedDocument
+            });
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            console.error('Error during document deletion:', errorMessage);
+            return reply.status(errorMessage.includes('Forbidden') ? 403 : 500).send({
+                success: false,
+                error: errorMessage.includes('Forbidden') ? errorMessage : 'Internal server error',
+            });
+        }
+    });
+
+    //upload Form12B
+    fastify.post('/form12b', {
+        preHandler: [filesUpload]
+    }, async (request, reply) => {
+        try {
+            console.log(request.file, "file");
+            console.log(request.files, "files")
+            console.log(request.body, "req body")
+            console.log("first")
+
+            const file = (request as any).files;
+            if (!file || file.length === 0) {
+                return reply.status(400).send({ success: false, error: 'No file uploaded.' });
+            }
+            console.log(file, "file in route")
+            const { documentData } = request.body as { documentData: string };
+            console.log(documentData, "documentData in route")
+            console.log(typeof documentData, "typeof documentData in route")
+            let parsedData: IForm12BSubmission = JSON.parse(documentData);
+            console.log(parsedData, "parsedData")
+            let userId = request.user?._id?.toString() || '68355851969275367d77b3bc';
+            console.log(userId, "userId")
+
+            const form12BDoc = await request.container!.documentService.uploadForm12B(file, parsedData, userId);
+
+            return reply.status(200).send({
+                success: true,
+                data: form12BDoc
+            });
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            console.error('Error during document deletion:', errorMessage);
+            return reply.status(errorMessage.includes('Forbidden') ? 403 : 500).send({
+                success: false,
+                error: errorMessage.includes('Forbidden') ? errorMessage : 'Internal server error',
+            });
+        }
+    })
+
+    //update Form12B status
+    fastify.put('/form12b/:id/status',
+        {
+            // preHandler: [authenticate],
+        },
+        async (request, reply) => {
+            console.log(request.params, "request params in route")
+            console.log(request.body, "request body in route");
+            const { id } = request.params as { id: string };
+            const { status, comments } = request.body as { status: 'Verified' | 'Rejected' | 'ResubmissionRequested', comments?: string };
+            const user = request?.user;
+            // if (user.role !== 'admin') {
+            //     return reply.status(403).send({ success: false, error: 'Forbidden: Only admins can update Form12B status.' });
+            // }
+            const userId = user?._id?.toString() || '68355851969275367d77b3bc'; // Default userId for testing, replace with actual user ID from request
+
+            if (!status || !['Verified', 'Rejected', 'ResubmissionRequested'].includes(status)) {
+                return reply.status(400).send({ success: false, error: 'Invalid status. Must be "Verified", "Rejected" or "ResubmissionRequested".' });
+            }
+
+            try {
+                const updatedDocument = await request.container!.documentService.updateForm12BStatus(id, status, userId, comments);
+                return reply.status(200).send({
+                    success: true,
+                    data: updatedDocument
+                });
+            } catch (error) {
+                const errorMessage = error instanceof Error ? error.message : String(error);
+                console.error('Error during Form12B status update:', errorMessage);
+                return reply.status(500).send({
+                    success: false,
+                    error: `Internal server error: ${errorMessage}`,
+                });
+            }
+        })
+
+    //Generate Form12BB
+    fastify.post('/generate-form12bb',
+        {
+            preHandler: [authenticate],
+        },
+        async (request, reply) => {
+            console.log(request.body, "data in form12bb generate route");
+            try {
+                const updatedDocument = await request.container!.documentService.generateForm12BB(request.body as IForm12BBGenerate);
+
+                return reply.status(200).send({
+                    success: true,
+                    data: updatedDocument
+                });
+            } catch (error) {
+                const errorMessage = error instanceof Error ? error.message : String(error);
+                console.error('Error during Form12B status update:', errorMessage);
+                return reply.status(500).send({
+                    success: false,
+                    error: `Internal server error: ${errorMessage}`,
+                });
+            }
+        }
+    );
+
+    //preview Status UpdateForm12BB
+    fastify.put<IPreviewStatusRequest>(
+        "/form12bb/:id/preview-status",
+        { preHandler: [authenticate] },
+        async (request: FastifyRequest<IPreviewStatusRequest>, reply: FastifyReply) => {
+            const { isPreviewEnabled } = request.body;
+            const { id } = request.params;
+            const user = request.user;
+
+            if (typeof isPreviewEnabled !== "boolean") {
+                return reply.status(400).send({ success: false, error: "isPreviewEnabled must be true or false." });
+            }
+
+            try {
+                const updatedDocument = await request.container!.documentService.updateForm12BBPreview(
+                    id,
+                    isPreviewEnabled,
+                    user
+                );
+                if (!updatedDocument) {
+                    return reply.status(404).send({ success: false, error: "Form12BB document not found." });
+                }
+                console.log(updatedDocument, "updatedDocument in route");
+                return reply.status(200).send({
+                    success: true,
+                    data: updatedDocument,
+                });
+            } catch (error) {
+                const errorMessage = error instanceof Error ? error.message : String(error);
+                console.error("Error during Form12BB preview status update:", errorMessage);
+                return reply.status(500).send({
+                    success: false,
+                    error: `Internal server error: ${errorMessage}`,
+                });
+            }
+        }
+    );
+
+    /**
+     * Admin Upload Document - Simple upload for payslips, timesheets, etc.
+     * POST /documents/admin/upload
+     */
+    fastify.post(
+        '/admin/upload',
+        {
+            onRequest: [authenticate],
+        },
+        async (request: FastifyRequest, reply: FastifyReply) => {
+            try {
+                // Parse multipart form data
+                const { body, files } = await parseMultipartForm(request);
+
+                if (!files || files.length === 0) {
+                    return reply.status(400).send({
+                        success: false,
+                        error: 'No file uploaded'
+                    });
+                }
+
+                const file = files[0];
+
+                // Extract form data
+                const { employeeId, documentType, documentName, documentDate, description } = body;
+
+                // Validate required fields
+                if (!employeeId || !documentType || !documentName || !documentDate) {
+                    return reply.status(400).send({
+                        success: false,
+                        error: 'Missing required fields: employeeId, documentType, documentName, documentDate'
+                    });
+                }
+
+                // Validate documentDate
+                const docDate = new Date(documentDate as string);
+                if (isNaN(docDate.getTime())) {
+                    return reply.status(400).send({
+                        success: false,
+                        error: 'Invalid document date'
+                    });
+                }
+
+                // Validate document type
+                if (!['Payslip', 'Timesheet', 'Other'].includes(documentType as string)) {
+                    return reply.status(400).send({
+                        success: false,
+                        error: 'Document type must be Payslip, Timesheet, or Other'
+                    });
+                }
+
+                const documentService = request.container!.documentService;
+
+                // Upload document
+                const document = await documentService.adminUploadDocument(
+                    employeeId as string,
+                    documentType as 'Payslip' | 'Timesheet' | 'Other',
+                    documentName as string,
+                    docDate,
+                    file,
+                    description
+                );
+
+                const employee = await User.findById(employeeId as string);
+
+                return reply.status(200).send({
+                    success: true,
+                    message: 'Document uploaded successfully',
+                    data: {
+                        documentId: document._id,
+                        documentName: documentName,
+                        fileName: document.fileName,
+                        employeeName: employee?.name,
+                        documentType: documentType,
+                        documentDate: docDate,
+                        uploadedAt: document.uploadDate
+                    }
+                });
+            } catch (error) {
+                const errorMessage = error instanceof Error ? error.message : String(error);
+                console.error('Error during admin document upload:', errorMessage);
+                return reply.status(500).send({
+                    success: false,
+                    error: `Internal server error: ${errorMessage}`
+                });
+            }
+        }
+    );
+
+    /**
+     * Get Admin Uploaded Documents with Filters
+     * GET /documents/admin/uploads
+     */
+    fastify.get(
+        '/admin/uploads',
+        {
+            onRequest: [authenticate],
+            schema: {
+                description: 'Get admin uploaded documents with filters',
+                tags: ['Documents'],
+                security: [{ bearerAuth: [] }, { cookieAuth: [] }],
+                querystring: {
+                    type: 'object',
+                    properties: {
+                        employeeId: { type: 'string', description: 'Filter by employee ID' },
+                        documentType: { type: 'string', enum: ['Payslip', 'Timesheet', 'Other'], description: 'Filter by document type' },
+                        startDate: { type: 'string', format: 'date', description: 'Filter from date (YYYY-MM-DD)' },
+                        endDate: { type: 'string', format: 'date', description: 'Filter to date (YYYY-MM-DD)' },
+                        page: { type: 'number', minimum: 1, default: 1, description: 'Page number' },
+                        limit: { type: 'number', minimum: 1, maximum: 100, default: 10, description: 'Items per page' }
+                    }
+                },
+                response: {
+                    200: {
+                        type: 'object',
+                        properties: {
+                            success: { type: 'boolean' },
+                            data: {
+                                type: 'array',
+                                items: {
+                                    type: 'object',
+                                    properties: {
+                                        _id: { type: 'string' },
+                                        employeeId: {
+                                            type: 'object',
+                                            properties: {
+                                                _id: { type: 'string' },
+                                                name: { type: 'string' },
+                                                email: { type: 'string' },
+                                                employeeId: { type: 'string' }
+                                            }
+                                        },
+                                        type: { type: 'string', enum: ['AdminUpload'] },
+                                        category: { type: 'string', enum: ['Payroll', 'Timesheet', 'Tax', 'EmployeeLifecycle', 'Certification'] },
+                                        tags: {
+                                            type: 'array',
+                                            items: { type: 'string' }
+                                        },
+                                        fileName: { type: 'string' },
+                                        filePath: { type: 'string' },
+                                        uploadedBy: {
+                                            type: 'object',
+                                            properties: {
+                                                _id: { type: 'string' },
+                                                name: { type: 'string' },
+                                                email: { type: 'string' }
+                                            }
+                                        },
+                                        version: { type: 'number' },
+                                        accessLevel: { type: 'string', enum: ['Private', 'Team', 'Public'] },
+                                        status: { type: 'string', enum: ['Uploaded', 'Processing', 'Completed', 'Failed'] },
+                                        metadata: {
+                                            type: 'object',
+                                            properties: {
+                                                adminUpload: {
+                                                    type: 'object',
+                                                    properties: {
+                                                        documentType: { type: 'string', enum: ['Payslip', 'Timesheet', 'Other'] },
+                                                        documentName: { type: 'string' },
+                                                        documentDate: { type: 'string', format: 'date-time' },
+                                                        description: { type: 'string' },
+                                                        uploadedAt: { type: 'string', format: 'date-time' }
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        auditLog: {
+                                            type: 'array',
+                                            items: {
+                                                type: 'object',
+                                                properties: {
+                                                    _id: { type: 'string' },
+                                                    action: { type: 'string' },
+                                                    performedBy: {
+                                                        type: 'object',
+                                                        properties: {
+                                                            _id: { type: 'string' },
+                                                            name: { type: 'string' },
+                                                            email: { type: 'string' }
+                                                        }
+                                                    },
+                                                    timestamp: { type: 'string', format: 'date-time' },
+                                                    details: { type: 'string' }
+                                                }
+                                            }
+                                        },
+                                        uploadDate: { type: 'string', format: 'date-time' },
+                                        createdAt: { type: 'string', format: 'date-time' },
+                                        updatedAt: { type: 'string', format: 'date-time' }
+                                    }
+                                }
+                            },
+                            meta: {
+                                type: 'object',
+                                properties: {
+                                    page: { type: 'number' },
+                                    limit: { type: 'number' },
+                                    total: { type: 'number' },
+                                    totalPages: { type: 'number' }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        async (request: FastifyRequest, reply: FastifyReply) => {
+            try {
+                const query = request.query as any;
+                const documentService = request.container!.documentService;
+
+                const result = await documentService.getAdminUploadedDocuments({
+                    employeeId: query.employeeId,
+                    documentType: query.documentType,
+                    startDate: query.startDate ? new Date(query.startDate) : undefined,
+                    endDate: query.endDate ? new Date(query.endDate) : undefined,
+                    page: query.page ? parseInt(query.page) : 1,
+                    limit: query.limit ? parseInt(query.limit) : 10
+                });
+
+                return reply.status(200).send({
+                    success: true,
+                    data: result.documents,
+                    meta: {
+                        page: result.page,
+                        limit: query.limit || 10,
+                        total: result.total,
+                        totalPages: result.totalPages
+                    }
+                });
+            } catch (error) {
+                const errorMessage = error instanceof Error ? error.message : String(error);
+                console.error('Error fetching admin uploaded documents:', errorMessage);
+                return reply.status(500).send({
+                    success: false,
+                    error: `Internal server error: ${errorMessage}`
+                });
+            }
+        }
+    );
+
+    /**
+     * Update Admin Uploaded Document
+     * PUT /documents/admin/uploads/:id
+     */
+    fastify.put<{ Params: { id: string }; Body: { documentType: string; documentDate: string; documentName: string; description?: string } }>(
+        '/admin/uploads/:id',
+        {
+            onRequest: [authenticate],
+            schema: {
+                description: 'Update an admin uploaded document',
+                tags: ['Documents'],
+                security: [{ bearerAuth: [] }, { cookieAuth: [] }],
+                params: {
+                    type: 'object',
+                    required: ['id'],
+                    properties: {
+                        id: { type: 'string', description: 'Document ID' }
+                    }
+                },
+                body: {
+                    type: 'object',
+                    required: ['documentType', 'documentDate', 'documentName'],
+                    properties: {
+                        documentType: {
+                            type: 'string',
+                            enum: ['Payslip', 'Timesheet', 'Other'],
+                            description: 'Type of document'
+                        },
+                        documentDate: {
+                            type: 'string',
+                            format: 'date',
+                            description: 'Document date (YYYY-MM-DD)'
+                        },
+                        documentName: {
+                            type: 'string',
+                            description: 'Name of the document'
+                        },
+                        description: {
+                            type: 'string',
+                            description: 'Optional description'
+                        }
+                    }
+                },
+                response: {
+                    200: {
+                        type: 'object',
+                        properties: {
+                            success: { type: 'boolean' },
+                            data: {
+                                type: 'object',
+                                properties: {
+                                    _id: { type: 'string' },
+                                    employeeId: { type: 'object' },
+                                    fileName: { type: 'string' },
+                                    filePath: { type: 'string' },
+                                    metadata: {
+                                        type: 'object',
+                                        properties: {
+                                            adminUpload: {
+                                                type: 'object',
+                                                properties: {
+                                                    documentType: { type: 'string' },
+                                                    documentName: { type: 'string' },
+                                                    documentDate: { type: 'string', format: 'date-time' },
+                                                    description: { type: 'string' },
+                                                    uploadedAt: { type: 'string', format: 'date-time' }
+                                                }
+                                            }
+                                        }
+                                    },
+                                    updatedAt: { type: 'string', format: 'date-time' }
+                                }
+                            }
+                        }
+                    },
+                    404: {
+                        type: 'object',
+                        properties: {
+                            success: { type: 'boolean', default: false },
+                            error: { type: 'string' }
+                        }
+                    }
+                }
+            }
+        },
+        async (request: FastifyRequest, reply: FastifyReply) => {
+            try {
+                const { id } = request.params as { id: string };
+                const { documentType, documentDate, documentName, description } = request.body as {
+                    documentType: string;
+                    documentDate: string;
+                    documentName: string;
+                    description?: string;
+                };
+
+                const documentService = request.container!.documentService;
+
+                const updatedDocument = await documentService.updateAdminDocument(
+                    id,
+                    {
+                        documentType: documentType as "Payslip" | "Timesheet" | "Other",
+                        documentDate,
+                        documentName,
+                        description
+                    }
+                );
+
+                return reply.status(200).send({
+                    success: true,
+                    data: updatedDocument
+                });
+            } catch (error) {
+                const errorMessage = error instanceof Error ? error.message : String(error);
+                console.error('Error updating admin document:', errorMessage);
+
+                if (errorMessage.includes('not found')) {
+                    return reply.status(404).send({
+                        success: false,
+                        error: 'Document not found'
+                    });
+                }
+
+                return reply.status(500).send({
+                    success: false,
+                    error: `Internal server error: ${errorMessage}`
+                });
+            }
+        }
+    );
+
+    /**
+     * Update Admin Uploaded Document with new file
+     * PUT /documents/admin/uploads/:id/file
+     */
+    fastify.put<{ Params: { id: string } }>(
+        '/admin/uploads/:id/file',
+        {
+            onRequest: [authenticate],
+            schema: {
+                description: 'Update an admin uploaded document with new file',
+                tags: ['Documents'],
+                security: [{ bearerAuth: [] }, { cookieAuth: [] }],
+                params: {
+                    type: 'object',
+                    required: ['id'],
+                    properties: {
+                        id: { type: 'string', description: 'Document ID' }
+                    }
+                },
+                response: {
+                    200: {
+                        type: 'object',
+                        properties: {
+                            success: { type: 'boolean' },
+                            data: {
+                                type: 'object',
+                                properties: {
+                                    _id: { type: 'string' },
+                                    employeeId: { type: 'object' },
+                                    fileName: { type: 'string' },
+                                    filePath: { type: 'string' },
+                                    metadata: {
+                                        type: 'object',
+                                        properties: {
+                                            adminUpload: {
+                                                type: 'object',
+                                                properties: {
+                                                    documentType: { type: 'string' },
+                                                    documentName: { type: 'string' },
+                                                    documentDate: { type: 'string', format: 'date-time' },
+                                                    description: { type: 'string' },
+                                                    uploadedAt: { type: 'string', format: 'date-time' }
+                                                }
+                                            }
+                                        }
+                                    },
+                                    updatedAt: { type: 'string', format: 'date-time' }
+                                }
+                            }
+                        }
+                    },
+                    404: {
+                        type: 'object',
+                        properties: {
+                            success: { type: 'boolean', default: false },
+                            error: { type: 'string' }
+                        }
+                    }
+                }
+            }
+        },
+        async (request: FastifyRequest, reply: FastifyReply) => {
+            try {
+                const { id } = request.params as { id: string };
+                const documentService = request.container!.documentService;
+
+                // Parse multipart form data
+                const { body, files } = await parseMultipartForm(request);
+
+                if (!files || files.length === 0) {
+                    return reply.status(400).send({
+                        success: false,
+                        error: 'No file uploaded'
+                    });
+                }
+
+                const file = files[0];
+
+                // Extract form data
+                const documentType = body.documentType as string;
+                const documentDate = body.documentDate as string;
+                const documentName = body.documentName as string;
+                const description = body.description as string;
+                const employeeId = body.employeeId as string;
+
+                if (!documentType || !documentDate || !documentName || !employeeId) {
+                    return reply.status(400).send({
+                        success: false,
+                        error: 'Missing required fields: documentType, documentDate, documentName, employeeId'
+                    });
+                }
+
+                const updatedDocument = await documentService.updateAdminDocumentWithFile(
+                    id,
+                    {
+                        file,
+                        documentType: documentType as "Payslip" | "Timesheet" | "Other",
+                        documentDate,
+                        documentName,
+                        description,
+                        employeeId
+                    }
+                );
+
+                return reply.status(200).send({
+                    success: true,
+                    data: updatedDocument
+                });
+            } catch (error) {
+                const errorMessage = error instanceof Error ? error.message : String(error);
+                console.error('Error updating admin document with file:', errorMessage);
+
+                if (errorMessage.includes('not found')) {
+                    return reply.status(404).send({
+                        success: false,
+                        error: 'Document not found'
+                    });
+                }
+
+                return reply.status(500).send({
+                    success: false,
+                    error: `Internal server error: ${errorMessage}`
+                });
+            }
+        }
+    );
+
+    /**
+     * Debug Admin Uploaded Document (temporary endpoint)
+     * GET /documents/admin/uploads/:id/debug
+     */
+    fastify.get<{ Params: { id: string } }>(
+        '/admin/uploads/:id/debug',
+        {
+            onRequest: [authenticate],
+            schema: {
+                description: 'Debug admin uploaded document (temporary)',
+                tags: ['Documents'],
+                security: [{ bearerAuth: [] }, { cookieAuth: [] }],
+                params: {
+                    type: 'object',
+                    required: ['id'],
+                    properties: {
+                        id: { type: 'string', description: 'Document ID' }
+                    }
+                }
+            }
+        },
+        async (request: FastifyRequest, reply: FastifyReply) => {
+            try {
+                const { id } = request.params as { id: string };
+                const documentService = request.container!.documentService;
+
+                // Get raw document without population
+                const rawDocument = await documentService.getDocumentByIdRaw(id);
+
+                // Get populated document
+                const populatedDocument = await documentService.getAdminUploadedDocuments({
+                    employeeId: rawDocument.employeeId.toString(),
+                    page: 1,
+                    limit: 1
+                });
+
+                return reply.status(200).send({
+                    success: true,
+                    data: {
+                        rawDocument: {
+                            _id: rawDocument._id,
+                            employeeId: rawDocument.employeeId,
+                            type: rawDocument.type,
+                            metadata: rawDocument.metadata
+                        },
+                        populatedDocument: populatedDocument.documents[0] || null
+                    }
+                });
+            } catch (error) {
+                const errorMessage = error instanceof Error ? error.message : String(error);
+                return reply.status(500).send({
+                    success: false,
+                    error: `Debug error: ${errorMessage}`
+                });
+            }
+        }
+    );
+
+    /**
+     * Delete Admin Uploaded Document
+     * DELETE /documents/admin/uploads/:id
+     */
+    fastify.delete<{ Params: { id: string } }>(
+        '/admin/uploads/:id',
+        {
+            onRequest: [authenticate],
+            schema: {
+                description: 'Delete an admin uploaded document',
+                tags: ['Documents'],
+                security: [{ bearerAuth: [] }, { cookieAuth: [] }],
+                params: {
+                    type: 'object',
+                    required: ['id'],
+                    properties: {
+                        id: { type: 'string', description: 'Document ID' }
+                    }
+                },
+                response: {
+                    200: {
+                        type: 'object',
+                        properties: {
+                            success: { type: 'boolean' },
+                            message: { type: 'string' }
+                        }
+                    },
+                    404: {
+                        type: 'object',
+                        properties: {
+                            success: { type: 'boolean' },
+                            error: { type: 'string' }
+                        }
+                    }
+                }
+            }
+        },
+        async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+            try {
+                const { id } = request.params;
+
+                // Find document
+                const document = await Document.findById(id);
+                if (!document) {
+                    return reply.status(404).send({
+                        success: false,
+                        error: 'Document not found'
+                    });
+                }
+
+                // Check if it's an admin upload
+                if (document.type !== 'AdminUpload') {
+                    return reply.status(400).send({
+                        success: false,
+                        error: 'Only admin uploaded documents can be deleted via this endpoint'
+                    });
+                }
+
+                // Delete from database
+                await Document.findByIdAndDelete(id);
+
+                // Optional: Delete from GCP storage
+                // await deleteFileFromGCP(document.filePath);
+
+                return reply.status(200).send({
+                    success: true,
+                    message: 'Document deleted successfully'
+                });
+            } catch (error) {
+                const errorMessage = error instanceof Error ? error.message : String(error);
+                console.error('Error deleting admin document:', errorMessage);
+                return reply.status(500).send({
+                    success: false,
+                    error: `Internal server error: ${errorMessage}`
+                });
+            }
+        }
+    );
+
+}
+
+
+/*
+| Action                          | Method | Path                                 | Notes                                     |
+| -------------------------------|--------|--------------------------------------|-------------------------------------------|
+| Generate Payslip               | POST   | `/documents/payslip/generate`        | Requires: userId, month, year             |
+| Generate Timesheet             | POST   | `/documents/timesheet/generate`      | Requires: userId, month, year             |
+| Send Payslip to Employees      | POST   | `/documents/payslip/send`            | Bulk or individual sends                  |
+| My Payslips                    | GET    | `/documents/my/payslips`             | Query: month, year                        |
+| My Timesheets                  | GET    | `/documents/my/timesheets`           | Query: month, year                        |
+| My Form 16                     | GET    | `/documents/my/form16`               | Query: financialYear                      |
+| Admin: Get Payslips for Users  | POST   | `/documents/payslip/query`           | Query: userIds[], month, year             |
+| Admin: Upload Form 16 ZIP      | POST   | `/documents/form16/upload`           | .zip file named by PAN                    |
+| Admin: Get Documents (All)     | GET    | `/documents`                         | Query: type, category, userId, year, etc. |
+| Admin: Delete Document         | DELETE | `/documents/:id`                     | Delete by Document ID                     |
+| Admin: Document Audit Log      | GET    | `/documents/:id/audit-log`           | Returns array of audit trail              |
+| Get Payslips for Users (Bulk)  | POST   | `/documents/payslip/search`          | userIds[], month, year in body            |
+
+
+# Get own documents
+GET /documents?access=own
+
+# Manager getting team documents
+GET /documents?access=team
+
+# Admin getting all documents for specific employee
+GET /documents?access=global&employeeId=679235bfa892ecaccad0ccd5
+
+# Filter by type and date
+GET /documents?access=own&type=Payslip&year=2024&month=12
+*/

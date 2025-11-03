@@ -1,0 +1,1750 @@
+import { BaseService } from './base.service';
+import { User } from '../models/user.model';
+import { RequestContext } from '../types/context';
+import { Types } from 'mongoose';
+import { emailService } from './email.service';
+import { messaging } from '../config/firebase/firebaseConfig';
+import { generateEmailTemplate } from '../emails/templates';
+import { getSubordinateUserIds } from '../utilis/userHierarchy';
+
+// import { MultipartFile } from '@fastify/multipart';
+
+interface IBankDetails {
+  accountHolderName: string;
+  accountNumber: string;
+  bankName: string;
+  ifscCode: string;
+  isActive: boolean; // Main salary account
+}
+
+interface IGovernmentIds {
+  pan: { number?: string; documentUrl?: string; file?: any };
+  aadhaar: { number?: string; documentUrl?: string; file?: any };
+  passport: { number?: string; documentUrl?: string; file?: any };
+  voterId: { number?: string; documentUrl?: string; file?: any };
+  drivingLicense: { number?: string; documentUrl?: string; file?: any };
+  pf: { number?: string; uan?: string };
+}
+
+interface IUserCreate {
+  name: string;
+  email: string;
+  password: string;
+  role: string;
+  specificRole?: string;
+  departmentId: string;
+  managerId?: string;
+  biometricId?: string | null;
+  active?: boolean;
+  joiningDate?: Date;
+  location?: string;
+  phone?: string;
+  emergencyContact?: string;
+  address?: string;
+  bloodGroup?: string;
+  dateOfBirth?: Date;
+  upcomingShiftAssignment: string;
+  currentShiftAssignment: string;
+  upcomingShiftAssignmentData: object;
+  currentShiftAssignmentData: object;
+  country?: string;
+  currency?: string;
+  licenseType?: string;
+  portalAccess?: boolean;
+  visaDetails?: {
+    visaType?: 'Standard Employment Visa' | 'Domestic Worker Visa' | 'Green Visa';
+    visaExpiryDate?: Date;
+    isActive?: boolean; // Only relevant when visa details are provided
+  };
+  client?: string;
+}
+
+interface IUserUpdate {
+  name?: string;
+  email?: string;
+  password?: string;
+  role?: string;
+  specificRole?: string;
+  departmentId?: string;
+  managerId?: string;
+  biometricId?: string | null;
+  active?: boolean;
+  joiningDate?: Date;
+  location?: string;
+  phone?: string;
+  emergencyContact?: string;
+  address?: string;
+  bloodGroup?: string;
+  dateOfBirth?: Date;
+  upcomingShiftAssignment?: string;
+  currentShiftAssignment?: string;
+  upcomingShiftAssignmentData?: object;
+  currentShiftAssignmentData?: object;
+  bankDetails?: IBankDetails[]; // Array for multiple bank accounts
+  governmentIds?: IGovernmentIds; // Separate section for identity documents
+  country?: string;
+  currency?: string;
+  licenseType?: string;
+  portalAccess?: boolean;
+  visaDetails?: {
+    visaType?: 'Standard Employment Visa' | 'Domestic Worker Visa' | 'Green Visa';
+    visaExpiryDate?: Date;
+    isActive?: boolean; // Only relevant when visa details are provided
+  };
+  client?: string;
+}
+
+interface IResignationState {
+  status: 'Pending' | 'Approved' | 'Rejected' | 'Withdrawn';
+  summary: string;
+  remarks?: string;
+  submittedAt: Date;
+  approvedAt?: Date;
+  rejectedAt?: Date;
+  withdrawnAt?: Date;
+  approvedBy?: Types.ObjectId;
+  noticePeriodDays?: number;
+  preferredLastWorkingDay?: Date;
+  approvedLastWorkingDay?: Date;
+  finalSettlementDone: boolean;
+  isActive: boolean; // Indicates if the resignation is currently active
+}
+
+interface IResignation {
+  remarks?: string;
+  approvedBy?: {
+    _id: string;
+    name: string;
+    email: string;
+  };
+}
+
+interface IResignQuery {
+  status?: 'Pending' | 'Approved' | 'Rejected' | 'Withdrawn' | null;
+  page?: number;
+  limit?: number;
+}
+
+export class UserService extends BaseService {
+  protected context: RequestContext;
+
+  constructor(context: RequestContext) {
+    super(context);
+    this.context = context;
+  }
+
+  async getUsers(query: {
+    page?: number;
+    limit?: number;
+    my?: boolean;
+    subordinates?: boolean;
+    search?: string;
+    role?: string;
+    status?: string;
+    departmentId?: string;
+    country?: string;
+    licenseType?: string;
+    portalAccess?: boolean;
+    sort?: string;
+    sortOrder?: 'asc' | 'desc';
+    select?: string;
+  }, authenticatedUser: any) {
+    const {
+      page = 1,
+      limit = 10,
+      my,
+      subordinates,
+      search,
+      role,
+      status,
+      departmentId,
+      country,
+      licenseType,
+      portalAccess,
+      sort = 'name',
+      sortOrder = 'asc',
+      select
+    } = query;
+
+    const skip = (page - 1) * limit;
+    const filter: any = {};
+
+    // Handle my filter - get current user by ID
+    if (my) {
+      filter._id = authenticatedUser._id;
+    }
+    // Handle subordinates filter
+    else if (subordinates) {
+      // Check if the authenticated user is a manager
+      if (authenticatedUser.role.toLowerCase() === 'manager') {
+        // Get all subordinate IDs recursively (staff + external users)
+        const allSubordinateIds = await getSubordinateUserIds(authenticatedUser._id);
+
+        if (allSubordinateIds.length > 0) {
+          filter._id = { $in: allSubordinateIds };
+        } else {
+          // No subordinates found, return empty result
+          filter._id = null;
+        }
+      } else {
+        // For non-managers, get direct subordinates only
+        filter.managerId = authenticatedUser._id;
+      }
+      filter.active = true;
+    } else {
+      // Apply role-based access control
+      if (this.context.reqRole === 'MANAGER') {
+        filter.managerId = this.context.user?._id;
+      } else if (this.context.reqRole !== 'ADMIN') {
+        filter._id = this.context.user?._id;
+      }
+    }
+
+    // Apply filters
+    if (search) {
+      filter.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+      ];
+    }
+
+    if (role) {
+      filter.role = role;
+    }
+
+    if (status) {
+      filter.active = status === 'active';
+    }
+
+    if (departmentId) {
+      filter.departmentId = departmentId;
+    }
+
+    if (country) {
+      filter.country = country;
+    }
+
+    if (licenseType) {
+      filter.licenseType = licenseType;
+    }
+
+    if (typeof portalAccess === 'boolean') {
+      filter.portalAccess = portalAccess;
+    }
+
+    // Build sort object
+    const sortObj: any = {};
+    sortObj[sort] = sortOrder === 'desc' ? -1 : 1;
+
+    // Build select string
+    const selectFields = select || 'name email role specificRole departmentId active joiningDate managerId managerName checkinId biometricId location phone emergencyContact address bloodGroup upcomingShiftAssignmentData currentShiftAssignmentData upcomingShiftAssignment currentShiftAssignment dateOfBirth holidayCalendarId weekendId createdAt updatedAt country currency licenseType portalAccess visaDetails';
+
+    console.log('Unified getUsers query:', { filter, page, limit, sort: sortObj, select: selectFields });
+
+    const [users, total] = await Promise.all([
+      User.find(filter)
+        .select(selectFields)
+        .sort(sortObj)
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      User.countDocuments(filter),
+    ]);
+
+    return {
+      users,
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  async find(query: {
+    page?: number;
+    limit?: number;
+    search?: string;
+    active?: boolean;
+    role?: string;
+    departmentId?: string;
+    reportingToId?: string;
+    id?: string;
+    sort?: string;
+    select?: string;
+  }) {
+    const {
+      page = 1,
+      limit = 10,
+      search,
+      active,
+      role,
+      departmentId,
+      reportingToId,
+      id,
+      sort = 'name',
+      select = 'name email role specificRole departmentId active joiningDate managerId managerName checkinId biometricId location phone emergencyContact address bloodGroup upcomingShiftAssignmentData currentShiftAssignmentData upcomingShiftAssignment currentShiftAssignment dateOfBirth holidayCalendarId weekendId createdAt updatedAt visaDetails',
+    } = query;
+
+    const skip = (page - 1) * limit;
+    const filter: any = {};
+
+    if (typeof active === 'boolean') {
+      filter.active = active;
+    }
+
+    if (search) {
+      filter.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+      ];
+    }
+
+    if (role) {
+      filter.role = role;
+    }
+
+    if (departmentId) {
+      filter.departmentId = departmentId;
+    }
+
+    if (reportingToId) {
+      filter.managerId = reportingToId;
+    }
+
+    if (id) {
+      filter._id = id;
+    }
+
+    if (this.context.reqRole === 'MANAGER') {
+      filter.managerId = this.context.user?._id;
+    } else if (this.context.reqRole !== 'ADMIN') {
+      filter._id = this.context.user?._id;
+    }
+
+    console.log('Dynamic find query:', { filter, page, limit, sort, select });
+
+    let dbQuery = User.find(filter)
+      .select(select)
+      .sort(sort)
+      .skip(skip)
+      .limit(limit)
+      .lean();
+
+    if (id) {
+      const user = await dbQuery.findOne();
+      console.log('Raw user data:', JSON.stringify(user, null, 2));
+      return user;
+    }
+
+    const [users, total] = await Promise.all([
+      dbQuery,
+      User.countDocuments(filter),
+    ]);
+
+    return {
+      users,
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  async findUserByPan(pan: string) {
+    // Case-insensitive search for PAN
+    return User.findOne({ 'governmentIds.pan.number': new RegExp(`^${pan}$`, 'i') }).lean();
+  }
+
+  async adminFindUsers(query: {
+    page?: number;
+    limit?: number;
+    search?: string;
+    month?: string; // '2025-05'
+    departmentId?: string;
+    role?: string;
+    status?: ('Active' | 'On Hold' | 'Resigned')[];
+    country?: 'AE' | 'IN';
+  }) {
+    const { page = 1, limit = 10, search, month, departmentId, role, status, country } = query;
+    const skip = (page - 1) * limit;
+    // const filter: any = {};
+    const andConditions: any[] = [];
+    console.log(status, 'status in adminFindUsers');
+
+    // 1. Search filter (name or email)
+    if (search) {
+      andConditions.push({
+        $or: [
+          { name: { $regex: search, $options: 'i' } },
+          { email: { $regex: search, $options: 'i' } },
+        ],
+      });
+    }
+    // 2. Month filter on joiningDate
+    if (month) {
+      const [year, monthNum] = month.split('-').map(Number);
+      const monthEnd = new Date(year, monthNum, 0, 23, 59, 59, 999);
+      andConditions.push({
+        joiningDate: { $lte: monthEnd },
+      });
+    }
+    // 3. Department filter
+    if (departmentId) {
+      andConditions.push({ departmentId });
+    }
+
+    // 4. Role filter
+    if (role) {
+      andConditions.push({ role });
+    }
+    // 5. Country filter
+    if (country) {
+      andConditions.push({ country });
+    }
+    // 6. Status filter
+    if (status?.length) {
+      const statusFilters: any[] = [];
+
+      if (status.includes('Active')) {
+        statusFilters.push({ active: true });
+      }
+
+      if (status.includes('On Hold')) {
+        statusFilters.push({
+          active: true,
+          resignations: {
+            $elemMatch: {
+              status: 'Pending',
+              isActive: true,
+            },
+          },
+        });
+      }
+
+      if (status.includes('Resigned')) {
+        statusFilters.push({
+          resignations: {
+            $elemMatch: {
+              status: 'Approved',
+              isActive: true,
+            },
+          },
+        });
+      }
+
+      if (statusFilters.length > 0) {
+        andConditions.push({ $or: statusFilters });
+      }
+    }
+    // Final query
+    const finalQuery = andConditions.length > 0 ? { $and: andConditions } : {};
+
+    console.log(JSON.stringify(finalQuery, null, 2), 'Final filter in adminFindUsers');
+
+
+
+    // Fetch users and count
+    const [users, total] = await Promise.all([
+      User.find(finalQuery).skip(skip).limit(limit).lean(),
+      User.countDocuments(finalQuery),
+    ]);
+
+    return {
+      users,
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+
+  async findAll(query: { page?: number; limit?: number; search?: string; active?: boolean }) {
+    const { page = 1, limit = 10, search, active } = query;
+    const skip = (page - 1) * limit;
+    console.log("findAll query", query);
+    const filter: any = {};
+    if (typeof active === 'boolean') {
+      filter.active = active;
+    }
+    if (search) {
+      filter.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+      ];
+    }
+    if (this.context.reqRole === 'MANAGER') {
+      filter.managerId = this.context.user?._id;
+    } else if (this.context.reqRole !== 'ADMIN') {
+      filter._id = this.context.user?._id;
+    }
+    const [users, total] = await Promise.all([
+      User.find(filter).skip(skip).limit(limit),
+      User.countDocuments(filter),
+    ]);
+    console.log('0.users', users);
+    return {
+      users,
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  async findById(id: string) {
+    const user = await User.findById(id);
+    console.log('Raw user data:', JSON.stringify(user, null, 2));
+    return user;
+  }
+
+  async findByRole(role: string) {
+    return User.find({ role: role });
+  }
+
+
+
+  async findByRoleAndDepartment(query: {
+    role?: string;
+    departmentId?: string;
+    page?: number;
+    limit?: number;
+    active?: boolean;
+  }) {
+    const { role, departmentId, active = true } = query;
+
+    console.log('findByRoleAndDepartment', query);
+    // Build filter
+    const filter: any = { active };
+    if (role) filter.role = role;
+    if (departmentId) filter.departmentId = departmentId;
+
+    // Execute queries in parallel
+    const users = await User.find(filter)
+      .select('name email role specificRole departmentId active joiningDate ')
+      .sort({ name: 1 });
+
+    return users;
+  }
+
+  async findByReportingToId(reportingToId: string, page: number = 1, limit: number = 10, includeHierarchy: boolean = false): Promise<any> {
+    const skip = (page - 1) * limit;
+
+    let filter: any = { active: true };
+    let total: number;
+
+    if (includeHierarchy) {
+      // Get the manager's role to determine if we should include hierarchy
+      const manager = await User.findById(reportingToId).select('role').lean();
+
+      if (manager?.role.toLowerCase() === 'manager') {
+        // Get all subordinate IDs recursively (staff + external users)
+        const allSubordinateIds = await getSubordinateUserIds(reportingToId);
+
+        if (allSubordinateIds.length > 0) {
+          filter._id = { $in: allSubordinateIds };
+        } else {
+          // No subordinates found, return empty result
+          filter._id = null;
+        }
+        total = await User.countDocuments(filter);
+      } else {
+        // For non-managers, get direct subordinates only
+        filter.managerId = reportingToId;
+        total = await User.countDocuments(filter);
+      }
+    } else {
+      // Original behavior - direct subordinates only
+      filter.managerId = reportingToId;
+      total = await User.countDocuments(filter);
+    }
+
+    // Query the database to find users
+    const users = await User
+      .find(filter)
+      .select('_id name email role specificRole departmentId active managerId managerName')
+      .skip(skip)
+      .limit(limit)
+      .lean();
+
+    console.log(reportingToId, 'reportingToId');
+    console.log(users, 'users found');
+    console.log(total, 'total count');
+
+    // Prepare metadata
+    const meta = {
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(total / limit),
+    };
+
+    return { users, meta };
+  }
+
+  /**
+   * Get all team members for a manager including hierarchical subordinates
+   * @param managerId - The ID of the manager
+   * @param query - Query parameters
+   * @returns All team members including staff and external users
+   */
+  async getManagerTeamMembers(managerId: string, query: {
+    page?: number;
+    limit?: number;
+    search?: string;
+    role?: string;
+    status?: string;
+    departmentId?: string;
+    sort?: string;
+    sortOrder?: 'asc' | 'desc';
+  } = {}): Promise<any> {
+    const {
+      page = 1,
+      limit = 10,
+      search,
+      role,
+      status,
+      departmentId,
+      sort = 'name',
+      sortOrder = 'asc'
+    } = query;
+
+    const skip = (page - 1) * limit;
+
+    // Verify the user is actually a manager
+    const manager = await User.findById(managerId).select('role').lean();
+    if (!manager || manager.role.toLowerCase() !== 'manager') {
+      throw new Error('User is not a manager');
+    }
+
+    // Get all subordinate IDs recursively
+    const allSubordinateIds = await getSubordinateUserIds(managerId);
+
+    if (allSubordinateIds.length === 0) {
+      return {
+        users: [],
+        meta: {
+          page,
+          limit,
+          total: 0,
+          totalPages: 0,
+        },
+      };
+    }
+
+    // Build filter
+    const filter: any = {
+      _id: { $in: allSubordinateIds },
+      active: true
+    };
+
+    // Apply additional filters
+    if (search) {
+      filter.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+      ];
+    }
+
+    if (role) {
+      filter.role = role;
+    }
+
+    if (status) {
+      filter.active = status === 'active';
+    }
+
+    if (departmentId) {
+      filter.departmentId = departmentId;
+    }
+
+    // Build sort object
+    const sortObj: any = {};
+    sortObj[sort] = sortOrder === 'desc' ? -1 : 1;
+
+    // Execute queries
+    const [users, total] = await Promise.all([
+      User.find(filter)
+        .select('name email role specificRole departmentId active joiningDate managerId managerName checkinId biometricId location phone emergencyContact address bloodGroup upcomingShiftAssignmentData currentShiftAssignmentData upcomingShiftAssignment currentShiftAssignment dateOfBirth holidayCalendarId weekendId createdAt updatedAt country currency licenseType portalAccess')
+        .sort(sortObj)
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      User.countDocuments(filter),
+    ]);
+
+    return {
+      users,
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  async create(data: IUserCreate) {
+    console.log('🔧 UserService.create() called');
+    console.log('📦 Input data:', JSON.stringify(data, null, 2));
+    console.log('📋 Data type:', typeof data);
+    console.log('📋 Data keys:', Object.keys(data || {}));
+
+    // ✅ FIX: Handle biometricId to prevent duplicate key error
+    // For UAE users only, don't set biometricId at all (undefined) to avoid sparse index issues
+    if (data.country === 'AE') {
+      // UAE users don't use biometric systems, so remove the field entirely
+      delete (data as any).biometricId;
+      console.log('🔄 Service: Removed biometricId for UAE user (country: AE)');
+    } else {
+      // For non-UAE users, handle empty biometricId as before
+      if (data.biometricId === '' || data.biometricId === null || data.biometricId === undefined) {
+        (data as any).biometricId = null;
+        console.log('🔄 Service: Converted empty biometricId to null for non-UAE user');
+      } else if (typeof data.biometricId === 'string' && data.biometricId.trim() === '') {
+        (data as any).biometricId = null;
+        console.log('🔄 Service: Converted whitespace-only biometricId to null for non-UAE user');
+      }
+    }
+
+    // Log required fields specifically
+    console.log('🔍 Required fields check:');
+    console.log('  - name:', data.name, '(required:', !!data.name, ')');
+    console.log('  - email:', data.email, '(required:', !!data.email, ')');
+    console.log('  - password:', data.password ? '[HIDDEN]' : 'undefined', '(required:', !!data.password, ')');
+    console.log('  - role:', data.role, '(required:', !!data.role, ')');
+    console.log('  - departmentId:', data.departmentId, '(required:', !!data.departmentId, ')');
+    console.log('  - biometricId:', data.biometricId, '(converted to null if empty)');
+    console.log('  - upcomingShiftAssignment:', data.upcomingShiftAssignment, '(required:', !!data.upcomingShiftAssignment, ')');
+    console.log('  - currentShiftAssignment:', data.currentShiftAssignment, '(required:', !!data.currentShiftAssignment, ')');
+    console.log('  - upcomingShiftAssignmentData:', data.upcomingShiftAssignmentData, '(required:', !!data.upcomingShiftAssignmentData, ')');
+    console.log('  - currentShiftAssignmentData:', data.currentShiftAssignmentData, '(required:', !!data.currentShiftAssignmentData, ')');
+
+    console.log('🎯 Creating new User instance...');
+    const user = new User(data);
+    console.log('✅ User instance created:', user._id);
+
+    console.log('💾 Saving user to database...');
+    const savedUser = await user.save();
+    console.log('✅ User saved successfully:', savedUser._id);
+
+    console.log('📧 Sending welcome email...');
+    //send welcome email
+    await this.sendWelcomeEmail(savedUser);
+    console.log('✅ Welcome email sent');
+
+    console.log('🎉 User creation completed successfully');
+    return savedUser;
+  }
+
+  async update(id: string, data: IUserUpdate) {
+    console.log(data, 'update data');
+    console.log(id, 'userid');
+
+    // ✅ FIX: Handle biometricId to prevent duplicate key error
+    // For UAE users only, don't set biometricId at all (undefined) to avoid sparse index issues
+    if (data.country === 'AE') {
+      // UAE users don't use biometric systems, so remove the field entirely
+      delete (data as any).biometricId;
+      console.log('🔄 Service Update: Removed biometricId for UAE user (country: AE)');
+    } else {
+      // For non-UAE users, handle empty biometricId as before
+      if (data.biometricId === '' || data.biometricId === null || data.biometricId === undefined) {
+        (data as any).biometricId = null;
+        console.log('🔄 Service Update: Converted empty biometricId to null for non-UAE user');
+      } else if (typeof data.biometricId === 'string' && data.biometricId.trim() === '') {
+        (data as any).biometricId = null;
+        console.log('🔄 Service Update: Converted whitespace-only biometricId to null for non-UAE user');
+      }
+    }
+
+    const user = await User.findById(id);
+    console.log(user, 'user data');
+    if (!user) {
+      throw new Error('User not found');
+    }
+
+    Object.assign(user, data);
+    return user.save();
+  }
+
+  async delete(id: string) {
+    const user = await User.findById(id);
+    if (!user) {
+      throw new Error('User not found');
+    }
+
+    user.active = false;
+    return user.save();
+  }
+
+  async updateFcmToken(id: string, fcmToken: string) {
+    console.log(id, fcmToken, 'updateFcmToken');
+    const user = await User.findById(id);
+    if (!user) {
+      throw new Error('User not found');
+    }
+    console.log(user, 'user data updateFcmToken');
+
+    if (user.fcmToken === fcmToken) {
+      console.log('FCM token is the same, no update needed');
+      return user;
+    }
+    user.fcmToken = fcmToken;
+    return user.save();
+  }
+
+  async applyResignation(
+    userId: string,
+    data: {
+      summary: string;
+      remarks?: string;
+      preferredLastWorkingDay?: Date;
+    },
+  ) {
+    const user = await User.findById(userId);
+    if (!user) {
+      throw new Error('User not found');
+    }
+    console.log(user, 'user data apply');
+    // Check if there's already a pending resignation
+    const hasPendingResignation = (user.resignations ?? []).some(
+      (resignation) => resignation.status === 'Pending' && resignation.isActive,
+    );
+    if (hasPendingResignation) {
+      throw new Error('Cannot apply: There is already a pending resignation.');
+    }
+    // Check if there's already a pending resignation
+    const hasApprovedResignation = (user.resignations ?? []).some(
+      (resignation) => resignation.status === 'Approved' && resignation.isActive,
+    );
+    if (hasApprovedResignation) {
+      throw new Error('Cannot apply: There is already a Approved resignation.');
+    }
+
+    // Mark all previous resignations as inactive
+    (user.resignations ?? []).forEach((resignation) => {
+      resignation.isActive = false;
+    });
+
+    const resignation: IResignationState = {
+      status: 'Pending',
+      summary: data.summary,
+      remarks: data.remarks ?? '',
+      submittedAt: new Date(),
+      preferredLastWorkingDay: data.preferredLastWorkingDay,
+      finalSettlementDone: false,
+      isActive: true,
+    };
+    console.log(resignation, ' resignation data');
+    user.resignations = user.resignations || [];
+    user.resignations.push(resignation);
+    await user.save();
+    const hrEmail = process.env.HR_EMAIL || 'hr@company.com'; // or fetch from DB
+
+    const html = generateEmailTemplate('resignationApplyEmail', {
+      adminName: 'HR/Admin',
+      employeeName: user.name,
+      submittedDate: new Date().toDateString(),
+      preferredLastWorkingDay: data.preferredLastWorkingDay ? data.preferredLastWorkingDay.toDateString() : '',
+      summary: data.summary,
+      remarks: data.remarks ?? '',
+      companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS'
+    });
+    await emailService.sendEmail({
+      body: {
+        to: hrEmail,
+        subject: `Resignation Request Submitted by ${user.name}`,
+        text: `${user.name} has submitted a resignation request.`,
+        html
+      }
+    });
+    return { resignation };
+  }
+
+  async withdrawResignation(userId: string): Promise<any> {
+    const user = await User.findById(userId);
+    if (!user) {
+      throw new Error('User not found');
+    }
+    // Find the latest active resignation
+    const resignation = (user.resignations ?? []).find(
+      (resignation) => resignation.status === 'Pending' && resignation.isActive,
+    );
+    if (!resignation) {
+      throw new Error('No active resignation to withdraw');
+    }
+
+    resignation.status = 'Withdrawn';
+    resignation.withdrawnAt = new Date();
+    resignation.isActive = false; // Mark as inactive
+
+    await user.save();
+    return { resignation: user.resignations };
+  }
+
+  async approveResignation(
+    userId: string,
+    approverId: string,
+    data: {
+      remarks?: string;
+      noticePeriodDays: number; // Make required
+      approvedLastWorkingDay: Date;
+    },
+  ): Promise<any> {
+    const user = await User.findById(userId);
+    if (!user) throw new Error('User not found');
+
+    // Find the latest active resignation with a Pending status
+    const resignation = (user.resignations ?? []).find(
+      (resignation) => resignation.status === 'Pending' && resignation.isActive,
+    );
+    if (!resignation) {
+      throw new Error('No active pending resignation to approve');
+    }
+    if (!data.noticePeriodDays) {
+      throw new Error('Notice period days are required');
+    }
+
+    const today = new Date();
+    const approvedDate = new Date(data.approvedLastWorkingDay);
+
+    if (approvedDate <= today) {
+      throw new Error('Last working day must be a future date');
+    }
+
+    // Update the resignation details
+    resignation.status = 'Approved';
+    resignation.remarks = data.remarks || resignation.remarks;
+    resignation.approvedBy = new Types.ObjectId(approverId);
+    resignation.approvedAt = new Date();
+    resignation.noticePeriodDays = data.noticePeriodDays;
+    resignation.approvedLastWorkingDay = data.approvedLastWorkingDay;
+    resignation.isActive = true; // Keep it active so we can track the approved resignation
+
+    await user.save();
+
+    const approver = await User.findById(approverId).select('name');
+
+    const html = generateEmailTemplate('resignationApprovedEmail', {
+      employeeName: user.name,
+      approverName: approver?.name || 'HR/Admin',
+      approvedDate: new Date().toDateString(),
+      approvedLastWorkingDay: data.approvedLastWorkingDay.toDateString(),
+      noticePeriodDays: data.noticePeriodDays,
+      remarks: data.remarks ?? '',
+      companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS'
+    });
+
+    await emailService.sendEmail({
+      body: {
+        to: user.email,
+        subject: `Your Resignation Has Been Approved`,
+        text: `Your resignation has been approved. Last working day: ${data.approvedLastWorkingDay.toDateString()}`,
+        html
+      }
+    });
+
+    return { resignation: user.resignations };
+  }
+
+  async rejectResignation(userId: string, data: IResignation): Promise<any> {
+    const user = await User.findById(userId);
+    if (!user) {
+      throw new Error('User not found');
+    }
+    // Find the latest active resignation with a Pending status
+    const resignation = (user.resignations ?? []).find(
+      (resignation) => resignation.status === 'Pending' && resignation.isActive,
+    );
+    if (!resignation) {
+      throw new Error('No active pending resignation to reject');
+    }
+
+    // Update the resignation details
+    resignation.status = 'Rejected';
+    resignation.remarks = data.remarks || resignation.remarks;
+    resignation.approvedBy = new Types.ObjectId(data.approvedBy?._id);
+    resignation.rejectedAt = new Date();
+    resignation.isActive = false; // Mark as inactive after rejection
+
+    await user.save();
+
+    const approver = await User.findById(data.approvedBy?._id).select('name');
+
+    const html = generateEmailTemplate('resignationRejectedEmail', {
+      employeeName: user.name,
+      approverName: approver?.name || 'HR/Admin',
+      rejectedAt: new Date().toDateString(),
+      remarks: data.remarks ?? '',
+      companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS'
+    });
+
+    await emailService.sendEmail({
+      body: {
+        to: user.email,
+        subject: `Your Resignation Has Been Rejected`,
+        text: `Your resignation request has been rejected.`,
+        html
+      }
+    });
+
+    return { resignation: user.resignations };
+  }
+
+  async getResignationStatus(userId: string): Promise<any> {
+    const user = await User.findById(userId);
+    if (!user) {
+      throw new Error('User not found');
+    }
+
+
+    return { resignation: user.resignations || null };
+  }
+
+  async checkResignationEligibility(userId: string): Promise<any> {
+    console.log('checkResignationEligibility', userId);
+    const user = await User.findById(userId);
+    if (!user) {
+      throw new Error('User not found');
+    }
+    console.log(user.resignations, 'user data checkResignationEligibility');
+
+    // First check if there's an active pending resignation
+    const pendingResignation = (user.resignations ?? []).find(
+      (resignation) => resignation.status === 'Pending' && resignation.isActive,
+    );
+
+    if (pendingResignation) {
+      return {
+        canApply: false,
+        canWithdraw: true,
+        activeResignation: pendingResignation,
+      };
+    }
+    console.log(pendingResignation, 'pendingResignation checkResignationEligibility');
+    // Then check if there's an approved resignation (even if not active)
+    const approvedResignation = (user.resignations ?? []).find(
+      (resignation) => resignation.status === 'Approved',
+    );
+    console.log(approvedResignation, 'approvedResignation checkResignationEligibility');
+    if (approvedResignation) {
+      // User has an approved resignation, they cannot apply again
+      return {
+        canApply: false,
+        canWithdraw: false,
+        activeResignation: approvedResignation,
+      };
+    }
+
+    // No active pending resignation and no approved resignation
+    return {
+      canApply: true,
+      canWithdraw: false,
+      // Get the most recent resignation for display if it exists
+      lastResignation:
+        (user.resignations ?? []).length > 0
+          ? (user.resignations ?? []).sort(
+            (a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime(),
+          )[0]
+          : null,
+    };
+
+    /*
+    const activeResignation = (user.resignations ?? []).find(
+      (resignation) => resignation.isActive
+    );
+
+    console.log(activeResignation, "activeResignation checkResignationEligibility")
+    if (activeResignation) {
+      return {
+        canApply: false,
+        canWithdraw: activeResignation.status === 'Pending',
+        activeResignation,
+      };
+    }
+
+    return {
+      canApply: true,
+      canWithdraw: false,
+    };
+    */
+  }
+
+  async getAllResignationsForAdmin(userId: string, query: IResignQuery = {}): Promise<any> {
+    const { status, page = 1, limit = 10 } = query;
+    const skip = (page - 1) * limit;
+
+    // Verify user is admin
+    const adminUser = await User.findById(userId);
+    if (!adminUser || adminUser.role.toUpperCase() !== 'ADMIN') {
+      throw new Error('Unauthorized: Only admins can access this data');
+    }
+    // Build query
+    const baseQuery: any = {
+      resignations: { $exists: true, $ne: [] },
+    };
+
+    if (status) {
+      baseQuery['resignations.status'] = status;
+    }
+
+    // Get users with resignations
+    const [users, totalUsers] = await Promise.all([
+      User.find(baseQuery)
+        .select('name email role joiningDate resignations')
+        .sort({ 'resignations.submittedAt': -1 })
+        .skip(skip)
+        .limit(limit),
+      User.countDocuments(baseQuery),
+    ]);
+
+    // Process resignations
+    const resignations = users.flatMap((user) =>
+      (user.resignations ?? [])
+        .filter((r) => (status ? r.status === status : true))
+        .map((r) => ({
+          employeeId: user._id,
+          employeeName: user.name,
+          email: user.email,
+          role: user.role,
+          joiningDate: user.joiningDate,
+          resignation: {
+            status: r.status,
+            summary: r.summary,
+            remarks: r.remarks,
+            submittedAt: r.submittedAt,
+            approvedAt: r.approvedAt,
+            rejectedAt: r.rejectedAt,
+            withdrawnAt: r.withdrawnAt,
+            approvedBy: r.approvedBy,
+            noticePeriodDays: r.noticePeriodDays,
+            preferredLastWorkingDay: r.preferredLastWorkingDay,
+            approvedLastWorkingDay: r.approvedLastWorkingDay,
+            finalSettlementDone: r.finalSettlementDone,
+            isActive: r.isActive,
+          },
+        })),
+    );
+
+    // Sort resignations by submittedAt date
+    const sortedResignations = resignations.sort(
+      (a, b) =>
+        new Date(b.resignation.submittedAt).getTime() -
+        new Date(a.resignation.submittedAt).getTime(),
+    );
+
+    return {
+      resignations: sortedResignations,
+      meta: {
+        page,
+        limit,
+        total: totalUsers,
+        totalPages: Math.ceil(totalUsers / limit),
+      },
+    };
+  }
+
+  async getResignationsForManager(managerUserId: string, query: IResignQuery): Promise<any> {
+    const { status, page = 1, limit = 10 } = query;
+    const skip = (page - 1) * limit;
+
+    // Verify user is manager
+    const managerUser = await User.findById(managerUserId);
+    if (!managerUser || !['MANAGER', 'ADMIN'].includes(managerUser.role.toUpperCase())) {
+      throw new Error('Unauthorized: Only managers can access this data');
+    }
+
+    // Build base query
+    const baseQuery: any = {
+      managerId: managerUserId,
+      resignations: { $exists: true, $ne: [] },
+    };
+
+    if (status) {
+      baseQuery['resignations.status'] = status;
+    }
+
+    // Get team members with resignations
+    const [users, totalUsers] = await Promise.all([
+      User.find(baseQuery)
+        .select('name email role joiningDate resignations')
+        .sort({ 'resignations.submittedAt': -1 })
+        .skip(skip)
+        .limit(limit),
+      User.countDocuments(baseQuery),
+    ]);
+
+    // Process resignations
+    const resignations = users.flatMap((user) =>
+      (user.resignations ?? [])
+        .filter((r) => (status ? r.status === status : true))
+        .map((r) => ({
+          employeeId: user._id,
+          employeeName: user.name,
+          email: user.email,
+          role: user.role,
+          joiningDate: user.joiningDate,
+          resignation: {
+            status: r.status,
+            summary: r.summary,
+            remarks: r.remarks,
+            submittedAt: r.submittedAt,
+            approvedAt: r.approvedAt,
+            rejectedAt: r.rejectedAt,
+            withdrawnAt: r.withdrawnAt,
+            approvedBy: r.approvedBy,
+            noticePeriodDays: r.noticePeriodDays,
+            preferredLastWorkingDay: r.preferredLastWorkingDay,
+            approvedLastWorkingDay: r.approvedLastWorkingDay,
+            finalSettlementDone: r.finalSettlementDone,
+            isActive: r.isActive,
+          },
+        })),
+    );
+
+    // Sort resignations by submittedAt date
+    const sortedResignations = resignations.sort(
+      (a, b) =>
+        new Date(b.resignation.submittedAt).getTime() -
+        new Date(a.resignation.submittedAt).getTime(),
+    );
+
+    return {
+      resignations: sortedResignations,
+      meta: {
+        page,
+        limit,
+        total: totalUsers,
+        totalPages: Math.ceil(totalUsers / limit),
+      },
+    };
+  }
+
+  private async sendWelcomeEmail(user: any) {
+    try {
+      // Application URL - adjust based on your environment
+      const appUrl = process.env.APP_URL || 'http://localhost:5173';
+      let companyName = process.env.COMPANY_NAME || 'CloudDesk HRMS';
+
+
+      const htmlContent = generateEmailTemplate('welcomeEmail', {
+        userName: user.name,
+        email: user.email,
+        role: user.role,
+        loginUrl: `${appUrl}/login`,
+        companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS'
+      });
+
+      const emailRequest = {
+        body: {
+          to: user.email,
+          subject: `Welcome to ${companyName}`,
+          text: `Hello ${user.name},\n\nWelcome to the HRMS system.\nLogin at ${appUrl}/login with your email: ${user.email}`,
+
+          html: htmlContent
+        },
+      };
+
+      // Send the email using your email service
+      await emailService.sendEmail(emailRequest);
+      return true;
+    } catch (error) {
+      console.log(error, 'error sending email');
+      return false;
+    }
+  }
+
+  //   import { FastifyRequest } from 'fastify';
+
+
+
+  /*
+    async updateGovernmentIdFiles(userId: string, request: FastifyRequest): Promise<any> {
+      const user = await User.findById(userId);
+      if (!user) {
+        throw new Error('User not found');
+      }
+  
+      const files = request.files as any; // fastify-multer adds files to request.files
+      console.log('Uploaded files:', files);
+  
+      // Initialize governmentIds with the correct structure if it doesn't exist
+      user.governmentIds = user.governmentIds || {
+        pan: {},
+        aadhaar: {},
+        passport: {},
+        voterId: {},
+        drivingLicense: {},
+        pf: {},
+      };
+      // Process each uploaded file
+      for (const file of files) {
+        const fieldName = file.fieldname; // e.g., pan_file, passport_file
+        const filename = file.filename;
+  
+        // Generate fileUrl
+        const fileUrl = `http://${request.headers.host}/${filename}`;
+  
+        // Map fieldName to the corresponding GovernmentIds field 
+        let targetField: keyof IGovernmentIds | null = null;
+        if (fieldName === 'pan_file') {
+          targetField = 'pan';
+        } else if (fieldName === 'passport_file') {
+          targetField = 'passport';
+        } else if (fieldName === 'aadhaar_file') {
+          targetField = 'aadhaar';
+        } else if (fieldName === 'voterId_file') {
+          targetField = 'voterId';
+        } else if (fieldName === 'drivingLicense_file') {
+          targetField = 'drivingLicense';
+        }
+  
+        // Update documentUrl if the fieldName matches a GovernmentIds field
+        if (targetField && targetField !== 'pf' as keyof IGovernmentIds) { // pf doesn't have documentUrl
+          user.governmentIds[targetField] = user.governmentIds[targetField] || {};
+          user.governmentIds[targetField].documentUrl = fileUrl;
+        }
+      }
+  
+      await user.save();
+      return user;
+    }
+  
+    async updateGovernmentIdFields(
+      userId: string,
+      fields: {
+        pan_number?: string;
+        passport_number?: string;
+        aadhaar_number?: string;
+        voterId_number?: string;
+        drivingLicense_number?: string;
+        pf_number?: string;
+        pf_uan?: string;
+      }
+    ): Promise<any> {
+      const user = await User.findById(userId);
+      if (!user) {
+        throw new Error('User not found');
+      }
+  
+      console.log('Form fields:', fields);
+      // Initialize governmentIds with the correct structure if it doesn't exist
+      user.governmentIds = user.governmentIds || {
+        pan: {},
+        aadhaar: {},
+        passport: {},
+        voterId: {},
+        drivingLicense: {},
+        pf: {},
+      };
+      // Update fields only if the corresponding payload key is provided (not undefined)
+      if (fields.pan_number !== undefined) {
+        user.governmentIds.pan.number = fields.pan_number;
+      }
+  
+      if (fields.passport_number !== undefined) {
+        user.governmentIds.passport.number = fields.passport_number;
+      }
+  
+      if (fields.aadhaar_number !== undefined) {
+        user.governmentIds.aadhaar.number = fields.aadhaar_number;
+      }
+  
+      if (fields.voterId_number !== undefined) {
+        user.governmentIds.voterId.number = fields.voterId_number;
+      }
+  
+      if (fields.drivingLicense_number !== undefined) {
+        user.governmentIds.drivingLicense.number = fields.drivingLicense_number;
+      }
+  
+      if (fields.pf_number !== undefined) {
+        user.governmentIds.pf.number = fields.pf_number;
+      }
+  
+      if (fields.pf_uan !== undefined) {
+        user.governmentIds.pf.uan = fields.pf_uan;
+      }
+  
+      console.log(user, "after update uservalue ")
+  
+      await user.save();
+      return user;
+    }
+  
+    async updateAcademicDetails(userId: string, academicDetails: IAcademicDetails[]): Promise<any> {
+      const user = await User.findById(userId);
+      if (!user) {
+        throw new Error('User not found');
+      }
+  
+      console.log('Received academic details:', academicDetails);
+  
+      // Validate the incoming data (optional, depending on requirements)
+      for (const detail of academicDetails) {
+        if (!detail.instituteName?.trim()) {
+          throw new Error('Institute name is required for all academic details');
+        }
+        if (detail.yearOfPassing && !/^\d{4}$/.test(detail.yearOfPassing)) {
+          throw new Error('Year of passing must be a valid 4-digit year');
+        }
+      }
+  
+      // Overwrite the academicDetails array with the new data
+      user.academicDetails = academicDetails.map(detail => ({
+        instituteName: detail.instituteName,
+        grade: detail.grade || undefined,
+        yearOfPassing: detail.yearOfPassing || undefined,
+        documentUrl: detail.documentUrl || undefined, // Will be undefined since frontend doesn't send this
+      }));
+  
+      await user.save();
+      return user;
+    }
+  
+    async updateExperienceDetails(userId: string, experienceDetails: IExperienceDetails[]): Promise<any> {
+      const user = await User.findById(userId);
+      if (!user) {
+        throw new Error('User not found');
+      }
+  
+      console.log('Received experience details:', experienceDetails);
+  
+      // Validate the incoming data
+      for (const detail of experienceDetails) {
+        if (!detail.companyName?.trim()) {
+          throw new Error('Company name is required for all experience details');
+        }
+        if (detail.period && !/^\w+\s\d{4}(\s?-\s?\w+\s\d{4})?$/.test(detail.period)) {
+          throw new Error('Period must be in format like "Jan 2020 - Dec 2023"');
+        }
+      }
+  
+      // Overwrite the experienceDetails array with the new data
+      user.experienceDetails = experienceDetails.map(detail => ({
+        companyName: detail.companyName,
+        period: detail.period || undefined,
+      }));
+  
+      await user.save();
+      return user;
+    }*/
+
+  async getUsersWithFcmTokens(userIds?: string[]) {
+    const query = userIds ? { _id: { $in: userIds } } : {};
+    return await User.find({
+      ...query,
+      fcmToken: { $exists: true, $ne: null }
+    }).select('_id email role fcmToken');
+  }
+
+  async sendNotification(
+    userId: string,
+    title: string,
+    body: string,
+    data?: Record<string, string>
+  ) {
+    try {
+      const user = await this.findById(userId);
+
+      if (!user || !user.fcmToken) {
+        throw new Error('User does not have FCM token registered');
+      }
+
+      // Enhanced message structure for better cross-platform compatibility
+      const message = {
+        notification: {
+          title,
+          body
+        },
+        data: {
+          ...data,
+          clickAction: 'FLUTTER_NOTIFICATION_CLICK',
+          timestamp: Date.now().toString(),
+          userId: userId
+        },
+        token: user.fcmToken,
+        // Platform-specific configurations
+        webpush: {
+          headers: {
+            Urgency: 'high'
+          },
+          notification: {
+            icon: '/icon-192x192.png',
+            requireInteraction: true,
+            actions: [
+              {
+                action: 'open',
+                title: 'Open'
+              }
+            ]
+          }
+        },
+        android: {
+          priority: 'high' as const,
+          notification: {
+            sound: 'default',
+            priority: 'high' as const,
+            channelId: 'default'
+          }
+        },
+        apns: {
+          payload: {
+            aps: {
+              sound: 'default',
+              badge: 1
+            }
+          }
+        }
+      };
+
+      console.log('Sending notification to user:', userId);
+      console.log('User:', user.name, user.email);
+      console.log('FCM Token:', user.fcmToken ? `${user.fcmToken.substring(0, 20)}...` : 'null');
+      console.log('Message structure:', JSON.stringify(message, null, 2));
+
+      const response = await messaging.send(message);
+      console.log('Notification sent successfully:', response);
+
+      return {
+        success: true,
+        messageId: response,
+        userId,
+        title,
+        body,
+        fcmToken: user.fcmToken
+      };
+    } catch (error: any) {
+      console.error('Failed to send notification:', error);
+      console.error('Error code:', error.code);
+      console.error('Error message:', error.message);
+
+      // Handle specific error codes
+      if (error.code === 'messaging/registration-token-not-registered') {
+        console.log('Token is invalid, clearing from database...');
+        await this.updateFcmToken(userId, '');
+        throw new Error('FCM token is invalid. Please refresh the app.');
+      } else if (error.code === 'messaging/invalid-registration-token') {
+        console.log('Invalid token format, clearing from database...');
+        await this.updateFcmToken(userId, '');
+        throw new Error('Invalid FCM token format.');
+      } else if (error.code === 'messaging/not-registered') {
+        console.log('Token not registered, clearing from database...');
+        await this.updateFcmToken(userId, '');
+        throw new Error('FCM token not registered.');
+      } else if (error.code === 'messaging/quota-exceeded') {
+        throw new Error('FCM quota exceeded. Please try again later.');
+      } else if (error.code === 'messaging/unavailable') {
+        throw new Error('FCM service temporarily unavailable.');
+      }
+
+      throw error;
+    }
+  }
+
+  async sendBulkNotifications(
+    userIds: string[],
+    title: string,
+    body: string,
+    data?: Record<string, string>
+  ) {
+    try {
+      const users = await this.getUsersWithFcmTokens(userIds);
+      const validTokens = users.filter(user => user.fcmToken).map(user => user.fcmToken!);
+
+      if (validTokens.length === 0) {
+        return {
+          success: false,
+          message: 'No valid FCM tokens found',
+          results: []
+        };
+      }
+
+      const message = {
+        notification: {
+          title,
+          body
+        },
+        data: data || {},
+        tokens: validTokens
+      };
+
+      const response = await messaging.sendEachForMulticast(message);
+
+      // Handle failed tokens
+      if (response.failureCount > 0) {
+        const failedTokens: string[] = [];
+        response.responses.forEach((resp, idx) => {
+          if (!resp.success) {
+            failedTokens.push(validTokens[idx]);
+            console.error('Failed to send to token:', validTokens[idx], resp.error);
+          }
+        });
+
+        // You might want to clean up invalid tokens here
+        // await this.cleanupInvalidTokens(failedTokens);
+      }
+
+      return {
+        success: true,
+        successCount: response.successCount,
+        failureCount: response.failureCount,
+        responses: response.responses
+      };
+    } catch (error: any) {
+      console.error('Failed to send bulk notifications:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get UAE users with visas expiring in the next 30 days
+   * @param daysAhead - Number of days ahead to check (default: 30)
+   * @returns Object with count and list of users with expiring visas
+   */
+  async getUAEUsersWithExpiringVisas(daysAhead: number = 30) {
+    try {
+      const today = new Date();
+      const expiryDate = new Date();
+      expiryDate.setDate(today.getDate() + daysAhead);
+      console.log("getUAEUsersWithExpiringVisas")
+      // Find UAE users with visa details and expiring visas
+      const users = await User.find({
+        country: 'AE',
+        active: true,
+        'visaDetails.visaExpiryDate': {
+          $gte: today,
+          $lte: expiryDate
+        },
+        'visaDetails.isActive': true
+      }).select('name email visaDetails.visaType visaDetails.visaExpiryDate').lean();
+      console.log(users, "users getUAEUsersWithExpiringVisas")
+      // Group by visa type for better reporting
+      const visaTypeCounts: Record<string, number> = {};
+      const expiringVisas = users.map(user => {
+        const visaType = user.visaDetails?.visaType || 'Unknown';
+        visaTypeCounts[visaType] = (visaTypeCounts[visaType] || 0) + 1;
+
+        return {
+          name: user.name,
+          email: user.email,
+          visaType: visaType,
+          expiryDate: user.visaDetails?.visaExpiryDate,
+          daysUntilExpiry: user.visaDetails?.visaExpiryDate ?
+            Math.ceil((new Date(user.visaDetails.visaExpiryDate).getTime() - today.getTime()) / (1000 * 60 * 60 * 24)) : 0
+        };
+      });
+
+      // Sort by days until expiry (most urgent first)
+      expiringVisas.sort((a, b) => a.daysUntilExpiry - b.daysUntilExpiry);
+      let expiringVisasData = {
+        totalCount: users.length,
+        visaTypeBreakdown: visaTypeCounts,
+        expiringVisas,
+        checkDate: today,
+        expiryThreshold: expiryDate
+      };
+      console.log(expiringVisasData, "expiringVisasData")
+      console.log(expiringVisasData.expiringVisas, "expiringVisasData.expiringVisas")
+      return expiringVisasData
+    } catch (error: any) {
+      console.error('Error getting UAE users with expiring visas:', error);
+      throw new Error(`Failed to get expiring visa data: ${error.message}`);
+    }
+  }
+
+  /**
+   * Generate visa expiry notification message for admins
+   * @param daysAhead - Number of days ahead to check (default: 30)
+   * @returns Formatted notification message
+   */
+  async generateVisaExpiryNotification(daysAhead: number = 30) {
+    try {
+      const visaData = await this.getUAEUsersWithExpiringVisas(daysAhead);
+      console.log(visaData, "visaData")
+      if (visaData.totalCount === 0) {
+        return {
+          title: 'Visa Status Update',
+          body: `No UAE employee visas are expiring in the next ${daysAhead} days.`,
+          data: {
+            type: 'visa_expiry',
+            count: '0',
+            action: 'none_required',
+            urgent_count: '0',
+            visa_types: '',
+            user_names: '',
+            error: 'false'
+          }
+        };
+      }
+
+      // Create detailed message
+      const visaTypeDetails = Object.entries(visaData.visaTypeBreakdown)
+        .map(([type, count]) => `${count} ${type}`)
+        .join(', ');
+
+      const urgentCount = visaData.expiringVisas.filter(v => v.daysUntilExpiry <= 7).length;
+      const urgentText = urgentCount > 0 ? ` (${urgentCount} urgent - expiring within 7 days)` : '';
+
+      // Create comma-separated list of user names
+      const userNamesList = visaData.expiringVisas.map(v => v.name).join(', ');
+
+      return {
+        title: 'Visa Expiry Alert',
+        body: `${visaData.totalCount} UAE employee visa(s) expiring in ${daysAhead} days: ${visaTypeDetails}${urgentText}`,
+        data: {
+          type: 'visa_expiry',
+          count: visaData.totalCount.toString(),
+          urgent_count: urgentCount.toString(),
+          action: 'review_required',
+          visa_types: Object.keys(visaData.visaTypeBreakdown).join(','),
+          user_names: userNamesList,
+          error: 'false'
+        }
+      };
+    } catch (error: any) {
+      console.error('Error generating visa expiry notification:', error);
+      return {
+        title: 'Visa Status Error',
+        body: 'Unable to check visa expiry status. Please review manually.',
+        data: {
+          type: 'visa_expiry',
+          error: 'true',
+          count: '0',
+          action: 'error',
+          urgent_count: '0',
+          visa_types: '',
+          user_names: ''
+        }
+      };
+    }
+  }
+
+  /*
+    async deleteMultipleUsers(userIds: string[]) {
+
+    if (!Array.isArray(userIds) || userIds.length === 0) {
+      throw new Error('Invalid user IDs provided');
+    }
+
+    // Ensure all IDs are valid ObjectIds
+    const validUserIds = userIds.map(id => new Types.ObjectId(id));
+    // delete record hard delete
+
+    const result = await User.deleteMany({ _id: { $in: validUserIds } });
+    console.log(result, 'result of deleteMany');
+
+    return true
+  }
+     */
+
+}

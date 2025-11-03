@@ -1,0 +1,55 @@
+import { RequestContext } from './context';
+import { UserService } from '../services/user.service';
+import { ShiftService } from '../services/shift.service';
+import { BiometricAttendanceService } from '../services/biometric-attendance.service';
+import { LeaveService } from '../services/leave.service';
+import { LeaveSummaryService } from '../services/leave-summary.service';
+import { LovService } from '../services/lov.service';
+import { OrganizationService } from '../services/organization.service';
+import { TrainingService } from '../services/training.service';
+import { TrainingAttendanceService } from '../services/training-attendance.service';
+import { AuthService } from '../services/auth.service';
+import { CollectionService } from '../services/collection.service';
+import { AttendanceRegularizationService } from '../services/attendance-regularization.service';
+import { TimesheetService } from '../services/timesheet.service';
+import { TaxDeclarationService } from '../services/tax-declaration.service';
+import { TaxSlabService } from '../services/tax-slab.service';
+import { SalaryStructureService } from '../services/salary-structure.service';
+import { PayrollService } from '../services/payroll.service';
+import { PayslipService } from '../services/payslip.service';
+import { HolidayCalendarService } from '../services/holiday-calendar.service';
+import { OvertimeService } from '../services/overtime.service';
+import { ReportService } from '../services/reports.service';
+import { SalaryAssignmentService } from '../services/salary-assignment.service';
+import { WeekendCalendarService } from '../services/weekend-calendar.service';
+import { DocumentService } from '../services/document.service';
+import { DashboardService } from '../services/dashboard.service';
+
+export interface ServiceContainer {
+  requestContext: RequestContext;
+  userService: UserService;
+  shiftService: ShiftService;
+  biometricAttendanceService: BiometricAttendanceService;
+  trainingAttendanceService: TrainingAttendanceService;
+  leaveService: LeaveService;
+  leaveSummaryService: LeaveSummaryService;
+  lovService: LovService;
+  organizationService: OrganizationService;
+  trainingService: TrainingService;
+  authService: AuthService;
+  collectionService: CollectionService;
+  attendanceRegularizationService: AttendanceRegularizationService,
+  timesheetService: TimesheetService;
+  taxDeclarationService: TaxDeclarationService;
+  taxSlabService: TaxSlabService;
+  salaryStructureService: SalaryStructureService;
+  payrollService: PayrollService;
+  payslipService: PayslipService;
+  holidayCalendarService: HolidayCalendarService;
+  overtimeService: OvertimeService;
+  reportService: ReportService;
+  salaryAssignmentService: SalaryAssignmentService;
+  weekendCalendarService: WeekendCalendarService;
+  documentService: DocumentService;
+  dashboardService: DashboardService;
+} 
