@@ -51,6 +51,7 @@ export interface IUser extends Document {
   departmentId: string;
   managerId?: string;
   managerName?: string;
+  employeeNo?: string; // Employee number
   checkinId?: string;
   biometricId?: string; // Optional - not used for UAE users
   active: boolean;
@@ -171,6 +172,13 @@ const userSchema = new Schema<IUser>(
     managerName: {
       type: String,
       maxlength: 100,
+    },
+    employeeNo: {
+      type: String,
+      trim: true,
+      maxlength: 50,
+      required: false,
+      description: 'Employee number'
     },
     checkinId: {
       type: String,

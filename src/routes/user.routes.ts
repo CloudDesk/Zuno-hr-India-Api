@@ -561,6 +561,11 @@ export const userRoutes: RouteHandler = async (
               type: 'string',
               description: 'Manager ID'
             },
+            employeeNo: {
+              type: 'string',
+              description: 'Employee number',
+              maxLength: 50
+            },
             joiningDate: {
               type: 'string',
               format: 'date-time',
@@ -736,6 +741,7 @@ export const userRoutes: RouteHandler = async (
             specificRole: { type: 'string' },
             departmentId: { type: 'string' },
             managerId: { type: 'string' },
+            employeeNo: { type: 'string', maxLength: 50 },
             biometricId: { type: 'string', maxLength: 20 },
             active: { type: 'boolean' },
             joiningDate: { type: 'string', format: 'date-time' },

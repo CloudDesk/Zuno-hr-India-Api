@@ -34,6 +34,7 @@ interface IUserCreate {
   specificRole?: string;
   departmentId: string;
   managerId?: string;
+  employeeNo?: string;
   biometricId?: string | null;
   active?: boolean;
   joiningDate?: Date;
@@ -67,6 +68,7 @@ interface IUserUpdate {
   specificRole?: string;
   departmentId?: string;
   managerId?: string;
+  employeeNo?: string;
   biometricId?: string | null;
   active?: boolean;
   joiningDate?: Date;
@@ -237,7 +239,7 @@ export class UserService extends BaseService {
     sortObj[sort] = sortOrder === 'desc' ? -1 : 1;
 
     // Build select string
-    const selectFields = select || 'name email role specificRole departmentId active joiningDate managerId managerName checkinId biometricId location phone emergencyContact address bloodGroup upcomingShiftAssignmentData currentShiftAssignmentData upcomingShiftAssignment currentShiftAssignment dateOfBirth holidayCalendarId weekendId createdAt updatedAt country currency licenseType portalAccess visaDetails';
+    const selectFields = select || 'name email role specificRole departmentId active joiningDate managerId managerName employeeNo checkinId biometricId location phone emergencyContact address bloodGroup upcomingShiftAssignmentData currentShiftAssignmentData upcomingShiftAssignment currentShiftAssignment dateOfBirth holidayCalendarId weekendId createdAt updatedAt country currency licenseType portalAccess visaDetails';
 
     console.log('Unified getUsers query:', { filter, page, limit, sort: sortObj, select: selectFields });
 
@@ -284,7 +286,7 @@ export class UserService extends BaseService {
       reportingToId,
       id,
       sort = 'name',
-      select = 'name email role specificRole departmentId active joiningDate managerId managerName checkinId biometricId location phone emergencyContact address bloodGroup upcomingShiftAssignmentData currentShiftAssignmentData upcomingShiftAssignment currentShiftAssignment dateOfBirth holidayCalendarId weekendId createdAt updatedAt visaDetails',
+      select = 'name email role specificRole departmentId active joiningDate managerId managerName employeeNo checkinId biometricId location phone emergencyContact address bloodGroup upcomingShiftAssignmentData currentShiftAssignmentData upcomingShiftAssignment currentShiftAssignment dateOfBirth holidayCalendarId weekendId createdAt updatedAt visaDetails',
     } = query;
 
     const skip = (page - 1) * limit;
@@ -570,7 +572,7 @@ export class UserService extends BaseService {
     // Query the database to find users
     const users = await User
       .find(filter)
-      .select('_id name email role specificRole departmentId active managerId managerName')
+      .select('_id name email role specificRole departmentId active managerId managerName employeeNo')
       .skip(skip)
       .limit(limit)
       .lean();
@@ -673,7 +675,7 @@ export class UserService extends BaseService {
     // Execute queries
     const [users, total] = await Promise.all([
       User.find(filter)
-        .select('name email role specificRole departmentId active joiningDate managerId managerName checkinId biometricId location phone emergencyContact address bloodGroup upcomingShiftAssignmentData currentShiftAssignmentData upcomingShiftAssignment currentShiftAssignment dateOfBirth holidayCalendarId weekendId createdAt updatedAt country currency licenseType portalAccess')
+        .select('name email role specificRole departmentId active joiningDate managerId managerName employeeNo checkinId biometricId location phone emergencyContact address bloodGroup upcomingShiftAssignmentData currentShiftAssignmentData upcomingShiftAssignment currentShiftAssignment dateOfBirth holidayCalendarId weekendId createdAt updatedAt country currency licenseType portalAccess')
         .sort(sortObj)
         .skip(skip)
         .limit(limit)
@@ -699,19 +701,19 @@ export class UserService extends BaseService {
     console.log('📋 Data keys:', Object.keys(data || {}));
 
     // ✅ FIX: Handle biometricId to prevent duplicate key error
-    // For UAE users only, don't set biometricId at all (undefined) to avoid sparse index issues
-    if (data.country === 'AE') {
-      // UAE users don't use biometric systems, so remove the field entirely
+    // For UAE and India users, don't set biometricId at all (undefined) to avoid sparse index issues
+    if (data.country === 'AE' || data.country === 'IN') {
+      // UAE and India users don't use biometric systems, so remove the field entirely
       delete (data as any).biometricId;
-      console.log('🔄 Service: Removed biometricId for UAE user (country: AE)');
+      console.log(`🔄 Service: Removed biometricId for ${data.country === 'AE' ? 'UAE' : 'India'} user (country: ${data.country})`);
     } else {
-      // For non-UAE users, handle empty biometricId as before
+      // For non-UAE/India users, handle empty biometricId as before
       if (data.biometricId === '' || data.biometricId === null || data.biometricId === undefined) {
         (data as any).biometricId = null;
-        console.log('🔄 Service: Converted empty biometricId to null for non-UAE user');
+        console.log('🔄 Service: Converted empty biometricId to null for non-UAE/India user');
       } else if (typeof data.biometricId === 'string' && data.biometricId.trim() === '') {
         (data as any).biometricId = null;
-        console.log('🔄 Service: Converted whitespace-only biometricId to null for non-UAE user');
+        console.log('🔄 Service: Converted whitespace-only biometricId to null for non-UAE/India user');
       }
     }
 
@@ -749,27 +751,31 @@ export class UserService extends BaseService {
     console.log(data, 'update data');
     console.log(id, 'userid');
 
-    // ✅ FIX: Handle biometricId to prevent duplicate key error
-    // For UAE users only, don't set biometricId at all (undefined) to avoid sparse index issues
-    if (data.country === 'AE') {
-      // UAE users don't use biometric systems, so remove the field entirely
-      delete (data as any).biometricId;
-      console.log('🔄 Service Update: Removed biometricId for UAE user (country: AE)');
-    } else {
-      // For non-UAE users, handle empty biometricId as before
-      if (data.biometricId === '' || data.biometricId === null || data.biometricId === undefined) {
-        (data as any).biometricId = null;
-        console.log('🔄 Service Update: Converted empty biometricId to null for non-UAE user');
-      } else if (typeof data.biometricId === 'string' && data.biometricId.trim() === '') {
-        (data as any).biometricId = null;
-        console.log('🔄 Service Update: Converted whitespace-only biometricId to null for non-UAE user');
-      }
-    }
-
     const user = await User.findById(id);
     console.log(user, 'user data');
     if (!user) {
       throw new Error('User not found');
+    }
+
+    // ✅ FIX: Handle biometricId to prevent duplicate key error
+    // For UAE and India users, don't set biometricId at all (undefined) to avoid sparse index issues
+    // Check if country is being updated to IN/AE, or if user already has country IN/AE
+    const targetCountry = data.country || user.country;
+    if (targetCountry === 'AE' || targetCountry === 'IN') {
+      // UAE and India users don't use biometric systems, so remove the field entirely
+      delete (data as any).biometricId;
+      // Also remove from existing user if it exists - set to undefined so Mongoose will unset it
+      (user as any).biometricId = undefined;
+      console.log(`🔄 Service Update: Removed biometricId for ${targetCountry === 'AE' ? 'UAE' : 'India'} user (country: ${targetCountry})`);
+    } else {
+      // For non-UAE/India users, handle empty biometricId as before
+      if (data.biometricId === '' || data.biometricId === null || data.biometricId === undefined) {
+        (data as any).biometricId = null;
+        console.log('🔄 Service Update: Converted empty biometricId to null for non-UAE/India user');
+      } else if (typeof data.biometricId === 'string' && data.biometricId.trim() === '') {
+        (data as any).biometricId = null;
+        console.log('🔄 Service Update: Converted whitespace-only biometricId to null for non-UAE/India user');
+      }
     }
 
     Object.assign(user, data);
