@@ -38,7 +38,7 @@ export const leaveRoutes: RouteHandler = async (
             endDate: {
               type: 'string',
               format: 'date',
-              description: 'Leave end date (YYYY-MM-DD)'
+              description: 'Leave end date (YYYY-MM-DD). For half-day leaves, must be same as startDate'
             },
             remarks: {
               type: 'string',
@@ -46,14 +46,25 @@ export const leaveRoutes: RouteHandler = async (
             },
             noOfDays: {
               type: 'number',
-              description: 'Number of days for leave'
+              description: 'Number of days for leave (0.5 for half-day, 1+ for full-day)'
             },
             reason: {
               type: 'string',
               description: 'Reason for leave'
-            }, appliedTo: {
+            },
+            appliedTo: {
               type: 'object',
               description: 'Leave applied'
+            },
+            leaveDuration: {
+              type: 'string',
+              enum: ['full-day', 'half-day'],
+              description: 'Leave duration type (India only). Default: full-day'
+            },
+            halfDayType: {
+              type: 'string',
+              enum: ['first-half', 'second-half'],
+              description: 'Half-day type - required when leaveDuration is half-day (India only)'
             },
           },
         },
@@ -96,6 +107,8 @@ export const leaveRoutes: RouteHandler = async (
             _id: string;
             name: string;
           };
+          leaveDuration?: 'full-day' | 'half-day';
+          halfDayType?: 'first-half' | 'second-half';
         };
 
         const leaveData: ILeaveCreate = {
@@ -108,6 +121,8 @@ export const leaveRoutes: RouteHandler = async (
           noOfDays: body.noOfDays,
           reason: body.reason,
           appliedTo: body.appliedTo,
+          leaveDuration: body.leaveDuration || 'full-day',
+          halfDayType: body.halfDayType,
         };
         console.log(leaveData, 'leaveData insert');
         const leave = await request.container!.leaveService.create(leaveData);

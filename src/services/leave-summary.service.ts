@@ -52,30 +52,36 @@ export class LeaveSummaryService extends BaseService {
         }
       };
     }
-    console.log(updates.availed, 'updates.availed Data is ==>> availed');
-    console.log(status, 'status Data is ==>> Rejected');
-    if (updates.availed !== undefined) {
+      console.log(updates.availed, 'updates.availed Data is ==>> availed');
+      console.log(status, 'status Data is ==>> Rejected');
+      if (updates.availed !== undefined) {
+        // Ensure category exists before accessing properties
+        const category = summary[categoryType];
+        if (!category) {
+          throw new Error(`Leave category '${String(categoryType)}' not found in leave summary. Available: annual, sick, compOff, lossOfPay, otherPaid, otherUnpaid, maternity`);
+        }
 
-      if (status === 'Rejected' || status === 'Cancelled') {
-        updates.availed = summary[categoryType].availed - updates.availed;
-      }
+        const currentAvailed = category.availed || 0;
+        const currentAlloted = category.alloted || 0;
 
+        if (status === 'Rejected' || status === 'Cancelled') {
+          updates.availed = currentAvailed - updates.availed;
+        }
 
+        console.log(updates.availed, 'updates.availed Data is ==>> availed 2');
 
-      console.log(updates.availed, 'updates.availed Data is ==>> availed 2');
-
-      updateObj[categoryType] = {
-        ...summary[categoryType],
-        availed: updates.availed,
-        _doc: {
-          ...summary[categoryType]._doc,
-          remaining: summary[categoryType].alloted - updates.availed,
+        updateObj[categoryType] = {
+          ...category,
           availed: updates.availed,
-          // Preserve existing leaveRequests
-          leaveRequests: summary[categoryType]._doc.leaveRequests || [],
-        },
-      };
-    }
+          _doc: {
+            ...(category._doc || {}),
+            remaining: currentAlloted - updates.availed,
+            availed: updates.availed,
+            // Preserve existing leaveRequests
+            leaveRequests: (category._doc && category._doc.leaveRequests) ? category._doc.leaveRequests : [],
+          },
+        };
+      }
 
     if (updates.leaveRequestId) {
       console.log(updates.leaveRequestId, 'updates.leaveRequestId Data is ==>>');
@@ -477,9 +483,21 @@ export class LeaveSummaryService extends BaseService {
     leaveRequestId: Types.ObjectId
   ): Promise<ILeaveSummary> {
     const summary: ILeaveSummary = await this.getLeaveSummary(userId, year);
-    const categoryTypeKey = categoryType as keyof ILeaveSummary;
+    
+    // Normalize category type to lowercase (e.g., "Annual" -> "annual")
+    const categoryTypeKey = categoryType.toLowerCase() as keyof ILeaveSummary;
+    
+    // Ensure category exists and has availed property
+    const category = summary[categoryTypeKey];
+    if (!category) {
+      throw new Error(`Leave category '${categoryType}' (normalized: '${categoryTypeKey}') not found in leave summary. Available categories: annual, sick, compOff, lossOfPay, otherPaid, otherUnpaid, maternity`);
+    }
+    
+    // Get current availed days, default to 0 if undefined
+    const currentAvailed = (category && category.availed) ? category.availed : 0;
+    
     return await this.createOrUpdateLeaveSummary(userId, year, categoryTypeKey, '', {
-      availed: summary[categoryTypeKey].availed + daysToDeduct,
+      availed: currentAvailed + daysToDeduct,
       leaveRequestId
     });
   }

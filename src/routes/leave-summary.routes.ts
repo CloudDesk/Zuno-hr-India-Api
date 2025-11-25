@@ -498,4 +498,301 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
       }
     },
   );
+
+  // India-specific: Release leaves (monthly/quarterly)
+  fastify.post(
+    '/release',
+    {
+      schema: {
+        tags: ['Leave Summary'],
+        summary: 'Release leaves to employees (India only)',
+        description: 'Release leaves on monthly or quarterly basis - adds to existing balance',
+        security: [{ bearerAuth: [] }],
+        body: {
+          type: 'object',
+          required: ['employeeIds', 'releaseType', 'period', 'leaveType', 'daysReleased'],
+          properties: {
+            employeeIds: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Array of employee IDs'
+            },
+            releaseType: {
+              type: 'string',
+              enum: ['monthly', 'quarterly'],
+              description: 'Release type: monthly (1 month) or quarterly (3 months)'
+            },
+            period: {
+              type: 'object',
+              required: ['year'],
+              properties: {
+                month: { type: 'number', minimum: 1, maximum: 12 },
+                quarter: { type: 'number', minimum: 1, maximum: 4 },
+                year: { type: 'number' }
+              }
+            },
+            leaveType: {
+              type: 'string',
+              enum: ['annual', 'sick', 'compOff', 'lossOfPay', 'otherPaid', 'otherUnpaid']
+            },
+            daysReleased: {
+              type: 'number',
+              minimum: 0,
+              description: 'Days to release (can be decimal, e.g., 4.5)'
+            },
+            notes: { type: 'string' }
+          }
+        }
+      },
+      preHandler: [authenticate],
+    },
+    async (request, reply) => {
+      try {
+        const { LeaveReleaseService } = await import('../services/leave-release.service');
+        const leaveReleaseService = new LeaveReleaseService(request.container!.requestContext);
+        
+        const result = await leaveReleaseService.releaseLeaves(request.body as any);
+        
+        return reply.send({
+          success: true,
+          data: result
+        });
+      } catch (error: any) {
+        return reply.status(400).send({
+          success: false,
+          error: { message: error.message }
+        });
+      }
+    }
+  );
+
+  // Get release history for an employee
+  fastify.get(
+    '/release-history/:userId',
+    {
+      schema: {
+        tags: ['Leave Summary'],
+        summary: 'Get leave release history (India only)',
+        security: [{ bearerAuth: [] }],
+        querystring: {
+          type: 'object',
+          properties: {
+            year: { type: 'number' }
+          }
+        }
+      },
+      preHandler: [authenticate],
+    },
+    async (request, reply) => {
+      try {
+        const { userId } = request.params as { userId: string };
+        const { year } = request.query as { year?: number };
+        
+        const { LeaveReleaseService } = await import('../services/leave-release.service');
+        const leaveReleaseService = new LeaveReleaseService(request.container!.requestContext);
+        
+        const history = await leaveReleaseService.getReleaseHistory(userId, year);
+        
+        return reply.send({
+          success: true,
+          data: history
+        });
+      } catch (error: any) {
+        return reply.status(400).send({
+          success: false,
+          error: { message: error.message }
+        });
+      }
+    }
+  );
+
+  // India-specific: Carry-forward leaves (year-end)
+  fastify.post(
+    '/carry-forward',
+    {
+      schema: {
+        tags: ['Leave Summary'],
+        summary: 'Process leave carry-forward for employee (India only)',
+        description: 'Carry forward specified days from previous year to next year',
+        security: [{ bearerAuth: [] }],
+        body: {
+          type: 'object',
+          required: ['employeeId', 'fromYear', 'toYear', 'leaveType', 'daysCarriedForward'],
+          properties: {
+            employeeId: { type: 'string' },
+            fromYear: { type: 'number' },
+            toYear: { type: 'number' },
+            leaveType: {
+              type: 'string',
+              enum: ['annual', 'sick', 'compOff', 'lossOfPay', 'otherPaid', 'otherUnpaid']
+            },
+            daysCarriedForward: {
+              type: 'number',
+              minimum: 0,
+              description: 'Days to carry forward (can be decimal)'
+            },
+            notes: { type: 'string' }
+          }
+        }
+      },
+      preHandler: [authenticate],
+    },
+    async (request, reply) => {
+      try {
+        const { LeaveCarryForwardService } = await import('../services/leave-carry-forward.service');
+        const carryForwardService = new LeaveCarryForwardService(request.container!.requestContext);
+        
+        const result = await carryForwardService.processCarryForward(request.body as any);
+        
+        return reply.send({
+          success: true,
+          data: result
+        });
+      } catch (error: any) {
+        return reply.status(400).send({
+          success: false,
+          error: { message: error.message }
+        });
+      }
+    }
+  );
+
+  // Batch carry-forward for multiple employees
+  fastify.post(
+    '/carry-forward/batch',
+    {
+      schema: {
+        tags: ['Leave Summary'],
+        summary: 'Batch process leave carry-forward (India only)',
+        description: 'Process carry-forward for multiple employees at once',
+        security: [{ bearerAuth: [] }],
+        body: {
+          type: 'object',
+          required: ['employees', 'fromYear', 'toYear'],
+          properties: {
+            employees: {
+              type: 'array',
+              items: {
+                type: 'object',
+                required: ['employeeId', 'leaveType', 'daysCarriedForward'],
+                properties: {
+                  employeeId: { type: 'string' },
+                  leaveType: {
+                    type: 'string',
+                    enum: ['annual', 'sick', 'compOff', 'lossOfPay', 'otherPaid', 'otherUnpaid']
+                  },
+                  daysCarriedForward: { type: 'number', minimum: 0 }
+                }
+              }
+            },
+            fromYear: { type: 'number' },
+            toYear: { type: 'number' },
+            notes: { type: 'string' }
+          }
+        }
+      },
+      preHandler: [authenticate],
+    },
+    async (request, reply) => {
+      try {
+        const { LeaveCarryForwardService } = await import('../services/leave-carry-forward.service');
+        const carryForwardService = new LeaveCarryForwardService(request.container!.requestContext);
+        
+        const result = await carryForwardService.batchProcessCarryForward(request.body as any);
+        
+        return reply.send({
+          success: true,
+          data: result
+        });
+      } catch (error: any) {
+        return reply.status(400).send({
+          success: false,
+          error: { message: error.message }
+        });
+      }
+    }
+  );
+
+  // Get carry-forward details
+  fastify.get(
+    '/carry-forward/:userId',
+    {
+      schema: {
+        tags: ['Leave Summary'],
+        summary: 'Get carry-forward details (India only)',
+        security: [{ bearerAuth: [] }],
+        querystring: {
+          type: 'object',
+          properties: {
+            fromYear: { type: 'number' },
+            toYear: { type: 'number' }
+          }
+        }
+      },
+      preHandler: [authenticate],
+    },
+    async (request, reply) => {
+      try {
+        const { userId } = request.params as { userId: string };
+        const { fromYear, toYear } = request.query as { fromYear?: number; toYear?: number };
+        
+        const { LeaveCarryForwardService } = await import('../services/leave-carry-forward.service');
+        const carryForwardService = new LeaveCarryForwardService(request.container!.requestContext);
+        
+        const details = await carryForwardService.getCarryForwardDetails(userId, fromYear, toYear);
+        
+        return reply.send({
+          success: true,
+          data: details
+        });
+      } catch (error: any) {
+        return reply.status(400).send({
+          success: false,
+          error: { message: error.message }
+        });
+      }
+    }
+  );
+
+  // Get available balance for carry-forward
+  fastify.get(
+    '/carry-forward-balance/:userId',
+    {
+      schema: {
+        tags: ['Leave Summary'],
+        summary: 'Get available balance for carry-forward (India only)',
+        description: 'Get remaining leave balance at end of year for carry-forward',
+        security: [{ bearerAuth: [] }],
+        querystring: {
+          type: 'object',
+          required: ['year'],
+          properties: {
+            year: { type: 'number' }
+          }
+        }
+      },
+      preHandler: [authenticate],
+    },
+    async (request, reply) => {
+      try {
+        const { userId } = request.params as { userId: string };
+        const { year } = request.query as { year: number };
+        
+        const { LeaveCarryForwardService } = await import('../services/leave-carry-forward.service');
+        const carryForwardService = new LeaveCarryForwardService(request.container!.requestContext);
+        
+        const balance = await carryForwardService.getAvailableBalanceForCarryForward(userId, year);
+        
+        return reply.send({
+          success: true,
+          data: balance
+        });
+      } catch (error: any) {
+        return reply.status(400).send({
+          success: false,
+          error: { message: error.message }
+        });
+      }
+    }
+  );
 }

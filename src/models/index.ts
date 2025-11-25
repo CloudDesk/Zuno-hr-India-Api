@@ -17,3 +17,5 @@ export * from './data-unit.model';
 export * from './timesheet.model';
 export * from './holiday-calendar.model';
 export * from './attendance-regularization.model';
+export * from './leave-release.model';
+export * from './leave-carry-forward.model';

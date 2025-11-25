@@ -1,6 +1,6 @@
 import { BaseService } from './base.service';
 import { RequestContext } from '../types/context';
-import { IUser, Leave, User } from '../models';
+import { IUser, Leave, User, LOV } from '../models';
 import { FilterQuery, Types } from 'mongoose';
 import { ILeave } from '../models/leave.model';
 import { LeaveSummaryService } from './leave-summary.service';
@@ -23,6 +23,9 @@ export interface ILeaveCreate {
     _id: string;
     name: string;
   };
+  // India-specific: Half-day leave support
+  leaveDuration?: 'full-day' | 'half-day';
+  halfDayType?: 'first-half' | 'second-half';
 }
 
 export interface ILeaveQuery {
@@ -265,6 +268,64 @@ export class LeaveService extends BaseService {
       throw new Error('User not found');
     }
 
+    // If leaveType is not provided, fetch it from Lov using leaveTypeId
+    // Note: leaveTypeId points to a Lov document with values array
+    if (!leaveData.leaveType && leaveData.leaveTypeId) {
+      const lov = await LOV.findById(leaveData.leaveTypeId);
+      if (!lov) {
+        throw new Error(`Leave type Lov not found for ID: ${leaveData.leaveTypeId}`);
+      }
+      
+      // Find the first active value
+      let selectedValue = lov.values.find(v => v.isActive !== false);
+      
+      // Fallback to first value if no active value found
+      if (!selectedValue && lov.values.length > 0) {
+        selectedValue = lov.values[0];
+      }
+      
+      if (!selectedValue) {
+        throw new Error('No leave type value found in Lov document');
+      }
+      
+      leaveData.leaveType = selectedValue.value; // Set the value (e.g., "annual", "sick")
+      console.log(`✅ [Leave Type] Fetched from Lov: ${leaveData.leaveType} for leaveTypeId: ${leaveData.leaveTypeId}`);
+    }
+    
+    // Ensure leaveType is set before proceeding
+    if (!leaveData.leaveType) {
+      throw new Error('Leave type is required. Please provide leaveType or ensure leaveTypeId points to a valid Lov with values.');
+    }
+
+    // India-specific: Validate half-day leave restrictions
+    if (leaveData.leaveDuration === 'half-day') {
+      if (user.country !== 'IN') {
+        throw new Error('Half-day leaves are only available for India employees');
+      }
+      
+      // Validate half-day specific rules
+      const startDateStr = new Date(leaveData.startDate).toDateString();
+      const endDateStr = new Date(leaveData.endDate).toDateString();
+      
+      if (startDateStr !== endDateStr) {
+        throw new Error('Half-day leaves must be on the same day (startDate = endDate)');
+      }
+      
+      if (!leaveData.halfDayType) {
+        throw new Error('halfDayType is required for half-day leaves');
+      }
+      
+      // Set noOfDays to 0.5 for half-day leaves
+      leaveData.noOfDays = 0.5;
+    } else {
+      // Default to full-day if not specified
+      leaveData.leaveDuration = leaveData.leaveDuration || 'full-day';
+      // Clear halfDayType for full-day leaves
+      if (leaveData.leaveDuration === 'full-day') {
+        leaveData.halfDayType = undefined;
+      }
+    }
+
     // Validate leave type against country
     if (leaveData.leaveType) {
       try {
@@ -276,24 +337,109 @@ export class LeaveService extends BaseService {
       }
     }
 
-    // Check for overlapping leaves
-    const overlappingLeave = await Leave.findOne({
+    // Check for overlapping leaves (handle half-day leaves)
+    // Exclude 'Rejected' and 'Cancelled' statuses - cancelled leaves can be re-applied
+    const baseQuery: any = {
       userId: leaveData.userId,
-      $or: [
-        {
-          startDate: { $lte: leaveData.startDate },
-          endDate: { $gte: leaveData.startDate },
-        },
-        {
-          startDate: { $lte: leaveData.endDate },
-          endDate: { $gte: leaveData.endDate },
-        },
-      ],
       status: { $nin: ['Rejected', 'Cancelled'] },
-    });
+    };
 
-    if (overlappingLeave) {
-      throw new Error('Leave dates overlap with existing leave request');
+    if (leaveData.leaveDuration === 'half-day') {
+      // For half-day leaves:
+      // 1. Check if same halfDayType exists on same date
+      // 2. Check if full-day leave exists on same date
+      const leaveDate = new Date(leaveData.startDate);
+      const dayStart = new Date(leaveDate);
+      dayStart.setHours(0, 0, 0, 0);
+      const dayEnd = new Date(leaveDate);
+      dayEnd.setHours(23, 59, 59, 999);
+      
+      // Check 1: Same halfDayType on same date
+      const sameHalfDayQuery = {
+        ...baseQuery,
+        $and: [
+          {
+            startDate: { $gte: dayStart, $lte: dayEnd }
+          },
+          {
+            endDate: { $gte: dayStart, $lte: dayEnd }
+          },
+          {
+            halfDayType: leaveData.halfDayType
+          },
+          {
+            leaveDuration: 'half-day'
+          }
+        ]
+      };
+      
+      // Check 2: Full-day leave on same date
+      // Check if any full-day leave (or leave without leaveDuration field) overlaps with the half-day date
+      const fullDayQuery = {
+        ...baseQuery,
+        startDate: { $lte: dayEnd },
+        endDate: { $gte: dayStart },
+        $or: [
+          { leaveDuration: { $ne: 'half-day' } },
+          { leaveDuration: { $exists: false } } // Old leaves without leaveDuration field are treated as full-day
+        ]
+      };
+      
+      const sameHalfDayLeave = await Leave.findOne(sameHalfDayQuery);
+      const fullDayLeave = await Leave.findOne(fullDayQuery);
+      
+      if (sameHalfDayLeave) {
+        const sessionName = leaveData.halfDayType === 'first-half' ? 'morning' : 'afternoon';
+        throw new Error(`A ${sessionName} half-day leave already exists for this date`);
+      }
+      
+      if (fullDayLeave) {
+        throw new Error('A full-day leave already exists for this date. Cannot apply half-day leave.');
+      }
+    } else {
+      // For full-day leaves:
+      // 1. Check if any full-day leave overlaps with date range
+      // 2. Check if any half-day leave exists on any date in the range
+      const startDate = new Date(leaveData.startDate);
+      const endDate = new Date(leaveData.endDate);
+      
+      // Check 1: Full-day leave overlap
+      // Check if any full-day leave (or leave without leaveDuration field) overlaps with the date range
+      const fullDayOverlapQuery = {
+        ...baseQuery,
+        startDate: { $lte: endDate },
+        endDate: { $gte: startDate },
+        $or: [
+          { leaveDuration: { $ne: 'half-day' } },
+          { leaveDuration: { $exists: false } } // Old leaves without leaveDuration field are treated as full-day
+        ]
+      };
+      
+      // Check 2: Any half-day leave in the date range
+      // For each day in the range, check if any half-day exists
+      const halfDayOverlapQuery = {
+        ...baseQuery,
+        leaveDuration: 'half-day',
+        $and: [
+          {
+            startDate: { $lte: endDate }
+          },
+          {
+            endDate: { $gte: startDate }
+          }
+        ]
+      };
+      
+      const fullDayOverlap = await Leave.findOne(fullDayOverlapQuery);
+      const halfDayOverlap = await Leave.findOne(halfDayOverlapQuery);
+      
+      if (fullDayOverlap) {
+        throw new Error('Leave dates overlap with existing full-day leave request');
+      }
+      
+      if (halfDayOverlap) {
+        throw new Error('A half-day leave already exists in the selected date range. Cannot apply full-day leave.');
+      }
     }
     console.log(leaveData, 'leaveData 2 data');
     const leave: ILeave = await Leave.create(leaveData);
@@ -333,10 +479,12 @@ export class LeaveService extends BaseService {
 
 
     console.log("first")
+    // Normalize leaveType to lowercase to match leave summary keys (annual, sick, etc.)
+    const normalizedLeaveType = (leave.leaveType || '').toLowerCase();
     await this.leaveSummaryService.updateLeaveBalance(
       leave.userId as Types.ObjectId,
       new Date(leave.startDate).getFullYear(),
-      leave.leaveType as keyof ILeaveSummary,
+      normalizedLeaveType,
       leave.noOfDays as number,
       leave._id as Types.ObjectId
     );

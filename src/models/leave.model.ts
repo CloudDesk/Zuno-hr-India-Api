@@ -25,6 +25,9 @@ export interface ILeave extends Document {
     email: string;
   };
   approvedAt?: Date;
+  // India-specific: Half-day leave support
+  leaveDuration?: 'full-day' | 'half-day'; // Default: 'full-day'
+  halfDayType?: 'first-half' | 'second-half'; // Required when leaveDuration = 'half-day'
 }
 
 const leaveSchema = new Schema<ILeave>(
@@ -60,6 +63,19 @@ const leaveSchema = new Schema<ILeave>(
 
     },
     approvedAt: Date,
+    // India-specific: Half-day leave support
+    leaveDuration: {
+      type: String,
+      enum: ['full-day', 'half-day'],
+      default: 'full-day'
+    },
+    halfDayType: {
+      type: String,
+      enum: ['first-half', 'second-half'],
+      required: function(this: ILeave) {
+        return this.leaveDuration === 'half-day';
+      }
+    },
   },
   {
     timestamps: true,
@@ -76,6 +92,37 @@ leaveSchema.pre('save', function (next) {
   if (this.endDate < this.startDate) {
     next(new Error('End date must be after start date'));
   }
+  next();
+});
+
+// India-specific: Validate half-day leave rules
+leaveSchema.pre('save', async function (next) {
+  // Only validate half-day rules if leaveDuration is 'half-day'
+  if (this.leaveDuration === 'half-day') {
+    // For half-day leave, startDate must equal endDate (same day)
+    const startDateStr = new Date(this.startDate).toDateString();
+    const endDateStr = new Date(this.endDate).toDateString();
+    
+    if (startDateStr !== endDateStr) {
+      return next(new Error('Half-day leaves must be on the same day (startDate = endDate)'));
+    }
+    
+    // halfDayType must be specified
+    if (!this.halfDayType) {
+      return next(new Error('halfDayType is required for half-day leaves'));
+    }
+    
+    // noOfDays must be exactly 0.5
+    if (this.noOfDays !== 0.5) {
+      return next(new Error('Half-day leaves must have noOfDays = 0.5'));
+    }
+  }
+  
+  // For full-day leaves, halfDayType should not be set
+  if (this.leaveDuration === 'full-day' && this.halfDayType) {
+    return next(new Error('halfDayType should not be set for full-day leaves'));
+  }
+  
   next();
 });
 

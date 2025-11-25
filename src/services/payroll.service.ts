@@ -1703,16 +1703,21 @@ export class PayrollService extends BaseService {
     private async fetchApprovedLeaves(employeeId: Types.ObjectId, year: number, monthNumber: number) {
         const { firstDay, lastDay } = this.getMonthBoundaries(year, monthNumber);
 
-        const result = await Leave.countDocuments({
-            employeeId,
+        // Fetch approved leaves and sum up noOfDays to support half-day leaves (0.5 days)
+        // This fixes the bug where countDocuments() was counting records instead of days
+        const leaves = await Leave.find({
+            userId: employeeId,  // Use userId field from Leave model
             status: 'Approved',
             $or: [
                 { startDate: { $gte: firstDay, $lte: lastDay } },
                 { endDate: { $gte: firstDay, $lte: lastDay } },
             ],
-        });
-        console.log(result, '1 fetchApprovedLeaves');
-        return result;
+        }).select('noOfDays').lean();
+
+        // Sum all noOfDays to get total leave days (supports decimals for half-day leaves)
+        const totalLeaveDays = leaves.reduce((sum, leave) => sum + (leave.noOfDays || 0), 0);
+        console.log(totalLeaveDays, `1 fetchApprovedLeaves - Total days: ${totalLeaveDays} from ${leaves.length} leave records`);
+        return totalLeaveDays;
     }
 
     // Retrieves attendance summary for an employee for a specific month.
