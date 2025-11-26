@@ -569,7 +569,7 @@ export class LeaveService extends BaseService {
           {
             $set: {
               // status: 'onLeave',
-              attendanceStatus: 'On-Leave',
+              attendanceStatus: ['On-Leave'],
               // leaveRequestId: leave._id,
               updatedAt: new Date(),
               updatedBy: updateData.approvedById

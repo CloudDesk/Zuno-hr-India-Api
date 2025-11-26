@@ -11,6 +11,7 @@ import { TrainingAttendanceService } from '../services/training-attendance.servi
 import { AuthService } from '../services/auth.service';
 import { CollectionService } from '../services/collection.service';
 import { AttendanceRegularizationService } from '../services/attendance-regularization.service';
+import { AttendanceOverrideService } from '../services/attendance-override.service';
 import { TimesheetService } from '../services/timesheet.service';
 import { TaxDeclarationService } from '../services/tax-declaration.service';
 import { TaxSlabService } from '../services/tax-slab.service';
@@ -39,6 +40,7 @@ export interface ServiceContainer {
   authService: AuthService;
   collectionService: CollectionService;
   attendanceRegularizationService: AttendanceRegularizationService,
+  attendanceOverrideService: AttendanceOverrideService,
   timesheetService: TimesheetService;
   taxDeclarationService: TaxDeclarationService;
   taxSlabService: TaxSlabService;

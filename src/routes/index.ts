@@ -26,6 +26,7 @@ import { weekendCalendarRoutes } from './weekend-calendar.routes';
 import { userResignationRoutes } from './user-resignation.routes';
 import { updateShiftAssignmentStatuses } from '../utilis/updateShiftAssignmentStatuses';
 import { attendanceRegularizeRoutes } from './attendance-regularization.routes';
+import { attendanceOverrideRoutes } from './attendance-override.routes';
 import { AttendanceRecord, Leave, Payroll, Payslip, SalaryAssignment, ShiftAssignment, Timesheet, User } from '../models';
 import { TaxDeclaration } from '../models/tax-declaration';
 import { TimesheetFile } from '../models/timesheet-file.model';
@@ -41,7 +42,8 @@ export async function routes(fastify: FastifyInstance) {
   fastify.register(userProfileRoutes, { prefix: '/user-profile' });
   fastify.register(userResignationRoutes, { prefix: '/users-resignations' });
   fastify.register(biometricAttendanceRoutes, { prefix: '/attendance' });
-  fastify.register(attendanceRegularizeRoutes, { prefix: '/attendance-regularizations' })
+  fastify.register(attendanceRegularizeRoutes, { prefix: '/attendance-regularizations' });
+  fastify.register(attendanceOverrideRoutes);
   fastify.register(leaveRoutes, { prefix: '/leaves' });
   fastify.register(leaveSummaryRoutes, { prefix: '/leave-summary' });
   fastify.register(overtimeRoutes, { prefix: '/overtime' });

@@ -133,6 +133,7 @@ const userResponseSchema = {
     departmentId: { type: 'string' },
     managerId: { type: 'string' },
     managerName: { type: 'string' },
+    employeeCode: { type: 'string' },
     checkinId: { type: 'string' },
     biometricId: { type: 'string' },
     active: { type: 'boolean' },
@@ -561,9 +562,9 @@ export const userRoutes: RouteHandler = async (
               type: 'string',
               description: 'Manager ID'
             },
-            employeeNo: {
+            employeeCode: {
               type: 'string',
-              description: 'Employee number',
+              description: 'Employee code (mandatory and unique)',
               maxLength: 50
             },
             joiningDate: {
@@ -741,7 +742,7 @@ export const userRoutes: RouteHandler = async (
             specificRole: { type: 'string' },
             departmentId: { type: 'string' },
             managerId: { type: 'string' },
-            employeeNo: { type: 'string', maxLength: 50 },
+            employeeCode: { type: 'string', maxLength: 50 },
             biometricId: { type: 'string', maxLength: 20 },
             active: { type: 'boolean' },
             joiningDate: { type: 'string', format: 'date-time' },
@@ -1458,6 +1459,7 @@ export const userRoutes: RouteHandler = async (
         const headers = [
           'Name',
           'Email',
+          'Employee Code',
           'Role',
           'Department ID',
           'Manager Name',
@@ -1492,6 +1494,7 @@ export const userRoutes: RouteHandler = async (
           const row = [
             user.name || '',
             user.email || '',
+            user.employeeCode || '',
             user.role || '',
             user.departmentId || '',
             user.managerName || '',

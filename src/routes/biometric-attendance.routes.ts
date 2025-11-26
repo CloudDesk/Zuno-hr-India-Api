@@ -761,5 +761,103 @@ export const biometricAttendanceRoutes: RouteHandler = async (
         });
       }
     }
-  )
+  );
+
+  // Weekly Report - Generate Excel file
+  fastify.get(
+    '/weekly-report',
+    {
+      schema: {
+        tags: ['Biometric Attendance'],
+        summary: 'Generate weekly attendance report as Excel by month',
+        description: 'Generate a weekly attendance report for a specific month. Automatically calculates all weeks in the month (including overlapping weeks) and returns an Excel file with color-coded hours based on weekend days and holidays.',
+        querystring: {
+          type: 'object',
+          required: ['month'],
+          properties: {
+            month: {
+              type: 'string',
+              pattern: '^\\d{4}-\\d{2}$',
+              description: 'Month in YYYY-MM format (e.g., 2025-11 for November 2025)'
+            }
+          }
+        },
+        response: {
+          200: {
+            description: 'Excel file',
+            content: {
+              'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': {
+                schema: {
+                  type: 'string',
+                  format: 'binary'
+                }
+              }
+            }
+          },
+          400: {
+            type: 'object',
+            properties: {
+              success: { type: 'boolean' },
+              error: {
+                type: 'object',
+                properties: {
+                  message: { type: 'string' }
+                }
+              }
+            }
+          }
+        }
+      },
+      preHandler: [authenticate]
+    },
+    async (request, reply) => {
+      try {
+        const { month } = request.query as { month: string };
+
+        if (!month) {
+          return reply.status(400).send({
+            success: false,
+            error: { message: 'month parameter is required (format: YYYY-MM)' }
+          });
+        }
+
+        // Validate month format (YYYY-MM, where MM is 1-12: 01=January, 12=December)
+        const monthPattern = /^\d{4}-\d{2}$/;
+        if (!monthPattern.test(month)) {
+          return reply.status(400).send({
+            success: false,
+            error: { message: 'Invalid month format. Please use YYYY-MM format (e.g., 2025-11 for November 2025)' }
+          });
+        }
+
+        const [year, monthNum] = month.split('-').map(Number);
+        if (monthNum < 1 || monthNum > 12) {
+          return reply.status(400).send({
+            success: false,
+            error: { message: 'Invalid month. Month must be between 01 (January) and 12 (December)' }
+          });
+        }
+
+        // Generate Excel report
+        const excelBuffer = await request.container!.biometricAttendanceService.generateWeeklyReportByMonth(month);
+
+        // Set response headers for file download
+        const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 
+                           'July', 'August', 'September', 'October', 'November', 'December'];
+        const monthName = monthNames[monthNum - 1];
+        const filename = `Weekly_Report_${monthName}_${year}.xlsx`;
+        reply.header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        reply.header('Content-Disposition', `attachment; filename="${filename}"`);
+        reply.header('Content-Length', excelBuffer.length.toString());
+
+        return reply.send(excelBuffer);
+      } catch (error: any) {
+        console.error('Error generating weekly report:', error);
+        return reply.status(400).send({
+          success: false,
+          error: { message: error.message || 'Failed to generate weekly report' }
+        });
+      }
+    }
+  );
 }; 

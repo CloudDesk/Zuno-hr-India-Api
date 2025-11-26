@@ -34,7 +34,7 @@ interface IUserCreate {
   specificRole?: string;
   departmentId: string;
   managerId?: string;
-  employeeNo?: string;
+  employeeCode: string;
   biometricId?: string | null;
   active?: boolean;
   joiningDate?: Date;
@@ -68,7 +68,7 @@ interface IUserUpdate {
   specificRole?: string;
   departmentId?: string;
   managerId?: string;
-  employeeNo?: string;
+  employeeCode?: string;
   biometricId?: string | null;
   active?: boolean;
   joiningDate?: Date;
@@ -239,7 +239,7 @@ export class UserService extends BaseService {
     sortObj[sort] = sortOrder === 'desc' ? -1 : 1;
 
     // Build select string
-    const selectFields = select || 'name email role specificRole departmentId active joiningDate managerId managerName employeeNo checkinId biometricId location phone emergencyContact address bloodGroup upcomingShiftAssignmentData currentShiftAssignmentData upcomingShiftAssignment currentShiftAssignment dateOfBirth holidayCalendarId weekendId createdAt updatedAt country currency licenseType portalAccess visaDetails';
+    const selectFields = select || 'name email role specificRole departmentId active joiningDate managerId managerName employeeCode checkinId biometricId location phone emergencyContact address bloodGroup upcomingShiftAssignmentData currentShiftAssignmentData upcomingShiftAssignment currentShiftAssignment dateOfBirth holidayCalendarId weekendId createdAt updatedAt country currency licenseType portalAccess visaDetails';
 
     console.log('Unified getUsers query:', { filter, page, limit, sort: sortObj, select: selectFields });
 
@@ -286,7 +286,7 @@ export class UserService extends BaseService {
       reportingToId,
       id,
       sort = 'name',
-      select = 'name email role specificRole departmentId active joiningDate managerId managerName employeeNo checkinId biometricId location phone emergencyContact address bloodGroup upcomingShiftAssignmentData currentShiftAssignmentData upcomingShiftAssignment currentShiftAssignment dateOfBirth holidayCalendarId weekendId createdAt updatedAt visaDetails',
+      select = 'name email role specificRole departmentId active joiningDate managerId managerName employeeCode checkinId biometricId location phone emergencyContact address bloodGroup upcomingShiftAssignmentData currentShiftAssignmentData upcomingShiftAssignment currentShiftAssignment dateOfBirth holidayCalendarId weekendId createdAt updatedAt visaDetails',
     } = query;
 
     const skip = (page - 1) * limit;
@@ -572,7 +572,7 @@ export class UserService extends BaseService {
     // Query the database to find users
     const users = await User
       .find(filter)
-      .select('_id name email role specificRole departmentId active managerId managerName employeeNo')
+      .select('_id name email role specificRole departmentId active managerId managerName employeeCode')
       .skip(skip)
       .limit(limit)
       .lean();
@@ -675,7 +675,7 @@ export class UserService extends BaseService {
     // Execute queries
     const [users, total] = await Promise.all([
       User.find(filter)
-        .select('name email role specificRole departmentId active joiningDate managerId managerName employeeNo checkinId biometricId location phone emergencyContact address bloodGroup upcomingShiftAssignmentData currentShiftAssignmentData upcomingShiftAssignment currentShiftAssignment dateOfBirth holidayCalendarId weekendId createdAt updatedAt country currency licenseType portalAccess')
+        .select('name email role specificRole departmentId active joiningDate managerId managerName employeeCode checkinId biometricId location phone emergencyContact address bloodGroup upcomingShiftAssignmentData currentShiftAssignmentData upcomingShiftAssignment currentShiftAssignment dateOfBirth holidayCalendarId weekendId createdAt updatedAt country currency licenseType portalAccess')
         .sort(sortObj)
         .skip(skip)
         .limit(limit)
@@ -699,6 +699,14 @@ export class UserService extends BaseService {
     console.log('📦 Input data:', JSON.stringify(data, null, 2));
     console.log('📋 Data type:', typeof data);
     console.log('📋 Data keys:', Object.keys(data || {}));
+
+    // Validate employeeCode uniqueness before creating
+    if (data.employeeCode) {
+      const existingUser = await User.findOne({ employeeCode: data.employeeCode });
+      if (existingUser) {
+        throw new Error(`Employee code "${data.employeeCode}" already exists. Please use a unique employee code.`);
+      }
+    }
 
     // ✅ FIX: Handle biometricId to prevent duplicate key error
     // For UAE and India users, don't set biometricId at all (undefined) to avoid sparse index issues
@@ -755,6 +763,17 @@ export class UserService extends BaseService {
     console.log(user, 'user data');
     if (!user) {
       throw new Error('User not found');
+    }
+
+    // Validate employeeCode uniqueness if it's being updated
+    if (data.employeeCode && data.employeeCode !== user.employeeCode) {
+      const existingUser = await User.findOne({ 
+        employeeCode: data.employeeCode,
+        _id: { $ne: id }
+      });
+      if (existingUser) {
+        throw new Error(`Employee code "${data.employeeCode}" already exists. Please use a unique employee code.`);
+      }
     }
 
     // ✅ FIX: Handle biometricId to prevent duplicate key error

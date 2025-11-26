@@ -5,6 +5,7 @@ import { AttendanceRecord, IAttendanceRecord } from '../models/attendance-record
 import { BaseService } from './base.service';
 import { RequestContext } from '../types/context';
 import { HolidayCalendar, IHoliday } from '../models';
+import * as ExcelJS from 'exceljs';
 
 
 interface ISwipeData {
@@ -1177,6 +1178,390 @@ export class BiometricAttendanceService extends BaseService {
         success: false,
         message: 'Error deleting user attendance'
       };
+    }
+  }
+
+  /**
+   * Generate Weekly Report as Excel based on month
+   * Calculates all weeks in the month (including overlapping weeks) and generates report with color coding
+   */
+  async generateWeeklyReportByMonth(month: string): Promise<Buffer> {
+    try {
+      // Parse month (YYYY-MM format)
+      // Note: In YYYY-MM format, months are 1-indexed (01=January, 12=December)
+      // JavaScript Date uses 0-indexed months (0=January, 11=December), so we subtract 1
+      const [year, monthNum] = month.split('-').map(Number);
+      if (!year || !monthNum || monthNum < 1 || monthNum > 12) {
+        throw new Error('Invalid month format. Please use YYYY-MM format (e.g., 2025-11 for November 2025)');
+      }
+
+      // Calculate month boundaries (monthNum - 1 converts 1-indexed to 0-indexed for JavaScript Date)
+      const firstDayOfMonth = new Date(Date.UTC(year, monthNum - 1, 1));
+      const lastDayOfMonth = new Date(Date.UTC(year, monthNum, 0, 23, 59, 59, 999));
+
+      // Calculate all weeks that fall within this month (including overlapping weeks)
+      const weeks: Array<{ weekNumber: number; startDate: Date; endDate: Date }> = [];
+      
+      // Start from the first Monday before or on the first day of month
+      const firstDay = new Date(firstDayOfMonth);
+      const firstDayOfWeek = firstDay.getUTCDay(); // 0 = Sunday, 1 = Monday, etc.
+      
+      // Calculate the start of the week (Monday = 1, so we need to go back)
+      // ISO week starts on Monday (1), but JavaScript Sunday is 0
+      let daysToSubtract = firstDayOfWeek === 0 ? 6 : firstDayOfWeek - 1; // Convert to Monday-based
+      const weekStart = new Date(firstDay);
+      weekStart.setUTCDate(firstDay.getUTCDate() - daysToSubtract);
+      weekStart.setUTCHours(0, 0, 0, 0);
+      
+      // Calculate week number for the first week
+      const getWeekNumber = (date: Date): number => {
+        const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+        d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7));
+        const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+        return Math.ceil((((d.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+      };
+
+      // Generate all weeks that overlap with the month
+      let currentWeekStart = new Date(weekStart);
+      let weekNumber = getWeekNumber(currentWeekStart);
+      
+      while (currentWeekStart <= lastDayOfMonth) {
+        const currentWeekEnd = new Date(currentWeekStart);
+        currentWeekEnd.setUTCDate(currentWeekEnd.getUTCDate() + 6);
+        currentWeekEnd.setUTCHours(23, 59, 59, 999);
+        
+        // Only include weeks that have at least one day in the target month
+        if (currentWeekEnd >= firstDayOfMonth && currentWeekStart <= lastDayOfMonth) {
+          weeks.push({
+            weekNumber,
+            startDate: new Date(currentWeekStart),
+            endDate: new Date(currentWeekEnd)
+          });
+        }
+        
+        // Move to next week
+        currentWeekStart.setUTCDate(currentWeekStart.getUTCDate() + 7);
+        weekNumber = getWeekNumber(currentWeekStart);
+      }
+
+      // Extended date range to cover all weeks
+      const utcStartDate = weeks[0]?.startDate || firstDayOfMonth;
+      const utcEndDate = weeks[weeks.length - 1]?.endDate || lastDayOfMonth;
+
+      // Fetch ALL active users (not just those with attendance records)
+      const allActiveUsers = await User.find({ active: true })
+        .select('_id name employeeCode holidayCalendarId')
+        .lean();
+
+      if (allActiveUsers.length === 0) {
+        throw new Error('No active users found');
+      }
+
+      const allUserIds = allActiveUsers.map(user => user._id.toString());
+
+      // Fetch all attendance records for the date range
+      const attendanceRecords = await AttendanceRecord.find({
+        shiftDay: {
+          $gte: utcStartDate,
+          $lte: utcEndDate
+        },
+        userId: { $in: allUserIds.map(id => new Types.ObjectId(id)) }
+      })
+        .populate('userId', 'name employeeCode holidayCalendarId')
+        .sort({ userId: 1, shiftDay: 1 })
+        .lean();
+
+      // Fetch shift assignments for all active users
+      const shiftAssignments = await ShiftAssignment.find({
+        userId: { $in: allUserIds.map(id => new Types.ObjectId(id)) },
+        $or: [
+          { endDate: null, startDate: { $lte: utcEndDate } },
+          { startDate: { $lte: utcEndDate }, endDate: { $gte: utcStartDate } }
+        ]
+      })
+        .lean();
+
+      // Fetch holiday calendars for all active users
+      const userHolidayCalendars = await HolidayCalendar.find({
+        assignedTo: { $in: allUserIds.map(id => new Types.ObjectId(id)) },
+        year: year
+      })
+        .lean();
+
+      // Create maps for quick lookup
+      const shiftAssignmentMap = new Map<string, any[]>();
+      shiftAssignments.forEach(assignment => {
+        const userId = assignment.userId.toString();
+        if (!shiftAssignmentMap.has(userId)) {
+          shiftAssignmentMap.set(userId, []);
+        }
+        shiftAssignmentMap.get(userId)!.push(assignment);
+      });
+
+      const holidayMap = new Map<string, Set<string>>(); // userId -> Set of holiday dates (YYYY-MM-DD)
+      userHolidayCalendars.forEach(calendar => {
+        calendar.assignedTo?.forEach(userId => {
+          const userIdStr = userId.toString();
+          if (!holidayMap.has(userIdStr)) {
+            holidayMap.set(userIdStr, new Set());
+          }
+          calendar.holidays.forEach(holiday => {
+            const holidayDate = new Date(holiday.date);
+            const dateStr = `${holidayDate.getUTCFullYear()}-${String(holidayDate.getUTCMonth() + 1).padStart(2, '0')}-${String(holidayDate.getUTCDate()).padStart(2, '0')}`;
+            holidayMap.get(userIdStr)!.add(dateStr);
+          });
+        });
+      });
+
+      // Helper function to get weekend days for a user in a week
+      // If no shift assignment exists, default to [0,6] (Saturday and Sunday)
+      const getWeekendDaysForWeek = (userId: string, weekStart: Date): number[] => {
+        const assignments = shiftAssignmentMap.get(userId) || [];
+        const weekendDaysSet = new Set<number>();
+        let hasAssignment = false;
+        
+        // Check each day of the week
+        for (let i = 0; i < 7; i++) {
+          const checkDate = new Date(weekStart);
+          checkDate.setUTCDate(checkDate.getUTCDate() + i);
+          
+          const activeAssignment = assignments.find(assignment => {
+            const start = new Date(assignment.startDate);
+            const end = assignment.endDate ? new Date(assignment.endDate) : new Date('2099-12-31');
+            return checkDate >= start && checkDate <= end;
+          });
+          
+          if (activeAssignment?.weekendDays) {
+            hasAssignment = true;
+            activeAssignment.weekendDays.forEach((day: number) => weekendDaysSet.add(day));
+          }
+        }
+        
+        // If no shift assignment found, default to [0,6] (Saturday and Sunday)
+        if (!hasAssignment) {
+          return [0, 6];
+        }
+        
+        return Array.from(weekendDaysSet);
+      };
+
+      // Helper function to check if week has holidays
+      const weekHasHoliday = (userId: string, weekStart: Date, weekEnd: Date): boolean => {
+        const userHolidays = holidayMap.get(userId);
+        if (!userHolidays) return false;
+        
+        for (let d = new Date(weekStart); d <= weekEnd; d.setUTCDate(d.getUTCDate() + 1)) {
+          const dateStr = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+          if (userHolidays.has(dateStr)) {
+            return true;
+          }
+        }
+        return false;
+      };
+
+      // Helper function to convert time string (HH:mm:ss) to hours
+      const timeStringToHours = (timeStr: string): number => {
+        if (!timeStr || timeStr === '0:00:00') return 0;
+        const parts = timeStr.split(':').map(Number);
+        return parts[0] + (parts[1] / 60) + (parts[2] / 3600);
+      };
+
+      // Helper function to format hours to HH:mm
+      const hoursToTimeString = (hours: number): string => {
+        const h = Math.floor(hours);
+        const m = Math.round((hours - h) * 60);
+        return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+      };
+
+      // Helper function to format date
+      const formatDate = (date: Date): string => {
+        const d = new Date(date);
+        const day = String(d.getUTCDate()).padStart(2, '0');
+        const year = d.getUTCFullYear();
+        const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        return `${day} ${monthNames[d.getUTCMonth()]} ${year}`;
+      };
+
+      // Group attendance records by user and week
+      const userWeekData = new Map<string, Map<number, { records: any[]; totalHours: number }>>();
+      
+      attendanceRecords.forEach(record => {
+        const userId = (record.userId as any)?._id 
+          ? (record.userId as any)._id.toString() 
+          : (record.userId as any).toString();
+        
+        // Find which week this record belongs to
+        const recordDate = new Date(record.shiftDay);
+        const week = weeks.find(w => 
+          recordDate >= w.startDate && recordDate <= w.endDate
+        );
+        
+        if (week) {
+          if (!userWeekData.has(userId)) {
+            userWeekData.set(userId, new Map());
+          }
+          
+          const userWeeks = userWeekData.get(userId)!;
+          if (!userWeeks.has(week.weekNumber)) {
+            userWeeks.set(week.weekNumber, { records: [], totalHours: 0 });
+          }
+          
+          const weekData = userWeeks.get(week.weekNumber)!;
+          weekData.records.push(record);
+          
+          // Add hours to total
+          const hours = timeStringToHours(record.actualWorkHours || record.totalWorkHours || '0:00:00');
+          weekData.totalHours += hours;
+        }
+      });
+
+      // Prepare Excel data - one row per employee, weeks as columns
+      // Create a map: userId -> { employeeCode, name, weeks: { weekNumber: { hours, shouldBeRed } } }
+      const employeeDataMap = new Map<string, {
+        employeeCode: string;
+        employeeName: string;
+        weeks: Map<number, { hours: string; shouldBeRed: boolean }>;
+      }>();
+
+      // Initialize all active users
+      allActiveUsers.forEach(user => {
+        const userId = user._id.toString();
+        employeeDataMap.set(userId, {
+          employeeCode: user.employeeCode || '',
+          employeeName: user.name || '',
+          weeks: new Map()
+        });
+      });
+
+      // Process each week for all users
+      weeks.forEach(week => {
+        allActiveUsers.forEach(user => {
+          const userId = user._id.toString();
+          const userWeekDataForWeek = userWeekData.get(userId)?.get(week.weekNumber);
+          const totalHours = userWeekDataForWeek?.totalHours || 0;
+          const hoursString = hoursToTimeString(totalHours);
+          
+          // Get weekend days for this week
+          const weekendDays = getWeekendDaysForWeek(userId, week.startDate);
+          const hasHoliday = weekHasHoliday(userId, week.startDate, week.endDate);
+          
+          // Determine color based on required hours
+          let shouldBeRed = false;
+          
+          if (hasHoliday) {
+            shouldBeRed = totalHours < 36;
+          } else if (weekendDays.length === 2 && weekendDays.includes(0) && weekendDays.includes(6)) {
+            // Weekend is [0,6] - Sat and Sun
+            shouldBeRed = totalHours < 45;
+          } else if (weekendDays.length === 1 && weekendDays.includes(0)) {
+            // Weekend is [0] - Sunday only
+            shouldBeRed = totalHours < 54;
+          } else {
+            // Default: 5 working days = 45 hours (9 hours per day)
+            shouldBeRed = totalHours < 45;
+          }
+          
+          const employeeData = employeeDataMap.get(userId)!;
+          employeeData.weeks.set(week.weekNumber, {
+            hours: hoursString,
+            shouldBeRed: shouldBeRed
+          });
+        });
+      });
+
+      // Convert to array and sort by employee code
+      const excelData = Array.from(employeeDataMap.values())
+        .sort((a, b) => (a.employeeCode || '').localeCompare(b.employeeCode || ''));
+
+      // Create Excel workbook
+      const workbook = new ExcelJS.Workbook();
+      const worksheet = workbook.addWorksheet('Weekly Report');
+
+      // Add company header
+      const firstWeek = weeks[0];
+      const lastWeek = weeks[weeks.length - 1];
+      const totalCols = 2 + weeks.length; // Employee No, Name, and one column per week
+      
+      worksheet.mergeCells(`A1:${String.fromCharCode(64 + totalCols)}1`);
+      const companyCell = worksheet.getCell('A1');
+      companyCell.value = 'Cloud Desk Technology Private Limited';
+      companyCell.font = { bold: true, size: 14 };
+      companyCell.alignment = { horizontal: 'center', vertical: 'middle' };
+      
+      worksheet.mergeCells(`A2:${String.fromCharCode(64 + totalCols)}2`);
+      const addressCell = worksheet.getCell('A2');
+      addressCell.value = 'No: 51, TEK Meadows, Old Mahabalipuram Rd, Solinganallur, chennai, Tamilnadu-600119';
+      addressCell.alignment = { horizontal: 'center', vertical: 'middle' };
+      
+      worksheet.mergeCells(`A3:${String.fromCharCode(64 + totalCols)}3`);
+      const reportTitleCell = worksheet.getCell('A3');
+      reportTitleCell.value = `Attendance Weekly Summary Report from ${formatDate(firstWeek.startDate)} to ${formatDate(lastWeek.endDate)}`;
+      reportTitleCell.font = { bold: true };
+      reportTitleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+      
+      // Table headers row
+      const headerRow = worksheet.getRow(5);
+      headerRow.getCell(1).value = 'Employee No';
+      headerRow.getCell(2).value = 'Name';
+      
+      // Add week headers
+      weeks.forEach((week, index) => {
+        const colIndex = 3 + index;
+        const weekHeader = `Week ${week.weekNumber}\n${formatDate(week.startDate)} - ${formatDate(week.endDate)}`;
+        headerRow.getCell(colIndex).value = weekHeader;
+      });
+      
+      headerRow.font = { bold: true };
+      headerRow.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FFE0E0E0' }
+      };
+      headerRow.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+      headerRow.height = 40;
+      
+      // Data rows - one row per employee
+      excelData.forEach((employee, rowIndex) => {
+        const dataRow = worksheet.getRow(6 + rowIndex);
+        dataRow.getCell(1).value = employee.employeeCode;
+        dataRow.getCell(2).value = employee.employeeName;
+        
+        // Add hours for each week
+        weeks.forEach((week, weekIndex) => {
+          const colIndex = 3 + weekIndex;
+          const weekData = employee.weeks.get(week.weekNumber);
+          const hoursCell = dataRow.getCell(colIndex);
+          
+          if (weekData) {
+            hoursCell.value = weekData.hours;
+            // Apply color coding
+            if (weekData.shouldBeRed) {
+              hoursCell.font = { color: { argb: 'FFFF0000' } }; // Red
+            } else {
+              hoursCell.font = { color: { argb: 'FF000000' } }; // Black
+            }
+          } else {
+            hoursCell.value = '00:00';
+            hoursCell.font = { color: { argb: 'FFFF0000' } }; // Red for no data
+          }
+          hoursCell.alignment = { horizontal: 'center', vertical: 'middle' };
+        });
+      });
+      
+      // Set column widths
+      worksheet.getColumn(1).width = 18; // Employee No
+      worksheet.getColumn(2).width = 30; // Name
+      weeks.forEach((_, index) => {
+        worksheet.getColumn(3 + index).width = 18; // Each week column
+      });
+
+      // Generate Excel buffer
+      const buffer = Buffer.from(await workbook.xlsx.writeBuffer());
+      return buffer;
+
+    } catch (error: any) {
+      console.error('Error generating weekly report:', error);
+      throw new Error(`Failed to generate weekly report: ${error.message}`);
     }
   }
 

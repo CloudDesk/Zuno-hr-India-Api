@@ -35,8 +35,8 @@ export interface IAttendanceRecord extends Document {
   overtimeStart?: Date;       // When overtime started (UTC)
   overtimeEnd?: Date;         // When overtime ended (UTC)
 
-  status: 'incomplete' | 'complete' | 'duplicate_swipes' | 'missing_checkout' | 'holiday_swipe' | "leave_swipe" | 'pending_regularization' | 'regularized';
-  attendanceStatus: ('Present' | 'Late' | 'On-Time' | 'Early-Exit' | 'Absent' | 'On-Leave' | 'Out-Of-Window' | 'Holiday-Swipe' | 'Pending-Regularization' | 'Regularized' | 'OT')[];
+  status: 'incomplete' | 'complete' | 'duplicate_swipes' | 'missing_checkout' | 'holiday_swipe' | "leave_swipe" | 'pending_regularization' | 'regularized' | 'overridden';
+  attendanceStatus: ('Present' | 'Late' | 'On-Time' | 'Early-Exit' | 'Absent' | 'On-Leave' | 'Out-Of-Window' | 'Holiday-Swipe' | 'Pending-Regularization' | 'Regularized' | 'OT' | 'Override')[];
   outOfWindowSwipes: {
     timestamp: Date; // DateTime in UTC
     direction?: 'IN' | 'OUT';
@@ -63,6 +63,32 @@ export interface IAttendanceRecord extends Document {
     status: 'Pending' | 'Approved' | 'Rejected-Absent' | 'Rejected-Leave';
     regularizationId: Types.ObjectId;
   }
+  override?: {
+    isOverridden: boolean;
+    overriddenAt: Date;
+    overriddenBy: Types.ObjectId;
+    lastModifiedAt?: Date;
+    lastModifiedBy?: Types.ObjectId;
+    reason: string;
+    remarks?: string;
+    originalStatus?: string;
+    originalAttendanceStatus?: string[];
+    originalFirstIn?: Date | null;
+    originalLastOut?: Date | null;
+    originalTotalWorkHours?: string;
+    originalActualWorkHours?: string;
+    overrideHistory?: Array<{
+      action: 'created' | 'modified' | 'removed';
+      performedBy: Types.ObjectId;
+      performedAt: Date;
+      changes?: Array<{
+        field: string;
+        oldValue: any;
+        newValue: any;
+      }>;
+      reason?: string;
+    }>;
+  };
   createdAt: Date; // DateTime in UTC
   updatedAt: Date; // DateTime in UTC
 }
@@ -172,7 +198,7 @@ const attendanceRecordSchema = new Schema<IAttendanceRecord>(
     status: {
       type: String,
       enum: ['incomplete', 'complete', 'duplicate_swipes', 'missing_checkout', 'holiday_swipe',
-        'leave_swipe', 'pending_regularization', 'regularized'
+        'leave_swipe', 'pending_regularization', 'regularized', 'overridden'
       ],
       default: 'incomplete',
     },
@@ -251,6 +277,10 @@ attendanceRecordSchema.index({ shiftDay: 1 });
 attendanceRecordSchema.index({ shiftStart: 1 });
 attendanceRecordSchema.index({ shiftEnd: 1 });
 attendanceRecordSchema.index({ attendanceStatus: 1 });
+// Indexes for override queries
+attendanceRecordSchema.index({ 'override.isOverridden': 1 });
+attendanceRecordSchema.index({ 'override.overriddenBy': 1 });
+attendanceRecordSchema.index({ 'override.overriddenAt': 1 });
 
 // Validate shift end is after shift start
 attendanceRecordSchema.pre('save', function (next) {

@@ -51,7 +51,7 @@ export interface IUser extends Document {
   departmentId: string;
   managerId?: string;
   managerName?: string;
-  employeeNo?: string; // Employee number
+  employeeCode: string; // Employee code (mandatory and unique)
   checkinId?: string;
   biometricId?: string; // Optional - not used for UAE users
   active: boolean;
@@ -173,12 +173,13 @@ const userSchema = new Schema<IUser>(
       type: String,
       maxlength: 100,
     },
-    employeeNo: {
+    employeeCode: {
       type: String,
       trim: true,
       maxlength: 50,
-      required: false,
-      description: 'Employee number'
+      required: true,
+      unique: true,
+      description: 'Employee code (mandatory and unique)'
     },
     checkinId: {
       type: String,
@@ -340,6 +341,7 @@ const userSchema = new Schema<IUser>(
 
 // Indexes for efficient queries
 userSchema.index({ email: 1 }, { unique: true });
+userSchema.index({ employeeCode: 1 }, { unique: true });
 userSchema.index({ checkinId: 1 }, { unique: true, sparse: true });
 userSchema.index({ biometricId: 1 }, { unique: true, sparse: true });
 userSchema.index({ managerId: 1 });
@@ -437,6 +439,41 @@ userSchema.pre('save', function (next) {
     }
   }
   next();
+});
+
+// Pre-save hook to validate unique employeeCode
+userSchema.pre('save', async function (next) {
+  // Only validate if employeeCode is being set or modified
+  if (!this.isModified('employeeCode') && !this.isNew) {
+    return next();
+  }
+
+  if (!this.employeeCode) {
+    return next();
+  }
+
+  try {
+    // Get the User model from the database connection
+    const UserModel = this.db.model('User');
+    
+    // Build query to find duplicate employeeCode
+    const query: any = { employeeCode: this.employeeCode };
+    
+    // If this is an update (not a new document), exclude current user from the check
+    if (!this.isNew && this._id) {
+      query._id = { $ne: this._id };
+    }
+
+    const existingUser = await UserModel.findOne(query);
+    
+    if (existingUser) {
+      return next(new Error(`Employee code "${this.employeeCode}" already exists. Please use a unique employee code.`));
+    }
+    
+    next();
+  } catch (error: any) {
+    next(error);
+  }
 });
 
 // Pre-save hook to handle UAE-specific visa validation

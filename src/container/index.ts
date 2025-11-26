@@ -12,6 +12,7 @@ import { TrainingAttendanceService } from '../services/training-attendance.servi
 import { AuthService } from '../services/auth.service';
 import { CollectionService } from '../services/collection.service';
 import { AttendanceRegularizationService } from '../services/attendance-regularization.service';
+import { AttendanceOverrideService } from '../services/attendance-override.service';
 import { TimesheetService } from '../services/timesheet.service';
 import { TaxDeclarationService } from '../services/tax-declaration.service';
 import { TaxSlabService } from '../services/tax-slab.service';
@@ -59,6 +60,7 @@ export class Container {
       authService: new AuthService(),
       collectionService: new CollectionService(context),
       attendanceRegularizationService: new AttendanceRegularizationService(context),
+      attendanceOverrideService: new AttendanceOverrideService(context),
       timesheetService: new TimesheetService(context),
       taxDeclarationService: new TaxDeclarationService(context),
       taxSlabService: new TaxSlabService(context),
