@@ -1565,6 +1565,261 @@ export class BiometricAttendanceService extends BaseService {
     }
   }
 
+  /**
+   * Get admin attendance view for all users within a date range
+   * Returns simplified attendance data for UI display
+   */
+  async getAdminAttendanceView(startDate: string, endDate: string): Promise<any> {
+    try {
+      // Step 1: Normalize dates
+      const start = new Date(startDate);
+      start.setUTCHours(0, 0, 0, 0);
+      const end = new Date(endDate);
+      end.setUTCHours(23, 59, 59, 999);
+
+      // Step 2: Generate date range
+      const dateRange: string[] = [];
+      const currentDate = new Date(start);
+      while (currentDate <= end) {
+        dateRange.push(currentDate.toISOString().split('T')[0]); // YYYY-MM-DD
+        currentDate.setUTCDate(currentDate.getUTCDate() + 1);
+      }
+
+      // Step 3: Get all users (with attendance OR active)
+      const attendanceUserIds = await AttendanceRecord.distinct('userId', {
+        shiftDay: { $gte: start, $lte: end }
+      });
+
+      const activeUsers = await User.find({ active: true }).select('_id').lean();
+
+      // Merge unique user IDs
+      const allUserIds = new Set([
+        ...attendanceUserIds.map(id => id.toString()),
+        ...activeUsers.map(u => u._id.toString())
+      ]);
+
+      // Get full user details
+      const allUsers = await User.find({
+        _id: { $in: Array.from(allUserIds).map(id => new Types.ObjectId(id)) }
+      })
+        .select('_id name employeeCode active holidayCalendarId')
+        .lean();
+
+      // Step 4: Get attendance records (batch query)
+      const attendanceRecords = await AttendanceRecord.find({
+        userId: { $in: Array.from(allUserIds).map(id => new Types.ObjectId(id)) },
+        shiftDay: { $gte: start, $lte: end }
+      })
+        .select('_id userId shiftDay status attendanceStatus')
+        .lean();
+
+      // Create map: userId -> date -> record
+      const attendanceByUserAndDate = new Map<string, Map<string, any>>();
+      attendanceRecords.forEach(record => {
+        const userId = record.userId.toString();
+        // shiftDay is a Date object, normalize to YYYY-MM-DD
+        const shiftDayDate = record.shiftDay instanceof Date ? record.shiftDay : new Date(record.shiftDay);
+        const dateKey = shiftDayDate.toISOString().split('T')[0];
+        
+        if (!attendanceByUserAndDate.has(userId)) {
+          attendanceByUserAndDate.set(userId, new Map());
+        }
+        attendanceByUserAndDate.get(userId)!.set(dateKey, record);
+      });
+
+      // Step 5: Get shift assignments
+      const shiftAssignments = await ShiftAssignment.find({
+        userId: { $in: Array.from(allUserIds).map(id => new Types.ObjectId(id)) },
+        $or: [
+          { startDate: { $gte: start, $lte: end } },
+          { endDate: null, startDate: { $lte: end } },
+          { startDate: { $lte: start }, endDate: { $gte: end } },
+          { endDate: { $gte: start, $lte: end } }
+        ]
+      })
+        .select('userId startDate endDate weekendDays')
+        .lean();
+
+      // Group by userId
+      const shiftAssignmentsByUser = new Map<string, any[]>();
+      shiftAssignments.forEach(sa => {
+        const userId = sa.userId.toString();
+        if (!shiftAssignmentsByUser.has(userId)) {
+          shiftAssignmentsByUser.set(userId, []);
+        }
+        shiftAssignmentsByUser.get(userId)!.push(sa);
+      });
+
+      // Step 6: Get holiday calendars (both methods)
+      const allUserIdsArray = Array.from(allUserIds).map(id => new Types.ObjectId(id));
+
+      // Method 1: Get calendars via holidayCalendarId
+      const holidayCalendarIds = allUsers
+        .map(u => u.holidayCalendarId)
+        .filter(id => id !== null && id !== undefined)
+        .map(id => new Types.ObjectId(id.toString()));
+
+      // Fetch all relevant calendars
+      const calendarsById = await HolidayCalendar.find({
+        $or: [
+          { _id: { $in: holidayCalendarIds } },  // Method 1: Direct reference
+          { assignedTo: { $in: allUserIdsArray } }  // Method 2: User in assignedTo array
+        ]
+      }).select('_id holidays assignedTo').lean();
+
+      // Create map: userId -> holidays (combining both methods)
+      const holidaysByUser = new Map<string, any[]>();
+
+      allUsers.forEach(user => {
+        const userId = user._id.toString();
+        const userHolidays: any[] = [];
+        
+        // Method 1: Check if user has holidayCalendarId
+        if (user.holidayCalendarId) {
+          const userCalendarId = user.holidayCalendarId.toString();
+          const calendar = calendarsById.find(
+            cal => cal._id.toString() === userCalendarId
+          );
+          if (calendar && calendar.holidays) {
+            userHolidays.push(...calendar.holidays);
+          }
+        }
+        
+        // Method 2: Check if user is in any calendar's assignedTo array
+        calendarsById.forEach(calendar => {
+          if (calendar.assignedTo && calendar.assignedTo.length > 0) {
+            const assignedUserIds = calendar.assignedTo.map(id => id.toString());
+            if (assignedUserIds.includes(userId)) {
+              if (calendar.holidays) {
+                userHolidays.push(...calendar.holidays);
+              }
+            }
+          }
+        });
+        
+        // Remove duplicates (same date + name)
+        const uniqueHolidays = Array.from(
+          new Map(
+            userHolidays.map(h => {
+              const dateKey = new Date(h.date).toISOString().split('T')[0];
+              return [`${dateKey}_${h.name}`, h];
+            })
+          ).values()
+        );
+        
+        holidaysByUser.set(userId, uniqueHolidays);
+      });
+
+      // Step 7: Helper function to find shift assignment for a date
+      const findShiftAssignmentForDate = (date: Date, shiftAssignments: any[]): any | null => {
+        const dateStart = new Date(date);
+        dateStart.setUTCHours(0, 0, 0, 0);
+        
+        const applicable = shiftAssignments.filter(sa => {
+          const saStart = new Date(sa.startDate);
+          saStart.setUTCHours(0, 0, 0, 0);
+          const saEnd = sa.endDate ? new Date(sa.endDate) : null;
+          if (saEnd) saEnd.setUTCHours(23, 59, 59, 999);
+          
+          return saStart <= dateStart && (saEnd === null || saEnd >= dateStart);
+        });
+        
+        if (applicable.length === 0) return null;
+        
+        // Use most recent assignment (by startDate descending)
+        applicable.sort((a, b) => 
+          new Date(b.startDate).getTime() - new Date(a.startDate).getTime()
+        );
+        
+        return applicable[0];
+      };
+
+      // Step 8: Process each user & date
+      const result = allUsers.map(user => {
+        const userId = user._id.toString();
+        const userAttendance = attendanceByUserAndDate.get(userId) || new Map();
+        const userShiftAssignments = shiftAssignmentsByUser.get(userId) || [];
+        const userHolidays = holidaysByUser.get(userId) || [];
+        
+        // Create map of holidays by date
+        const holidaysByDate = new Map<string, any>();
+        userHolidays.forEach(holiday => {
+          const dateKey = new Date(holiday.date).toISOString().split('T')[0];
+          holidaysByDate.set(dateKey, holiday);
+        });
+        
+        // Process each date in range
+        const attendance: any[] = [];
+        
+        dateRange.forEach(dateStr => {
+          const record = userAttendance.get(dateStr);
+          const holiday = holidaysByDate.get(dateStr);
+          
+          // Find shift assignment for this date (to get weekend days)
+          const applicableAssignment = findShiftAssignmentForDate(
+            new Date(dateStr),
+            userShiftAssignments
+          );
+          
+          // Check if this date is a weekend
+          let isWeekend = false;
+          if (applicableAssignment) {
+            const dateObj = new Date(dateStr);
+            const dayOfWeek = dateObj.getUTCDay(); // 0 = Sunday, 6 = Saturday
+            if (applicableAssignment.weekendDays && applicableAssignment.weekendDays.includes(dayOfWeek)) {
+              isWeekend = true;
+            }
+          }
+          
+          // Build attendance entry
+          const attendanceEntry: any = {
+            attendanceId: record ? record._id.toString() : null,
+            shiftDay: dateStr,
+            status: record ? record.status : 'unknown',  // 'unknown' if no record
+            attendanceStatus: record ? record.attendanceStatus || [] : [],
+          };
+          
+          // Add weekend flag only if it's a weekend
+          if (isWeekend) {
+            attendanceEntry.isWeekend = true;
+          }
+          
+          // Add holiday flag if applicable
+          if (holiday) {
+            attendanceEntry.isHoliday = true;
+          }
+          
+          attendance.push(attendanceEntry);
+        });
+        
+        return {
+          userId: user._id.toString(),
+          userName: user.name,
+          employeeCode: user.employeeCode,
+          active: user.active,
+          attendance,
+        };
+      });
+
+      // Filter out users with no attendance (inactive users only)
+      const filteredResult = result.filter(r => r.active || r.attendance.some(a => a.attendanceId !== null));
+
+      return {
+        success: true,
+        data: filteredResult,
+        meta: {
+          startDate: startDate,
+          endDate: endDate,
+          totalUsers: filteredResult.length,
+          dateRange: dateRange
+        }
+      };
+    } catch (error: any) {
+      console.error('Error in getAdminAttendanceView:', error);
+      throw new Error(`Failed to get admin attendance view: ${error.message}`);
+    }
+  }
+
 }
 
 

@@ -860,4 +860,134 @@ export const biometricAttendanceRoutes: RouteHandler = async (
       }
     }
   );
+
+  // Get admin attendance view
+  fastify.get(
+    '/admin/view',
+    {
+      onRequest: [authenticate],
+      schema: {
+        tags: ['Biometric Attendance'],
+        summary: 'Get admin attendance view for all users (simplified)',
+        description: 'Returns simplified attendance data for all users within a date range. Includes userId, attendanceId, shiftDay, status, attendanceStatus, weekend info, and holiday info. For detailed data, use attendanceId with other endpoints.',
+        querystring: {
+          type: 'object',
+          required: ['startDate', 'endDate'],
+          properties: {
+            startDate: {
+              type: 'string',
+              format: 'date',
+              description: 'Start date in YYYY-MM-DD format'
+            },
+            endDate: {
+              type: 'string',
+              format: 'date',
+              description: 'End date in YYYY-MM-DD format'
+            }
+          }
+        },
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              success: { type: 'boolean' },
+              data: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    userId: { type: 'string' },
+                    userName: { type: 'string' },
+                    employeeCode: { type: 'string' },
+                    active: { type: 'boolean' },
+                    attendance: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          attendanceId: { type: 'string', nullable: true },
+                          shiftDay: { type: 'string' },
+                          status: { type: 'string' },  // 'unknown' if no record, otherwise actual status
+                          attendanceStatus: { type: 'array', items: { type: 'string' } },
+                          isWeekend: { type: 'boolean' },  // Only included if true
+                          isHoliday: { type: 'boolean' }   // Only included if true
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              meta: {
+                type: 'object',
+                properties: {
+                  startDate: { type: 'string' },
+                  endDate: { type: 'string' },
+                  totalUsers: { type: 'number' },
+                  dateRange: {
+                    type: 'array',
+                    items: { type: 'string' }
+                  }
+                }
+              }
+            }
+          },
+          400: {
+            type: 'object',
+            properties: {
+              success: { type: 'boolean', default: false },
+              error: {
+                type: 'object',
+                properties: {
+                  message: { type: 'string' }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    async (request, reply) => {
+      try {
+        const { startDate, endDate } = request.query as { startDate: string; endDate: string };
+        
+        // Validate date format
+        const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+        if (!datePattern.test(startDate) || !datePattern.test(endDate)) {
+          return reply.status(400).send({
+            success: false,
+            error: { message: 'Invalid date format. Please use YYYY-MM-DD format' }
+          });
+        }
+
+        // Validate date range
+        const start = new Date(startDate);
+        const end = new Date(endDate);
+        if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+          return reply.status(400).send({
+            success: false,
+            error: { message: 'Invalid date values' }
+          });
+        }
+
+        if (start > end) {
+          return reply.status(400).send({
+            success: false,
+            error: { message: 'startDate must be before or equal to endDate' }
+          });
+        }
+        
+        const result = await request.container!.biometricAttendanceService.getAdminAttendanceView(
+          startDate,
+          endDate
+        );
+        
+        return reply.send(result);
+      } catch (error: any) {
+        return reply.status(400).send({
+          success: false,
+          error: { message: error.message }
+        });
+      }
+    }
+  );
 }; 

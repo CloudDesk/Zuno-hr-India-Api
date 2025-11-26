@@ -23,6 +23,10 @@ export const attendanceOverrideRoutes: RouteHandler = async (
               type: 'string',
               description: 'User ID whose attendance is being overridden',
             },
+            attendanceId: {
+              type: 'string',
+              description: 'Optional: Attendance record ID. If provided, updates existing record. Otherwise finds by userId and shiftDay.',
+            },
             shiftDay: {
               type: 'string',
               format: 'date',
@@ -33,18 +37,6 @@ export const attendanceOverrideRoutes: RouteHandler = async (
               items: { type: 'string' },
               description: 'Must include "Override" and one of: Present, Absent, On-Leave, Holiday-Swipe',
             },
-            leaveTypeId: {
-              type: 'string',
-              description: 'Required for On-Leave status - Leave type ID',
-            },
-            leaveReason: {
-              type: 'string',
-              description: 'Optional: Reason for leave (if creating new leave request)',
-            },
-            status: {
-              type: 'string',
-              description: 'Optional: Set status (defaults based on attendanceStatus)',
-            },
             reason: {
               type: 'string',
               description: 'Optional: Reason for override (if null, backend sets default)',
@@ -53,29 +45,16 @@ export const attendanceOverrideRoutes: RouteHandler = async (
               type: 'string',
               description: 'Optional additional notes',
             },
-            firstIn: {
+            leaveTypeId: {
               type: 'string',
-              format: 'date-time',
-              description: 'Optional: Override firstIn time (ISO format) - Required for Present status',
+              description: 'Required for On-Leave status - Leave type ID',
             },
-            lastOut: {
+            leaveReason: {
               type: 'string',
-              format: 'date-time',
-              description: 'Optional: Override lastOut time (ISO format) - Required for Present status',
-            },
-            totalWorkHours: {
-              type: 'string',
-              description: 'Optional: Override total work hours (HH:mm:ss) - Auto-calculated if firstIn/lastOut provided',
-            },
-            actualWorkHours: {
-              type: 'string',
-              description: 'Optional: Override actual work hours (HH:mm:ss) - Auto-calculated if firstIn/lastOut provided',
-            },
-            breakHours: {
-              type: 'string',
-              description: 'Optional: Override break hours (HH:mm:ss)',
+              description: 'Optional: Reason for leave (if creating new leave request)',
             },
           },
+          additionalProperties: false,
         },
         response: {
           200: {
@@ -322,20 +301,16 @@ export const attendanceOverrideRoutes: RouteHandler = async (
                 required: ['userId', 'shiftDay', 'attendanceStatus'],
                 properties: {
                   userId: { type: 'string' },
+                  attendanceId: { type: 'string' },
                   shiftDay: { type: 'string', format: 'date' },
                   attendanceStatus: {
                     type: 'array',
                     items: { type: 'string' },
                   },
-                  leaveTypeId: { type: 'string' },
-                  leaveReason: { type: 'string' },
-                  status: { type: 'string' },
                   reason: { type: 'string' },
                   remarks: { type: 'string' },
-                  firstIn: { type: 'string', format: 'date-time' },
-                  lastOut: { type: 'string', format: 'date-time' },
-                  totalWorkHours: { type: 'string' },
-                  actualWorkHours: { type: 'string' },
+                  leaveTypeId: { type: 'string' },
+                  leaveReason: { type: 'string' },
                 },
               },
             },
