@@ -1409,8 +1409,8 @@ export class BiometricAttendanceService extends BaseService {
           const weekData = userWeeks.get(week.weekNumber)!;
           weekData.records.push(record);
           
-          // Add hours to total
-          const hours = timeStringToHours(record.actualWorkHours || record.totalWorkHours || '0:00:00');
+          // Add hours to total - use totalWorkHours (not actualWorkHours) for cumulative calculation
+          const hours = timeStringToHours(record.totalWorkHours || '0:00:00');
           weekData.totalHours += hours;
         }
       });
