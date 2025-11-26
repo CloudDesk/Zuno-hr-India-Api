@@ -192,6 +192,8 @@ export class AttendanceOverrideService extends BaseService {
         shiftHours: recordData.shiftHours,
         shortfallHours: recordData.shortfallHours,
         excessHours: recordData.excessHours,
+        // Don't set regularization - override doesn't use regularization
+        // Mongoose will create it with defaults, but we'll unset it after save
       });
     } else {
       // 9. Check if regularization is pending
@@ -268,6 +270,11 @@ export class AttendanceOverrideService extends BaseService {
       record.shiftHours = overrideData.shiftHours;
       record.shortfallHours = overrideData.shortfallHours;
       record.excessHours = overrideData.excessHours;
+      // Clear regularization object if it exists (override takes precedence)
+      // We already checked for 'Pending' status above, so if we reach here, we can clear it
+      if (record.regularization) {
+        record.regularization = undefined;
+      }
     }
 
     // 11. Set override object with complete history
@@ -309,6 +316,13 @@ export class AttendanceOverrideService extends BaseService {
 
     // 12. Save record
     await record.save();
+
+    // 13. Unset regularization object if it was created with defaults (for new records only)
+    // Override doesn't use regularization, so we should remove it
+    if (isNewRecord && record.regularization) {
+      record.regularization = undefined;
+      await record.save();
+    }
 
     return record;
   }

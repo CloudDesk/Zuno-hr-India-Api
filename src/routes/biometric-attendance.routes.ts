@@ -899,6 +899,7 @@ export const biometricAttendanceRoutes: RouteHandler = async (
                     userId: { type: 'string' },
                     userName: { type: 'string' },
                     employeeCode: { type: 'string' },
+                    role: { type: 'string' },
                     active: { type: 'boolean' },
                     attendance: {
                       type: 'array',

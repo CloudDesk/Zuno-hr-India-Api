@@ -1602,7 +1602,7 @@ export class BiometricAttendanceService extends BaseService {
       const allUsers = await User.find({
         _id: { $in: Array.from(allUserIds).map(id => new Types.ObjectId(id)) }
       })
-        .select('_id name employeeCode active holidayCalendarId')
+        .select('_id name employeeCode role active holidayCalendarId')
         .lean();
 
       // Step 4: Get attendance records (batch query)
@@ -1796,6 +1796,7 @@ export class BiometricAttendanceService extends BaseService {
           userId: user._id.toString(),
           userName: user.name,
           employeeCode: user.employeeCode,
+          role: user.role,
           active: user.active,
           attendance,
         };
