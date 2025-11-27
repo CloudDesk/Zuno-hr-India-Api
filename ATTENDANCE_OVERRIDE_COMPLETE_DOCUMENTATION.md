@@ -249,12 +249,13 @@ shiftDay.setUTCHours(0, 0, 0, 0);          // Normalize to UTC midnight
 **Handles Different Statuses**:
 
 1. **Present** (Lines 929-994)
-   - Sets firstIn/lastOut (from payload or shift defaults)
-   - Calculates work hours
+   - **Automatically calculates** firstIn/lastOut from shift assignment (shiftStart/shiftEnd)
+   - Calculates work hours from shift times
    - Calculates break hours (30 min if > 6 hours)
    - Calculates actual work hours
-   - Checks late entry and early exit
+   - Checks late entry and early exit (always false for override, as we use shift times)
    - Calculates shortfall/excess hours
+   - **Creates swipes array** from calculated firstIn/lastOut
 
 2. **Absent** (Lines 995-1009)
    - Sets firstIn/lastOut to `null`
@@ -321,19 +322,21 @@ All endpoints are accessible at the root level (no prefix).
 ```json
 {
   "userId": "string",
+  "attendanceId": "string (optional - if provided, updates existing record)",
   "shiftDay": "2025-11-12",
   "attendanceStatus": ["Override", "Present"],
-  "reason": "Optional reason",
+  "reason": "Optional reason (defaults to system message if not provided)",
   "remarks": "Optional additional notes",
-  "firstIn": "2025-11-12T09:00:00.000Z",
-  "lastOut": "2025-11-12T18:00:00.000Z",
-  "totalWorkHours": "09:00:00",
-  "actualWorkHours": "08:30:00",
-  "breakHours": "00:30:00",
   "leaveTypeId": "string (required for On-Leave)",
   "leaveReason": "string (optional for On-Leave)"
 }
 ```
+
+**Note**: 
+- `firstIn`, `lastOut`, `swipes`, and all time calculations (`totalWorkHours`, `actualWorkHours`, `breakHours`, etc.) are **automatically calculated** from the user's shift assignment
+- For `Present` status: Uses shift start/end times to calculate work hours
+- For `Absent`/`Holiday-Swipe`: Sets all times to `00:00:00`
+- `swipes` array is automatically created from calculated `firstIn`/`lastOut`
 
 **Response**:
 ```json
@@ -352,6 +355,7 @@ All endpoints are accessible at the root level (no prefix).
 - ✅ `attendanceStatus` must include `'Override'` and one allowed status
 - ✅ Cannot override if regularization is pending
 - ✅ Shift assignment must exist for the date
+- ✅ If `attendanceId` is provided, it must exist and belong to the user
 
 ### 2. Get Override History
 
@@ -412,12 +416,14 @@ All endpoints are accessible at the root level (no prefix).
 {
   "overrides": [
     {
-      "userId": "string",
-      "shiftDay": "2025-11-12",
-      "attendanceStatus": ["Override", "Present"],
-      "reason": "string",
-      "firstIn": "2025-11-12T09:00:00.000Z",
-      "lastOut": "2025-11-12T18:00:00.000Z"
+                  "userId": "string",
+                  "attendanceId": "string (optional)",
+                  "shiftDay": "2025-11-12",
+                  "attendanceStatus": ["Override", "Present"],
+                  "reason": "string",
+                  "remarks": "string",
+                  "leaveTypeId": "string (for On-Leave)",
+                  "leaveReason": "string (for On-Leave)"
     }
   ],
   "commonReason": "Optional common reason for all overrides"
@@ -765,14 +771,20 @@ shiftDay.setUTCHours(0, 0, 0, 0);          // Normalize to UTC midnight
 
 ## Important Notes
 
-1. **Leave Balance**: Balance is reserved when leave is created (`leaveService.create()`), not when approved
-2. **Attendance Records**: Leave approval (`updateStatus`) automatically creates attendance records
-3. **Override Priority**: Override takes precedence over all other statuses
-4. **History**: All changes are tracked, including firstIn/lastOut modifications
-5. **Default Reason**: Backend sets default reason if not provided in payload
-6. **Status Field**: All overrides set `status: 'overridden'` regardless of attendance status
-7. **Shift Assignment**: Required for creating new records - override fails if not found
-8. **Date Format**: API accepts `YYYY-MM-DD` format, normalized to UTC midnight
+1. **Simplified Payload**: Frontend only passes `userId`, `shiftDay`, `attendanceStatus`, `reason`, `remarks`, `leaveTypeId`, `leaveReason`. All time calculations are automatic.
+2. **Automatic Calculations**: 
+   - `firstIn`/`lastOut` are calculated from shift assignment (shiftStart/shiftEnd)
+   - `swipes` array is created from calculated firstIn/lastOut
+   - All work hours (`totalWorkHours`, `actualWorkHours`, `breakHours`, etc.) are calculated automatically
+3. **Leave Balance**: Balance is reserved when leave is created (`leaveService.create()`), not when approved
+4. **Attendance Records**: Leave approval (`updateStatus`) automatically creates attendance records
+5. **Override Priority**: Override takes precedence over all other statuses
+6. **History**: All changes are tracked, including firstIn/lastOut modifications
+7. **Default Reason**: Backend sets default reason if not provided in payload
+8. **Status Field**: All overrides set `status: 'overridden'` regardless of attendance status
+9. **Shift Assignment**: Required for creating new records - override fails if not found
+10. **Date Format**: API accepts `YYYY-MM-DD` format, normalized to UTC midnight
+11. **attendanceId**: Optional field - if provided, updates existing record; otherwise finds by userId + shiftDay
 
 ---
 

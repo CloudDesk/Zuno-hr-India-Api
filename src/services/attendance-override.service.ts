@@ -6,19 +6,15 @@ import { Types } from 'mongoose';
 
 export interface ICreateOverride {
   userId: string;
+  attendanceId?: string;       // Optional: If provided, updates existing record
   shiftDay: string;
   attendanceStatus: string[];  // Must include 'Override' and one of: 'Present', 'Absent', 'On-Leave', 'Holiday-Swipe'
-  status?: string;             // Optional: defaults based on attendanceStatus
   reason?: string;             // Optional: defaults to "Attendance manually overridden by administrator"
   remarks?: string;
-  firstIn?: string;            // Required for 'Present' status (or will use shift default)
-  lastOut?: string;            // Required for 'Present' status (or will use shift default)
-  totalWorkHours?: string;
-  actualWorkHours?: string;
-  breakHours?: string;
   // For On-Leave override:
   leaveTypeId?: string;        // Required for 'On-Leave' status - Leave type ID
   leaveReason?: string;        // Optional: Reason for leave (if creating new leave request)
+  // Note: firstIn, lastOut, swipes, and all time calculations are automatically calculated from shift assignment
 }
 
 export interface IUpdateOverride {
@@ -94,10 +90,24 @@ export class AttendanceOverrideService extends BaseService {
     const isHoliday = targetStatus === 'Holiday-Swipe';
 
     // 8. Find or create attendance record
-    let record = await AttendanceRecord.findOne({
-      userId: new Types.ObjectId(data.userId),
-      shiftDay,
-    });
+    // If attendanceId is provided, use it; otherwise find by userId and shiftDay
+    let record: IAttendanceRecord | null = null;
+    
+    if (data.attendanceId) {
+      record = await AttendanceRecord.findById(data.attendanceId);
+      if (!record) {
+        throw new Error('Attendance record not found with provided attendanceId');
+      }
+      // Verify it belongs to the user
+      if (record.userId.toString() !== data.userId) {
+        throw new Error('Attendance record does not belong to the specified user');
+      }
+    } else {
+      record = await AttendanceRecord.findOne({
+        userId: new Types.ObjectId(data.userId),
+        shiftDay,
+      });
+    }
 
     const isNewRecord = !record;
     
@@ -128,7 +138,37 @@ export class AttendanceOverrideService extends BaseService {
         isHoliday
       );
 
+      // Create swipes array from calculated firstIn/lastOut
+      const swipes: any[] = [];
+      if (recordData.firstIn && recordData.lastOut) {
+        swipes.push({
+          timestamp: recordData.firstIn,
+          direction: 'IN' as const,
+          deviceId: 'override',
+          location: {
+            latitude: 0,
+            longitude: 0,
+            accuracy: 0,
+            altitude: 0,
+            address: 'Manual Override'
+          }
+        });
+        swipes.push({
+          timestamp: recordData.lastOut,
+          direction: 'OUT' as const,
+          deviceId: 'override',
+          location: {
+            latitude: 0,
+            longitude: 0,
+            accuracy: 0,
+            altitude: 0,
+            address: 'Manual Override'
+          }
+        });
+      }
+
       // Create new attendance record
+      // Initialize all fields to match normal attendance record structure
       record = new AttendanceRecord({
         userId: new Types.ObjectId(data.userId),
         shiftId: shiftAssignment.shiftId,
@@ -136,21 +176,24 @@ export class AttendanceOverrideService extends BaseService {
         shiftDay,
         shiftStart: shiftAssignment.shiftStart,
         shiftEnd: shiftAssignment.shiftEnd,
-        swipes: [],
+        swipes, // Array with 2 entries (IN and OUT) for Present, empty for Absent/Holiday
+        outOfWindowSwipes: [], // Empty for override (all swipes are within window)
         attendanceStatus: data.attendanceStatus as any,
         status: 'overridden' as any,
-        needsRegularization: false,
-        isWithinWindow: true,
+        needsRegularization: false, // Override doesn't need regularization
+        isWithinWindow: true, // Override swipes are always within window
         isLateEntry: recordData.isLateEntry,
         isEarlyExit: recordData.isEarlyExit,
-        firstIn: recordData.firstIn,
-        lastOut: recordData.lastOut,
+        firstIn: recordData.firstIn, // Set from shiftStart for Present, null for Absent/Holiday
+        lastOut: recordData.lastOut, // Set from shiftEnd for Present, null for Absent/Holiday
         totalWorkHours: recordData.totalWorkHours,
         breakHours: recordData.breakHours,
         actualWorkHours: recordData.actualWorkHours,
         shiftHours: recordData.shiftHours,
         shortfallHours: recordData.shortfallHours,
         excessHours: recordData.excessHours,
+        // Don't set regularization - override doesn't use regularization
+        // Mongoose will create it with defaults, but we'll unset it after save
       });
     } else {
       // 9. Check if regularization is pending
@@ -176,19 +219,62 @@ export class AttendanceOverrideService extends BaseService {
         isHoliday
       );
 
+      // Create/update swipes array from calculated firstIn/lastOut
+      // Only create swipes if firstIn and lastOut exist (Present status)
+      // For Absent/Holiday-Swipe, swipes array will be empty
+      const swipes: any[] = [];
+      if (overrideData.firstIn && overrideData.lastOut) {
+        swipes.push({
+          timestamp: overrideData.firstIn,
+          direction: 'IN' as const,
+          deviceId: 'override',
+          location: {
+            latitude: 0,
+            longitude: 0,
+            accuracy: 0,
+            altitude: 0,
+            address: 'Manual Override'
+          }
+        });
+        swipes.push({
+          timestamp: overrideData.lastOut,
+          direction: 'OUT' as const,
+          deviceId: 'override',
+          location: {
+            latitude: 0,
+            longitude: 0,
+            accuracy: 0,
+            altitude: 0,
+            address: 'Manual Override'
+          }
+        });
+      }
+
       // Update record with override data
+      // Ensure all fields are set to match normal attendance record structure
       record.attendanceStatus = data.attendanceStatus as any;
       record.status = 'overridden' as any;
+      record.swipes = swipes; // Array with 2 entries (IN and OUT) for Present, empty for Absent/Holiday
+      if (!record.outOfWindowSwipes) {
+        record.outOfWindowSwipes = []; // Initialize if not exists
+      }
+      record.needsRegularization = false; // Override doesn't need regularization
+      record.isWithinWindow = true; // Override swipes are always within window
       record.isLateEntry = overrideData.isLateEntry;
       record.isEarlyExit = overrideData.isEarlyExit;
-      record.firstIn = overrideData.firstIn;
-      record.lastOut = overrideData.lastOut;
+      record.firstIn = overrideData.firstIn; // Set from shiftStart for Present, null for Absent/Holiday
+      record.lastOut = overrideData.lastOut; // Set from shiftEnd for Present, null for Absent/Holiday
       record.totalWorkHours = overrideData.totalWorkHours;
       record.breakHours = overrideData.breakHours;
       record.actualWorkHours = overrideData.actualWorkHours;
       record.shiftHours = overrideData.shiftHours;
       record.shortfallHours = overrideData.shortfallHours;
       record.excessHours = overrideData.excessHours;
+      // Clear regularization object if it exists (override takes precedence)
+      // We already checked for 'Pending' status above, so if we reach here, we can clear it
+      if (record.regularization) {
+        record.regularization = undefined;
+      }
     }
 
     // 11. Set override object with complete history
@@ -230,6 +316,13 @@ export class AttendanceOverrideService extends BaseService {
 
     // 12. Save record
     await record.save();
+
+    // 13. Unset regularization object if it was created with defaults (for new records only)
+    // Override doesn't use regularization, so we should remove it
+    if (isNewRecord && record.regularization) {
+      record.regularization = undefined;
+      await record.save();
+    }
 
     return record;
   }
@@ -894,6 +987,7 @@ export class AttendanceOverrideService extends BaseService {
 
   /**
    * Helper: Prepare record data based on override status
+   * Uses the same calculation method as BiometricAttendanceService for consistency
    */
   private async prepareOverrideRecordData(
     data: ICreateOverride,
@@ -919,81 +1013,50 @@ export class AttendanceOverrideService extends BaseService {
     const shiftStart = shiftAssignment.shiftStart;
     const shiftEnd = shiftAssignment.shiftEnd;
     
-    // Calculate shift hours
-    const shiftDurationMs = shiftEnd.getTime() - shiftStart.getTime();
-    const shiftHours = Math.floor(shiftDurationMs / (1000 * 60 * 60));
-    const shiftMinutes = Math.floor((shiftDurationMs % (1000 * 60 * 60)) / (1000 * 60));
-    const shiftHoursStr = `${String(shiftHours).padStart(2, '0')}:${String(shiftMinutes).padStart(2, '0')}:00`;
-
     // Handle different override statuses
     if (isPresent) {
-      // Present: Set work hours (default 9:00 to 18:00 if not provided)
-      let firstIn: Date;
-      let lastOut: Date;
+      // Present: Always use shift start and end times (calculated from shift assignment)
+      // Frontend no longer passes firstIn/lastOut - backend calculates from shift
+      const firstIn = new Date(shiftStart);
+      const lastOut = new Date(shiftEnd);
 
-      if (data.firstIn && data.lastOut) {
-        firstIn = new Date(data.firstIn);
-        lastOut = new Date(data.lastOut);
-      } else {
-        // Default: Use shift start and end times
-        firstIn = new Date(shiftStart);
-        lastOut = new Date(shiftEnd);
-      }
-
-      // Calculate work hours
-      const workDurationMs = lastOut.getTime() - firstIn.getTime();
-      const workHours = Math.floor(workDurationMs / (1000 * 60 * 60));
-      const workMinutes = Math.floor((workDurationMs % (1000 * 60 * 60)) / (1000 * 60));
-      const workSeconds = Math.floor((workDurationMs % (1000 * 60)) / 1000);
-      const totalWorkHoursStr = `${String(workHours).padStart(2, '0')}:${String(workMinutes).padStart(2, '0')}:${String(workSeconds).padStart(2, '0')}`;
-
-      // Calculate break hours (30 min if > 6 hours)
-      const breakMinutes = workHours > 6 ? 30 : 0;
-      const breakHoursStr = `${String(Math.floor(breakMinutes / 60)).padStart(2, '0')}:${String(breakMinutes % 60).padStart(2, '0')}:00`;
-
-      // Calculate actual work hours
-      const actualWorkMinutes = (workHours * 60 + workMinutes) - breakMinutes;
-      const actualWorkHours = Math.floor(actualWorkMinutes / 60);
-      const actualWorkMins = actualWorkMinutes % 60;
-      const actualWorkHoursStr = `${String(actualWorkHours).padStart(2, '0')}:${String(actualWorkMins).padStart(2, '0')}:00`;
-
-      // Check late entry and early exit
-      const isLateEntry = firstIn > shiftStart;
-      const isEarlyExit = lastOut < shiftEnd;
-
-      // Calculate shortfall/excess
-      const shiftMinutesTotal = shiftHours * 60 + shiftMinutes;
-      const actualMinutesTotal = actualWorkMinutes;
-      const difference = actualMinutesTotal - shiftMinutesTotal;
-
-      let shortfallHours = '00:00:00';
-      let excessHours = '00:00:00';
-
-      if (difference < 0) {
-        const shortfallHrs = Math.floor(Math.abs(difference) / 60);
-        const shortfallMins = Math.abs(difference) % 60;
-        shortfallHours = `${String(shortfallHrs).padStart(2, '0')}:${String(shortfallMins).padStart(2, '0')}:00`;
-      } else if (difference > 0) {
-        const excessHrs = Math.floor(difference / 60);
-        const excessMins = difference % 60;
-        excessHours = `${String(excessHrs).padStart(2, '0')}:${String(excessMins).padStart(2, '0')}:00`;
-      }
-
-      return {
-        status: data.status || 'complete',
+      // Use BiometricAttendanceService's calculateAttendanceMetrics for consistency
+      const { BiometricAttendanceService } = await import('./biometric-attendance.service');
+      const biometricService = new BiometricAttendanceService(this.context);
+      
+      // Use the same calculation method as normal attendance processing
+      const metrics = await (biometricService as any).calculateAttendanceMetrics(
         firstIn,
         lastOut,
-        totalWorkHours: data.totalWorkHours || totalWorkHoursStr,
-        breakHours: data.breakHours || breakHoursStr,
-        actualWorkHours: data.actualWorkHours || actualWorkHoursStr,
-        shiftHours: shiftHoursStr,
-        shortfallHours,
-        excessHours,
+        shiftStart,
+        shiftEnd
+      );
+
+      // For override, firstIn = shiftStart and lastOut = shiftEnd, so no late/early
+      const isLateEntry = false; // Override uses exact shift times
+      const isEarlyExit = false; // Override uses exact shift times
+
+      return {
+        status: 'complete', // Always complete for Present override
+        firstIn,
+        lastOut,
+        totalWorkHours: metrics.totalWorkHours,
+        breakHours: metrics.breakHours,
+        actualWorkHours: metrics.actualWorkHours,
+        shiftHours: metrics.shiftHours,
+        shortfallHours: metrics.shortfallHours,
+        excessHours: metrics.excessHours,
         isLateEntry,
         isEarlyExit,
       };
     } else if (isAbsent) {
       // Absent: No work hours
+      // Calculate shift hours using the same method
+      const { BiometricAttendanceService } = await import('./biometric-attendance.service');
+      const biometricService = new BiometricAttendanceService(this.context);
+      const shiftMinutes = (shiftEnd.getTime() - shiftStart.getTime()) / (1000 * 60);
+      const shiftHoursStr = await (biometricService as any).formatDuration(shiftMinutes);
+      
       return {
         status: 'incomplete',
         firstIn: null,
@@ -1002,13 +1065,19 @@ export class AttendanceOverrideService extends BaseService {
         breakHours: '00:00:00',
         actualWorkHours: '00:00:00',
         shiftHours: shiftHoursStr,
-        shortfallHours: shiftHoursStr,
+        shortfallHours: shiftHoursStr, // Full shift is shortfall for absent
         excessHours: '00:00:00',
         isLateEntry: false,
         isEarlyExit: false,
       };
     } else if (isHoliday) {
       // Holiday: No work hours
+      // Calculate shift hours using the same method
+      const { BiometricAttendanceService } = await import('./biometric-attendance.service');
+      const biometricService = new BiometricAttendanceService(this.context);
+      const shiftMinutes = (shiftEnd.getTime() - shiftStart.getTime()) / (1000 * 60);
+      const shiftHoursStr = await (biometricService as any).formatDuration(shiftMinutes);
+      
       return {
         status: 'holiday_swipe',
         firstIn: null,
@@ -1017,7 +1086,7 @@ export class AttendanceOverrideService extends BaseService {
         breakHours: '00:00:00',
         actualWorkHours: '00:00:00',
         shiftHours: shiftHoursStr,
-        shortfallHours: '00:00:00',
+        shortfallHours: '00:00:00', // No shortfall for holiday
         excessHours: '00:00:00',
         isLateEntry: false,
         isEarlyExit: false,

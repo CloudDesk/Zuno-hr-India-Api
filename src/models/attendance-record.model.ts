@@ -204,7 +204,7 @@ const attendanceRecordSchema = new Schema<IAttendanceRecord>(
     },
     attendanceStatus: [{
       type: String,
-      enum: ['Present', 'Late', 'On-Time', 'Early-Exit', 'Absent', 'On-Leave', 'Out-Of-Window', 'Holiday-Swipe', 'Pending-Regularization', 'Regularized', 'OT'],
+      enum: ['Present', 'Late', 'On-Time', 'Early-Exit', 'Absent', 'On-Leave', 'Out-Of-Window', 'Holiday-Swipe', 'Pending-Regularization', 'Regularized', 'OT', 'Override'],
     }],
     outOfWindowSwipes: [{
       timestamp: {
@@ -264,7 +264,72 @@ const attendanceRecordSchema = new Schema<IAttendanceRecord>(
         type: Schema.Types.ObjectId,
         ref: 'AttendanceRegularization',
       },
-    }
+    },
+    override: {
+      isOverridden: {
+        type: Boolean,
+        default: false,
+      },
+      overriddenAt: {
+        type: Date,
+      },
+      overriddenBy: {
+        type: Schema.Types.ObjectId,
+        ref: 'User',
+      },
+      lastModifiedAt: {
+        type: Date,
+      },
+      lastModifiedBy: {
+        type: Schema.Types.ObjectId,
+        ref: 'User',
+      },
+      reason: {
+        type: String,
+      },
+      remarks: {
+        type: String,
+      },
+      originalStatus: {
+        type: String,
+      },
+      originalAttendanceStatus: [{
+        type: String,
+      }],
+      originalFirstIn: {
+        type: Date,
+      },
+      originalLastOut: {
+        type: Date,
+      },
+      originalTotalWorkHours: {
+        type: String,
+      },
+      originalActualWorkHours: {
+        type: String,
+      },
+      overrideHistory: [{
+        action: {
+          type: String,
+          enum: ['created', 'modified', 'removed'],
+        },
+        performedBy: {
+          type: Schema.Types.ObjectId,
+          ref: 'User',
+        },
+        performedAt: {
+          type: Date,
+        },
+        changes: [{
+          field: { type: String },
+          oldValue: { type: Schema.Types.Mixed },
+          newValue: { type: Schema.Types.Mixed },
+        }],
+        reason: {
+          type: String,
+        },
+      }],
+    },
   },
   {
     timestamps: true, // createdAt and updatedAt will be in UTC
