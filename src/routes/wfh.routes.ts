@@ -17,7 +17,7 @@ export const wfhRoutes: RouteHandler = async (
       schema: {
         tags: ['WFH Management'],
         summary: 'Apply for Work From Home',
-        description: 'Submit a new WFH request (can apply even if balance is 0)',
+        description: 'Submit a new WFH request. If allocated days = 0, unlimited WFH allowed. If allocated > 0, balance validation applies (includes pending requests).',
         body: {
           type: 'object',
           required: ['startDate', 'endDate', 'reason'],
