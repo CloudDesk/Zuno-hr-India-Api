@@ -220,5 +220,116 @@ export async function wfhSummaryRoutes(fastify: FastifyInstance): Promise<void> 
       }
     },
   );
+
+  // Bulk update WFH allotments (Admin only)
+  fastify.post(
+    '/allotments/bulk',
+    {
+      schema: {
+        tags: ['WFH Summary'],
+        summary: 'Bulk update WFH allotments for multiple users (Admin)',
+        description: 'Set yearly WFH days allotment for multiple users at once',
+        security: [{ bearerAuth: [] }],
+        body: {
+          type: 'object',
+          required: ['allotments', 'year'],
+          properties: {
+            allotments: {
+              type: 'array',
+              description: 'Array of user allotments',
+              items: {
+                type: 'object',
+                required: ['userId', 'alloted'],
+                properties: {
+                  userId: {
+                    type: 'string',
+                    description: 'User ID',
+                  },
+                  alloted: {
+                    type: 'number',
+                    minimum: 0,
+                    description: 'Days allotted per year',
+                  },
+                },
+              },
+              minItems: 1,
+            },
+            year: {
+              type: 'number',
+              description: 'Year for WFH allotment',
+              default: new Date().getFullYear(),
+            },
+          },
+        },
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              success: { type: 'boolean' },
+              data: {
+                type: 'object',
+                properties: {
+                  successCount: { type: 'number' },
+                  failedCount: { type: 'number' },
+                  errors: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      properties: {
+                        userId: { type: 'string' },
+                        error: { type: 'string' },
+                      },
+                    },
+                  },
+                  updated: {
+                    type: 'array',
+                    items: { type: 'object' },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      preHandler: [authenticate],
+    },
+    async (request, reply) => {
+      try {
+        const { allotments, year = new Date().getFullYear() } = request.body as {
+          allotments: Array<{ userId: string; alloted: number }>;
+          year?: number;
+        };
+
+        // Validate allotments array
+        if (!Array.isArray(allotments) || allotments.length === 0) {
+          return reply.status(400).send({
+            success: false,
+            error: { message: 'allotments must be a non-empty array' },
+          });
+        }
+
+        // Convert to ObjectId format
+        const allotmentsWithObjectId = allotments.map((a) => ({
+          userId: new Types.ObjectId(a.userId),
+          alloted: a.alloted,
+        }));
+
+        const result = await request.container!.wfhSummaryService.bulkUpdateWFHAllotments(
+          allotmentsWithObjectId,
+          year
+        );
+
+        return reply.send({
+          success: true,
+          data: result,
+        });
+      } catch (error: any) {
+        return reply.status(400).send({
+          success: false,
+          error: { message: error.message },
+        });
+      }
+    },
+  );
 }
 

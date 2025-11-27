@@ -114,5 +114,50 @@ export class PermissionSummaryService extends BaseService {
       remaining: summary.permissions.remaining || 0,
     };
   }
+
+  /**
+   * Bulk update permission allotments for multiple users
+   * @param allotments Array of { userId, alloted } objects
+   * @param year Year for permission allotment
+   * @param month Month for permission allotment (1-12)
+   */
+  async bulkUpdatePermissionAllotments(
+    allotments: Array<{ userId: Types.ObjectId; alloted: number }>,
+    year: number,
+    month: number
+  ): Promise<{
+    successCount: number;
+    failedCount: number;
+    errors: Array<{ userId: string; error: string }>;
+    updated: IPermissionSummary[];
+  }> {
+    const results = {
+      successCount: 0,
+      failedCount: 0,
+      errors: [] as Array<{ userId: string; error: string }>,
+      updated: [] as IPermissionSummary[],
+    };
+
+    // Process all allotments in parallel
+    const promises = allotments.map(async ({ userId, alloted }) => {
+      try {
+        const updated = await this.updatePermissionAllotments(userId, year, month, alloted);
+        results.successCount++;
+        results.updated.push(updated);
+        return { success: true, userId: userId.toString() };
+      } catch (error: any) {
+        results.failedCount++;
+        results.errors.push({
+          userId: userId.toString(),
+          error: error.message || 'Unknown error',
+        });
+        return { success: false, userId: userId.toString(), error: error.message };
+      }
+    });
+
+    await Promise.all(promises);
+
+    return results;
+  }
 }
 

@@ -276,15 +276,53 @@ export class WFHService extends BaseService {
       throw new Error('WFH dates overlap with existing WFH request');
     }
 
+    const year = startDate.getFullYear();
+
+    // Get WFH balance for the year
+    const balance = await this.wfhSummaryService.getWFHBalance(
+      new Types.ObjectId(wfhData.userId.toString()),
+      year
+    );
+
+    // Calculate total days used this year (only approved WFH)
+    const totalUsedThisYear = await this.getTotalDaysUsedInYear(
+      new Types.ObjectId(wfhData.userId.toString()),
+      year
+    );
+
+    // Calculate pending days for the same year (excluding rejected and cancelled)
+    const pendingDays = await this.getPendingDaysInYear(
+      new Types.ObjectId(wfhData.userId.toString()),
+      year
+    );
+
+    // Balance validation logic:
+    // - If alloted = 0: No restriction (unlimited)
+    // - If alloted > 0: Validate that requested days + availed + pending <= alloted
+    if (balance.alloted > 0) {
+      const requestedDays = daysDiff;
+      const availableDays = balance.alloted - totalUsedThisYear - pendingDays;
+
+      // Check if requested days exceed remaining balance
+      if (requestedDays > availableDays) {
+        throw new Error(
+          `Insufficient WFH balance. ` +
+          `Allocated: ${balance.alloted} days, ` +
+          `Availed: ${totalUsedThisYear} days, ` +
+          `Pending: ${pendingDays} days, ` +
+          `Available: ${availableDays} days. ` +
+          `Requested: ${requestedDays} days exceeds available balance.`
+        );
+      }
+    }
+    // If alloted = 0, allow unlimited (no validation needed)
+
     const wfh: IWFH = await WFH.create({
       ...wfhData,
       noOfDays: daysDiff,
     });
 
-    const year = startDate.getFullYear();
-
     // Track WFH request (don't deduct yet - will deduct on approval)
-    // Note: Users can apply even if balance is 0, so no balance check needed
     await this.wfhSummaryService.createOrUpdateWFHSummary(
       new Types.ObjectId(wfh.userId.toString()),
       year,
@@ -459,6 +497,27 @@ export class WFHService extends BaseService {
     });
 
     return approvedWFHs.reduce((total, wfh) => total + wfh.noOfDays, 0);
+  }
+
+  /**
+   * Get total pending days for a user in a specific year
+   * Excludes Rejected and Cancelled WFH requests
+   */
+  private async getPendingDaysInYear(
+    userId: Types.ObjectId,
+    year: number
+  ): Promise<number> {
+    const startDate = new Date(year, 0, 1);
+    const endDate = new Date(year, 11, 31, 23, 59, 59, 999);
+
+    const pendingWFHs = await WFH.find({
+      userId,
+      startDate: { $gte: startDate },
+      endDate: { $lte: endDate },
+      status: 'Pending',
+    });
+
+    return pendingWFHs.reduce((total, wfh) => total + wfh.noOfDays, 0);
   }
 }
 

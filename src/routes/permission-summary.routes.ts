@@ -269,5 +269,124 @@ export async function permissionSummaryRoutes(fastify: FastifyInstance): Promise
       }
     },
   );
+
+  // Bulk update permission allotments (Admin only)
+  fastify.post(
+    '/allotments/bulk',
+    {
+      schema: {
+        tags: ['Permission Summary'],
+        summary: 'Bulk update permission allotments for multiple users (Admin)',
+        description: 'Set monthly permission hours allotment for multiple users at once',
+        security: [{ bearerAuth: [] }],
+        body: {
+          type: 'object',
+          required: ['allotments', 'year', 'month'],
+          properties: {
+            allotments: {
+              type: 'array',
+              description: 'Array of user allotments',
+              items: {
+                type: 'object',
+                required: ['userId', 'alloted'],
+                properties: {
+                  userId: {
+                    type: 'string',
+                    description: 'User ID',
+                  },
+                  alloted: {
+                    type: 'number',
+                    minimum: 0,
+                    description: 'Hours allotted per month (e.g., 2)',
+                  },
+                },
+              },
+              minItems: 1,
+            },
+            year: {
+              type: 'number',
+              description: 'Year for permission allotment',
+              default: new Date().getFullYear(),
+            },
+            month: {
+              type: 'number',
+              description: 'Month for permission allotment (1-12)',
+              minimum: 1,
+              maximum: 12,
+            },
+          },
+        },
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              success: { type: 'boolean' },
+              data: {
+                type: 'object',
+                properties: {
+                  successCount: { type: 'number' },
+                  failedCount: { type: 'number' },
+                  errors: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      properties: {
+                        userId: { type: 'string' },
+                        error: { type: 'string' },
+                      },
+                    },
+                  },
+                  updated: {
+                    type: 'array',
+                    items: { type: 'object' },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      preHandler: [authenticate],
+    },
+    async (request, reply) => {
+      try {
+        const { allotments, year = new Date().getFullYear(), month } = request.body as {
+          allotments: Array<{ userId: string; alloted: number }>;
+          year?: number;
+          month: number;
+        };
+
+        // Validate allotments array
+        if (!Array.isArray(allotments) || allotments.length === 0) {
+          return reply.status(400).send({
+            success: false,
+            error: { message: 'allotments must be a non-empty array' },
+          });
+        }
+
+        // Convert to ObjectId format
+        const allotmentsWithObjectId = allotments.map((a) => ({
+          userId: new Types.ObjectId(a.userId),
+          alloted: a.alloted,
+        }));
+
+        const result = await request.container!.permissionSummaryService.bulkUpdatePermissionAllotments(
+          allotmentsWithObjectId,
+          year,
+          month
+        );
+
+        return reply.send({
+          success: true,
+          data: result,
+        });
+      } catch (error: any) {
+        return reply.status(400).send({
+          success: false,
+          error: { message: error.message },
+        });
+      }
+    },
+  );
 }
 

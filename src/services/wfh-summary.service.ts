@@ -102,5 +102,48 @@ export class WFHSummaryService extends BaseService {
       remaining: summary.wfh.remaining || 0,
     };
   }
+
+  /**
+   * Bulk update WFH allotments for multiple users
+   * @param allotments Array of { userId, alloted } objects
+   * @param year Year for WFH allotment
+   */
+  async bulkUpdateWFHAllotments(
+    allotments: Array<{ userId: Types.ObjectId; alloted: number }>,
+    year: number
+  ): Promise<{
+    successCount: number;
+    failedCount: number;
+    errors: Array<{ userId: string; error: string }>;
+    updated: IWFHSummary[];
+  }> {
+    const results = {
+      successCount: 0,
+      failedCount: 0,
+      errors: [] as Array<{ userId: string; error: string }>,
+      updated: [] as IWFHSummary[],
+    };
+
+    // Process all allotments in parallel
+    const promises = allotments.map(async ({ userId, alloted }) => {
+      try {
+        const updated = await this.updateWFHAllotments(userId, year, alloted);
+        results.successCount++;
+        results.updated.push(updated);
+        return { success: true, userId: userId.toString() };
+      } catch (error: any) {
+        results.failedCount++;
+        results.errors.push({
+          userId: userId.toString(),
+          error: error.message || 'Unknown error',
+        });
+        return { success: false, userId: userId.toString(), error: error.message };
+      }
+    });
+
+    await Promise.all(promises);
+
+    return results;
+  }
 }
 
