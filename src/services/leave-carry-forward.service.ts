@@ -123,7 +123,44 @@ export class LeaveCarryForwardService extends BaseService {
       notes
     });
 
-    // Add carried-forward days to next year's leave summary
+    // IMPORTANT: Subtract carried forward days from FROM year's remaining balance
+    // We do this by reducing 'alloted' in the FROM year
+    // This way: remaining = alloted - availed will automatically decrease
+    // And 'availed' stays accurate (only actual leave days, not administrative operations)
+    const fromYearCategory = fromYearSummary[leaveType as keyof typeof fromYearSummary];
+    const currentFromYearAlloted = fromYearCategory?.alloted || 0;
+
+    // Update FROM year: reduce alloted by carried forward days
+    // This will make remaining = (alloted - daysCarriedForward) - availed
+    // So remaining decreases by daysCarriedForward without affecting availed
+    await this.leaveSummaryService.updateLeaveAllotments(
+      new Types.ObjectId(employeeId),
+      fromYear,
+      {
+        [leaveType]: currentFromYearAlloted - daysCarriedForward
+      }
+    );
+
+    // Verify FROM year's alloted and remaining balance were correctly updated
+    const updatedFromYearSummary = await this.leaveSummaryService.getLeaveSummary(
+      new Types.ObjectId(employeeId),
+      fromYear
+    );
+    const updatedFromYearCategory = updatedFromYearSummary[leaveType as keyof typeof updatedFromYearSummary];
+    const expectedFromYearAlloted = currentFromYearAlloted - daysCarriedForward;
+    const expectedFromYearRemaining = balanceBefore - daysCarriedForward;
+
+    // Verify alloted was reduced correctly
+    if (Math.abs((updatedFromYearCategory?.alloted || 0) - expectedFromYearAlloted) > 0.01) {
+      console.warn(`Carry forward FROM year alloted mismatch. Expected: ${expectedFromYearAlloted}, Got: ${updatedFromYearCategory?.alloted}.`);
+    }
+
+    // Verify remaining balance was correctly updated (should be auto-calculated: alloted - availed)
+    if (Math.abs((updatedFromYearCategory?.remaining || 0) - expectedFromYearRemaining) > 0.01) {
+      console.warn(`Carry forward FROM year remaining balance mismatch. Expected: ${expectedFromYearRemaining}, Got: ${updatedFromYearCategory?.remaining}. This may be recalculated on next save.`);
+    }
+
+    // Get next year's leave summary
     const toYearSummary = await this.leaveSummaryService.getLeaveSummary(
       new Types.ObjectId(employeeId),
       toYear
@@ -132,14 +169,65 @@ export class LeaveCarryForwardService extends BaseService {
     const toYearCategory = toYearSummary[leaveType as keyof typeof toYearSummary];
     const currentToYearAlloted = toYearCategory?.alloted || 0;
 
-    // Add carry-forward to existing allotted balance
+    // Carry forward logic:
+    // When 5 days are carried forward from 2024 (remaining: 10) to 2025:
+    // 
+    // FROM YEAR (2024):
+    // - Original: alloted = 20, availed = 10, remaining = 10
+    // - After carry-forward: alloted = 20 - 5 = 15, availed = 10, remaining = 5
+    // - We reduce 'alloted' (not 'availed') to keep availed accurate for reports
+    // - The 5 days are subtracted from 2024's quota
+    // 
+    // TO YEAR (2025):
+    // - Original: alloted = 20, availed = 0, remaining = 20
+    // - After carry-forward: alloted = 20 + 5 = 25, remaining = 25 - availed
+    // - The 5 days are added to 2025's allotted quota
+    // 
+    // Example:
+    // 2024: alloted = 20, remaining = 10, carry forward 5 → alloted = 15, remaining = 5
+    // 2025: alloted = 20, carry forward 5 → alloted = 25
+    // 
+    // Result: Employee has 5 less days quota in 2024, 5 more days quota in 2025
+    // Note: 'availed' stays accurate (only actual leave days, not administrative operations)
+
+    // Add carried forward days to next year's allotted
+    // This increases the remaining balance: remaining = alloted - availed
+    const finalAlloted = currentToYearAlloted + daysCarriedForward;
+
+    // Update allotted - pre-save hook will recalculate remaining
+    // remaining = alloted - availed = finalAlloted - availed
+    // This gives employee access to: (original quota - carried forward) + carried forward = original quota + carried forward
     await this.leaveSummaryService.updateLeaveAllotments(
       new Types.ObjectId(employeeId),
       toYear,
       {
-        [leaveType]: currentToYearAlloted + daysCarriedForward
+        [leaveType]: finalAlloted
       }
     );
+
+    // Verify the update was successful and remaining balance includes carried forward days
+    const updatedSummary = await this.leaveSummaryService.getLeaveSummary(
+      new Types.ObjectId(employeeId),
+      toYear
+    );
+
+    const updatedCategory = updatedSummary[leaveType as keyof typeof updatedSummary];
+    if (!updatedCategory) {
+      throw new Error(`Failed to retrieve updated leave summary for ${leaveType}`);
+    }
+
+    // Verify allotted was updated correctly
+    // Should be: (original - carried forward) + carried forward = original + carried forward
+    if (updatedCategory.alloted !== finalAlloted) {
+      throw new Error(`Failed to update leave summary for carry forward. Expected alloted: ${finalAlloted}, Got: ${updatedCategory.alloted}`);
+    }
+
+    // Verify remaining balance includes carried forward days
+    // remaining = alloted - availed = (original + carried forward) - availed
+    const expectedRemaining = finalAlloted - (updatedCategory.availed || 0);
+    if (Math.abs(updatedCategory.remaining - expectedRemaining) > 0.01) {
+      console.warn(`Carry forward remaining balance mismatch. Expected: ${expectedRemaining}, Got: ${updatedCategory.remaining}. This may be recalculated on next save.`);
+    }
 
     // Send email notification
     try {
@@ -150,12 +238,12 @@ export class LeaveCarryForwardService extends BaseService {
         leaveType,
         companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS'
       };
-      
+
       // Only include forfeitedDays if there are forfeited days (never set to null)
       if (daysForfeited > 0) {
         emailParams.forfeitedDays = `${daysForfeited} days forfeited`;
       }
-      
+
       const html = generateEmailTemplate('leaveBalanceAllotmentEmail', emailParams);
 
       await emailService.sendEmail({

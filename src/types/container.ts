@@ -25,6 +25,11 @@ import { SalaryAssignmentService } from '../services/salary-assignment.service';
 import { WeekendCalendarService } from '../services/weekend-calendar.service';
 import { DocumentService } from '../services/document.service';
 import { DashboardService } from '../services/dashboard.service';
+import { PermissionService } from '../services/permission.service';
+import { PermissionSummaryService } from '../services/permission-summary.service';
+import { WFHService } from '../services/wfh.service';
+import { WFHSummaryService } from '../services/wfh-summary.service';
+import { ShiftChangeService } from '../services/shift-change.service';
 
 export interface ServiceContainer {
   requestContext: RequestContext;
@@ -54,4 +59,9 @@ export interface ServiceContainer {
   weekendCalendarService: WeekendCalendarService;
   documentService: DocumentService;
   dashboardService: DashboardService;
+  permissionService: PermissionService;
+  permissionSummaryService: PermissionSummaryService;
+  wfhService: WFHService;
+  wfhSummaryService: WFHSummaryService;
+  shiftChangeService: ShiftChangeService;
 } 

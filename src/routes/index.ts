@@ -33,6 +33,12 @@ import { TimesheetFile } from '../models/timesheet-file.model';
 import { documentRoutes } from './document.routes';
 import { bulkAttendanceUploadRoutes } from './bulk-attendance-upload.routes';
 import { dashboardRoutes } from './dashboard.routes';
+import { dataMigrationRoutes } from './data-migration.routes';
+import { permissionRoutes } from './permission.routes';
+import { wfhRoutes } from './wfh.routes';
+import { permissionSummaryRoutes } from './permission-summary.routes';
+import { wfhSummaryRoutes } from './wfh-summary.routes';
+import { shiftChangeRoutes } from './shift-change.routes';
 import mongoose from 'mongoose';
 
 
@@ -67,13 +73,19 @@ export async function routes(fastify: FastifyInstance) {
   fastify.register(documentRoutes, { prefix: '/documents' })
   fastify.register(bulkAttendanceUploadRoutes, { prefix: '/bulk-upload' })
   fastify.register(dashboardRoutes, { prefix: '/dashboard' })
+  fastify.register(dataMigrationRoutes, { prefix: '/data-migration' })
+  fastify.register(permissionRoutes, { prefix: '/permissions' })
+  fastify.register(wfhRoutes, { prefix: '/wfh' })
+  fastify.register(permissionSummaryRoutes, { prefix: '/permission-summary' })
+  fastify.register(wfhSummaryRoutes, { prefix: '/wfh-summary' })
+  fastify.register(shiftChangeRoutes, { prefix: '/shift-changes' })
 
   fastify.get('/dev/run-shift-cron', async (_request, reply) => {
     await updateShiftAssignmentStatuses();
     reply.send({ success: true, message: "Shift assignment statuses updated." });
   })
-  fastify.get('/test', async (request, reply) => {
-    console.log(reply, request);
+  fastify.get('/test', async (_request, reply) => {
+    // Removed verbose logging - use request.log instead if needed
     reply.send('Hello World')
   })
 

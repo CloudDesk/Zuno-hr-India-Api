@@ -19,3 +19,8 @@ export * from './holiday-calendar.model';
 export * from './attendance-regularization.model';
 export * from './leave-release.model';
 export * from './leave-carry-forward.model';
+export * from './permission.model';
+export * from './permission-summary.model';
+export * from './wfh.model';
+export * from './wfh-summary.model';
+export * from './shift-change-request.model';

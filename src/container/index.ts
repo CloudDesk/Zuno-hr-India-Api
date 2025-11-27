@@ -26,6 +26,11 @@ import { SalaryAssignmentService } from '../services/salary-assignment.service';
 import { WeekendCalendarService } from '../services/weekend-calendar.service';
 import { DocumentService } from '../services/document.service';
 import { DashboardService } from '../services/dashboard.service';
+import { PermissionService } from '../services/permission.service';
+import { PermissionSummaryService } from '../services/permission-summary.service';
+import { WFHService } from '../services/wfh.service';
+import { WFHSummaryService } from '../services/wfh-summary.service';
+import { ShiftChangeService } from '../services/shift-change.service';
 
 export class Container {
   private static instance: Container;
@@ -74,6 +79,11 @@ export class Container {
       weekendCalendarService: new WeekendCalendarService(context),
       documentService: new DocumentService(context),
       dashboardService: new DashboardService(context),
+      permissionService: new PermissionService(context),
+      permissionSummaryService: new PermissionSummaryService(context),
+      wfhService: new WFHService(context),
+      wfhSummaryService: new WFHSummaryService(context),
+      shiftChangeService: new ShiftChangeService(context),
     };
   }
 

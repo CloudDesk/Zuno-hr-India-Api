@@ -324,12 +324,26 @@ export class LeaveSummaryService extends BaseService {
       // return summary;
     }
     else {
-      summary.annual.alloted = allotments.annual || 0;
-      summary.sick.alloted = allotments.sick || 0;
-      summary.otherPaid.alloted = allotments.otherPaid || 0;
-      summary.otherUnpaid.alloted = allotments.otherUnpaid || 0;
-      summary.compOff.alloted = allotments.compOff || 0;
-      summary.maternity.alloted = allotments.maternity || 0;
+      // Only update leave types that are explicitly provided in allotments
+      // This prevents overwriting other leave types with 0 when updating a single type
+      if (allotments.annual !== undefined) {
+        summary.annual.alloted = allotments.annual;
+      }
+      if (allotments.sick !== undefined) {
+        summary.sick.alloted = allotments.sick;
+      }
+      if (allotments.otherPaid !== undefined) {
+        summary.otherPaid.alloted = allotments.otherPaid;
+      }
+      if (allotments.otherUnpaid !== undefined) {
+        summary.otherUnpaid.alloted = allotments.otherUnpaid;
+      }
+      if (allotments.compOff !== undefined) {
+        summary.compOff.alloted = allotments.compOff;
+      }
+      if (allotments.maternity !== undefined) {
+        summary.maternity.alloted = allotments.maternity;
+      }
 
       // UAE-specific: Set allocation dates if provided, otherwise use today
       const user = await User.findById(userId);

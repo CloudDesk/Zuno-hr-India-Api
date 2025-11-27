@@ -1012,6 +1012,672 @@ const calculateForfeitedDays = (
 
 ---
 
-*Frontend Implementation Guide v1.0*  
+## 4️⃣ Data Migration (Import/Export) - Admin Only
+
+### Overview
+The data migration feature allows admins to import and export data via Excel files for:
+- Users
+- Shifts
+- Leaves
+- Salary Assignments
+- Salary Structures
+- Attendance Records
+
+### API Endpoints
+
+#### 1. Download Template
+```
+GET /data-migration/template?objects=user,shift,leave
+```
+
+**Query Parameters:**
+- `objects` (required): Comma-separated or array of object types
+  - Valid values: `user`, `shift`, `leave`, `salary-assignment`, `salary-structure`, `attendance-record`
+
+**Response:** Excel file (binary)
+
+**Excel Template Features:**
+- ✅ **Required/Optional Indicators:** All field headers clearly marked with `(Required)` or `(Optional)`
+- ✅ **Color Coding:** Required fields appear in **red** font for easy identification
+- ✅ **Cell Notes/Comments:** Hover over any header cell to see detailed field descriptions, format requirements, and special rules
+- ✅ **Instructions Row:** Each template includes an instructions section below headers with format guidelines and business rules
+- ✅ **Field Validation Hints:** Cell notes include format examples (e.g., "Format: YYYY-MM-DD", "Must be 0-100")
+
+**Example:**
+```typescript
+const downloadTemplate = async (objects: string[]) => {
+  const queryString = objects.join(',');
+  const response = await fetch(`/data-migration/template?objects=${queryString}`, {
+    credentials: 'include'
+  });
+  
+  const blob = await response.blob();
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `data_import_template_${new Date().toISOString().split('T')[0]}.xlsx`;
+  a.click();
+};
+```
+
+#### 2. Export Data
+```
+GET /data-migration/export?objects=user,shift&active=true&country=IN
+```
+
+**Query Parameters:**
+- `objects` (required): Array of object types to export
+- `active` (optional): Filter users by active status
+- `country` (optional): Filter users by country (IN/AE)
+- `role` (optional): Filter users by role
+- `departmentId` (optional): Filter users by department
+- `isActive` (optional): Filter shifts/salary assignments by active status
+- `status` (optional): Filter leaves by status
+- `userId` (optional): Filter leaves/attendance by user ID
+- `shiftCode` (optional): Filter attendance by shift code
+- `shiftDay` (optional): Filter attendance by shift day (YYYY-MM-DD)
+
+**Response:** Excel file (binary)
+
+**Example:**
+```typescript
+const exportData = async (objects: string[], filters?: any) => {
+  const params = new URLSearchParams();
+  params.append('objects', objects.join(','));
+  
+  if (filters) {
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value !== undefined && value !== null) {
+        params.append(key, String(value));
+      }
+    });
+  }
+  
+  const response = await fetch(`/data-migration/export?${params.toString()}`, {
+    credentials: 'include'
+  });
+  
+  const blob = await response.blob();
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `data_export_${new Date().toISOString().split('T')[0]}.xlsx`;
+  a.click();
+};
+```
+
+#### 3. Preview Import (Parse & Validate)
+```
+POST /data-migration/import/preview
+Content-Type: multipart/form-data
+```
+
+**Request Body (FormData):**
+- `file` (required): Excel file (.xlsx)
+- `objects` (required): Array of object types to import
+
+**Response:**
+```typescript
+{
+  success: true,
+  data: {
+    [objectType: string]: {
+      validRows: Array<{
+        rowNumber: number;
+        [key: string]: any;
+      }>;
+      invalidRows: Array<{
+        rowNumber: number;
+        [key: string]: any;
+      }>;
+      errors: Array<{
+        rowNumber: number;
+        field: string;
+        message: string;
+        severity: 'error' | 'warning';
+      }>;
+      summary: {
+        totalRows: number;
+        validRows: number;
+        invalidRows: number;
+        errors: number;
+        warnings: number;
+      };
+    }
+  }
+}
+```
+
+**Example:**
+```typescript
+const previewImport = async (file: File, objects: string[]) => {
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('objects', JSON.stringify(objects));
+  
+  // ⚠️ Important: Do NOT set Content-Type header manually
+  // Browser automatically sets it with boundary for multipart/form-data
+  const response = await fetch('/data-migration/import/preview', {
+    method: 'POST',
+    credentials: 'include',
+    body: formData
+    // No headers needed - browser sets Content-Type automatically
+  });
+  
+  return await response.json();
+};
+```
+
+**✅ Backend Fix Applied:**
+- The backend now properly accepts `multipart/form-data`
+- The `objects` field can be sent as:
+  - JSON string: `JSON.stringify(['user', 'shift'])` ✅ (Recommended)
+  - Array: Backend will handle it if sent as array
+- No schema validation on body for this endpoint (multipart handled by multer)
+
+#### 4. Confirm Import
+```
+POST /data-migration/import/confirm
+Content-Type: application/json
+```
+
+**Request Body:**
+```typescript
+{
+  objects: string[];
+  validRows: {
+    [objectType: string]: Array<{
+      rowNumber: number;
+      [key: string]: any;
+    }>;
+  };
+}
+```
+
+**Response:**
+```typescript
+{
+  success: true,
+  data: {
+    [objectType: string]: {
+      created: number;
+      errors: string[];
+    };
+  };
+}
+```
+
+**Example:**
+```typescript
+const confirmImport = async (objects: string[], validRows: any) => {
+  const response = await fetch('/data-migration/import/confirm', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    body: JSON.stringify({
+      objects,
+      validRows
+    })
+  });
+  
+  return await response.json();
+};
+```
+
+---
+
+## 🎨 Frontend Component Example - Data Migration
+
+### React/TypeScript Component
+
+```tsx
+import React, { useState } from 'react';
+import { useForm } from 'react-hook-form';
+
+type ObjectType = 'user' | 'shift' | 'leave' | 'salary-assignment' | 'salary-structure' | 'attendance-record';
+
+interface ValidationResult {
+  validRows: any[];
+  invalidRows: any[];
+  errors: Array<{
+    rowNumber: number;
+    field: string;
+    message: string;
+    severity: 'error' | 'warning';
+  }>;
+  summary: {
+    totalRows: number;
+    validRows: number;
+    invalidRows: number;
+    errors: number;
+    warnings: number;
+  };
+}
+
+const DataMigrationPage: React.FC = () => {
+  const [selectedObjects, setSelectedObjects] = useState<ObjectType[]>([]);
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
+  const [validationResults, setValidationResults] = useState<Record<string, ValidationResult>>({});
+  const [importResults, setImportResults] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+  const [step, setStep] = useState<'select' | 'upload' | 'preview' | 'confirm'>('select');
+
+  const allObjectTypes: ObjectType[] = [
+    'user',
+    'shift',
+    'leave',
+    'salary-assignment',
+    'salary-structure',
+    'attendance-record'
+  ];
+
+  const handleDownloadTemplate = async () => {
+    if (selectedObjects.length === 0) {
+      alert('Please select at least one object type');
+      return;
+    }
+
+    try {
+      const queryString = selectedObjects.join(',');
+      const response = await fetch(`/data-migration/template?objects=${queryString}`, {
+        credentials: 'include'
+      });
+
+      if (!response.ok) throw new Error('Failed to download template');
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `data_import_template_${new Date().toISOString().split('T')[0]}.xlsx`;
+      a.click();
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      alert('Failed to download template');
+      console.error(error);
+    }
+  };
+
+  const handleFileUpload = async (file: File) => {
+    if (selectedObjects.length === 0) {
+      alert('Please select at least one object type');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('objects', JSON.stringify(selectedObjects));
+
+      // ⚠️ Important: Do NOT set Content-Type header manually
+      // Browser automatically sets it with boundary for multipart/form-data
+      const response = await fetch('/data-migration/import/preview', {
+        method: 'POST',
+        credentials: 'include',
+        body: formData
+        // No headers needed - browser sets Content-Type automatically
+      });
+
+      const result = await response.json();
+
+      if (result.success) {
+        setValidationResults(result.data);
+        setStep('preview');
+      } else {
+        alert(`Error: ${result.error.message}`);
+      }
+    } catch (error) {
+      alert('Failed to validate file');
+      console.error(error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleConfirmImport = async () => {
+    setLoading(true);
+    try {
+      const validRows: any = {};
+      Object.keys(validationResults).forEach(objectType => {
+        validRows[objectType] = validationResults[objectType].validRows;
+      });
+
+      const response = await fetch('/data-migration/import/confirm', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          objects: selectedObjects,
+          validRows
+        })
+      });
+
+      const result = await response.json();
+
+      if (result.success) {
+        setImportResults(result.data);
+        setStep('confirm');
+      } else {
+        alert(`Error: ${result.error.message}`);
+      }
+    } catch (error) {
+      alert('Failed to import data');
+      console.error(error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="data-migration-page">
+      <h1>Data Migration</h1>
+
+      {/* Step 1: Select Object Types */}
+      {step === 'select' && (
+        <div className="step-select">
+          <h2>Step 1: Select Data Types</h2>
+          <div className="object-types">
+            {allObjectTypes.map(type => (
+              <label key={type} className="checkbox-label">
+                <input
+                  type="checkbox"
+                  checked={selectedObjects.includes(type)}
+                  onChange={(e) => {
+                    if (e.target.checked) {
+                      setSelectedObjects([...selectedObjects, type]);
+                    } else {
+                      setSelectedObjects(selectedObjects.filter(t => t !== type));
+                    }
+                  }}
+                />
+                <span>{type.replace('-', ' ').replace(/\b\w/g, l => l.toUpperCase())}</span>
+              </label>
+            ))}
+          </div>
+          <div className="actions">
+            <button onClick={handleDownloadTemplate} disabled={selectedObjects.length === 0}>
+              Download Template
+            </button>
+            <button 
+              onClick={() => setStep('upload')} 
+              disabled={selectedObjects.length === 0}
+            >
+              Next: Upload File
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Step 2: Upload File */}
+      {step === 'upload' && (
+        <div className="step-upload">
+          <h2>Step 2: Upload Excel File</h2>
+          <input
+            type="file"
+            accept=".xlsx"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) {
+                setUploadedFile(file);
+                handleFileUpload(file);
+              }
+            }}
+          />
+          <div className="actions">
+            <button onClick={() => setStep('select')}>Back</button>
+          </div>
+        </div>
+      )}
+
+      {/* Step 3: Preview Validation Results */}
+      {step === 'preview' && (
+        <div className="step-preview">
+          <h2>Step 3: Review Validation Results</h2>
+          {Object.entries(validationResults).map(([objectType, result]) => (
+            <div key={objectType} className="validation-result">
+              <h3>{objectType.replace('-', ' ').replace(/\b\w/g, l => l.toUpperCase())}</h3>
+              <div className="summary">
+                <p>Total Rows: {result.summary.totalRows}</p>
+                <p className="valid">Valid: {result.summary.validRows}</p>
+                <p className="invalid">Invalid: {result.summary.invalidRows}</p>
+                <p className="errors">Errors: {result.summary.errors}</p>
+                <p className="warnings">Warnings: {result.summary.warnings}</p>
+              </div>
+              
+              {result.errors.length > 0 && (
+                <div className="errors-list">
+                  <h4>Errors & Warnings:</h4>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Row</th>
+                        <th>Field</th>
+                        <th>Message</th>
+                        <th>Severity</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {result.errors.map((error, idx) => (
+                        <tr key={idx} className={error.severity}>
+                          <td>{error.rowNumber}</td>
+                          <td>{error.field}</td>
+                          <td>{error.message}</td>
+                          <td>{error.severity}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          ))}
+          
+          <div className="actions">
+            <button onClick={() => setStep('upload')}>Back</button>
+            <button 
+              onClick={handleConfirmImport}
+              disabled={Object.values(validationResults).some(r => r.summary.validRows === 0)}
+            >
+              Confirm Import
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Step 4: Import Results */}
+      {step === 'confirm' && (
+        <div className="step-confirm">
+          <h2>Step 4: Import Complete</h2>
+          {importResults && Object.entries(importResults).map(([objectType, result]: [string, any]) => (
+            <div key={objectType} className="import-result">
+              <h3>{objectType.replace('-', ' ').replace(/\b\w/g, l => l.toUpperCase())}</h3>
+              <p className="success">Created: {result.created}</p>
+              {result.errors.length > 0 && (
+                <div className="errors">
+                  <h4>Errors:</h4>
+                  <ul>
+                    {result.errors.map((error: string, idx: number) => (
+                      <li key={idx}>{error}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          ))}
+          <div className="actions">
+            <button onClick={() => {
+              setStep('select');
+              setValidationResults({});
+              setImportResults(null);
+              setUploadedFile(null);
+            }}>
+              Start New Import
+            </button>
+          </div>
+        </div>
+      )}
+
+      {loading && <div className="loading">Processing...</div>}
+    </div>
+  );
+};
+
+export default DataMigrationPage;
+```
+
+### Validation Error Display Component
+
+```tsx
+interface ValidationErrorsProps {
+  errors: Array<{
+    rowNumber: number;
+    field: string;
+    message: string;
+    severity: 'error' | 'warning';
+  }>;
+}
+
+const ValidationErrors: React.FC<ValidationErrorsProps> = ({ errors }) => {
+  const errorRows = errors.filter(e => e.severity === 'error');
+  const warningRows = errors.filter(e => e.severity === 'warning');
+
+  return (
+    <div className="validation-errors">
+      {errorRows.length > 0 && (
+        <div className="errors-section">
+          <h4>Errors ({errorRows.length})</h4>
+          <table>
+            <thead>
+              <tr>
+                <th>Row</th>
+                <th>Field</th>
+                <th>Message</th>
+              </tr>
+            </thead>
+            <tbody>
+              {errorRows.map((error, idx) => (
+                <tr key={idx} className="error-row">
+                  <td>{error.rowNumber}</td>
+                  <td>{error.field}</td>
+                  <td>{error.message}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {warningRows.length > 0 && (
+        <div className="warnings-section">
+          <h4>Warnings ({warningRows.length})</h4>
+          <table>
+            <thead>
+              <tr>
+                <th>Row</th>
+                <th>Field</th>
+                <th>Message</th>
+              </tr>
+            </thead>
+            <tbody>
+              {warningRows.map((warning, idx) => (
+                <tr key={idx} className="warning-row">
+                  <td>{warning.rowNumber}</td>
+                  <td>{warning.field}</td>
+                  <td>{warning.message}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+};
+```
+
+### Important Validation Rules for Frontend
+
+> **Note:** All required/optional fields are now clearly marked in the Excel templates with `(Required)` or `(Optional)` indicators. Required fields appear in **red** font. Hover over header cells to see detailed notes with format requirements and validation rules.
+
+#### User Import
+- **Required fields:** name, email, role, departmentId, country *(marked in red in template)*
+- **Email:** Must be unique and valid format
+- **Visa details:** Required for AE users only (visaType, visaExpiryDate must be in future)
+- **BiometricId:** Only for non-IN/AE countries (see template notes)
+- **Country-currency:** Should match (IN → INR, AE → AED), auto-set if not provided
+- **Date formats:** YYYY-MM-DD or DD/MM/YYYY
+- **Boolean fields:** Yes/No (case insensitive)
+- **Shift ID (Column 27):** 
+  - ✅ **Optional** - Leave empty if no shift assignment needed
+  - ✅ **If provided:** System automatically creates shift assignment
+  - ✅ **Shift must exist first** - Get shift IDs via:
+    - **Option 1:** Export shifts: `GET /data-migration/export?objects=shift&isActive=true` (Shift ID in column 1)
+    - **Option 2:** API call: `GET /shifts?isActive=true` (returns `_id` field)
+  - ✅ **Shift assignment created with:**
+    - Start Date: User's joining date (or current date if not provided)
+    - Status: 'current' if joining date ≤ today, 'upcoming' if future
+    - Weekend Days: [0, 6] (Sunday and Saturday) by default
+    - Is Active: true
+  - ⚠️ **Note:** If shiftId is invalid, user is created but shift assignment fails (error logged)
+
+#### Shift Import
+- **Required fields:** name, code, startTime, endTime, shiftWindowStart, shiftWindowEnd *(marked in red in template)*
+- **Time format:** HH:mm (e.g., "09:00")
+- **Shift window:** windowStart ≤ startTime, windowEnd > startTime
+- **Overnight shifts:** endTime < startTime
+- **Code:** Must be unique and uppercase
+
+#### Shift Export
+When exporting shifts via `GET /data-migration/export?objects=shift`, the Excel file includes:
+- **Shift ID** (Column 1): The MongoDB ObjectId of the shift - **Use this in column 27 (Shift ID) when importing users**
+- **Name** (Column 2): Shift name
+- **Code** (Column 3): Shift code
+- **Start Time** (Column 4): Shift start time (HH:mm)
+- **End Time** (Column 5): Shift end time (HH:mm)
+- **Shift Window Start** (Column 6): Earliest check-in time (HH:mm)
+- **Shift Window End** (Column 7): Latest check-in time (HH:mm)
+- **Valid From** (Column 8): Shift validity start date
+- **Valid Till** (Column 9): Shift validity end date (if applicable)
+- **Is Active** (Column 10): Active status (Yes/No)
+- **Description** (Column 11): Shift description
+- **Grace Time (Minutes)** (Column 12): Grace period for late entry
+- **Is Overnight Shift** (Column 13): Overnight shift indicator (Yes/No)
+
+**💡 Tip:** Export shifts first to get the Shift IDs, then use those IDs in column 27 when importing users for automatic shift assignment.
+
+#### Leave Import
+- **Required fields:** userId, leaveTypeId, startDate, endDate *(marked in red in template)*
+- **Half-day leaves:**
+  - startDate === endDate
+  - halfDayType required (first-half or second-half)
+  - noOfDays must be exactly 0.5
+- **Full-day leaves:** halfDayType must not be set
+- **Date formats:** YYYY-MM-DD or DD/MM/YYYY
+
+#### Salary Assignment Import
+- **Required fields:** employeeId, salaryStructureId, monthlyGross, monthlyInsurance, reimbursement, effectiveFrom, effectiveTo *(marked in red in template)*
+- **Numeric fields:** All must be non-negative (≥ 0)
+- **Date logic:** effectiveTo > effectiveFrom
+- **Is Active:** If Yes, automatically deactivates other active assignments for the same employee
+
+#### Salary Structure Import
+- **Required fields:** name, country *(marked in red in template)*
+- **Percentage fields:** All must be between 0 and 100
+- **Country:** Must be IN or AE
+
+#### Attendance Record Import
+- **Required fields:** userId, shiftId, shiftCode, shiftDay, shiftStart, shiftEnd *(marked in red in template)*
+- **Time logic:** shiftEnd > shiftStart
+- **Date formats:** YYYY-MM-DD for shiftDay, ISO DateTime for shiftStart/shiftEnd (e.g., 2025-01-15T09:00:00Z)
+- **Date formats:** YYYY-MM-DD for shiftDay, ISO DateTime for shiftStart/shiftEnd (e.g., 2025-01-15T09:00:00Z)
+
+---
+
+*Frontend Implementation Guide v1.1*  
 *Last Updated: January 2025*
 
