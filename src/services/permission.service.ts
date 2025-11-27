@@ -266,13 +266,26 @@ export class PermissionService extends BaseService {
       month
     );
 
+    // Calculate pending hours for the same month (excluding rejected and cancelled)
+    const pendingHours = await this.getPendingHoursInMonth(
+      new Types.ObjectId(permissionData.userId.toString()),
+      year,
+      month
+    );
+
     const requestedHours = permissionData.hours;
-    const availableHours = balance.alloted - totalUsedThisMonth;
+    // Available balance = Alloted - Availed - Pending
+    const availableHours = balance.alloted - totalUsedThisMonth - pendingHours;
 
     // Check if requested hours exceed remaining balance
     if (requestedHours > availableHours) {
       throw new Error(
-        `Insufficient permission balance. Available: ${availableHours.toFixed(1)} hours, Requested: ${requestedHours} hours`
+        `Insufficient permission balance. ` +
+        `Allocated: ${balance.alloted} hrs, ` +
+        `Availed: ${totalUsedThisMonth.toFixed(1)} hrs, ` +
+        `Pending: ${pendingHours.toFixed(1)} hrs, ` +
+        `Available: ${availableHours.toFixed(1)} hrs. ` +
+        `Requested: ${requestedHours} hrs exceeds available balance.`
       );
     }
 
@@ -493,6 +506,27 @@ export class PermissionService extends BaseService {
     });
 
     return approvedPermissions.reduce((total, perm) => total + perm.hours, 0);
+  }
+
+  /**
+   * Get total pending hours for a user in a specific month
+   * Excludes Rejected and Cancelled permissions
+   */
+  private async getPendingHoursInMonth(
+    userId: Types.ObjectId,
+    year: number,
+    month: number
+  ): Promise<number> {
+    const startDate = new Date(year, month - 1, 1);
+    const endDate = new Date(year, month, 0, 23, 59, 59, 999);
+
+    const pendingPermissions = await Permission.find({
+      userId,
+      permissionDate: { $gte: startDate, $lte: endDate },
+      status: 'Pending',
+    });
+
+    return pendingPermissions.reduce((total, perm) => total + perm.hours, 0);
   }
 }
 
