@@ -7,6 +7,7 @@ declare global {
       MONGODB_URI: string;
       JWT_SECRET: string;
       CORS_ORIGINS: string;
+      PROJECT_ID: string;
       GCP_STORAGE_BUCKET: string;
     }
   }

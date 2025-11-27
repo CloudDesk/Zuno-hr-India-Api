@@ -2,15 +2,26 @@ import { Storage } from "@google-cloud/storage";
 import * as fs from "fs";
 import path from 'path';
 import dotenv from 'dotenv'
+import { config } from '../config';
 
 dotenv.config()
 
+// Initialize GCP Storage with project ID from config
 const storage = new Storage({
-  projectId: process.env.PROJECT_ID,
+  projectId: config.PROJECT_ID,
 });
-console.log(process.env.PROJECT_ID, 'process.env.PROJECT_ID');
-console.log(process.env.GCP_STORAGE_BUCKET, 'process.env.GCP_STORAGE_BUCKETs');
-const bucketName =process.env.GCP_STORAGE_BUCKET;
+
+// Get bucket name from config (environment-specific)
+const bucketName = config.GCP_STORAGE_BUCKET;
+
+// Log configuration (mask sensitive info in production)
+if (process.env.NODE_ENV !== 'production') {
+  console.log('GCP Configuration:', {
+    projectId: config.PROJECT_ID,
+    bucketName: bucketName,
+    environment: config.NODE_ENV
+  });
+}
 
 export interface IGCPUploadParams {
   filePath: string;

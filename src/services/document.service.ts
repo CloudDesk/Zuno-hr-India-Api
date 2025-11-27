@@ -14,6 +14,7 @@ import { promisify } from 'util';
 import { Document, IDocument } from "../models/document.model";
 import { emailService } from "./email.service";
 import { IDocumentQuery, IForm12BBGenerate, IForm12BSubmission } from "../routes/document.routes";
+import { config } from "../config";
 
 import { TaxDeclaration } from "../models/tax-declaration";
 import { TaxDeclarationService } from "./tax-declaration.service";
@@ -2849,7 +2850,7 @@ export class DocumentService extends BaseService {
         const timestamp = Date.now();
         const sanitizedFileName = file.filename.replace(/[^a-zA-Z0-9.-]/g, '_');
         const newFileName = `${timestamp}_${sanitizedFileName}`;
-        const filePath = `https://storage.googleapis.com/${process.env.GCP_STORAGE_BUCKET}/${employeeId}/Payroll/${newFileName}`;
+        const filePath = `https://storage.googleapis.com/${config.GCP_STORAGE_BUCKET}/${employeeId}/Payroll/${newFileName}`;
 
         // Update document with new file information
         existingDocument.fileName = newFileName;

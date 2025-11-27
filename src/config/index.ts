@@ -14,6 +14,9 @@ interface Config {
   GMAIL_AUTH_PASSWORD: string;
   NODE_ENV: string;
 
+  // GCP Configuration
+  PROJECT_ID: string;
+  GCP_STORAGE_BUCKET: string;
 }
 
 export const config: Config = {
@@ -34,5 +37,9 @@ export const config: Config = {
 
   // App configuration
   NODE_ENV: process.env.NODE_ENV || 'default-gmail-host',
+
+  // GCP Configuration
+  PROJECT_ID: process.env.PROJECT_ID || '',
+  GCP_STORAGE_BUCKET: process.env.GCP_STORAGE_BUCKET || '',
 
 }; 
