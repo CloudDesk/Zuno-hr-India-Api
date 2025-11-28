@@ -19,6 +19,7 @@
     "db:migrate:dry-run": "node scripts/migrate-to-production-db.js --dry-run",
     "db:clone": "ts-node scripts/simpleCloneDatabase.ts",
     "db:clone:advanced": "ts-node scripts/cloneDatabase.ts",
+    "auth-project": "gcloud auth login",
     "set-project": "gcloud config set project zuno-hr-2025",
     "hrms-build": "docker build -t zuno-cd-hr-india .",
     "hrms-tag": "docker tag zuno-cd-hr-india gcr.io/zuno-hr-2025/zuno-cd-hr-india",
