@@ -1,33 +1,67 @@
-# Use Node.js 20 as the base image
-FROM node:20
+# Multi-stage build for smaller final image
+# Stage 1: Build stage
+FROM node:20-slim AS builder
 
-# Install LibreOffice for document conversion
-RUN apt-get update && apt-get install -y libreoffice && \
-    apt-get clean
+# Install build dependencies and LibreOffice
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    libreoffice \
+    python3 \
+    make \
+    g++ && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
-# Set the working directory in the container
+# Set the working directory
 WORKDIR /app
 
-# Copy package.json and package-lock.json (if available)
+# Copy package files first for better layer caching
 COPY package*.json ./
 
+# Install all dependencies (including devDependencies for build)
+RUN npm ci
 
-# Copy the rest of your application's source code
+# Copy source code
 COPY . .
 
-# Expose the port that your application will run on
-EXPOSE 5800
-
+# Build the application
 RUN npm run build
 
-RUN npm install
+# Stage 2: Production stage
+FROM node:20-slim AS production
 
-# Explicitly install docxtemplater (in case it's not in package.json)
-RUN npm install docxtemplater
+# Install only runtime dependencies (LibreOffice for document conversion)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    libreoffice && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Set the working directory
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Install only production dependencies
+RUN npm ci --only=production && \
+    npm cache clean --force
+
+# Copy built application from builder stage
+COPY --from=builder /app/dist ./dist
+
+# Copy templates directory (for runtime template access)
+COPY --from=builder /app/templates ./templates
+
+# Create uploads directory and non-root user for security
+RUN mkdir -p /app/uploads && \
+    groupadd -r appuser && useradd -r -g appuser appuser && \
+    chown -R appuser:appuser /app
+
+USER appuser
+
+# Expose the port
+EXPOSE 5800
 
 # Start the application
 CMD [ "node", "dist/local.js" ]
-
-
-
-
