@@ -564,7 +564,8 @@ export class PayslipService extends BaseService {
       // Replace placeholders in DOCX template
       await this.replacePlaceholdersInDocx(
         // path.join(process.cwd(), 'CD_paySlip.docx'),
-        path.join(process.cwd(), 'CD_payslip_Dubai Zuno.docx'),
+        //path.join(process.cwd(), 'CD_payslip_Dubai Zuno.docx'),
+        path.join(process.cwd(), 'CD_paySlip old.docx'),
         outputDocxPath,
         templateData
       );

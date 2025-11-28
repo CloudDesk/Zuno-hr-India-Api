@@ -23,7 +23,7 @@
     "hrms-build": "docker build -t zuno-cd-hr-india .",
     "hrms-tag": "docker tag zuno-cd-hr-india gcr.io/zuno-hr-2025/zuno-cd-hr-india",
     "hrms-push": "docker push gcr.io/zuno-hr-2025/zuno-cd-hr-india",
-    "hrms-deploy": "gcloud run deploy zuno-cd-hr-india --image gcr.io/zuno-hr-2025/zuno-cd-hr-india:latest --platform managed --region asia-south1 --allow-unauthenticated --port 5800  --execution-environment gen1 --memory 256Mi --cpu 1",
+    "hrms-deploy": "gcloud run deploy zuno-cd-hr-india --image gcr.io/zuno-hr-2025/zuno-cd-hr-india:latest --platform managed --region asia-south1 --allow-unauthenticated --port 5800  --execution-environment gen2 --memory 512Mi --cpu 1",
     "full-deploy": "npm run set-project && npm run hrms-build && npm run hrms-tag && npm run hrms-push && npm run hrms-deploy"
   },
   "dependencies": {

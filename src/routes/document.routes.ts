@@ -209,6 +209,14 @@ export const documentRoutes = async (
         },
         async (request, reply) => {
             try {
+                // Ensure container is available
+                if (!request.container) {
+                    return reply.status(500).send({
+                        success: false,
+                        error: { message: 'Service container not available.' },
+                    });
+                }
+
                 const { monthYear, userIds, filters } = request.body as PayslipGenerateRequest;
                 const [yearStr, monthStr] = monthYear.split('-');
                 const year = Number(yearStr);
@@ -251,9 +259,10 @@ export const documentRoutes = async (
                     data: salary,
                 });
             } catch (error: any) {
-                return reply.status(400).send({
+                console.error('Payslip generation error:', error);
+                return reply.status(500).send({
                     success: false,
-                    error: { message: error.message },
+                    error: { message: error.message || 'Failed to generate payslips.' },
                 });
             }
         }
