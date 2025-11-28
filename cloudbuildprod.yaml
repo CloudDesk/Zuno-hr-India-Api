@@ -37,6 +37,8 @@ steps:
       - '--platform'
       - 'managed'
       - '--allow-unauthenticated'
+      - '--service-account'
+      - 'zunoprod@zuno-hr-2025.iam.gserviceaccount.com'
       - '--execution-environment'
       - 'gen2'
       - '--set-env-vars'
