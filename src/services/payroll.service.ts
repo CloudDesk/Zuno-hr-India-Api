@@ -9,6 +9,7 @@ import {
     ShiftAssignment,
     User,
 } from '../models';
+import { OptionalHolidayRequest } from '../models/optional-holiday-request.model';
 import { TaxDeclaration } from '../models/tax-declaration';
 import { PayrollStatus, } from './payroll-status.service';
 import XLSX from "xlsx";
@@ -1978,10 +1979,36 @@ export class PayrollService extends BaseService {
             const holidayCalendar = await HolidayCalendar.findById(holidayCalendarId, 'holidays').lean();
             const holidays = holidayCalendar?.holidays || [];
             console.log(holidays, 'holidaysholidays');
-            holidayDays = holidays.filter((h) => {
+            
+            // Separate mandatory and optional holidays
+            const mandatoryHolidays = holidays.filter((h) => {
                 const holidayDate = new Date(h.date);
-                return holidayDate.getFullYear() === year && holidayDate.getMonth() === monthNumber - 1;
-            }).length;
+                return holidayDate.getFullYear() === year && 
+                       holidayDate.getMonth() === monthNumber - 1 &&
+                       h.type === 'mandatory';
+            });
+            
+            // Count mandatory holidays
+            const mandatoryHolidayCount = mandatoryHolidays.length;
+            
+            // Get APPROVED optional holidays for this employee in this month
+            const approvedOptionalHolidays = await OptionalHolidayRequest.find({
+                userId: employeeId,
+                year: year,
+                status: 'Approved',
+                holidayDate: {
+                    $gte: firstDay,
+                    $lte: lastDay,
+                },
+            }).lean();
+            
+            // Count approved optional holidays
+            const approvedOptionalHolidayCount = approvedOptionalHolidays.length;
+            
+            // Total holiday days = mandatory + approved optional
+            holidayDays = mandatoryHolidayCount + approvedOptionalHolidayCount;
+            
+            console.log(`Holiday breakdown: ${mandatoryHolidayCount} mandatory + ${approvedOptionalHolidayCount} approved optional = ${holidayDays} total`);
         }
 
         console.log(holidayDays, 'holidayDays after holidayCalendarId');

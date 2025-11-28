@@ -739,6 +739,8 @@ export class UserService extends BaseService {
     console.log('  - currentShiftAssignmentData:', data.currentShiftAssignmentData, '(required:', !!data.currentShiftAssignmentData, ')');
 
     console.log('🎯 Creating new User instance...');
+    // Store plain password before hashing (for email notification if it's default password)
+    const plainPassword = data.password === '123456' ? data.password : undefined;
     const user = new User(data);
     console.log('✅ User instance created:', user._id);
 
@@ -747,8 +749,8 @@ export class UserService extends BaseService {
     console.log('✅ User saved successfully:', savedUser._id);
 
     console.log('📧 Sending welcome email...');
-    //send welcome email
-    await this.sendWelcomeEmail(savedUser);
+    //send welcome email with password if it's the default password
+    await this.sendWelcomeEmail(savedUser, plainPassword);
     console.log('✅ Welcome email sent');
 
     console.log('🎉 User creation completed successfully');
@@ -767,7 +769,7 @@ export class UserService extends BaseService {
 
     // Validate employeeCode uniqueness if it's being updated
     if (data.employeeCode && data.employeeCode !== user.employeeCode) {
-      const existingUser = await User.findOne({ 
+      const existingUser = await User.findOne({
         employeeCode: data.employeeCode,
         _id: { $ne: id }
       });
@@ -1254,27 +1256,37 @@ export class UserService extends BaseService {
     };
   }
 
-  private async sendWelcomeEmail(user: any) {
+  private async sendWelcomeEmail(user: any, plainPassword?: string) {
     try {
       // Application URL - adjust based on your environment
       const appUrl = process.env.APP_URL || 'http://localhost:5173';
       let companyName = process.env.COMPANY_NAME || 'CloudDesk HRMS';
 
-
-      const htmlContent = generateEmailTemplate('welcomeEmail', {
+      const emailData: any = {
         userName: user.name,
         email: user.email,
         role: user.role,
         loginUrl: `${appUrl}/login`,
         companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS'
-      });
+      };
+
+      // Include password in email if provided (for imported users with default password)
+      if (plainPassword) {
+        emailData.password = plainPassword;
+      }
+
+      const htmlContent = generateEmailTemplate('welcomeEmail', emailData);
+
+      let emailText = `Hello ${user.name},\n\nWelcome to the HRMS system.\nLogin at ${appUrl}/login with your email: ${user.email}`;
+      if (plainPassword) {
+        emailText += `\n\nYour default password: ${plainPassword}\n\n⚠️ Important: Please change your password after first login for security.`;
+      }
 
       const emailRequest = {
         body: {
           to: user.email,
           subject: `Welcome to ${companyName}`,
-          text: `Hello ${user.name},\n\nWelcome to the HRMS system.\nLogin at ${appUrl}/login with your email: ${user.email}`,
-
+          text: emailText,
           html: htmlContent
         },
       };

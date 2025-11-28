@@ -8,8 +8,7 @@ const start = async () => {
     const server = await createApp();
     const port = parseInt(process.env.PORT || '5800', 10);
     const host = '0.0.0.0';
-    console.log(host , port, 'host and port');
-    console.log(host , port, 'host and port');
+    
     console.log(`Attempting to listen on ${host}:${port}`);
     const address = await server.listen({ port, host });
     console.log(`✅ Server successfully listening at ${address}`);

@@ -2,6 +2,11 @@ import fs from 'fs';
 import path from 'path';
 import handlebars from 'handlebars';
 
+// Register Handlebars helpers
+handlebars.registerHelper('eq', function(a: any, b: any) {
+    return a === b;
+});
+
 interface TemplateParams {
     [key: string]: string | number | boolean;
 }

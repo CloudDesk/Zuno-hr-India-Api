@@ -2,7 +2,6 @@ import { BaseService } from './base.service';
 import { RequestContext } from '../types/context';
 import { Types } from 'mongoose';
 import * as ExcelJS from 'exceljs';
-import crypto from 'crypto';
 import { User } from '../models/user.model';
 import { Shift, ShiftAssignment } from '../models/shift.model';
 import { Leave } from '../models/leave.model';
@@ -2431,14 +2430,14 @@ export class DataMigrationService extends BaseService {
 
     for (const row of rows) {
       try {
-        // Generate random password
-        const randomPassword = crypto.randomBytes(12).toString('hex') + 'A1!';
+        // Use default password for imported users (users should change it after first login)
+        const defaultPassword = '123456';
 
         // Prepare user data
         const userData: any = {
           name: row.name?.trim(),
           email: row.email?.toLowerCase().trim(),
-          password: randomPassword,
+          password: defaultPassword,
           role: row.role?.toLowerCase().trim(),
           specificRole: row.specificRole?.trim() || undefined,
           departmentId: row.departmentId?.trim(),

@@ -30,6 +30,7 @@ import { PermissionSummaryService } from '../services/permission-summary.service
 import { WFHService } from '../services/wfh.service';
 import { WFHSummaryService } from '../services/wfh-summary.service';
 import { ShiftChangeService } from '../services/shift-change.service';
+import { OptionalHolidayService } from '../services/optional-holiday.service';
 
 export interface ServiceContainer {
   requestContext: RequestContext;
@@ -64,4 +65,5 @@ export interface ServiceContainer {
   wfhService: WFHService;
   wfhSummaryService: WFHSummaryService;
   shiftChangeService: ShiftChangeService;
+  optionalHolidayService: OptionalHolidayService;
 } 

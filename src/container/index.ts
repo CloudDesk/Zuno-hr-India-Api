@@ -31,6 +31,7 @@ import { PermissionSummaryService } from '../services/permission-summary.service
 import { WFHService } from '../services/wfh.service';
 import { WFHSummaryService } from '../services/wfh-summary.service';
 import { ShiftChangeService } from '../services/shift-change.service';
+import { OptionalHolidayService } from '../services/optional-holiday.service';
 
 export class Container {
   private static instance: Container;
@@ -84,6 +85,7 @@ export class Container {
       wfhService: new WFHService(context),
       wfhSummaryService: new WFHSummaryService(context),
       shiftChangeService: new ShiftChangeService(context),
+      optionalHolidayService: new OptionalHolidayService(context),
     };
   }
 

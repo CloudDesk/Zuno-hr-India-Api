@@ -24,3 +24,4 @@ export * from './permission-summary.model';
 export * from './wfh.model';
 export * from './wfh-summary.model';
 export * from './shift-change-request.model';
+export * from './optional-holiday-request.model';

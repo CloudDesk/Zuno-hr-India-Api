@@ -288,8 +288,22 @@ export class HolidayCalendarService extends BaseService {
             throw new Error('Invalid user ID');
         }
 
+        const userObjectId = new Types.ObjectId(userId);
+
+        // First, check if user has a direct holidayCalendarId reference (Method 1)
+        const user = await User.findById(userId).select('holidayCalendarId').lean();
+        if (user?.holidayCalendarId) {
+            const calendar = await HolidayCalendar.findById(user.holidayCalendarId)
+                .select('-assignedTo -createdAt -updatedAt')
+                .lean();
+            if (calendar) {
+                return calendar;
+            }
+        }
+
+        // If no direct reference, check calendars where user is in assignedTo array (Method 2)
         const calendar = await HolidayCalendar.findOne({
-            assignedTo: new Types.ObjectId(userId)
+            assignedTo: userObjectId
         })
             .select('-assignedTo -createdAt -updatedAt')
             .lean();
