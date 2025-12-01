@@ -724,6 +724,19 @@ export class UserService extends BaseService {
       }
     }
 
+    // Validate email uniqueness only for active users
+    // Inactive users can have duplicate emails (for rehired employees)
+    const isActive = data.active !== undefined ? data.active : true; // Default to true
+    if (isActive && data.email) {
+      const existingUser = await User.findOne({
+        email: data.email.toLowerCase().trim(),
+        active: true // Only check against active users
+      });
+      if (existingUser) {
+        throw new Error(`Email "${data.email}" already exists for an active user.`);
+      }
+    }
+
     // ✅ FIX: Handle biometricId to prevent duplicate key error
     // For UAE and India users, don't set biometricId at all (undefined) to avoid sparse index issues
     if (data.country === 'AE' || data.country === 'IN') {
@@ -772,10 +785,15 @@ export class UserService extends BaseService {
     const savedUser = await user.save();
     console.log('✅ User saved successfully:', savedUser._id);
 
-    console.log('📧 Sending welcome email...');
-    //send welcome email with password if it's the default password
-    await this.sendWelcomeEmail(savedUser, plainPassword);
-    console.log('✅ Welcome email sent');
+    // Only send welcome email for active users
+    if (savedUser.active) {
+      console.log('📧 Sending welcome email...');
+      //send welcome email with password if it's the default password
+      await this.sendWelcomeEmail(savedUser, plainPassword);
+      console.log('✅ Welcome email sent');
+    } else {
+      console.log('⏭️ Skipping welcome email for inactive user');
+    }
 
     console.log('🎉 User creation completed successfully');
     return savedUser;
@@ -799,6 +817,20 @@ export class UserService extends BaseService {
       });
       if (existingUser) {
         throw new Error(`Employee code "${data.employeeCode}" already exists. Please use a unique employee code.`);
+      }
+    }
+
+    // Validate email uniqueness only for active users
+    // Inactive users can have duplicate emails (for rehired employees)
+    const willBeActive = data.active !== undefined ? data.active : user.active;
+    if (willBeActive && data.email && data.email.toLowerCase().trim() !== user.email.toLowerCase().trim()) {
+      const existingUser = await User.findOne({
+        email: data.email.toLowerCase().trim(),
+        active: true, // Only check against active users
+        _id: { $ne: id } // Exclude current user
+      });
+      if (existingUser) {
+        throw new Error(`Email "${data.email}" already exists for an active user.`);
       }
     }
 

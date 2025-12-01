@@ -6,8 +6,8 @@ import { generateEmailTemplate } from '../emails/templates';
 
 export class AuthService {
   async login(email: string, password: string) {
-
-    const user = await User.findOne({ email }).select('+password');
+    // Only allow login for active users
+    const user = await User.findOne({ email: email.toLowerCase().trim(), active: true }).select('+password');
     console.log('User Found', user);
     if (!user) {
       throw new Error('Invalid email or password');
