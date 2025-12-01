@@ -89,17 +89,33 @@ async function up() {
       console.log(`\n📅 Calendar: ${calendar.name} (${calendar.year})`);
       console.log(`   Found ${pastOptionalHolidays.length} past optional holidays`);
 
-      // Get employees assigned to this calendar
-      const employeeIds = calendar.assignedTo || [];
-      if (employeeIds.length === 0) {
+      // Get employees assigned to this calendar (Method 2: assignedTo array)
+      const employeeIdsFromArray = calendar.assignedTo || [];
+      
+      // Get employees with direct holidayCalendarId reference (Method 1: direct reference)
+      const employeesWithDirectRef = await User.find({
+        holidayCalendarId: calendar._id,
+        active: true
+      }).select('_id').lean();
+      const employeeIdsFromDirectRef = employeesWithDirectRef.map(e => e._id);
+
+      // Combine both methods and remove duplicates
+      const allEmployeeIds = [
+        ...new Set([
+          ...employeeIdsFromArray.map(id => id.toString()),
+          ...employeeIdsFromDirectRef.map(id => id.toString())
+        ])
+      ].map(id => new mongoose.Types.ObjectId(id));
+
+      if (allEmployeeIds.length === 0) {
         console.log(`   ⚠️  No employees assigned to this calendar`);
         continue;
       }
 
-      console.log(`   👥 Processing ${employeeIds.length} employees`);
+      console.log(`   👥 Processing ${allEmployeeIds.length} employees (${employeeIdsFromArray.length} from assignedTo, ${employeeIdsFromDirectRef.length} from direct reference)`);
 
       // Process each employee
-      for (const employeeId of employeeIds) {
+      for (const employeeId of allEmployeeIds) {
         try {
           const employee = await User.findById(employeeId).select('name email active').lean();
           if (!employee || !employee.active) {
@@ -119,11 +135,16 @@ async function up() {
             const year = holidayDate.getFullYear();
 
             // Check if request already exists
+            const startOfDay = new Date(holidayDate);
+            startOfDay.setUTCHours(0, 0, 0, 0);
+            const endOfDay = new Date(holidayDate);
+            endOfDay.setUTCHours(23, 59, 59, 999);
+            
             const existingRequest = await OptionalHolidayRequest.findOne({
               userId: employeeId,
               holidayDate: {
-                $gte: new Date(holidayDate.setHours(0, 0, 0, 0)),
-                $lt: new Date(holidayDate.setHours(23, 59, 59, 999)),
+                $gte: startOfDay,
+                $lte: endOfDay,
               },
             });
 

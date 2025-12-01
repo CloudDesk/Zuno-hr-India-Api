@@ -1022,17 +1022,18 @@ The data migration feature allows admins to import and export data via Excel fil
 - Salary Assignments
 - Salary Structures
 - Attendance Records
+- Optional Holidays
 
 ### API Endpoints
 
 #### 1. Download Template
 ```
-GET /data-migration/template?objects=user,shift,leave
+GET /data-migration/template?objects=user,shift,leave,optional-holiday
 ```
 
 **Query Parameters:**
 - `objects` (required): Comma-separated or array of object types
-  - Valid values: `user`, `shift`, `leave`, `salary-assignment`, `salary-structure`, `attendance-record`
+  - Valid values: `user`, `shift`, `leave`, `salary-assignment`, `salary-structure`, `attendance-record`, `optional-holiday`
 
 **Response:** Excel file (binary)
 
@@ -1072,8 +1073,9 @@ GET /data-migration/export?objects=user,shift&active=true&country=IN
 - `role` (optional): Filter users by role
 - `departmentId` (optional): Filter users by department
 - `isActive` (optional): Filter shifts/salary assignments by active status
-- `status` (optional): Filter leaves by status
-- `userId` (optional): Filter leaves/attendance by user ID
+- `status` (optional): Filter leaves/optional-holidays by status (Pending, Approved, Rejected, Cancelled)
+- `userId` (optional): Filter leaves/attendance/optional-holidays by user ID
+- `year` (optional): Filter optional-holidays by year
 - `shiftCode` (optional): Filter attendance by shift code
 - `shiftDay` (optional): Filter attendance by shift day (YYYY-MM-DD)
 
@@ -1236,7 +1238,7 @@ const confirmImport = async (objects: string[], validRows: any) => {
 import React, { useState } from 'react';
 import { useForm } from 'react-hook-form';
 
-type ObjectType = 'user' | 'shift' | 'leave' | 'salary-assignment' | 'salary-structure' | 'attendance-record';
+type ObjectType = 'user' | 'shift' | 'leave' | 'salary-assignment' | 'salary-structure' | 'attendance-record' | 'optional-holiday';
 
 interface ValidationResult {
   validRows: any[];
@@ -1270,7 +1272,8 @@ const DataMigrationPage: React.FC = () => {
     'leave',
     'salary-assignment',
     'salary-structure',
-    'attendance-record'
+    'attendance-record',
+    'optional-holiday'
   ];
 
   const handleDownloadTemplate = async () => {
@@ -1678,6 +1681,76 @@ When exporting shifts via `GET /data-migration/export?objects=shift`, the Excel 
 
 ---
 
-*Frontend Implementation Guide v1.1*  
+### 📋 Optional Holiday Import/Export - Special Notes
+
+#### Import Template Fields
+
+When importing optional holidays, the Excel template includes the following fields:
+
+**Required Fields:**
+- `User ID` - Valid User ID (must exist in system)
+- `Holiday Date` - Format: YYYY-MM-DD (must be an optional holiday in user's calendar)
+- `Holiday Name` - Name of the optional holiday (will be validated against calendar)
+- `Year` - Year of the holiday (must match holiday date year)
+
+**Optional Fields:**
+- `Status` - Default: "Pending". Valid values: "Pending", "Approved", "Rejected", "Cancelled"
+- `Reason` - Reason for requesting optional holiday
+- `Remarks` - Remarks from approver
+- `Applied To ID` - User ID of manager/admin to approve
+- `Applied To Name` - Name of manager/admin
+- `Approved By ID` - User ID of approver (if status is Approved/Rejected)
+- `Approved At` - Format: YYYY-MM-DD. Approval date
+
+#### ⚠️ Important: Annual Limit Enforcement
+
+**Annual Limit:** Maximum 2 approved optional holidays per user per year.
+
+**Import Behavior:**
+1. The system tracks existing approved optional holidays from the database
+2. During import, it also tracks newly imported approved requests
+3. If importing multiple approved optional holidays for the same user in the same year:
+   - **1st approved** → Count = 1, Remaining = 1 ✅
+   - **2nd approved** → Count = 2, Remaining = 0 ✅
+   - **3rd approved** → Automatically changed to "Pending" status with error message ⚠️
+
+**Error Messages:**
+- If annual limit is exceeded: `"Row X: Cannot approve - user already has 2 approved optional holidays for YYYY. Maximum is 2 per year. Changing status to Pending."`
+- If duplicate date: `"Row X: Optional holiday request already exists for this date"`
+- If invalid date: `"Row X: The selected date is not an optional holiday in your calendar"`
+
+**Best Practice:**
+- Import approved optional holidays in chronological order
+- Check validation results before confirming import
+- Review error messages to see which requests were changed to "Pending" due to limit
+
+#### Export Filters
+
+When exporting optional holidays, you can filter by:
+- `status` - Filter by status (Pending, Approved, Rejected, Cancelled)
+- `userId` - Filter by specific user ID
+- `year` - Filter by year
+
+**Example:**
+```typescript
+// Export all approved optional holidays for 2025
+const exportApprovedHolidays = async () => {
+  const params = new URLSearchParams();
+  params.append('objects', 'optional-holiday');
+  params.append('status', 'Approved');
+  params.append('year', '2025');
+  
+  const response = await fetch(`/data-migration/export?${params.toString()}`, {
+    credentials: 'include'
+  });
+  
+  const blob = await response.blob();
+  // ... download logic
+};
+```
+
+---
+
+*Frontend Implementation Guide v1.2*  
 *Last Updated: January 2025*
 

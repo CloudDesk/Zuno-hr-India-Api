@@ -10,8 +10,9 @@ import { SalaryStructure } from '../models/salary-structure.model';
 import { AttendanceRecord } from '../models/attendance-record.model';
 import { LOV } from '../models/lov.model';
 import { HolidayCalendar } from '../models/holiday-calendar.model';
+import { OptionalHolidayRequest } from '../models/optional-holiday-request.model';
 
-export type ExportableObject = 'user' | 'shift' | 'leave' | 'salary-assignment' | 'salary-structure' | 'attendance-record';
+export type ExportableObject = 'user' | 'shift' | 'leave' | 'salary-assignment' | 'salary-structure' | 'attendance-record' | 'optional-holiday';
 
 export interface IExportRequest {
   objects: ExportableObject[];
@@ -116,6 +117,9 @@ export class DataMigrationService extends BaseService {
       case 'attendance-record':
         this.createAttendanceRecordTemplate(worksheet);
         break;
+      case 'optional-holiday':
+        this.createOptionalHolidayTemplate(worksheet);
+        break;
     }
 
     this.autoFitColumns(worksheet);
@@ -170,6 +174,16 @@ export class DataMigrationService extends BaseService {
         '• Shift End must be > Shift Start',
         '• Shift Code should match the Shift ID',
         '• Date formats: YYYY-MM-DD for shiftDay, ISO DateTime for times'
+      ],
+      'optional-holiday': [
+        'Instructions:',
+        '• User ID must be valid and user must exist',
+        '• Holiday Date must be an optional holiday in user\'s calendar',
+        '• Holiday Name must match the optional holiday name in calendar',
+        '• Status: Pending, Approved, Rejected, or Cancelled (default: Pending)',
+        '• Year must match the holiday date year',
+        '• Maximum 2 approved optional holidays per year per employee',
+        '• Date formats: YYYY-MM-DD'
       ]
     };
 
@@ -193,7 +207,7 @@ export class DataMigrationService extends BaseService {
   private createUserTemplate(worksheet: ExcelJS.Worksheet): void {
     const headers = [
       'Name (Required)',
-      'Email (Required)',
+      'Email (Required if Active=Yes, Optional if Active=No)',
       'Role (Required)',
       'Specific Role (Optional)',
       'Department ID (Required)',
@@ -203,12 +217,20 @@ export class DataMigrationService extends BaseService {
       'Biometric ID (Optional - Non-IN/AE only)',
       'Active (Optional - Default: Yes)',
       'Joining Date (Optional - Default: Today)',
+      'Confirmation Date (Required)',
+      'Probation Date (Required)',
       'Location (Optional)',
       'Phone (Optional)',
       'Emergency Contact (Optional)',
       'Address (Optional)',
       'Blood Group (Optional)',
       'Date of Birth (Optional)',
+      'Father\'s Name (Optional)',
+      'Marital Status (Optional)',
+      'Spouse Name (Optional)',
+      'Separation Date (Optional)',
+      'Notice Period (Optional)',
+      'Personal Mail ID (Optional)',
       'Country (Required)',
       'Currency (Optional - Auto-set by Country)',
       'License Type (Optional - Default: employee)',
@@ -227,7 +249,7 @@ export class DataMigrationService extends BaseService {
     // Add detailed notes to header cells
     this.addFieldRequirementNotes(worksheet, {
       1: { required: true, note: 'Full name of the user' },
-      2: { required: true, note: 'Valid email address, must be unique' },
+      2: { required: false, note: 'Valid email address, must be unique. Required if Active=Yes, optional if Active=No' },
       3: { required: true, note: 'Must be one of: admin, manager, staff, external' },
       4: { required: false, note: 'Specific role designation' },
       5: { required: true, note: 'Must exist in Department LOV' },
@@ -237,22 +259,30 @@ export class DataMigrationService extends BaseService {
       9: { required: false, note: 'Only for non-IN/AE countries, must be unique if provided' },
       10: { required: false, note: 'Yes/No, defaults to Yes' },
       11: { required: false, note: 'Format: YYYY-MM-DD or DD/MM/YYYY' },
-      12: { required: false, note: 'User location' },
-      13: { required: false, note: 'Phone number' },
-      14: { required: false, note: 'Emergency contact information' },
-      15: { required: false, note: 'User address' },
-      16: { required: false, note: 'Blood group' },
-      17: { required: false, note: 'Format: YYYY-MM-DD or DD/MM/YYYY' },
-      18: { required: true, note: 'Required field. Must be IN or AE' },
-      19: { required: false, note: 'INR for IN, AED for AE (auto-set if not provided)' },
-      20: { required: false, note: 'employee or external, defaults to employee' },
-      21: { required: false, note: 'Yes/No, defaults to Yes' },
-      22: { required: false, note: 'Required for AE users: Standard Employment Visa, Domestic Worker Visa, or Green Visa' },
-      23: { required: false, note: 'Required for AE users, must be future date, format: YYYY-MM-DD' },
-      24: { required: false, note: 'Yes/No, defaults to Yes' },
-      25: { required: false, note: 'Client assignment' },
-      26: { required: false, note: 'Valid Holiday Calendar ID' },
-      27: { required: false, note: 'Valid Shift ID. Required if shift-assignment is also being imported. Shift assignment will be created with joining date as start date and weekend [0,6]' }
+      12: { required: true, note: 'Format: YYYY-MM-DD or DD/MM/YYYY. Employee confirmation date (Required)' },
+      13: { required: true, note: 'Format: YYYY-MM-DD or DD/MM/YYYY. Employee probation date (Required)' },
+      14: { required: false, note: 'User location' },
+      15: { required: false, note: 'Phone number' },
+      16: { required: false, note: 'Emergency contact information' },
+      17: { required: false, note: 'User address' },
+      18: { required: false, note: 'Blood group' },
+      19: { required: false, note: 'Format: YYYY-MM-DD or DD/MM/YYYY' },
+      20: { required: false, note: 'Father\'s name' },
+      21: { required: false, note: 'Single, Married, Divorced, or Widowed' },
+      22: { required: false, note: 'Spouse name (if married)' },
+      23: { required: false, note: 'Format: YYYY-MM-DD or DD/MM/YYYY. Employee separation date' },
+      24: { required: false, note: 'Notice period in days (number)' },
+      25: { required: false, note: 'Personal email address (must be valid format)' },
+      26: { required: true, note: 'Required field. Must be IN or AE' },
+      27: { required: false, note: 'INR for IN, AED for AE (auto-set if not provided)' },
+      28: { required: false, note: 'employee or external, defaults to employee' },
+      29: { required: false, note: 'Yes/No, defaults to Yes' },
+      30: { required: false, note: 'Required for AE users: Standard Employment Visa, Domestic Worker Visa, or Green Visa' },
+      31: { required: false, note: 'Required for AE users, must be future date, format: YYYY-MM-DD' },
+      32: { required: false, note: 'Yes/No, defaults to Yes' },
+      33: { required: false, note: 'Client assignment' },
+      34: { required: false, note: 'Valid Holiday Calendar ID' },
+      35: { required: false, note: 'Valid Shift ID. Required if shift-assignment is also being imported. Shift assignment will be created with joining date as start date and weekend [0,6]' }
     });
   }
 
@@ -335,6 +365,42 @@ export class DataMigrationService extends BaseService {
       13: { required: false, note: 'Format: YYYY-MM-DD' },
       14: { required: false, note: 'full-day or half-day. For half-day: startDate = endDate, noOfDays = 0.5, halfDayType required' },
       15: { required: false, note: 'Required for half-day leaves: first-half or second-half' }
+    });
+  }
+
+  /**
+   * Create Optional Holiday template
+   */
+  private createOptionalHolidayTemplate(worksheet: ExcelJS.Worksheet): void {
+    const headers = [
+      'User ID (Required)',
+      'Holiday Date (Required)',
+      'Holiday Name (Required)',
+      'Year (Required)',
+      'Status (Optional - Default: Pending)',
+      'Reason (Optional)',
+      'Remarks (Optional)',
+      'Applied To ID (Optional)',
+      'Applied To Name (Optional)',
+      'Approved By ID (Optional)',
+      'Approved At (Optional)'
+    ];
+    worksheet.addRow(headers);
+    this.styleHeaderRow(worksheet.getRow(1));
+
+    // Add detailed notes to header cells
+    this.addFieldRequirementNotes(worksheet, {
+      1: { required: true, note: 'Valid User ID' },
+      2: { required: true, note: 'Format: YYYY-MM-DD. Must be an optional holiday in user\'s calendar' },
+      3: { required: true, note: 'Name of the optional holiday' },
+      4: { required: true, note: 'Year of the holiday (must match holiday date year)' },
+      5: { required: false, note: 'Pending, Approved, Rejected, or Cancelled' },
+      6: { required: false, note: 'Reason for requesting optional holiday' },
+      7: { required: false, note: 'Remarks from approver' },
+      8: { required: false, note: 'User ID of manager/admin to approve' },
+      9: { required: false, note: 'Name of manager/admin' },
+      10: { required: false, note: 'User ID of approver (if status is Approved/Rejected)' },
+      11: { required: false, note: 'Format: YYYY-MM-DD. Approval date' }
     });
   }
 
@@ -500,6 +566,9 @@ export class DataMigrationService extends BaseService {
       case 'attendance-record':
         await this.exportAttendanceRecords(worksheet, filters);
         break;
+      case 'optional-holiday':
+        await this.exportOptionalHolidays(worksheet, filters);
+        break;
     }
   }
 
@@ -508,6 +577,7 @@ export class DataMigrationService extends BaseService {
    */
   private async exportUsers(worksheet: ExcelJS.Worksheet, filters?: any): Promise<void> {
     const headers = [
+      'User ID',
       'Name',
       'Email',
       'Role',
@@ -519,12 +589,20 @@ export class DataMigrationService extends BaseService {
       'Biometric ID',
       'Active',
       'Joining Date',
+      'Confirmation Date',
+      'Probation Date',
       'Location',
       'Phone',
       'Emergency Contact',
       'Address',
       'Blood Group',
       'Date of Birth',
+      'Father\'s Name',
+      'Marital Status',
+      'Spouse Name',
+      'Separation Date',
+      'Notice Period',
+      'Personal Mail ID',
       'Country',
       'Currency',
       'License Type',
@@ -547,11 +625,12 @@ export class DataMigrationService extends BaseService {
     if (filters?.departmentId) query.departmentId = filters.departmentId;
 
     const users = await User.find(query)
-      .select('name email role specificRole departmentId managerId employeeCode checkinId biometricId active joiningDate location phone emergencyContact address bloodGroup dateOfBirth country currency licenseType portalAccess visaDetails client holidayCalendarId fcmToken')
+      .select('name email role specificRole departmentId managerId employeeCode checkinId biometricId active joiningDate confirmationDate probationDate location phone emergencyContact address bloodGroup dateOfBirth fatherName maritalStatus spouseName separationDate noticePeriod personalMailId country currency licenseType portalAccess visaDetails client holidayCalendarId fcmToken')
       .lean();
 
     for (const user of users) {
       const row = [
+        user._id?.toString() || '',  // User ID as first column
         user.name || '',
         user.email || '',
         user.role || '',
@@ -563,12 +642,20 @@ export class DataMigrationService extends BaseService {
         user.biometricId || '',
         user.active ? CONSTANTS.BOOLEAN_YES.toUpperCase() : CONSTANTS.BOOLEAN_NO.toUpperCase(),
         user.joiningDate ? new Date(user.joiningDate).toISOString().split('T')[0] : '',
+        user.confirmationDate ? new Date(user.confirmationDate).toISOString().split('T')[0] : '',
+        user.probationDate ? new Date(user.probationDate).toISOString().split('T')[0] : '',
         user.location || '',
         user.phone || '',
         user.emergencyContact || '',
         user.address || '',
         user.bloodGroup || '',
         user.dateOfBirth ? new Date(user.dateOfBirth).toISOString().split('T')[0] : '',
+        user.fatherName || '',
+        user.maritalStatus || '',
+        user.spouseName || '',
+        user.separationDate ? new Date(user.separationDate).toISOString().split('T')[0] : '',
+        user.noticePeriod || '',
+        user.personalMailId || '',
         user.country || CONSTANTS.DEFAULT_COUNTRY,
         user.currency || CONSTANTS.DEFAULT_CURRENCY_INR,
         user.licenseType || CONSTANTS.DEFAULT_LICENSE_TYPE,
@@ -845,6 +932,54 @@ export class DataMigrationService extends BaseService {
   }
 
   /**
+   * Export Optional Holidays to Excel
+   */
+  private async exportOptionalHolidays(worksheet: ExcelJS.Worksheet, filters?: any): Promise<void> {
+    const headers = [
+      'User ID',
+      'Holiday Date',
+      'Holiday Name',
+      'Year',
+      'Status',
+      'Reason',
+      'Remarks',
+      'Applied To ID',
+      'Applied To Name',
+      'Approved By ID',
+      'Approved At'
+    ];
+
+    worksheet.addRow(headers);
+    this.styleHeaderRow(worksheet.getRow(1));
+
+    const query: any = {};
+    if (filters?.userId) query.userId = new Types.ObjectId(filters.userId);
+    if (filters?.status) query.status = filters.status;
+    if (filters?.year) query.year = filters.year;
+
+    const requests = await OptionalHolidayRequest.find(query).lean();
+
+    for (const request of requests) {
+      const row = [
+        request.userId?.toString() || '',
+        request.holidayDate ? new Date(request.holidayDate).toISOString().split('T')[0] : '',
+        request.holidayName || '',
+        request.year || '',
+        request.status || 'Pending',
+        request.reason || '',
+        request.remarks || '',
+        request.appliedTo?._id || '',
+        request.appliedTo?.name || '',
+        request.approvedById?.toString() || '',
+        request.approvedAt ? new Date(request.approvedAt).toISOString().split('T')[0] : ''
+      ];
+      worksheet.addRow(row);
+    }
+
+    this.autoFitColumns(worksheet);
+  }
+
+  /**
    * Parse Excel file and extract data for selected objects
    */
   async parseExcelFile(fileBuffer: Buffer, objects: ExportableObject[]): Promise<{ [objectType: string]: IImportRow[] }> {
@@ -902,6 +1037,9 @@ export class DataMigrationService extends BaseService {
         case 'attendance-record':
           this.parseAttendanceRecordRow(row, rowData);
           break;
+        case 'optional-holiday':
+          this.parseOptionalHolidayRow(row, rowData);
+          break;
       }
 
       // Only add rows that have at least one non-empty field
@@ -931,22 +1069,30 @@ export class DataMigrationService extends BaseService {
     rowData.biometricId = this.getCellValue(row, 9);
     rowData.active = this.parseBoolean(this.getCellValue(row, 10), true);
     rowData.joiningDate = this.getCellValue(row, 11);
-    rowData.location = this.getCellValue(row, 12);
-    rowData.phone = this.getCellValue(row, 13);
-    rowData.emergencyContact = this.getCellValue(row, 14);
-    rowData.address = this.getCellValue(row, 15);
-    rowData.bloodGroup = this.getCellValue(row, 16);
-    rowData.dateOfBirth = this.getCellValue(row, 17);
-    rowData.country = this.getCellValue(row, 18);
-    rowData.currency = this.getCellValue(row, 19) || CONSTANTS.DEFAULT_CURRENCY_INR;
-    rowData.licenseType = this.getCellValue(row, 20) || CONSTANTS.DEFAULT_LICENSE_TYPE;
-    rowData.portalAccess = this.parseBoolean(this.getCellValue(row, 21), true);
-    rowData.visaType = this.getCellValue(row, 22);
-    rowData.visaExpiryDate = this.getCellValue(row, 23);
-    rowData.visaIsActive = this.parseBoolean(this.getCellValue(row, 24), true);
-    rowData.client = this.getCellValue(row, 25);
-    rowData.holidayCalendarId = this.getCellValue(row, 26);
-    rowData.shiftId = this.getCellValue(row, 27); // For automatic shift assignment creation
+    rowData.confirmationDate = this.getCellValue(row, 12); // Required
+    rowData.probationDate = this.getCellValue(row, 13); // Required
+    rowData.location = this.getCellValue(row, 14);
+    rowData.phone = this.getCellValue(row, 15);
+    rowData.emergencyContact = this.getCellValue(row, 16);
+    rowData.address = this.getCellValue(row, 17);
+    rowData.bloodGroup = this.getCellValue(row, 18);
+    rowData.dateOfBirth = this.getCellValue(row, 19);
+    rowData.fatherName = this.getCellValue(row, 20);
+    rowData.maritalStatus = this.getCellValue(row, 21);
+    rowData.spouseName = this.getCellValue(row, 22);
+    rowData.separationDate = this.getCellValue(row, 23);
+    rowData.noticePeriod = this.getCellValue(row, 24);
+    rowData.personalMailId = this.getCellValue(row, 25);
+    rowData.country = this.getCellValue(row, 26);
+    rowData.currency = this.getCellValue(row, 27) || CONSTANTS.DEFAULT_CURRENCY_INR;
+    rowData.licenseType = this.getCellValue(row, 28) || CONSTANTS.DEFAULT_LICENSE_TYPE;
+    rowData.portalAccess = this.parseBoolean(this.getCellValue(row, 29), true);
+    rowData.visaType = this.getCellValue(row, 30);
+    rowData.visaExpiryDate = this.getCellValue(row, 31);
+    rowData.visaIsActive = this.parseBoolean(this.getCellValue(row, 32), true);
+    rowData.client = this.getCellValue(row, 33);
+    rowData.holidayCalendarId = this.getCellValue(row, 34);
+    rowData.shiftId = this.getCellValue(row, 35); // For automatic shift assignment creation
     // Note: FCM Token is not imported - it's set automatically when users log into the mobile app
   }
 
@@ -1046,6 +1192,23 @@ export class DataMigrationService extends BaseService {
   }
 
   /**
+   * Parse Optional Holiday row
+   */
+  private parseOptionalHolidayRow(row: ExcelJS.Row, rowData: IImportRow): void {
+    rowData.userId = this.getCellValue(row, 1);
+    rowData.holidayDate = this.getCellValue(row, 2);
+    rowData.holidayName = this.getCellValue(row, 3);
+    rowData.year = this.getCellValue(row, 4);
+    rowData.status = this.getCellValue(row, 5);
+    rowData.reason = this.getCellValue(row, 6);
+    rowData.remarks = this.getCellValue(row, 7);
+    rowData.appliedToId = this.getCellValue(row, 8);
+    rowData.appliedToName = this.getCellValue(row, 9);
+    rowData.approvedById = this.getCellValue(row, 10);
+    rowData.approvedAt = this.getCellValue(row, 11);
+  }
+
+  /**
    * Validate imported data
    */
   async validateImportData(
@@ -1078,6 +1241,9 @@ export class DataMigrationService extends BaseService {
           break;
         case 'attendance-record':
           results[objectType] = await this.validateAttendanceRecords(rows);
+          break;
+        case 'optional-holiday':
+          results[objectType] = await this.validateOptionalHolidays(rows);
           break;
       }
 
@@ -1135,7 +1301,7 @@ export class DataMigrationService extends BaseService {
       }
     }
 
-    // Get all unique emails and employee numbers for batch database check
+    // Get all unique emails for batch database check (only for provided emails)
     const emails = [...new Set(rows.map(r => r.email?.toLowerCase().trim()).filter(Boolean))];
     const employeeNos = [...new Set(rows.map(r => r.employeeNo?.trim()).filter(Boolean))];
     const checkinIds = [...new Set(rows.map(r => r.checkinId?.trim()).filter(Boolean))];
@@ -1215,13 +1381,21 @@ export class DataMigrationService extends BaseService {
         });
       }
 
+      // Email is required only if user is active (Active = Yes)
+      // If Active = No, email is optional
+      const isActive = row.active !== undefined ? row.active : true; // Default to true if not specified
+
       if (!row.email?.trim()) {
-        rowErrors.push({
-          rowNumber: row.rowNumber,
-          field: 'email',
-          message: 'Email is required',
-          severity: 'error'
-        });
+        if (isActive) {
+          // Email is required for active users
+          rowErrors.push({
+            rowNumber: row.rowNumber,
+            field: 'email',
+            message: 'Email is required for active users (Active=Yes)',
+            severity: 'error'
+          });
+        }
+        // If inactive, email is optional - no error
       } else {
         // Email format validation - accepts formats like: user@domain.com, user@domain.ae, user@subdomain.domain.com
         // Examples: pravinraja@clouddesk.ae, john@example.com, user.name@company.co.uk
@@ -1397,6 +1571,45 @@ export class DataMigrationService extends BaseService {
         }
       }
 
+      // Required fields: Confirmation Date and Probation Date
+      if (!row.confirmationDate) {
+        rowErrors.push({
+          rowNumber: row.rowNumber,
+          field: 'confirmationDate',
+          message: 'Confirmation Date is required',
+          severity: 'error'
+        });
+      } else {
+        const confirmationDate = this.parseDate(row.confirmationDate);
+        if (!confirmationDate) {
+          rowErrors.push({
+            rowNumber: row.rowNumber,
+            field: 'confirmationDate',
+            message: 'Invalid confirmation date format. Expected: YYYY-MM-DD or DD/MM/YYYY',
+            severity: 'error'
+          });
+        }
+      }
+
+      if (!row.probationDate) {
+        rowErrors.push({
+          rowNumber: row.rowNumber,
+          field: 'probationDate',
+          message: 'Probation Date is required',
+          severity: 'error'
+        });
+      } else {
+        const probationDate = this.parseDate(row.probationDate);
+        if (!probationDate) {
+          rowErrors.push({
+            rowNumber: row.rowNumber,
+            field: 'probationDate',
+            message: 'Invalid probation date format. Expected: YYYY-MM-DD or DD/MM/YYYY',
+            severity: 'error'
+          });
+        }
+      }
+
       // Date validation
       if (row.joiningDate) {
         const date = this.parseDate(row.joiningDate);
@@ -1543,6 +1756,70 @@ export class DataMigrationService extends BaseService {
             field: 'visaDetails',
             message: 'Visa details are only applicable for AE (UAE) users',
             severity: 'warning'
+          });
+        }
+      }
+
+      // Optional date field validation
+      if (row.dateOfBirth) {
+        const date = this.parseDate(row.dateOfBirth);
+        if (!date) {
+          rowErrors.push({
+            rowNumber: row.rowNumber,
+            field: 'dateOfBirth',
+            message: 'Invalid date of birth format (expected YYYY-MM-DD or DD/MM/YYYY)',
+            severity: 'error'
+          });
+        }
+      }
+
+      if (row.separationDate) {
+        const date = this.parseDate(row.separationDate);
+        if (!date) {
+          rowErrors.push({
+            rowNumber: row.rowNumber,
+            field: 'separationDate',
+            message: 'Invalid separation date format (expected YYYY-MM-DD or DD/MM/YYYY)',
+            severity: 'error'
+          });
+        }
+      }
+
+      // Marital Status validation
+      if (row.maritalStatus?.trim()) {
+        const validStatuses = ['Single', 'Married', 'Divorced', 'Widowed'];
+        if (!validStatuses.includes(row.maritalStatus.trim())) {
+          rowErrors.push({
+            rowNumber: row.rowNumber,
+            field: 'maritalStatus',
+            message: `Marital status must be one of: ${validStatuses.join(', ')}`,
+            severity: 'error'
+          });
+        }
+      }
+
+      // Notice Period validation
+      if (row.noticePeriod) {
+        const noticePeriod = Number(row.noticePeriod);
+        if (isNaN(noticePeriod) || noticePeriod < 0) {
+          rowErrors.push({
+            rowNumber: row.rowNumber,
+            field: 'noticePeriod',
+            message: 'Notice period must be a non-negative number',
+            severity: 'error'
+          });
+        }
+      }
+
+      // Personal Mail ID validation
+      if (row.personalMailId?.trim()) {
+        const emailRegex = /^[a-zA-Z0-9._+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+        if (!emailRegex.test(row.personalMailId.trim())) {
+          rowErrors.push({
+            rowNumber: row.rowNumber,
+            field: 'personalMailId',
+            message: 'Invalid personal email format. Expected format: user@domain.com',
+            severity: 'error'
           });
         }
       }
@@ -2366,6 +2643,245 @@ export class DataMigrationService extends BaseService {
   }
 
   /**
+   * Validate Optional Holidays
+   */
+  private async validateOptionalHolidays(rows: IImportRow[]): Promise<IValidationResult> {
+    const validRows: IImportRow[] = [];
+    const invalidRows: IImportRow[] = [];
+    const errors: IValidationError[] = [];
+
+    // Batch validate user IDs
+    const userIds = [...new Set(rows.map(r => r.userId).filter(Boolean).filter(id => this.isValidObjectId(id)))];
+    const existingUsers = userIds.length > 0
+      ? await User.find({ _id: { $in: userIds.map(id => new Types.ObjectId(id)) } })
+        .select('_id holidayCalendarId')
+        .lean()
+      : [];
+
+    const validUserIds = new Set(existingUsers.map(u => u._id.toString()));
+    const userCalendarMap = new Map(existingUsers.map(u => [u._id.toString(), u.holidayCalendarId?.toString()]));
+
+    // Batch fetch holiday calendars
+    const calendarIds = [...new Set(Array.from(userCalendarMap.values()).filter(Boolean))];
+    const calendars = calendarIds.length > 0
+      ? await HolidayCalendar.find({ _id: { $in: calendarIds.map(id => new Types.ObjectId(id!)) } })
+        .select('holidays')
+        .lean()
+      : [];
+
+    const calendarHolidaysMap = new Map(
+      calendars.map(cal => [
+        cal._id.toString(),
+        cal.holidays.filter((h: any) => h.type === 'optional')
+      ])
+    );
+
+    for (const row of rows) {
+      const rowErrors: IValidationError[] = [];
+
+      // Validate userId
+      if (!row.userId) {
+        rowErrors.push({
+          rowNumber: row.rowNumber,
+          field: 'userId',
+          message: 'User ID is required',
+          severity: 'error'
+        });
+      } else if (!this.isValidObjectId(row.userId)) {
+        rowErrors.push({
+          rowNumber: row.rowNumber,
+          field: 'userId',
+          message: 'Invalid User ID format',
+          severity: 'error'
+        });
+      } else if (!validUserIds.has(row.userId)) {
+        rowErrors.push({
+          rowNumber: row.rowNumber,
+          field: 'userId',
+          message: 'User not found',
+          severity: 'error'
+        });
+      }
+
+      // Validate holidayDate
+      if (!row.holidayDate) {
+        rowErrors.push({
+          rowNumber: row.rowNumber,
+          field: 'holidayDate',
+          message: 'Holiday Date is required',
+          severity: 'error'
+        });
+      } else {
+        const holidayDate = this.parseDate(row.holidayDate);
+        if (!holidayDate) {
+          rowErrors.push({
+            rowNumber: row.rowNumber,
+            field: 'holidayDate',
+            message: 'Invalid date format. Use YYYY-MM-DD or DD/MM/YYYY',
+            severity: 'error'
+          });
+        } else {
+          // Validate date is in the past (for migration)
+          const today = new Date();
+          today.setHours(0, 0, 0, 0);
+          if (holidayDate >= today) {
+            rowErrors.push({
+              rowNumber: row.rowNumber,
+              field: 'holidayDate',
+              message: 'Holiday date must be in the past for migration',
+              severity: 'error'
+            });
+          }
+
+          // Validate it's an optional holiday in user's calendar
+          if (row.userId && validUserIds.has(row.userId)) {
+            const calendarId = userCalendarMap.get(row.userId);
+            if (calendarId) {
+              const optionalHolidays = calendarHolidaysMap.get(calendarId) || [];
+              const holidayDateStr = holidayDate.toISOString().split('T')[0];
+              const matchingHoliday = optionalHolidays.find((h: any) => {
+                const hDateStr = new Date(h.date).toISOString().split('T')[0];
+                return hDateStr === holidayDateStr;
+              });
+
+              if (!matchingHoliday) {
+                rowErrors.push({
+                  rowNumber: row.rowNumber,
+                  field: 'holidayDate',
+                  message: 'Date is not an optional holiday in user\'s calendar',
+                  severity: 'error'
+                });
+              } else if (row.holidayName && row.holidayName.trim() !== matchingHoliday.name) {
+                rowErrors.push({
+                  rowNumber: row.rowNumber,
+                  field: 'holidayName',
+                  message: `Holiday name should be "${matchingHoliday.name}"`,
+                  severity: 'warning'
+                });
+              }
+            } else {
+              rowErrors.push({
+                rowNumber: row.rowNumber,
+                field: 'userId',
+                message: 'User does not have a holiday calendar assigned',
+                severity: 'error'
+              });
+            }
+          }
+        }
+      }
+
+      // Validate holidayName
+      if (!row.holidayName || !row.holidayName.trim()) {
+        rowErrors.push({
+          rowNumber: row.rowNumber,
+          field: 'holidayName',
+          message: 'Holiday Name is required',
+          severity: 'error'
+        });
+      }
+
+      // Validate year
+      if (!row.year) {
+        rowErrors.push({
+          rowNumber: row.rowNumber,
+          field: 'year',
+          message: 'Year is required',
+          severity: 'error'
+        });
+      } else {
+        const year = parseInt(row.year.toString());
+        if (isNaN(year) || year < 2000 || year > 2100) {
+          rowErrors.push({
+            rowNumber: row.rowNumber,
+            field: 'year',
+            message: 'Year must be a valid number between 2000 and 2100',
+            severity: 'error'
+          });
+        } else if (row.holidayDate) {
+          const holidayDate = this.parseDate(row.holidayDate);
+          if (holidayDate && holidayDate.getFullYear() !== year) {
+            rowErrors.push({
+              rowNumber: row.rowNumber,
+              field: 'year',
+              message: `Year must match holiday date year (${holidayDate.getFullYear()})`,
+              severity: 'error'
+            });
+          }
+        }
+      }
+
+      // Validate status
+      if (row.status) {
+        const validStatuses = ['Pending', 'Approved', 'Rejected', 'Cancelled'];
+        if (!validStatuses.includes(row.status)) {
+          rowErrors.push({
+            rowNumber: row.rowNumber,
+            field: 'status',
+            message: `Status must be one of: ${validStatuses.join(', ')}`,
+            severity: 'error'
+          });
+        }
+      }
+
+      // Validate appliedToId if provided
+      if (row.appliedToId && !this.isValidObjectId(row.appliedToId)) {
+        rowErrors.push({
+          rowNumber: row.rowNumber,
+          field: 'appliedToId',
+          message: 'Invalid Applied To ID format',
+          severity: 'error'
+        });
+      }
+
+      // Validate approvedById if provided
+      if (row.approvedById && !this.isValidObjectId(row.approvedById)) {
+        rowErrors.push({
+          rowNumber: row.rowNumber,
+          field: 'approvedById',
+          message: 'Invalid Approved By ID format',
+          severity: 'error'
+        });
+      }
+
+      // Validate approvedAt if provided
+      if (row.approvedAt) {
+        const approvedAt = this.parseDate(row.approvedAt);
+        if (!approvedAt) {
+          rowErrors.push({
+            rowNumber: row.rowNumber,
+            field: 'approvedAt',
+            message: 'Invalid date format. Use YYYY-MM-DD or DD/MM/YYYY',
+            severity: 'error'
+          });
+        }
+      }
+
+      const hasErrors = rowErrors.some(e => e.severity === 'error');
+      if (hasErrors) {
+        invalidRows.push(row);
+      } else {
+        validRows.push(row);
+      }
+
+      errors.push(...rowErrors);
+    }
+
+    return {
+      validRows,
+      invalidRows,
+      errors,
+      summary: {
+        totalRows: rows.length,
+        validRows: validRows.length,
+        invalidRows: invalidRows.length,
+        errors: errors.filter(e => e.severity === 'error').length,
+        warnings: errors.filter(e => e.severity === 'warning').length
+      }
+    };
+  }
+
+  /**
    * Confirm and insert valid data
    */
   async confirmAndInsert(
@@ -2402,6 +2918,9 @@ export class DataMigrationService extends BaseService {
           case 'attendance-record':
             results[objectType] = await this.insertAttendanceRecords(rows);
             break;
+          case 'optional-holiday':
+            results[objectType] = await this.insertOptionalHolidays(rows);
+            break;
         }
         console.log(`✅ [Data Migration Insert] ${objectType} completed:`, results[objectType]);
       } catch (error: any) {
@@ -2433,10 +2952,28 @@ export class DataMigrationService extends BaseService {
         // Use default password for imported users (users should change it after first login)
         const defaultPassword = '123456';
 
+        // Determine if user is active
+        const isActive = row.active !== undefined ? row.active : true;
+
+        // Handle email: required for active users, optional for inactive users
+        // If inactive user has no email, generate a placeholder email
+        let userEmail = row.email?.toLowerCase().trim();
+        if (!userEmail) {
+          if (!isActive) {
+            // Generate placeholder email for inactive users
+            const timestamp = Date.now();
+            const employeeCode = row.employeeNo?.trim() || 'user';
+            userEmail = `inactive-${employeeCode}-${timestamp}@placeholder.local`;
+          } else {
+            // This should not happen as validation ensures email for active users
+            throw new Error('Email is required for active users');
+          }
+        }
+
         // Prepare user data
         const userData: any = {
           name: row.name?.trim(),
-          email: row.email?.toLowerCase().trim(),
+          email: userEmail,
           password: defaultPassword,
           role: row.role?.toLowerCase().trim(),
           specificRole: row.specificRole?.trim() || undefined,
@@ -2445,12 +2982,20 @@ export class DataMigrationService extends BaseService {
           checkinId: row.checkinId?.trim() || undefined,
           active: row.active !== undefined ? row.active : true,
           joiningDate: row.joiningDate ? this.parseDate(row.joiningDate) : new Date(),
+          confirmationDate: this.parseDate(row.confirmationDate!), // Required - validated earlier
+          probationDate: this.parseDate(row.probationDate!), // Required - validated earlier
           location: row.location?.trim() || undefined,
           phone: row.phone?.trim() || undefined,
           emergencyContact: row.emergencyContact?.trim() || undefined,
           address: row.address?.trim() || undefined,
           bloodGroup: row.bloodGroup?.trim() || undefined,
           dateOfBirth: row.dateOfBirth ? this.parseDate(row.dateOfBirth) : undefined,
+          fatherName: row.fatherName?.trim() || undefined,
+          maritalStatus: row.maritalStatus?.trim() || undefined,
+          spouseName: row.spouseName?.trim() || undefined,
+          separationDate: row.separationDate ? this.parseDate(row.separationDate) : undefined,
+          noticePeriod: row.noticePeriod ? Number(row.noticePeriod) : undefined,
+          personalMailId: row.personalMailId?.toLowerCase().trim() || undefined,
           country: row.country?.trim(),
           currency: row.currency || (row.country?.trim() === 'AE' ? CONSTANTS.DEFAULT_CURRENCY_AED : CONSTANTS.DEFAULT_CURRENCY_INR),
           licenseType: row.licenseType || CONSTANTS.DEFAULT_LICENSE_TYPE,
@@ -2837,6 +3382,207 @@ export class DataMigrationService extends BaseService {
   }
 
   /**
+   * Insert Optional Holiday records
+   */
+  private async insertOptionalHolidays(rows: IImportRow[]): Promise<{ created: number; errors: string[] }> {
+    const errors: string[] = [];
+    let created = 0;
+
+    // Track approved optional holidays per user per year during import
+    // Key: userId_year, Value: count of approved holidays
+    const MAX_OPTIONAL_HOLIDAYS_PER_YEAR = 2;
+    const approvedCountByYear = new Map<string, number>(); // Key: userId_year
+
+    // Pre-populate with existing approved counts from database
+    const userIds = new Set<string>();
+    const years = new Set<number>();
+    for (const row of rows) {
+      if (row.userId && this.isValidObjectId(row.userId)) {
+        userIds.add(row.userId);
+        const year = parseInt(row.year?.toString() || '0');
+        if (!isNaN(year)) {
+          years.add(year);
+        }
+      }
+    }
+
+    // Get existing approved counts for all users and years in this import
+    if (userIds.size > 0 && years.size > 0) {
+      const existingApproved = await OptionalHolidayRequest.find({
+        userId: { $in: Array.from(userIds).map(id => new Types.ObjectId(id)) },
+        year: { $in: Array.from(years) },
+        status: 'Approved',
+      }).select('userId year').lean();
+
+      for (const approved of existingApproved) {
+        const key = `${approved.userId}_${approved.year}`;
+        const currentCount = approvedCountByYear.get(key) || 0;
+        approvedCountByYear.set(key, currentCount + 1);
+      }
+    }
+
+    for (const row of rows) {
+      try {
+        if (!this.isValidObjectId(row.userId)) {
+          throw new Error('Invalid User ID format');
+        }
+
+        const holidayDate = this.parseDate(row.holidayDate!);
+        if (!holidayDate) {
+          throw new Error('Invalid holiday date format');
+        }
+
+        const year = parseInt(row.year!.toString());
+        if (isNaN(year)) {
+          throw new Error('Invalid year');
+        }
+
+        // Get user to fetch holiday calendar and validate
+        const user = await User.findById(row.userId).select('name email holidayCalendarId').lean();
+        if (!user) {
+          throw new Error('User not found');
+        }
+
+        // Get holiday calendar to validate holiday name
+        let holidayName = row.holidayName?.trim();
+        if (user.holidayCalendarId) {
+          const calendar = await HolidayCalendar.findById(user.holidayCalendarId).lean();
+          if (calendar) {
+            const holidayDateStr = holidayDate.toISOString().split('T')[0];
+            const matchingHoliday = calendar.holidays.find((h: any) => {
+              const hDateStr = new Date(h.date).toISOString().split('T')[0];
+              return hDateStr === holidayDateStr && h.type === 'optional';
+            });
+            if (matchingHoliday) {
+              holidayName = matchingHoliday.name; // Use name from calendar
+            }
+          }
+        }
+
+        if (!holidayName) {
+          throw new Error('Holiday name is required');
+        }
+
+        // Check for duplicate request
+        const startOfDay = new Date(holidayDate);
+        startOfDay.setUTCHours(0, 0, 0, 0);
+        const endOfDay = new Date(holidayDate);
+        endOfDay.setUTCHours(23, 59, 59, 999);
+
+        const existingRequest = await OptionalHolidayRequest.findOne({
+          userId: new Types.ObjectId(row.userId),
+          holidayDate: {
+            $gte: startOfDay,
+            $lte: endOfDay,
+          },
+        });
+
+        if (existingRequest) {
+          errors.push(`Row ${row.rowNumber}: Optional holiday request already exists for this date`);
+          continue;
+        }
+
+        // Prepare appliedTo if provided
+        let appliedTo = undefined;
+        if (row.appliedToId && this.isValidObjectId(row.appliedToId)) {
+          const appliedToUser = await User.findById(row.appliedToId).select('name').lean();
+          if (appliedToUser) {
+            appliedTo = {
+              _id: row.appliedToId,
+              name: row.appliedToName?.trim() || appliedToUser.name || 'Manager',
+            };
+          }
+        }
+
+        // Check annual limit if status is Approved
+        // Track count during import: 1 applied = 1 used, 2 applied = 0 remaining
+        let finalStatus = row.status || 'Pending';
+        if (finalStatus === 'Approved') {
+          const userIdYearKey = `${row.userId}_${year}`;
+          const currentApprovedCount = approvedCountByYear.get(userIdYearKey) || 0;
+
+          if (currentApprovedCount >= MAX_OPTIONAL_HOLIDAYS_PER_YEAR) {
+            // Limit reached - change to Pending
+            errors.push(`Row ${row.rowNumber}: Cannot approve - user already has ${currentApprovedCount} approved optional holidays for ${year}. Maximum is ${MAX_OPTIONAL_HOLIDAYS_PER_YEAR} per year. Changing status to Pending.`);
+            finalStatus = 'Pending';
+          } else {
+            // Increment count for this user/year
+            approvedCountByYear.set(userIdYearKey, currentApprovedCount + 1);
+          }
+        }
+
+        // Prepare optional holiday data
+        const optionalHolidayData: any = {
+          userId: new Types.ObjectId(row.userId),
+          holidayDate: holidayDate,
+          holidayName: holidayName,
+          year: year,
+          status: finalStatus,
+          reason: row.reason?.trim() || undefined,
+          remarks: row.remarks?.trim() || undefined,
+          appliedTo: appliedTo,
+        };
+
+        // If status is Approved, set approvedBy and approvedAt
+        if (finalStatus === 'Approved') {
+          if (row.approvedById && this.isValidObjectId(row.approvedById)) {
+            const approver = await User.findById(row.approvedById).select('name email').lean();
+            if (approver) {
+              optionalHolidayData.approvedBy = {
+                _id: new Types.ObjectId(row.approvedById),
+                name: approver.name,
+                email: approver.email,
+              };
+              optionalHolidayData.approvedById = new Types.ObjectId(row.approvedById);
+            }
+          }
+          if (row.approvedAt) {
+            const approvedAt = this.parseDate(row.approvedAt);
+            if (approvedAt) {
+              optionalHolidayData.approvedAt = approvedAt;
+            }
+          } else {
+            optionalHolidayData.approvedAt = new Date();
+          }
+        }
+
+        // If status is Rejected, set rejectedAt
+        if (row.status === 'Rejected') {
+          optionalHolidayData.rejectedAt = new Date();
+        }
+
+        // If status is Cancelled, set cancelledAt
+        if (row.status === 'Cancelled') {
+          optionalHolidayData.cancelledAt = new Date();
+        }
+
+        // Mark as migrated from manual import
+        optionalHolidayData.migratedFrom = {
+          source: 'manual',
+        };
+
+        // Create the optional holiday request
+        const request = new OptionalHolidayRequest({
+          ...optionalHolidayData,
+          user: {
+            name: user.name,
+            email: user.email,
+          },
+        });
+
+        await request.save();
+        created++;
+      } catch (error: any) {
+        const errorMessage = error.message || 'Unknown error occurred';
+        errors.push(`Row ${row.rowNumber}: ${errorMessage}`);
+        console.error(`Error inserting optional holiday at row ${row.rowNumber}:`, error);
+      }
+    }
+
+    return { created, errors };
+  }
+
+  /**
    * Helper methods
    */
   private getSheetName(objectType: ExportableObject): string {
@@ -2846,7 +3592,8 @@ export class DataMigrationService extends BaseService {
       'leave': 'Leaves',
       'salary-assignment': 'Salary Assignments',
       'salary-structure': 'Salary Structures',
-      'attendance-record': 'Attendance Records'
+      'attendance-record': 'Attendance Records',
+      'optional-holiday': 'Optional Holidays'
     };
     return names[objectType] || objectType;
   }

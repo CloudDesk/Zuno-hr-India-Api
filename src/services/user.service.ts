@@ -38,12 +38,20 @@ interface IUserCreate {
   biometricId?: string | null;
   active?: boolean;
   joiningDate?: Date;
+  confirmationDate?: Date; // Optional - defaults to joiningDate if not provided
+  probationDate?: Date; // Optional - defaults to joiningDate if not provided
   location?: string;
   phone?: string;
   emergencyContact?: string;
   address?: string;
   bloodGroup?: string;
   dateOfBirth?: Date;
+  fatherName?: string;
+  maritalStatus?: string;
+  spouseName?: string;
+  separationDate?: Date;
+  noticePeriod?: number;
+  personalMailId?: string;
   upcomingShiftAssignment: string;
   currentShiftAssignment: string;
   upcomingShiftAssignmentData: object;
@@ -72,12 +80,20 @@ interface IUserUpdate {
   biometricId?: string | null;
   active?: boolean;
   joiningDate?: Date;
+  confirmationDate?: Date;
+  probationDate?: Date;
   location?: string;
   phone?: string;
   emergencyContact?: string;
   address?: string;
   bloodGroup?: string;
   dateOfBirth?: Date;
+  fatherName?: string;
+  maritalStatus?: string;
+  spouseName?: string;
+  separationDate?: Date;
+  noticePeriod?: number;
+  personalMailId?: string;
   upcomingShiftAssignment?: string;
   currentShiftAssignment?: string;
   upcomingShiftAssignmentData?: object;
@@ -741,7 +757,15 @@ export class UserService extends BaseService {
     console.log('🎯 Creating new User instance...');
     // Store plain password before hashing (for email notification if it's default password)
     const plainPassword = data.password === '123456' ? data.password : undefined;
-    const user = new User(data);
+
+    // Set default confirmationDate and probationDate if not provided (use joiningDate or current date)
+    const userDataWithDefaults = {
+      ...data,
+      confirmationDate: (data as any).confirmationDate || data.joiningDate || new Date(),
+      probationDate: (data as any).probationDate || data.joiningDate || new Date(),
+    };
+
+    const user = new User(userDataWithDefaults);
     console.log('✅ User instance created:', user._id);
 
     console.log('💾 Saving user to database...');

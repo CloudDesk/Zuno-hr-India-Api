@@ -546,8 +546,8 @@ export class ShiftChangeService extends BaseService {
       endDate.setHours(23, 59, 59, 999);
 
       currentAssignment.endDate = endDate;
-      currentAssignment.isActive = false;
-      currentAssignment.status = 'past';
+      // Keep assignment active until endDate passes (don't set inactive yet)
+      // Status will be updated by recalculateUserShiftStatus based on dates
       await currentAssignment.save();
 
       // Create new assignment starting from effective date

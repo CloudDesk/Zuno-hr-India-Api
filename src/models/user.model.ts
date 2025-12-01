@@ -58,12 +58,20 @@ export interface IUser extends Document {
   resetToken?: string;
   resetTokenExpiry?: Date;
   joiningDate: Date;
+  confirmationDate?: Date; // Optional - defaults to joiningDate if not provided
+  probationDate?: Date; // Optional - defaults to joiningDate if not provided
   location: string;
   phone?: string;
   emergencyContact?: string;
   address?: string;
   bloodGroup?: string;
   dateOfBirth?: Date;
+  fatherName?: string;
+  maritalStatus?: string;
+  spouseName?: string;
+  separationDate?: Date;
+  noticePeriod?: number; // Notice period in days
+  personalMailId?: string;
   createdAt: Date;
   updatedAt: Date;
   currentShiftAssignmentData: IShiftAssignmentData | null;
@@ -213,6 +221,14 @@ const userSchema = new Schema<IUser>(
       required: true,
       default: () => new Date(),
     },
+    confirmationDate: {
+      type: Date,
+      required: false, // Optional - defaults to joiningDate if not provided
+    },
+    probationDate: {
+      type: Date,
+      required: false, // Optional - defaults to joiningDate if not provided
+    },
     location: {
       type: String,
       required: false,
@@ -241,6 +257,41 @@ const userSchema = new Schema<IUser>(
     },
     dateOfBirth: {
       type: Date,
+    },
+    fatherName: {
+      type: String,
+      trim: true,
+      maxlength: 100,
+    },
+    maritalStatus: {
+      type: String,
+      trim: true,
+      enum: ['Single', 'Married', 'Divorced', 'Widowed'],
+    },
+    spouseName: {
+      type: String,
+      trim: true,
+      maxlength: 100,
+    },
+    separationDate: {
+      type: Date,
+    },
+    noticePeriod: {
+      type: Number,
+      min: 0,
+    },
+    personalMailId: {
+      type: String,
+      trim: true,
+      lowercase: true,
+      maxlength: 100,
+      validate: {
+        validator: function (v: string) {
+          if (!v) return true; // Optional field
+          return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+        },
+        message: 'Invalid personal email format'
+      }
     },
     bankDetails: [
       {
@@ -455,21 +506,21 @@ userSchema.pre('save', async function (next) {
   try {
     // Get the User model from the database connection
     const UserModel = this.db.model('User');
-    
+
     // Build query to find duplicate employeeCode
     const query: any = { employeeCode: this.employeeCode };
-    
+
     // If this is an update (not a new document), exclude current user from the check
     if (!this.isNew && this._id) {
       query._id = { $ne: this._id };
     }
 
     const existingUser = await UserModel.findOne(query);
-    
+
     if (existingUser) {
       return next(new Error(`Employee code "${this.employeeCode}" already exists. Please use a unique employee code.`));
     }
-    
+
     next();
   } catch (error: any) {
     next(error);
