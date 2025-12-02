@@ -163,7 +163,16 @@ const userResponseSchema = {
     portalAccess: { type: 'boolean' },
     // UAE-specific visa details
     visaDetails: visaDetailsSchema,
-    client: { type: 'string' }
+    client: { type: 'string' },
+    // Employee detail fields (63-70)
+    confirmationDate: { type: 'string', format: 'date-time' },
+    probationDate: { type: 'string', format: 'date-time' },
+    separationDate: { type: 'string', format: 'date-time' },
+    fatherName: { type: 'string' },
+    maritalStatus: { type: 'string' },
+    spouseName: { type: 'string' },
+    noticePeriod: { type: 'number' },
+    personalMailId: { type: 'string' }
   }
 };
 
@@ -810,6 +819,46 @@ export const userRoutes: RouteHandler = async (
               type: 'string',
               maxLength: 100,
               description: 'Client name or identifier for employee assignment'
+            },
+            // Employee detail fields (63-70)
+            confirmationDate: {
+              type: 'string',
+              format: 'date-time',
+              description: 'Employee confirmation date'
+            },
+            probationDate: {
+              type: 'string',
+              format: 'date-time',
+              description: 'Employee probation date'
+            },
+            separationDate: {
+              type: 'string',
+              format: 'date-time',
+              description: 'Employee separation date'
+            },
+            fatherName: {
+              type: 'string',
+              maxLength: 100,
+              description: "Employee's father's name"
+            },
+            maritalStatus: {
+              type: 'string',
+              enum: ['Single', 'Married', 'Divorced', 'Widowed'],
+              description: 'Employee marital status'
+            },
+            spouseName: {
+              type: 'string',
+              maxLength: 100,
+              description: "Employee's spouse name"
+            },
+            noticePeriod: {
+              type: 'number',
+              description: 'Notice period in days'
+            },
+            personalMailId: {
+              type: 'string',
+              format: 'email',
+              description: "Employee's personal email address"
             }
           },
         },
