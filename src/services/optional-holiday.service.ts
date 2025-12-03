@@ -153,12 +153,26 @@ export class OptionalHolidayService extends BaseService {
       }
     }
 
+    // Handle search filter
     if (search) {
-      filter.$or = [
+      const searchConditions = [
         { holidayName: { $regex: search, $options: 'i' } },
         { reason: { $regex: search, $options: 'i' } },
         { 'user.name': { $regex: search, $options: 'i' } },
+        { status: { $regex: search, $options: 'i' } },
+        { 'appliedTo.name': { $regex: search, $options: 'i' } },
       ];
+
+      // If there's already a date filter, combine with $and
+      if (filter.holidayDate) {
+        filter.$and = [
+          { holidayDate: filter.holidayDate },
+          { $or: searchConditions }
+        ];
+        delete filter.holidayDate;
+      } else {
+        filter.$or = searchConditions;
+      }
     }
 
     const sortOrder = sort === 'asc' ? 1 : -1;

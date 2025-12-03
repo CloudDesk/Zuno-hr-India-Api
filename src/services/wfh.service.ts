@@ -87,8 +87,9 @@ export class WFHService extends BaseService {
     appliedTo?: string; // Manager ID to filter by
     page?: number;
     limit?: number;
+    search?: string;
   }): Promise<{ wfhs: IWFH[]; total: number; meta: { page: number; limit: number; total: number; totalPages: number } }> {
-    const { userId, status, startDate, endDate, appliedTo, page = 1, limit = 10 } = query;
+    const { userId, status, startDate, endDate, appliedTo, page = 1, limit = 10, search } = query;
     const skip = (page - 1) * limit;
 
     const filter: any = {};
@@ -111,6 +112,27 @@ export class WFHService extends BaseService {
           },
         },
       ];
+    }
+
+    // Handle search filter
+    if (search) {
+      const searchConditions = [
+        { 'user.name': { $regex: search, $options: 'i' } },
+        { reason: { $regex: search, $options: 'i' } },
+        { 'appliedTo.name': { $regex: search, $options: 'i' } },
+        { status: { $regex: search, $options: 'i' } },
+      ];
+
+      // If there's already a $or for dates, combine with $and
+      if (filter.$or) {
+        filter.$and = [
+          { $or: filter.$or },
+          { $or: searchConditions }
+        ];
+        delete filter.$or;
+      } else {
+        filter.$or = searchConditions;
+      }
     }
 
     const [wfhs, total] = await Promise.all([

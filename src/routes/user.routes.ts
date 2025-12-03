@@ -753,7 +753,7 @@ export const userRoutes: RouteHandler = async (
             managerId: { type: 'string' },
             employeeCode: { type: 'string', maxLength: 50 },
             biometricId: { type: 'string', maxLength: 20 },
-            active: { type: 'boolean' },
+            // active field is NOT allowed in update - it can only be set to false during final settlement
             joiningDate: { type: 'string', format: 'date-time' },
             location: { type: 'string', maxLength: 100 },
             phone: { type: 'string', maxLength: 20 },

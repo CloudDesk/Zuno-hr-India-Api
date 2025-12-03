@@ -232,7 +232,7 @@ export const leaveRoutes: RouteHandler = async (
             },
             status: {
               type: 'string',
-              enum: ['Pending', 'Approved', 'Rejected'],
+              enum: ['Pending', 'Approved', 'Rejected', 'Cancelled'],
               description: 'Filter by leave status'
             },
             startDate: {
@@ -257,6 +257,10 @@ export const leaveRoutes: RouteHandler = async (
               maximum: 100,
               default: 10,
               description: 'Records per page'
+            },
+            search: {
+              type: 'string',
+              description: 'Search by employee name, leave type, reason, manager name, or status'
             },
           },
         },
@@ -301,7 +305,7 @@ export const leaveRoutes: RouteHandler = async (
     },
     async (request, reply) => {
       try {
-        const { userId, status, startDate, endDate, page, limit } = request.query as any;
+        const { userId, status, startDate, endDate, page, limit, search } = request.query as any;
         const query: ILeaveQuery = {
           userId: userId,
           status: status ? status : undefined,
@@ -309,6 +313,7 @@ export const leaveRoutes: RouteHandler = async (
           endDate: endDate ? new Date(endDate) : undefined,
           page: page ? Number(page) : undefined,
           limit: limit ? Number(limit) : undefined,
+          search: search,
         };
         console.log(query, "1 query");
         const result = await request.container!.leaveService.findAll(query);

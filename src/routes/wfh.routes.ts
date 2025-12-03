@@ -127,18 +127,19 @@ export const wfhRoutes: RouteHandler = async (
           type: 'object',
           properties: {
             userId: { type: 'string' },
-            status: { type: 'string', enum: ['Pending', 'Approved', 'Rejected'] },
+            status: { type: 'string', enum: ['Pending', 'Approved', 'Rejected', 'Cancelled'] },
             startDate: { type: 'string', format: 'date' },
             endDate: { type: 'string', format: 'date' },
             page: { type: 'number', minimum: 1, default: 1 },
             limit: { type: 'number', minimum: 1, maximum: 100, default: 10 },
+            search: { type: 'string', description: 'Search by employee name, reason, manager name, or status' },
           },
         },
       },
     },
     async (request, reply) => {
       try {
-        const { userId, status, startDate, endDate, page, limit } = request.query as any;
+        const { userId, status, startDate, endDate, page, limit, search } = request.query as any;
         const currentUser = request.user!;
         const userRole = (currentUser as any).role?.toLowerCase() || '';
 
@@ -170,6 +171,7 @@ export const wfhRoutes: RouteHandler = async (
         if (status) query.status = status;
         if (startDate) query.startDate = startDate;
         if (endDate) query.endDate = endDate;
+        if (search) query.search = search;
 
         const result = await request.container!.wfhService.findAll(query);
         return reply.send({

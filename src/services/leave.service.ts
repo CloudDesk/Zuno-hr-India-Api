@@ -192,12 +192,14 @@ export class LeaveService extends BaseService {
 
 
   async findAll(query: ILeaveQuery): Promise<{ leaves: ILeave[], meta: { page: number, limit: number, total: number, totalPages: number } }> {
-    const { userId, status, startDate, endDate, page = 1, limit = 10 } = query;
+    const { userId, status, startDate, endDate, page = 1, limit = 10, search } = query;
     const skip = (page - 1) * limit;
 
-    const filter: ILeaveQuery = {};
+    const filter: any = {};
     if (userId) filter.userId = userId;
     if (status) filter.status = status;
+    
+    // Handle date filters
     if (startDate || endDate) {
       filter.$or = [
         {
@@ -213,6 +215,29 @@ export class LeaveService extends BaseService {
           },
         },
       ];
+    }
+
+    // Handle search filter
+    if (search) {
+      const searchConditions = [
+        { 'user.name': { $regex: search, $options: 'i' } },
+        { leaveType: { $regex: search, $options: 'i' } },
+        { reason: { $regex: search, $options: 'i' } },
+        { 'appliedTo.name': { $regex: search, $options: 'i' } },
+        { status: { $regex: search, $options: 'i' } },
+      ];
+
+      // If there's already a $or for dates, we need to combine them properly
+      if (filter.$or) {
+        // We need to use $and to combine date filter with search filter
+        filter.$and = [
+          { $or: filter.$or },
+          { $or: searchConditions }
+        ];
+        delete filter.$or;
+      } else {
+        filter.$or = searchConditions;
+      }
     }
 
     console.log(filter);
@@ -691,10 +716,10 @@ export class LeaveService extends BaseService {
     const { appliedTo, userId, status, startDate, endDate, page = 1, limit = 5 } = query;
     const skip = (page - 1) * limit;
 
-    const filter: any = { 'appliedTo._id': appliedTo, status: status || 'Pending' }; // Initialize filter with appliedTo
+    const filter: any = { 'appliedTo._id': appliedTo }; // Initialize filter with appliedTo
 
     if (userId) filter.userId = userId;
-    if (status) filter.status = status;
+    if (status) filter.status = status; // Only filter by status if explicitly provided
     if (startDate || endDate) {
       filter.$or = [
         {

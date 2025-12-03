@@ -121,13 +121,14 @@ export const optionalHolidayRoutes: RouteHandler = async (
             year: { type: 'number' },
             page: { type: 'number', minimum: 1, default: 1 },
             limit: { type: 'number', minimum: 1, maximum: 100, default: 10 },
+            search: { type: 'string', description: 'Search by holiday name, reason, employee name, status, or applied to (manager name)' },
           },
         },
       },
     },
     async (request, reply) => {
       try {
-        const { userId, status, startDate, endDate, year, page, limit } = request.query as any;
+        const { userId, status, startDate, endDate, year, page, limit, search } = request.query as any;
         const currentUser = request.user!;
         const userRole = (currentUser as any).role?.toLowerCase() || '';
 
@@ -137,17 +138,30 @@ export const optionalHolidayRoutes: RouteHandler = async (
           limit: limit ? Number(limit) : 10,
         };
 
-        // Non-admin/manager users can only see their own requests
-        if (userRole !== 'admin' && userRole !== 'manager') {
-          query.userId = (currentUser as any)._id.toString();
-        } else if (userId) {
+        // If userId is provided, filter by that user
+        if (userId) {
           query.userId = userId;
+        } else {
+          // If no userId provided:
+          // - For admins: show all requests
+          // - For managers: show requests where they are the approver (appliedTo)
+          // - For regular users: show only their own requests
+          if (userRole === 'admin' || userRole === 'superadmin') {
+            // Admin sees all - no userId filter
+          } else if (userRole === 'manager') {
+            // Manager sees requests assigned to them
+            query.appliedTo = (currentUser as any)._id.toString();
+          } else {
+            // Regular user sees only their own
+            query.userId = (currentUser as any)._id.toString();
+          }
         }
 
         if (status) query.status = status;
         if (startDate) query.startDate = startDate;
         if (endDate) query.endDate = endDate;
         if (year) query.year = Number(year);
+        if (search) query.search = search;
 
         const result = await request.container!.optionalHolidayService.findAll(query);
         return reply.send({

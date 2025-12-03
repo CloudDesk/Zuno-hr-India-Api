@@ -87,8 +87,9 @@ export class PermissionService extends BaseService {
     appliedTo?: string; // Manager ID to filter by
     page?: number;
     limit?: number;
+    search?: string;
   }): Promise<{ permissions: IPermission[]; total: number; meta: { page: number; limit: number; total: number; totalPages: number } }> {
-    const { userId, status, startDate, endDate, appliedTo, page = 1, limit = 10 } = query;
+    const { userId, status, startDate, endDate, appliedTo, page = 1, limit = 10, search } = query;
     const skip = (page - 1) * limit;
 
     const filter: any = {};
@@ -107,6 +108,27 @@ export class PermissionService extends BaseService {
         const end = new Date(endDate);
         end.setUTCHours(23, 59, 59, 999);
         filter.permissionDate.$lte = end;
+      }
+    }
+
+    // Handle search filter
+    if (search) {
+      const searchConditions = [
+        { 'user.name': { $regex: search, $options: 'i' } },
+        { reason: { $regex: search, $options: 'i' } },
+        { 'appliedTo.name': { $regex: search, $options: 'i' } },
+        { status: { $regex: search, $options: 'i' } },
+      ];
+
+      // If there's already a date filter, combine with $and
+      if (filter.permissionDate) {
+        filter.$and = [
+          { permissionDate: filter.permissionDate },
+          { $or: searchConditions }
+        ];
+        delete filter.permissionDate;
+      } else {
+        filter.$or = searchConditions;
       }
     }
 

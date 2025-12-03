@@ -820,9 +820,16 @@ export class UserService extends BaseService {
       }
     }
 
+    // RESTRICTION: active field cannot be updated manually
+    // It can only be set to false during final settlement process
+    if (data.active !== undefined) {
+      delete (data as any).active;
+      console.log('⚠️ [User Update] active field is restricted and cannot be updated manually. It can only be set to false during final settlement.');
+    }
+
     // Validate email uniqueness only for active users
     // Inactive users can have duplicate emails (for rehired employees)
-    const willBeActive = data.active !== undefined ? data.active : user.active;
+    const willBeActive = user.active; // Use current user's active status, not from data
     if (willBeActive && data.email && data.email.toLowerCase().trim() !== user.email.toLowerCase().trim()) {
       const existingUser = await User.findOne({
         email: data.email.toLowerCase().trim(),

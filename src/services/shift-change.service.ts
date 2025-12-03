@@ -163,14 +163,20 @@ export class ShiftChangeService extends BaseService {
     appliedTo?: string;
     page?: number;
     limit?: number;
+    search?: string;
   }): Promise<{ requests: IShiftChangeRequest[]; total: number; meta: { page: number; limit: number; total: number; totalPages: number } }> {
-    const { userId, status, startDate, endDate, appliedTo, page = 1, limit = 20 } = query;
+    const { userId, status, startDate, endDate, appliedTo, page = 1, limit = 20, search } = query;
     const skip = (page - 1) * limit;
 
     const filter: any = {};
     if (userId) filter.userId = userId;
     if (status) filter.status = status;
-    if (appliedTo) filter['appliedTo._id'] = appliedTo;
+    if (appliedTo) {
+      // Convert to ObjectId since appliedTo._id is stored as ObjectId in the model
+      filter['appliedTo._id'] = Types.ObjectId.isValid(appliedTo) 
+        ? new Types.ObjectId(appliedTo) 
+        : appliedTo;
+    }
 
     if (startDate || endDate) {
       filter.effectiveDate = {};
@@ -184,6 +190,214 @@ export class ShiftChangeService extends BaseService {
         end.setUTCHours(23, 59, 59, 999);
         filter.effectiveDate.$lte = end;
       }
+    }
+
+    // Handle search filter - use aggregation to search by shift names
+    if (search) {
+      const directSearchConditions = [
+        { 'user.name': { $regex: search, $options: 'i' } },
+        { 'user.email': { $regex: search, $options: 'i' } },
+        { reason: { $regex: search, $options: 'i' } },
+        { 'appliedTo.name': { $regex: search, $options: 'i' } },
+        { status: { $regex: search, $options: 'i' } },
+      ];
+
+      // Build base match filter (without search conditions)
+      const baseMatchFilter = { ...filter };
+      
+      // Use aggregation to search by shift names
+      const pipeline: any[] = [
+        { $match: baseMatchFilter },
+        {
+          $lookup: {
+            from: 'shifts',
+            localField: 'requestedShiftId',
+            foreignField: '_id',
+            as: 'requestedShiftData'
+          }
+        },
+        {
+          $lookup: {
+            from: 'shiftassignments',
+            localField: 'currentShiftId',
+            foreignField: '_id',
+            as: 'currentShiftAssignmentData'
+          }
+        },
+        {
+          $lookup: {
+            from: 'shifts',
+            localField: 'currentShiftAssignmentData.shiftId',
+            foreignField: '_id',
+            as: 'currentShiftData'
+          }
+        },
+        {
+          $match: {
+            $or: [
+              ...directSearchConditions,
+              { 'requestedShiftData.name': { $regex: search, $options: 'i' } },
+              { 'requestedShiftData.code': { $regex: search, $options: 'i' } },
+              { 'currentShiftData.name': { $regex: search, $options: 'i' } },
+              { 'currentShiftData.code': { $regex: search, $options: 'i' } },
+            ]
+          }
+        },
+        { $sort: { createdAt: -1 } },
+        { $skip: skip },
+        { $limit: Number(limit) },
+        {
+          $project: {
+            requestedShiftData: 0,
+            currentShiftAssignmentData: 0,
+            currentShiftData: 0
+          }
+        }
+      ];
+
+      const countPipeline = [
+        { $match: baseMatchFilter },
+        {
+          $lookup: {
+            from: 'shifts',
+            localField: 'requestedShiftId',
+            foreignField: '_id',
+            as: 'requestedShiftData'
+          }
+        },
+        {
+          $lookup: {
+            from: 'shiftassignments',
+            localField: 'currentShiftId',
+            foreignField: '_id',
+            as: 'currentShiftAssignmentData'
+          }
+        },
+        {
+          $lookup: {
+            from: 'shifts',
+            localField: 'currentShiftAssignmentData.shiftId',
+            foreignField: '_id',
+            as: 'currentShiftData'
+          }
+        },
+        {
+          $match: {
+            $or: [
+              ...directSearchConditions,
+              { 'requestedShiftData.name': { $regex: search, $options: 'i' } },
+              { 'requestedShiftData.code': { $regex: search, $options: 'i' } },
+              { 'currentShiftData.name': { $regex: search, $options: 'i' } },
+              { 'currentShiftData.code': { $regex: search, $options: 'i' } },
+            ]
+          }
+        },
+        { $count: 'total' }
+      ];
+
+      const [requests, totalResult] = await Promise.all([
+        ShiftChangeRequest.aggregate(pipeline),
+        ShiftChangeRequest.aggregate(countPipeline)
+      ]);
+
+      const total = totalResult[0]?.total || 0;
+      const requestsDocs = requests.map((req: any) => new ShiftChangeRequest(req));
+      
+      // Populate related data for each request
+      const populatedRequests = await Promise.all(
+        requestsDocs.map(async (req) => {
+          const [user, requestedShift, currentShiftAssignment, approver, appliedToUser] = await Promise.all([
+            User.findById(req.userId).select('name email'),
+            Shift.findById(req.requestedShiftId).select('name code startTime endTime'),
+            ShiftAssignment.findById(req.currentShiftId).populate('shiftId', 'name code startTime endTime'),
+            req.approvedById ? User.findById(req.approvedById).select('name email') : null,
+            req.appliedTo?._id ? User.findById(req.appliedTo._id).select('name email') : null,
+          ]);
+
+          // Add user data
+          if (user) {
+            req.user = {
+              name: user.name,
+              email: user.email,
+            };
+          }
+
+          // Add requested shift data as dynamic property
+          if (requestedShift) {
+            (req as any).requestedShift = {
+              _id: requestedShift._id,
+              name: requestedShift.name,
+              code: requestedShift.code,
+              startTime: requestedShift.startTime,
+              endTime: requestedShift.endTime,
+            };
+          } else {
+            (req as any).requestedShift = null;
+          }
+
+          // Add current shift data as dynamic property
+          if (currentShiftAssignment) {
+            let currentShift = (currentShiftAssignment.shiftId as any);
+            
+            if (!currentShift || typeof currentShift === 'string' || currentShift instanceof Types.ObjectId || !currentShift.name) {
+              const shiftIdToFetch = typeof currentShift === 'object' && currentShift?._id 
+                ? currentShift._id 
+                : currentShiftAssignment.shiftId;
+              
+              if (shiftIdToFetch) {
+                currentShift = await Shift.findById(shiftIdToFetch).select('name code startTime endTime');
+              }
+            }
+            
+            (req as any).currentShift = currentShift ? {
+              _id: currentShift._id,
+              name: currentShift.name,
+              code: currentShift.code,
+              startTime: currentShift.startTime,
+              endTime: currentShift.endTime,
+            } : null;
+          } else {
+            (req as any).currentShift = null;
+          }
+
+          // Add approver data
+          if (approver) {
+            req.approvedBy = {
+              _id: approver._id,
+              name: approver.name,
+              email: approver.email,
+            };
+          }
+
+          // Add appliedTo user data as dynamic property
+          if (appliedToUser) {
+            (req as any).appliedToUser = {
+              _id: appliedToUser._id,
+              name: appliedToUser.name,
+              email: appliedToUser.email,
+            };
+          }
+
+          // Convert to plain object
+          const reqObj: any = req.toObject();
+          reqObj.requestedShift = (req as any).requestedShift ?? null;
+          reqObj.currentShift = (req as any).currentShift ?? null;
+          reqObj.appliedToUser = (req as any).appliedToUser ?? null;
+
+          return reqObj;
+        })
+      );
+
+      return {
+        requests: populatedRequests,
+        total,
+        meta: {
+          page,
+          limit,
+          total,
+          totalPages: Math.ceil(total / limit),
+        },
+      };
     }
 
     const [requests, total] = await Promise.all([
