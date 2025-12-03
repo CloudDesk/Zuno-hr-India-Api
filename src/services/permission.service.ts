@@ -85,10 +85,9 @@ export class PermissionService extends BaseService {
     startDate?: string;
     endDate?: string;
     appliedTo?: string; // Manager ID to filter by
-    search?: string; // Search in user name, email, reason, remarks
     page?: number;
     limit?: number;
-    search?: string;
+    search?: string; // Search in user name, reason, manager name, or status
   }): Promise<{ permissions: IPermission[]; total: number; meta: { page: number; limit: number; total: number; totalPages: number } }> {
     const { userId, status, startDate, endDate, appliedTo, page = 1, limit = 10, search } = query;
     const skip = (page - 1) * limit;

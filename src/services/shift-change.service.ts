@@ -161,10 +161,9 @@ export class ShiftChangeService extends BaseService {
     startDate?: string;
     endDate?: string;
     appliedTo?: string;
-    search?: string; // Search in user name, email, reason, remarks
     page?: number;
     limit?: number;
-    search?: string;
+    search?: string; // Search by applied by (employee name/email), applied to (manager name), reason, status, current shift name/code, or requested shift name/code
   }): Promise<{ requests: IShiftChangeRequest[]; total: number; meta: { page: number; limit: number; total: number; totalPages: number } }> {
     const { userId, status, startDate, endDate, appliedTo, page = 1, limit = 20, search } = query;
     const skip = (page - 1) * limit;

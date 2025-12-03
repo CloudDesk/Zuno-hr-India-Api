@@ -131,7 +131,6 @@ export const wfhRoutes: RouteHandler = async (
             startDate: { type: 'string', format: 'date' },
             endDate: { type: 'string', format: 'date' },
             appliedTo: { type: 'string' },
-            search: { type: 'string' },
             page: { type: 'number', minimum: 1, default: 1 },
             limit: { type: 'number', minimum: 1, maximum: 100, default: 10 },
             search: { type: 'string', description: 'Search by employee name, reason, manager name, or status' },

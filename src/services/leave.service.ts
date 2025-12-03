@@ -198,7 +198,7 @@ export class LeaveService extends BaseService {
     const filter: any = {};
     if (userId) filter.userId = userId;
     if (status) filter.status = status;
-
+    
     // Handle date filters
     if (startDate || endDate) {
       filter.$or = [
@@ -215,63 +215,6 @@ export class LeaveService extends BaseService {
           },
         },
       ];
-
-      // Also search in user collection to find matching users
-      const userSearchFilter: any = {
-        $or: [
-          { name: { $regex: search, $options: 'i' } },
-          { email: { $regex: search, $options: 'i' } },
-        ]
-      };
-
-      // If userId is already filtered, combine with user search
-      if (userId) {
-        userSearchFilter._id = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
-      }
-
-      const matchingUsers = await User.find(userSearchFilter).select('_id').lean();
-
-      // If users found, add userId filter
-      if (matchingUsers.length > 0) {
-        const userIds = matchingUsers.map(u => u._id);
-        searchFilter.push({ userId: { $in: userIds } });
-      }
-
-      // Combine search with existing filters using $and
-      const existingFilters = { ...filter };
-      filter.$and = [
-        existingFilters,
-        { $or: searchFilter }
-      ];
-    }
-
-    // Date range filter - handle separately from search
-    if (startDate || endDate) {
-      const dateFilter: any = {
-        $or: [
-          {
-            startDate: {
-              ...(startDate && { $gte: startDate }),
-              ...(endDate && { $lte: endDate }),
-            },
-          },
-          {
-            endDate: {
-              ...(startDate && { $gte: startDate }),
-              ...(endDate && { $lte: endDate }),
-            },
-          },
-        ]
-      };
-
-      // Combine date filter with existing filters
-      if (filter.$and) {
-        filter.$and.push(dateFilter);
-      } else {
-        // If we have other filters, use $and to combine
-        const existingFilters = { ...filter };
-        filter.$and = [existingFilters, dateFilter];
-      }
     }
 
     // Handle search filter

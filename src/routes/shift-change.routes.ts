@@ -142,7 +142,6 @@ export const shiftChangeRoutes: RouteHandler = async (
               enum: ['Pending', 'Approved', 'Rejected', 'Cancelled'],
             },
             appliedTo: { type: 'string', description: 'Filter by manager ID (Admin only)' },
-            search: { type: 'string', description: 'Search in user name, email, reason, or remarks' },
             startDate: { type: 'string', format: 'date' },
             endDate: { type: 'string', format: 'date' },
             page: { type: 'number', minimum: 1, default: 1 },
@@ -184,7 +183,6 @@ export const shiftChangeRoutes: RouteHandler = async (
         }
 
         if (status) query.status = status;
-        if (search) query.search = search;
         if (startDate) query.startDate = startDate;
         if (endDate) query.endDate = endDate;
         if (appliedTo && (userRole === 'admin' || userRole === 'superadmin')) {

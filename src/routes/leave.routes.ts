@@ -266,10 +266,6 @@ export const leaveRoutes: RouteHandler = async (
               default: 10,
               description: 'Records per page'
             },
-            search: {
-              type: 'string',
-              description: 'Search by employee name, leave type, reason, manager name, or status'
-            },
           },
         },
         response: {
@@ -313,7 +309,10 @@ export const leaveRoutes: RouteHandler = async (
     },
     async (request, reply) => {
       try {
-        const { userId, status, startDate, endDate, page, limit, search } = request.query as any;
+        const { userId, status, startDate, endDate, page, limit, search, appliedTo } = request.query as any;
+        const currentUser = request.user!;
+        const userRole = (currentUser as any).role?.toLowerCase() || '';
+        
         const query: ILeaveQuery = {
           userId: userId,
           status: status ? status : undefined,
@@ -333,10 +332,12 @@ export const leaveRoutes: RouteHandler = async (
         if (search) query.search = search;
         if (startDate) query.startDate = new Date(startDate);
         if (endDate) query.endDate = new Date(endDate);
+        
         // Allow admins to filter by manager (appliedTo)
         if (appliedTo && (userRole === 'admin' || userRole === 'superadmin')) {
           query.appliedTo = appliedTo;
         }
+        
         console.log(query, "1 query");
         const result = await request.container!.leaveService.findAll(query);
         return reply.send({

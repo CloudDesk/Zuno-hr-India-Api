@@ -85,10 +85,9 @@ export class WFHService extends BaseService {
     startDate?: string;
     endDate?: string;
     appliedTo?: string; // Manager ID to filter by
-    search?: string;
     page?: number;
     limit?: number;
-    search?: string;
+    search?: string; // Search in user name, reason, manager name, or status
   }): Promise<{ wfhs: IWFH[]; total: number; meta: { page: number; limit: number; total: number; totalPages: number } }> {
     const { userId, status, startDate, endDate, appliedTo, page = 1, limit = 10, search } = query;
     const skip = (page - 1) * limit;
