@@ -106,18 +106,22 @@ export class WFHService extends BaseService {
     // Search filter - search in user name, email, reason, remarks, and status
     // Since user data is populated after query, we need to search users first
     if (search) {
-      // Search in reason, remarks, and status (stored in document)
+      // Escape special regex characters in search string
+      const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      
+      // Search in reason, remarks, status, and appliedTo name (stored in document)
       const searchFilter: any[] = [
-        { 'reason': { $regex: search, $options: 'i' } },
-        { 'remarks': { $regex: search, $options: 'i' } },
-        { 'status': { $regex: search, $options: 'i' } },
+        { 'reason': { $regex: escapedSearch, $options: 'i' } },
+        { 'remarks': { $regex: escapedSearch, $options: 'i' } },
+        { 'status': { $regex: escapedSearch, $options: 'i' } },
+        { 'appliedTo.name': { $regex: escapedSearch, $options: 'i' } },
       ];
 
       // Also search in user collection to find matching users
       const userSearchFilter: any = {
         $or: [
-          { name: { $regex: search, $options: 'i' } },
-          { email: { $regex: search, $options: 'i' } },
+          { name: { $regex: escapedSearch, $options: 'i' } },
+          { email: { $regex: escapedSearch, $options: 'i' } },
         ]
       };
 
@@ -172,27 +176,6 @@ export class WFHService extends BaseService {
           existingFilters,
           dateFilter
         ];
-      }
-    }
-
-    // Handle search filter
-    if (search) {
-      const searchConditions = [
-        { 'user.name': { $regex: search, $options: 'i' } },
-        { reason: { $regex: search, $options: 'i' } },
-        { 'appliedTo.name': { $regex: search, $options: 'i' } },
-        { status: { $regex: search, $options: 'i' } },
-      ];
-
-      // If there's already a $or for dates, combine with $and
-      if (filter.$or) {
-        filter.$and = [
-          { $or: filter.$or },
-          { $or: searchConditions }
-        ];
-        delete filter.$or;
-      } else {
-        filter.$or = searchConditions;
       }
     }
 
@@ -414,10 +397,13 @@ export class WFHService extends BaseService {
       }
     );
 
-    // Send email to manager
-    const manager: IUser = await User.findById(
-      new Types.ObjectId(wfh.appliedTo?._id)
-    ).select('name email');
+    // Send email to manager (only if appliedTo._id is valid)
+    let manager: IUser | null = null;
+    if (wfh.appliedTo?._id && wfh.appliedTo._id.trim() !== '' && Types.ObjectId.isValid(wfh.appliedTo._id)) {
+      manager = await User.findById(
+        new Types.ObjectId(wfh.appliedTo._id)
+      ).select('name email').lean();
+    }
 
     if (manager) {
       const appUrl = process.env.APP_URL || 'http://localhost:5173';

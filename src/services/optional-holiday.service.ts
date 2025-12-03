@@ -148,18 +148,21 @@ export class OptionalHolidayService extends BaseService {
     // Search filter - search in holiday name, reason, status, and user name/email
     // Since user data is populated after query, we need to search users first
     if (search) {
+      // Escape special regex characters in search string
+      const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      
       // Search in holidayName, reason, and status (stored in document)
       const searchFilter: any[] = [
-        { 'holidayName': { $regex: search, $options: 'i' } },
-        { 'reason': { $regex: search, $options: 'i' } },
-        { 'status': { $regex: search, $options: 'i' } },
+        { 'holidayName': { $regex: escapedSearch, $options: 'i' } },
+        { 'reason': { $regex: escapedSearch, $options: 'i' } },
+        { 'status': { $regex: escapedSearch, $options: 'i' } },
       ];
 
       // Also search in user collection to find matching users
       const userSearchFilter: any = {
         $or: [
-          { name: { $regex: search, $options: 'i' } },
-          { email: { $regex: search, $options: 'i' } },
+          { name: { $regex: escapedSearch, $options: 'i' } },
+          { email: { $regex: escapedSearch, $options: 'i' } },
         ]
       };
 
@@ -205,28 +208,6 @@ export class OptionalHolidayService extends BaseService {
         filter.$and.push(dateFilter);
       } else {
         Object.assign(filter, dateFilter);
-      }
-    }
-
-    // Handle search filter
-    if (search) {
-      const searchConditions = [
-        { holidayName: { $regex: search, $options: 'i' } },
-        { reason: { $regex: search, $options: 'i' } },
-        { 'user.name': { $regex: search, $options: 'i' } },
-        { status: { $regex: search, $options: 'i' } },
-        { 'appliedTo.name': { $regex: search, $options: 'i' } },
-      ];
-
-      // If there's already a date filter, combine with $and
-      if (filter.holidayDate) {
-        filter.$and = [
-          { holidayDate: filter.holidayDate },
-          { $or: searchConditions }
-        ];
-        delete filter.holidayDate;
-      } else {
-        filter.$or = searchConditions;
       }
     }
 

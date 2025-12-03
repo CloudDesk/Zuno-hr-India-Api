@@ -73,9 +73,9 @@ export const wfhRoutes: RouteHandler = async (
         const body = request.body as IWFHCreate;
         const userId = (request.user as any)._id;
 
-        // Get user to find manager if appliedTo is not provided
+        // Get user to find manager if appliedTo is not provided or has empty _id
         let appliedTo = body.appliedTo;
-        if (!appliedTo) {
+        if (!appliedTo || !appliedTo._id || appliedTo._id.trim() === '') {
           const user = await User.findById(userId).select('managerId managerName');
           if (user && (user as any).managerId) {
             const manager = await User.findById((user as any).managerId).select('name');
@@ -84,10 +84,8 @@ export const wfhRoutes: RouteHandler = async (
               name: manager?.name || (user as any).managerName || 'Manager',
             };
           } else {
-            appliedTo = {
-              _id: '',
-              name: 'Manager',
-            };
+            // If no manager found, set appliedTo to undefined (will skip email notification)
+            appliedTo = undefined;
           }
         }
 
@@ -133,7 +131,9 @@ export const wfhRoutes: RouteHandler = async (
             appliedTo: { type: 'string' },
             page: { type: 'number', minimum: 1, default: 1 },
             limit: { type: 'number', minimum: 1, maximum: 100, default: 10 },
-            search: { type: 'string', description: 'Search by employee name, reason, manager name, or status' },
+            search: {
+              description: 'Search by employee name, reason, manager name, or status'
+            },
           },
         },
       },
@@ -176,7 +176,10 @@ export const wfhRoutes: RouteHandler = async (
         if (status) query.status = status;
         if (startDate) query.startDate = startDate;
         if (endDate) query.endDate = endDate;
-        if (search) query.search = search;
+        // Normalize search parameter (handle case where it might be an array from duplicate query params)
+        if (search) {
+          query.search = Array.isArray(search) ? search[0] : search;
+        }
 
         const result = await request.container!.wfhService.findAll(query);
         return reply.send({

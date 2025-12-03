@@ -106,18 +106,22 @@ export class PermissionService extends BaseService {
     // Search filter - search in user name, email, reason, remarks, and status
     // Since user data is populated after query, we need to search users first
     if (search) {
-      // Search in reason, remarks, and status (stored in document)
+      // Escape special regex characters in search string
+      const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      
+      // Search in reason, remarks, status, and appliedTo name (stored in document)
       const searchFilter: any[] = [
-        { 'reason': { $regex: search, $options: 'i' } },
-        { 'remarks': { $regex: search, $options: 'i' } },
-        { 'status': { $regex: search, $options: 'i' } },
+        { 'reason': { $regex: escapedSearch, $options: 'i' } },
+        { 'remarks': { $regex: escapedSearch, $options: 'i' } },
+        { 'status': { $regex: escapedSearch, $options: 'i' } },
+        { 'appliedTo.name': { $regex: escapedSearch, $options: 'i' } },
       ];
 
       // Also search in user collection to find matching users
       const userSearchFilter: any = {
         $or: [
-          { name: { $regex: search, $options: 'i' } },
-          { email: { $regex: search, $options: 'i' } },
+          { name: { $regex: escapedSearch, $options: 'i' } },
+          { email: { $regex: escapedSearch, $options: 'i' } },
         ]
       };
 
@@ -163,27 +167,6 @@ export class PermissionService extends BaseService {
         filter.$and.push(dateFilter);
       } else {
         Object.assign(filter, dateFilter);
-      }
-    }
-
-    // Handle search filter
-    if (search) {
-      const searchConditions = [
-        { 'user.name': { $regex: search, $options: 'i' } },
-        { reason: { $regex: search, $options: 'i' } },
-        { 'appliedTo.name': { $regex: search, $options: 'i' } },
-        { status: { $regex: search, $options: 'i' } },
-      ];
-
-      // If there's already a date filter, combine with $and
-      if (filter.permissionDate) {
-        filter.$and = [
-          { permissionDate: filter.permissionDate },
-          { $or: searchConditions }
-        ];
-        delete filter.permissionDate;
-      } else {
-        filter.$or = searchConditions;
       }
     }
 

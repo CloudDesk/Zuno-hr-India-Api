@@ -31,6 +31,7 @@ export interface ILeaveCreate {
 export interface ILeaveQuery {
   userId?: string | Types.ObjectId;
   status?: 'Pending' | 'Approved' | 'Rejected';
+  leaveType?: string;
   startDate?: Date;
   endDate?: Date;
   page?: number;
@@ -125,15 +126,7 @@ export class LeaveService extends BaseService {
       query.leaveType = { $regex: leaveType, $options: 'i' }; // Case-insensitive search
     }
 
-    if (search) {
-      query.$or = [
-        { 'user.name': { $regex: search, $options: 'i' } },
-        { leaveType: { $regex: search, $options: 'i' } },
-        { reason: { $regex: search, $options: 'i' } },
-      ];
-    }
-
-    // Handle date filters
+    // Handle date filters first
     if (startDate) {
       const start = new Date(startDate);
       start.setUTCHours(0, 0, 0, 0);
@@ -144,6 +137,49 @@ export class LeaveService extends BaseService {
       const end = new Date(endDate);
       end.setUTCHours(23, 59, 59, 999);
       query.endDate = { $lte: end };
+    }
+
+    // Handle search filter
+    if (search) {
+      // Escape special regex characters in search string
+      const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      
+      // Search in document fields (leaveType, reason, status)
+      const searchConditions: any[] = [
+        { leaveType: { $regex: escapedSearch, $options: 'i' } },
+        { reason: { $regex: escapedSearch, $options: 'i' } },
+        { status: { $regex: escapedSearch, $options: 'i' } },
+      ];
+
+      // Search in User collection to find matching users
+      // Since user data is populated after query, we need to search users first
+      const userSearchFilter: any = {
+        $or: [
+          { name: { $regex: escapedSearch, $options: 'i' } },
+          { email: { $regex: escapedSearch, $options: 'i' } },
+        ]
+      };
+
+      // Combine with userId filter since we're already filtering by userId
+      userSearchFilter._id = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
+
+      const matchingUsers = await User.find(userSearchFilter).select('_id').lean();
+
+      // If users found, add userId filter (though it should match since we're already filtering by userId)
+      if (matchingUsers.length > 0) {
+        const userIds = matchingUsers.map(u => u._id);
+        searchConditions.push({ userId: { $in: userIds } });
+      }
+
+      // Combine search with existing filters using $and
+      // This ensures search works correctly with date filters and other filters
+      const existingFilters = { ...query };
+      delete existingFilters.$or;
+      
+      query.$and = [
+        existingFilters,
+        { $or: searchConditions }
+      ];
     }
 
     // Fetch leaves and total count concurrently
@@ -192,12 +228,13 @@ export class LeaveService extends BaseService {
 
 
   async findAll(query: ILeaveQuery): Promise<{ leaves: ILeave[], meta: { page: number, limit: number, total: number, totalPages: number } }> {
-    const { userId, status, startDate, endDate, page = 1, limit = 10, search } = query;
+    const { userId, status, leaveType, startDate, endDate, page = 1, limit = 10, search } = query;
     const skip = (page - 1) * limit;
 
     const filter: any = {};
     if (userId) filter.userId = userId;
     if (status) filter.status = status;
+    if (leaveType) filter.leaveType = { $regex: `^${leaveType}$`, $options: 'i' }; // Case-insensitive exact match
     
     // Handle date filters
     if (startDate || endDate) {
@@ -219,13 +256,37 @@ export class LeaveService extends BaseService {
 
     // Handle search filter
     if (search) {
-      const searchConditions = [
-        { 'user.name': { $regex: search, $options: 'i' } },
-        { leaveType: { $regex: search, $options: 'i' } },
-        { reason: { $regex: search, $options: 'i' } },
-        { 'appliedTo.name': { $regex: search, $options: 'i' } },
-        { status: { $regex: search, $options: 'i' } },
+      // Escape special regex characters in search string
+      const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      
+      // Search in document fields (leaveType, reason, appliedTo.name, status)
+      const searchConditions: any[] = [
+        { leaveType: { $regex: escapedSearch, $options: 'i' } },
+        { reason: { $regex: escapedSearch, $options: 'i' } },
+        { 'appliedTo.name': { $regex: escapedSearch, $options: 'i' } },
+        { status: { $regex: escapedSearch, $options: 'i' } },
       ];
+
+      // Search in User collection to find matching users
+      const userSearchFilter: any = {
+        $or: [
+          { name: { $regex: escapedSearch, $options: 'i' } },
+          { email: { $regex: escapedSearch, $options: 'i' } },
+        ]
+      };
+
+      // If userId is already filtered, combine with user search
+      if (userId) {
+        userSearchFilter._id = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
+      }
+
+      const matchingUsers = await User.find(userSearchFilter).select('_id').lean();
+
+      // If users found, add userId filter
+      if (matchingUsers.length > 0) {
+        const userIds = matchingUsers.map(u => u._id);
+        searchConditions.push({ userId: { $in: userIds } });
+      }
 
       // If there's already a $or for dates, we need to combine them properly
       if (filter.$or) {
@@ -713,7 +774,7 @@ export class LeaveService extends BaseService {
     }
   }> {
     console.log(query, "2, query")
-    const { appliedTo, userId, status, startDate, endDate, page = 1, limit = 5 } = query;
+    const { appliedTo, userId, status, startDate, endDate, page = 1, limit = 5, search } = query;
     const skip = (page - 1) * limit;
 
     const filter: any = { 'appliedTo._id': appliedTo }; // Initialize filter with appliedTo
@@ -735,6 +796,53 @@ export class LeaveService extends BaseService {
           },
         },
       ];
+    }
+
+    // Handle search filter
+    if (search) {
+      // Escape special regex characters in search string
+      const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      
+      // Search in document fields (leaveType, reason, appliedTo.name, status)
+      const searchConditions: any[] = [
+        { leaveType: { $regex: escapedSearch, $options: 'i' } },
+        { reason: { $regex: escapedSearch, $options: 'i' } },
+        { 'appliedTo.name': { $regex: escapedSearch, $options: 'i' } },
+        { status: { $regex: escapedSearch, $options: 'i' } },
+      ];
+
+      // Search in User collection to find matching users
+      const userSearchFilter: any = {
+        $or: [
+          { name: { $regex: escapedSearch, $options: 'i' } },
+          { email: { $regex: escapedSearch, $options: 'i' } },
+        ]
+      };
+
+      // If userId is already filtered, combine with user search
+      if (userId) {
+        userSearchFilter._id = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
+      }
+
+      const matchingUsers = await User.find(userSearchFilter).select('_id').lean();
+
+      // If users found, add userId filter
+      if (matchingUsers.length > 0) {
+        const userIds = matchingUsers.map(u => u._id);
+        searchConditions.push({ userId: { $in: userIds } });
+      }
+
+      // If there's already a $or for dates, we need to combine them properly
+      if (filter.$or) {
+        // We need to use $and to combine date filter with search filter
+        filter.$and = [
+          { $or: filter.$or },
+          { $or: searchConditions }
+        ];
+        delete filter.$or;
+      } else {
+        filter.$or = searchConditions;
+      }
     }
 
     console.log('Filter:', filter);

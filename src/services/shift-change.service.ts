@@ -197,13 +197,36 @@ export class ShiftChangeService extends BaseService {
 
     // Handle search filter - use aggregation to search by shift names
     if (search) {
-      const directSearchConditions = [
-        { 'user.name': { $regex: search, $options: 'i' } },
-        { 'user.email': { $regex: search, $options: 'i' } },
-        { reason: { $regex: search, $options: 'i' } },
-        { 'appliedTo.name': { $regex: search, $options: 'i' } },
-        { status: { $regex: search, $options: 'i' } },
+      // Escape special regex characters in search string
+      const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      
+      // First, search User collection for matching names/emails
+      const userSearchFilter: any = {
+        $or: [
+          { name: { $regex: escapedSearch, $options: 'i' } },
+          { email: { $regex: escapedSearch, $options: 'i' } },
+        ]
+      };
+
+      // If userId is already filtered, combine with user search
+      if (userId) {
+        userSearchFilter._id = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
+      }
+
+      const matchingUsers = await User.find(userSearchFilter).select('_id').lean();
+      const matchingUserIds = matchingUsers.map(u => u._id);
+
+      // Search conditions for fields stored in the document
+      const documentSearchConditions: any[] = [
+        { reason: { $regex: escapedSearch, $options: 'i' } },
+        { 'appliedTo.name': { $regex: escapedSearch, $options: 'i' } },
+        { status: { $regex: escapedSearch, $options: 'i' } },
       ];
+
+      // If users found, add userId filter
+      if (matchingUserIds.length > 0) {
+        documentSearchConditions.push({ userId: { $in: matchingUserIds } });
+      }
 
       // Build base match filter (without search conditions)
       const baseMatchFilter = { ...filter };
@@ -238,11 +261,11 @@ export class ShiftChangeService extends BaseService {
         {
           $match: {
             $or: [
-              ...directSearchConditions,
-              { 'requestedShiftData.name': { $regex: search, $options: 'i' } },
-              { 'requestedShiftData.code': { $regex: search, $options: 'i' } },
-              { 'currentShiftData.name': { $regex: search, $options: 'i' } },
-              { 'currentShiftData.code': { $regex: search, $options: 'i' } },
+              ...documentSearchConditions,
+              { 'requestedShiftData.name': { $regex: escapedSearch, $options: 'i' } },
+              { 'requestedShiftData.code': { $regex: escapedSearch, $options: 'i' } },
+              { 'currentShiftData.name': { $regex: escapedSearch, $options: 'i' } },
+              { 'currentShiftData.code': { $regex: escapedSearch, $options: 'i' } },
             ]
           }
         },
@@ -287,11 +310,11 @@ export class ShiftChangeService extends BaseService {
         {
           $match: {
             $or: [
-              ...directSearchConditions,
-              { 'requestedShiftData.name': { $regex: search, $options: 'i' } },
-              { 'requestedShiftData.code': { $regex: search, $options: 'i' } },
-              { 'currentShiftData.name': { $regex: search, $options: 'i' } },
-              { 'currentShiftData.code': { $regex: search, $options: 'i' } },
+              ...documentSearchConditions,
+              { 'requestedShiftData.name': { $regex: escapedSearch, $options: 'i' } },
+              { 'requestedShiftData.code': { $regex: escapedSearch, $options: 'i' } },
+              { 'currentShiftData.name': { $regex: escapedSearch, $options: 'i' } },
+              { 'currentShiftData.code': { $regex: escapedSearch, $options: 'i' } },
             ]
           }
         },

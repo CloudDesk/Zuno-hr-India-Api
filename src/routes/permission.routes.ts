@@ -132,7 +132,13 @@ export const permissionRoutes: RouteHandler = async (
             endDate: { type: 'string', format: 'date' },
             page: { type: 'number', minimum: 1, default: 1 },
             limit: { type: 'number', minimum: 1, maximum: 100, default: 10 },
-            search: { type: 'string', description: 'Search by employee name, reason, manager name, or status' },
+            search: { 
+              oneOf: [
+                { type: 'string' },
+                { type: 'array', items: { type: 'string' } }
+              ],
+              description: 'Search by employee name, reason, manager name, or status'
+            },
           },
         },
       },
@@ -169,10 +175,12 @@ export const permissionRoutes: RouteHandler = async (
         }
 
         if (status) query.status = status;
-        if (search) query.search = search;
         if (startDate) query.startDate = startDate;
         if (endDate) query.endDate = endDate;
-        if (search) query.search = search;
+        // Normalize search parameter (handle case where it might be an array from duplicate query params)
+        if (search) {
+          query.search = Array.isArray(search) ? search[0] : search;
+        }
 
         const result = await request.container!.permissionService.findAll(query);
         return reply.send({

@@ -235,13 +235,16 @@ export const leaveRoutes: RouteHandler = async (
               enum: ['Pending', 'Approved', 'Rejected', 'Cancelled'],
               description: 'Filter by leave status'
             },
+            leaveType: {
+              type: 'string',
+              description: 'Filter by leave type (e.g., annual, sick, lossOfPay)'
+            },
             appliedTo: {
               type: 'string',
               description: 'Filter by manager ID (Admin only)'
             },
             search: {
-              type: 'string',
-              description: 'Search in user name, email, reason, remarks, or leave type'
+              description: 'Search by employee name, leave type, reason, manager name, or status'
             },
             startDate: {
               type: 'string',
@@ -309,18 +312,19 @@ export const leaveRoutes: RouteHandler = async (
     },
     async (request, reply) => {
       try {
-        const { userId, status, startDate, endDate, page, limit, search, appliedTo } = request.query as any;
+        const { userId, status, leaveType, startDate, endDate, page, limit, search, appliedTo } = request.query as any;
         const currentUser = request.user!;
         const userRole = (currentUser as any).role?.toLowerCase() || '';
         
         const query: ILeaveQuery = {
           userId: userId,
           status: status ? status : undefined,
+          leaveType: leaveType,
           startDate: startDate ? new Date(startDate) : undefined,
           endDate: endDate ? new Date(endDate) : undefined,
           page: page ? Number(page) : undefined,
           limit: limit ? Number(limit) : undefined,
-          search: search,
+          search: Array.isArray(search) ? search[0] : search,
         };
 
         // If userId is provided, filter by that user
@@ -329,7 +333,10 @@ export const leaveRoutes: RouteHandler = async (
         }
 
         if (status) query.status = status as 'Pending' | 'Approved' | 'Rejected';
-        if (search) query.search = search;
+        // Normalize search parameter (handle case where it might be an array from duplicate query params)
+        if (search) {
+          query.search = Array.isArray(search) ? search[0] : search;
+        }
         if (startDate) query.startDate = new Date(startDate);
         if (endDate) query.endDate = new Date(endDate);
         
@@ -709,6 +716,20 @@ export const leaveRoutes: RouteHandler = async (
         tags: ['Leave Management'],
         summary: 'Get leave requests by appliedTo',
         description: 'Get Leave Data Based on appliedTo field',
+        querystring: {
+          type: 'object',
+          properties: {
+            userId: { type: 'string' },
+            status: { type: 'string', enum: ['Pending', 'Approved', 'Rejected', 'Cancelled'] },
+            startDate: { type: 'string', format: 'date' },
+            endDate: { type: 'string', format: 'date' },
+            page: { type: 'number', minimum: 1, default: 1 },
+            limit: { type: 'number', minimum: 1, maximum: 100, default: 5 },
+            search: {
+              description: 'Search by employee name, leave type, reason, manager name, or status'
+            },
+          },
+        },
         response: {
           200: {
             type: 'object',
@@ -766,7 +787,10 @@ export const leaveRoutes: RouteHandler = async (
     async (request, reply) => {
       try {
         const { appliedTo } = request.params as { appliedTo: string };
-        const { userId, status, startDate, endDate, page, limit } = request.query as any;
+        const { userId, status, startDate, endDate, page, limit, search } = request.query as any;
+        // Normalize search parameter (handle case where it might be an array from duplicate query params)
+        const normalizedSearch = search ? (Array.isArray(search) ? search[0] : search) : undefined;
+        
         const query: ILeaveQuery = {
           appliedTo,
           userId: userId,
@@ -775,6 +799,7 @@ export const leaveRoutes: RouteHandler = async (
           endDate: endDate ? new Date(endDate) : undefined,
           page: page ? Number(page) : undefined,
           limit: limit ? Number(limit) : undefined,
+          search: normalizedSearch,
         };
 
         const leaveData = await request.container!.leaveService.getLeavesByAppliedTo(query);

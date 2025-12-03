@@ -146,7 +146,9 @@ export const shiftChangeRoutes: RouteHandler = async (
             endDate: { type: 'string', format: 'date' },
             page: { type: 'number', minimum: 1, default: 1 },
             limit: { type: 'number', minimum: 1, maximum: 100, default: 20 },
-            search: { type: 'string', description: 'Search by applied by (employee name/email), applied to (manager name), reason, status, current shift name/code, or requested shift name/code' },
+            search: {
+              description: 'Search by applied by (employee name/email), applied to (manager name), reason, status, current shift name/code, or requested shift name/code'
+            },
           },
         },
       },
@@ -188,7 +190,10 @@ export const shiftChangeRoutes: RouteHandler = async (
         if (appliedTo && (userRole === 'admin' || userRole === 'superadmin')) {
           query.appliedTo = appliedTo;
         }
-        if (search) query.search = search;
+        // Normalize search parameter (handle case where it might be an array from duplicate query params)
+        if (search) {
+          query.search = Array.isArray(search) ? search[0] : search;
+        }
 
         const result = await request.container!.shiftChangeService.findAll(query);
         return reply.send({
