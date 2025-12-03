@@ -254,6 +254,131 @@ export class OptionalHolidayService extends BaseService {
     };
   }
 
+  // Service method to get optional holiday requests by appliedTo
+  async getOptionalHolidaysByAppliedTo(query: IOptionalHolidayQuery): Promise<{
+    data: IOptionalHolidayRequest[],
+    meta: {
+      page: number,
+      limit: number,
+      total: number,
+      totalPages: number
+    }
+  }> {
+    const { appliedTo, userId, status, startDate, endDate, year, page = 1, limit = 5, search } = query;
+    const skip = (page - 1) * limit;
+
+    const filter: any = {};
+    // appliedTo._id is stored as String in the model
+    if (appliedTo) {
+      filter['appliedTo._id'] = appliedTo;
+    }
+
+    if (userId) {
+      filter.userId = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
+    }
+    if (status) filter.status = status;
+    if (year) filter.year = year;
+    
+    if (startDate || endDate) {
+      const dateFilter: any = {
+        holidayDate: {}
+      };
+      if (startDate) {
+        const start = new Date(startDate);
+        start.setUTCHours(0, 0, 0, 0);
+        dateFilter.holidayDate.$gte = start;
+      }
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setUTCHours(23, 59, 59, 999);
+        dateFilter.holidayDate.$lte = end;
+      }
+      Object.assign(filter, dateFilter);
+    }
+
+    // Handle search filter
+    if (search) {
+      const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      
+      const searchConditions: any[] = [
+        { holidayName: { $regex: escapedSearch, $options: 'i' } },
+        { reason: { $regex: escapedSearch, $options: 'i' } },
+        { status: { $regex: escapedSearch, $options: 'i' } },
+        { 'appliedTo.name': { $regex: escapedSearch, $options: 'i' } },
+      ];
+
+      const userSearchFilter: any = {
+        $or: [
+          { name: { $regex: escapedSearch, $options: 'i' } },
+          { email: { $regex: escapedSearch, $options: 'i' } },
+        ]
+      };
+
+      if (userId) {
+        userSearchFilter._id = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
+      }
+
+      const matchingUsers = await User.find(userSearchFilter).select('_id').lean();
+
+      if (matchingUsers.length > 0) {
+        const userIds = matchingUsers.map(u => u._id);
+        searchConditions.push({ userId: { $in: userIds } });
+      }
+
+      // Combine search with existing filters
+      if (filter.$or || filter.holidayDate) {
+        const existingFilters: any = {};
+        if (filter.holidayDate) {
+          existingFilters.holidayDate = filter.holidayDate;
+        }
+        if (filter.status) {
+          existingFilters.status = filter.status;
+        }
+        if (filter.year) {
+          existingFilters.year = filter.year;
+        }
+        if (filter.userId) {
+          existingFilters.userId = filter.userId;
+        }
+        if (filter['appliedTo._id']) {
+          existingFilters['appliedTo._id'] = filter['appliedTo._id'];
+        }
+
+        filter.$and = [
+          existingFilters,
+          { $or: searchConditions }
+        ];
+        delete filter.holidayDate;
+        delete filter.status;
+        delete filter.year;
+        delete filter.userId;
+        delete filter['appliedTo._id'];
+      } else {
+        filter.$or = searchConditions;
+      }
+    }
+
+    const [requests, total] = await Promise.all([
+      OptionalHolidayRequest.find(filter)
+        .sort({ holidayDate: -1 })
+        .skip(skip)
+        .limit(limit)
+        .populate('userId', 'name email employeeCode')
+        .lean(),
+      OptionalHolidayRequest.countDocuments(filter),
+    ]);
+
+    return {
+      data: requests as IOptionalHolidayRequest[],
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
   async create(data: IOptionalHolidayCreate): Promise<IOptionalHolidayRequest> {
     const userId = typeof data.userId === 'string' ? new Types.ObjectId(data.userId) : data.userId;
     const holidayDate = new Date(data.holidayDate);

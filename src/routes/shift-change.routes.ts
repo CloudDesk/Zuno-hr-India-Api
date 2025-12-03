@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyPluginOptions } from 'fastify';
 import { RouteHandler } from '../types/routes';
 import { authenticate } from '../middleware/auth';
-import { IShiftChangeCreate } from '../services/shift-change.service';
+import { IShiftChangeCreate, IShiftChangeQuery } from '../services/shift-change.service';
 import { Types } from 'mongoose';
 import { User } from '../models';
 
@@ -201,6 +201,129 @@ export const shiftChangeRoutes: RouteHandler = async (
           data: result.requests,
           total: result.total,
           meta: result.meta,
+        });
+      } catch (error: any) {
+        return reply.status(400).send({
+          success: false,
+          error: { message: error.message },
+        });
+      }
+    }
+  );
+
+  // Get shift change requests by appliedTo
+  fastify.get(
+    '/applied-to/:appliedTo',
+    {
+      onRequest: [authenticate],
+      schema: {
+        tags: ['Shift Change Management'],
+        summary: 'Get shift change requests by appliedTo',
+        description: 'Get Shift Change Data Based on appliedTo field',
+        querystring: {
+          type: 'object',
+          properties: {
+            userId: { type: 'string' },
+            status: { type: 'string', enum: ['Pending', 'Approved', 'Rejected', 'Cancelled'] },
+            startDate: { type: 'string', format: 'date' },
+            endDate: { type: 'string', format: 'date' },
+            page: { type: 'number', minimum: 1, default: 1 },
+            limit: { type: 'number', minimum: 1, maximum: 100, default: 5 },
+            search: {
+              description: 'Search by employee name, reason, manager name, status, current shift name/code, or requested shift name/code'
+            },
+          },
+        },
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              success: { type: 'boolean' },
+              data: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    _id: { type: 'string' },
+                    userId: { type: 'string' },
+                    effectiveDate: { type: 'string', format: 'date' },
+                    status: { type: 'string', enum: ['Pending', 'Approved', 'Rejected', 'Cancelled'] },
+                    reason: { type: 'string' },
+                    remarks: { type: 'string' },
+                    appliedTo: {
+                      type: 'object',
+                      properties: {
+                        _id: { type: 'string' },
+                        name: { type: 'string' },
+                      },
+                    },
+                    user: {
+                      type: 'object',
+                      properties: {
+                        name: { type: 'string' },
+                        email: { type: 'string' },
+                      },
+                    },
+                    requestedShift: {
+                      type: 'object',
+                      properties: {
+                        _id: { type: 'string' },
+                        name: { type: 'string' },
+                        code: { type: 'string' },
+                      },
+                    },
+                    currentShift: {
+                      type: 'object',
+                      properties: {
+                        _id: { type: 'string' },
+                        name: { type: 'string' },
+                        code: { type: 'string' },
+                      },
+                    },
+                    createdAt: { type: 'string', format: 'date-time' },
+                    updatedAt: { type: 'string', format: 'date-time' }
+                  }
+                }
+              },
+              meta: {
+                type: 'object',
+                properties: {
+                  page: { type: 'number' },
+                  limit: { type: 'number' },
+                  total: { type: 'number' },
+                  totalPages: { type: 'number' }
+                }
+              }
+            },
+            required: ['success', 'data', 'meta']
+          }
+        }
+      }
+    },
+    async (request, reply) => {
+      try {
+        const { appliedTo } = request.params as { appliedTo: string };
+        const { userId, status, startDate, endDate, page, limit, search } = request.query as any;
+        // Normalize search parameter (handle case where it might be an array from duplicate query params)
+        const normalizedSearch = search ? (Array.isArray(search) ? search[0] : search) : undefined;
+
+        const query: IShiftChangeQuery = {
+          appliedTo,
+          userId: userId,
+          status: status ? status : undefined,
+          startDate: startDate ? new Date(startDate) : undefined,
+          endDate: endDate ? new Date(endDate) : undefined,
+          page: page ? Number(page) : undefined,
+          limit: limit ? Number(limit) : undefined,
+          search: normalizedSearch,
+        };
+
+        const shiftChangeData = await request.container!.shiftChangeService.getShiftChangesByAppliedTo(query);
+
+        return reply.send({
+          success: true,
+          data: shiftChangeData.data,
+          meta: shiftChangeData.meta
         });
       } catch (error: any) {
         return reply.status(400).send({

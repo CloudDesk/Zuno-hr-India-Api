@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyPluginOptions } from 'fastify';
 import { RouteHandler } from '../types/routes';
 import { authenticate } from '../middleware/auth';
-import { IPermissionCreate } from '../services/permission.service';
+import { IPermissionCreate, IPermissionQuery } from '../services/permission.service';
 import { Types } from 'mongoose';
 import { User } from '../models';
 
@@ -132,7 +132,7 @@ export const permissionRoutes: RouteHandler = async (
             endDate: { type: 'string', format: 'date' },
             page: { type: 'number', minimum: 1, default: 1 },
             limit: { type: 'number', minimum: 1, maximum: 100, default: 10 },
-            search: { 
+            search: {
               oneOf: [
                 { type: 'string' },
                 { type: 'array', items: { type: 'string' } }
@@ -188,6 +188,115 @@ export const permissionRoutes: RouteHandler = async (
           data: result.permissions,
           total: result.total,
           meta: result.meta,
+        });
+      } catch (error: any) {
+        return reply.status(400).send({
+          success: false,
+          error: { message: error.message },
+        });
+      }
+    },
+  );
+
+  // Get permissions by appliedTo
+  fastify.get(
+    '/applied-to/:appliedTo',
+    {
+      onRequest: [authenticate],
+      schema: {
+        tags: ['Permission Management'],
+        summary: 'Get permission requests by appliedTo',
+        description: 'Get Permission Data Based on appliedTo field',
+        querystring: {
+          type: 'object',
+          properties: {
+            userId: { type: 'string' },
+            status: { type: 'string', enum: ['Pending', 'Approved', 'Rejected', 'Cancelled'] },
+            startDate: { type: 'string', format: 'date' },
+            endDate: { type: 'string', format: 'date' },
+            page: { type: 'number', minimum: 1, default: 1 },
+            limit: { type: 'number', minimum: 1, maximum: 100, default: 5 },
+            search: {
+              description: 'Search by employee name, reason, manager name, or status'
+            },
+          },
+        },
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              success: { type: 'boolean' },
+              data: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    _id: { type: 'string' },
+                    userId: { type: 'string' },
+                    permissionDate: { type: 'string', format: 'date' },
+                    hours: { type: 'number' },
+                    status: { type: 'string', enum: ['Pending', 'Approved', 'Rejected', 'Cancelled'] },
+                    reason: { type: 'string' },
+                    remarks: { type: 'string' },
+                    appliedTo: {
+                      type: 'object',
+                      properties: {
+                        _id: { type: 'string' },
+                        name: { type: 'string' },
+                      },
+                    },
+                    user: {
+                      type: 'object',
+                      properties: {
+                        name: { type: 'string' },
+                        email: { type: 'string' },
+                      },
+                    },
+                    createdAt: { type: 'string', format: 'date-time' },
+                    updatedAt: { type: 'string', format: 'date-time' }
+                  }
+                }
+              },
+              meta: {
+                type: 'object',
+                properties: {
+                  page: { type: 'number' },
+                  limit: { type: 'number' },
+                  total: { type: 'number' },
+                  totalPages: { type: 'number' }
+                }
+              }
+            },
+            required: ['success', 'data', 'meta']
+          }
+        }
+      }
+    },
+    async (request, reply) => {
+      try {
+        const { appliedTo } = request.params as { appliedTo: string };
+        const { userId, status, startDate, endDate, page, limit, search } = request.query as any;
+
+        // Normalize search parameter (handle case where it might be an array from duplicate query params)
+        const normalizedSearch = search ? (Array.isArray(search) ? search[0] : search) : undefined;
+
+        const query: IPermissionQuery = {
+          appliedTo,
+          userId: userId,
+          status: status ? status : undefined,
+          startDate: startDate ? new Date(startDate) : undefined,
+          endDate: endDate ? new Date(endDate) : undefined,
+          page: page ? Number(page) : undefined,
+          limit: limit ? Number(limit) : undefined,
+          search: normalizedSearch,
+        };
+
+        const permissionData = await request.container!.permissionService.getPermissionsByAppliedTo(query);
+
+        return reply.send({
+          success: true,
+          data: permissionData.data,
+          meta: permissionData.meta
         });
       } catch (error: any) {
         return reply.status(400).send({

@@ -29,6 +29,7 @@ export interface IWFHQuery {
   sort?: 'asc' | 'desc';
   sortBy?: keyof IWFH;
   search?: string;
+  appliedTo?: string;
 }
 
 export interface IWFHStatusUpdate {
@@ -605,6 +606,153 @@ export class WFHService extends BaseService {
     });
 
     return pendingWFHs.reduce((total, wfh) => total + wfh.noOfDays, 0);
+  }
+
+  // Service method to get WFH requests by appliedTo
+  async getWFHsByAppliedTo(query: IWFHQuery): Promise<{
+    data: IWFH[],
+    meta: {
+      page: number,
+      limit: number,
+      total: number,
+      totalPages: number
+    }
+  }> {
+    const { appliedTo, userId, status, startDate, endDate, page = 1, limit = 5, search } = query;
+    const skip = (page - 1) * limit;
+
+    const filter: any = { 'appliedTo._id': appliedTo }; // Initialize filter with appliedTo
+
+    if (userId) {
+      filter.userId = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
+    }
+    if (status) filter.status = status;
+    
+    if (startDate || endDate) {
+      const dateFilter: any = {
+        $or: [
+          {
+            startDate: {
+              ...(startDate && { $gte: new Date(startDate) }),
+              ...(endDate && { $lte: new Date(endDate) }),
+            },
+          },
+          {
+            endDate: {
+              ...(startDate && { $gte: new Date(startDate) }),
+              ...(endDate && { $lte: new Date(endDate) }),
+            },
+          },
+        ],
+      };
+
+      if (filter.$or) {
+        filter.$and = [
+          { 'appliedTo._id': appliedTo },
+          ...(status ? [{ status }] : []),
+          ...(userId ? [{ userId: typeof userId === 'string' ? new Types.ObjectId(userId) : userId }] : []),
+          dateFilter
+        ];
+        delete filter.$or;
+      } else {
+        Object.assign(filter, dateFilter);
+      }
+    }
+
+    // Handle search filter
+    if (search) {
+      const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      
+      const searchConditions: any[] = [
+        { reason: { $regex: escapedSearch, $options: 'i' } },
+        { remarks: { $regex: escapedSearch, $options: 'i' } },
+        { 'appliedTo.name': { $regex: escapedSearch, $options: 'i' } },
+        { status: { $regex: escapedSearch, $options: 'i' } },
+      ];
+
+      const userSearchFilter: any = {
+        $or: [
+          { name: { $regex: escapedSearch, $options: 'i' } },
+          { email: { $regex: escapedSearch, $options: 'i' } },
+        ]
+      };
+
+      if (userId) {
+        userSearchFilter._id = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
+      }
+
+      const matchingUsers = await User.find(userSearchFilter).select('_id').lean();
+
+      if (matchingUsers.length > 0) {
+        const userIds = matchingUsers.map(u => u._id);
+        searchConditions.push({ userId: { $in: userIds } });
+      }
+
+      // Combine search with existing filters
+      if (filter.$or || filter.$and) {
+        const existingFilters: any = { 'appliedTo._id': appliedTo };
+        if (status) existingFilters.status = status;
+        if (userId) {
+          existingFilters.userId = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
+        }
+
+        filter.$and = [
+          existingFilters,
+          ...(filter.$or ? [filter.$or] : []),
+          { $or: searchConditions }
+        ];
+        delete filter.$or;
+        delete filter.status;
+        delete filter.userId;
+        delete filter['appliedTo._id'];
+      } else {
+        filter.$or = searchConditions;
+      }
+    }
+
+    const [wfhs, total] = await Promise.all([
+      WFH.find(filter as FilterQuery<IWFH>)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit),
+      WFH.countDocuments(filter as FilterQuery<IWFH>),
+    ]);
+
+    const populatedWFHs = await Promise.all(
+      wfhs.map(async (wfh) => {
+        const [user, approver] = await Promise.all([
+          User.findById(wfh.userId).select('name email'),
+          wfh.approvedById ? User.findById(wfh.approvedById).select('name email') : null,
+        ]);
+
+        if (user) {
+          wfh.user = {
+            name: user.name,
+            email: user.email,
+          };
+        }
+
+        if (approver) {
+          wfh.approvedBy = {
+            _id: approver._id,
+            name: approver.name,
+            email: approver.email,
+          };
+        }
+
+        return wfh;
+      })
+    );
+
+    return {
+      data: populatedWFHs,
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
   }
 }
 

@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyPluginOptions } from 'fastify';
 import { RouteHandler } from '../types/routes';
 import { authenticate } from '../middleware/auth';
-import { IWFHCreate } from '../services/wfh.service';
+import { IWFHCreate, IWFHQuery } from '../services/wfh.service';
 import { Types } from 'mongoose';
 import { User } from '../models';
 
@@ -187,6 +187,115 @@ export const wfhRoutes: RouteHandler = async (
           data: result.wfhs,
           total: result.total,
           meta: result.meta,
+        });
+      } catch (error: any) {
+        return reply.status(400).send({
+          success: false,
+          error: { message: error.message },
+        });
+      }
+    },
+  );
+
+  // Get WFH requests by appliedTo
+  fastify.get(
+    '/applied-to/:appliedTo',
+    {
+      onRequest: [authenticate],
+      schema: {
+        tags: ['WFH Management'],
+        summary: 'Get WFH requests by appliedTo',
+        description: 'Get WFH Data Based on appliedTo field',
+        querystring: {
+          type: 'object',
+          properties: {
+            userId: { type: 'string' },
+            status: { type: 'string', enum: ['Pending', 'Approved', 'Rejected', 'Cancelled'] },
+            startDate: { type: 'string', format: 'date' },
+            endDate: { type: 'string', format: 'date' },
+            page: { type: 'number', minimum: 1, default: 1 },
+            limit: { type: 'number', minimum: 1, maximum: 100, default: 5 },
+            search: {
+              description: 'Search by employee name, reason, manager name, or status'
+            },
+          },
+        },
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              success: { type: 'boolean' },
+              data: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    _id: { type: 'string' },
+                    userId: { type: 'string' },
+                    startDate: { type: 'string', format: 'date' },
+                    endDate: { type: 'string', format: 'date' },
+                    noOfDays: { type: 'number' },
+                    status: { type: 'string', enum: ['Pending', 'Approved', 'Rejected', 'Cancelled'] },
+                    reason: { type: 'string' },
+                    remarks: { type: 'string' },
+                    appliedTo: {
+                      type: 'object',
+                      properties: {
+                        _id: { type: 'string' },
+                        name: { type: 'string' },
+                      },
+                    },
+                    user: {
+                      type: 'object',
+                      properties: {
+                        name: { type: 'string' },
+                        email: { type: 'string' },
+                      },
+                    },
+                    createdAt: { type: 'string', format: 'date-time' },
+                    updatedAt: { type: 'string', format: 'date-time' }
+                  }
+                }
+              },
+              meta: {
+                type: 'object',
+                properties: {
+                  page: { type: 'number' },
+                  limit: { type: 'number' },
+                  total: { type: 'number' },
+                  totalPages: { type: 'number' }
+                }
+              }
+            },
+            required: ['success', 'data', 'meta']
+          }
+        }
+      }
+    },
+    async (request, reply) => {
+      try {
+        const { appliedTo } = request.params as { appliedTo: string };
+        const { userId, status, startDate, endDate, page, limit, search } = request.query as any;
+        
+        const normalizedSearch = search ? (Array.isArray(search) ? search[0] : search) : undefined;
+        
+        const query: IWFHQuery = {
+          appliedTo,
+          userId: userId,
+          status: status ? status : undefined,
+          startDate: startDate ? new Date(startDate) : undefined,
+          endDate: endDate ? new Date(endDate) : undefined,
+          page: page ? Number(page) : undefined,
+          limit: limit ? Number(limit) : undefined,
+          search: normalizedSearch,
+        };
+
+        const wfhData = await request.container!.wfhService.getWFHsByAppliedTo(query);
+
+        return reply.send({
+          success: true,
+          data: wfhData.data,
+          meta: wfhData.meta
         });
       } catch (error: any) {
         return reply.status(400).send({
