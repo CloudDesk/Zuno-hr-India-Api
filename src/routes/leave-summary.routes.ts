@@ -105,6 +105,19 @@ const getLeaveSummarySchema = {
                 manuallyAdjusted: { type: 'boolean' },
               },
             },
+            workFromHome: {
+              type: 'object',
+              properties: {
+                alloted: { type: 'number' },
+                availed: { type: 'number' },
+                remaining: { type: 'number' },
+                leaveRequests: { type: 'array', items: { type: 'string' } },
+                allocationDate: { type: 'string', format: 'date-time' },
+                expiryDate: { type: 'string', format: 'date-time' },
+                originalExpiryDate: { type: 'string', format: 'date-time' },
+                manuallyAdjusted: { type: 'boolean' },
+              },
+            },
           },
         },
       },
@@ -225,6 +238,11 @@ const updateLeaveAllotmentSchema = {
         minimum: 0,
         description: 'Maternity leave days (UAE-specific)',
       },
+      workFromHome: {
+        type: 'number',
+        minimum: 0,
+        description: 'Work From Home days',
+      },
       // UAE-specific: Optional allocation dates
       annualAllocationDate: {
         type: 'string',
@@ -256,6 +274,11 @@ const updateLeaveAllotmentSchema = {
         format: 'date-time',
         description: 'Allocation date for maternity leave (UAE)',
       },
+      workFromHomeAllocationDate: {
+        type: 'string',
+        format: 'date-time',
+        description: 'Allocation date for work from home (UAE)',
+      },
       // UAE-specific: Optional manual expiry dates
       annualExpiryDate: {
         type: 'string',
@@ -286,6 +309,11 @@ const updateLeaveAllotmentSchema = {
         type: 'string',
         format: 'date-time',
         description: 'Manual expiry date for maternity leave (UAE)',
+      },
+      workFromHomeExpiryDate: {
+        type: 'string',
+        format: 'date-time',
+        description: 'Manual expiry date for work from home (UAE)',
       }
     },
   },
@@ -324,6 +352,14 @@ const updateLeaveAllotmentSchema = {
               },
             },
             otherUnpaid: {
+              type: 'object',
+              properties: {
+                alloted: { type: 'number' },
+                availed: { type: 'number' },
+                remaining: { type: 'number' },
+              },
+            },
+            workFromHome: {
               type: 'object',
               properties: {
                 alloted: { type: 'number' },
@@ -422,18 +458,21 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
           otherUnpaid,
           compOff,
           maternity,
+          workFromHome,
           annualAllocationDate,
           sickAllocationDate,
           otherPaidAllocationDate,
           otherUnpaidAllocationDate,
           compOffAllocationDate,
           maternityAllocationDate,
+          workFromHomeAllocationDate,
           annualExpiryDate,
           sickExpiryDate,
           otherPaidExpiryDate,
           otherUnpaidExpiryDate,
           compOffExpiryDate,
           maternityExpiryDate,
+          workFromHomeExpiryDate,
         } = request.body as {
           userId: string;
           year: number;
@@ -443,6 +482,7 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
           otherUnpaid?: number;
           compOff?: number;
           maternity?: number;
+          workFromHome?: number;
           // UAE-specific allocation dates
           annualAllocationDate?: string;
           sickAllocationDate?: string;
@@ -450,6 +490,7 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
           otherUnpaidAllocationDate?: string;
           compOffAllocationDate?: string;
           maternityAllocationDate?: string;
+          workFromHomeAllocationDate?: string;
           // UAE-specific manual expiry dates
           annualExpiryDate?: string;
           sickExpiryDate?: string;
@@ -457,6 +498,7 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
           otherUnpaidExpiryDate?: string;
           compOffExpiryDate?: string;
           maternityExpiryDate?: string;
+          workFromHomeExpiryDate?: string;
         };
 
         const updatedSummary = await request.container!.leaveSummaryService.updateLeaveAllotments(
@@ -469,6 +511,7 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
             otherUnpaid,
             compOff,
             maternity,
+            workFromHome,
             // Convert allocation date strings to Date objects if provided
             annualAllocationDate: annualAllocationDate ? new Date(annualAllocationDate) : undefined,
             sickAllocationDate: sickAllocationDate ? new Date(sickAllocationDate) : undefined,
@@ -476,6 +519,7 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
             otherUnpaidAllocationDate: otherUnpaidAllocationDate ? new Date(otherUnpaidAllocationDate) : undefined,
             compOffAllocationDate: compOffAllocationDate ? new Date(compOffAllocationDate) : undefined,
             maternityAllocationDate: maternityAllocationDate ? new Date(maternityAllocationDate) : undefined,
+            workFromHomeAllocationDate: workFromHomeAllocationDate ? new Date(workFromHomeAllocationDate) : undefined,
             // Convert expiry date strings to Date objects if provided (manual override)
             annualExpiryDate: annualExpiryDate ? new Date(annualExpiryDate) : undefined,
             sickExpiryDate: sickExpiryDate ? new Date(sickExpiryDate) : undefined,
@@ -483,12 +527,59 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
             otherUnpaidExpiryDate: otherUnpaidExpiryDate ? new Date(otherUnpaidExpiryDate) : undefined,
             compOffExpiryDate: compOffExpiryDate ? new Date(compOffExpiryDate) : undefined,
             maternityExpiryDate: maternityExpiryDate ? new Date(maternityExpiryDate) : undefined,
+            workFromHomeExpiryDate: workFromHomeExpiryDate ? new Date(workFromHomeExpiryDate) : undefined,
           }
         );
 
+        // Format response to include all leave types including workFromHome
+        const formattedResponse = {
+          userId: updatedSummary.userId,
+          year: updatedSummary.year,
+          annual: {
+            alloted: updatedSummary.annual?.alloted || 0,
+            availed: updatedSummary.annual?.availed || 0,
+            remaining: updatedSummary.annual?.remaining || 0,
+          },
+          sick: {
+            alloted: updatedSummary.sick?.alloted || 0,
+            availed: updatedSummary.sick?.availed || 0,
+            remaining: updatedSummary.sick?.remaining || 0,
+          },
+          compOff: {
+            alloted: updatedSummary.compOff?.alloted || 0,
+            availed: updatedSummary.compOff?.availed || 0,
+            remaining: updatedSummary.compOff?.remaining || 0,
+          },
+          lossOfPay: {
+            alloted: updatedSummary.lossOfPay?.alloted || 0,
+            availed: updatedSummary.lossOfPay?.availed || 0,
+            remaining: updatedSummary.lossOfPay?.remaining || 0,
+          },
+          otherPaid: {
+            alloted: updatedSummary.otherPaid?.alloted || 0,
+            availed: updatedSummary.otherPaid?.availed || 0,
+            remaining: updatedSummary.otherPaid?.remaining || 0,
+          },
+          otherUnpaid: {
+            alloted: updatedSummary.otherUnpaid?.alloted || 0,
+            availed: updatedSummary.otherUnpaid?.availed || 0,
+            remaining: updatedSummary.otherUnpaid?.remaining || 0,
+          },
+          maternity: {
+            alloted: updatedSummary.maternity?.alloted || 0,
+            availed: updatedSummary.maternity?.availed || 0,
+            remaining: updatedSummary.maternity?.remaining || 0,
+          },
+          workFromHome: {
+            alloted: updatedSummary.workFromHome?.alloted || 0,
+            availed: updatedSummary.workFromHome?.availed || 0,
+            remaining: updatedSummary.workFromHome?.remaining || 0,
+          },
+        };
+
         return reply.send({
           success: true,
-          data: updatedSummary,
+          data: formattedResponse,
         });
       } catch (error: any) {
         return reply.status(error.statusCode || 400).send({

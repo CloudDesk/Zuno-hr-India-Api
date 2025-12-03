@@ -565,12 +565,12 @@ export class LeaveService extends BaseService {
 
 
     console.log("first")
-    // Normalize leaveType to lowercase to match leave summary keys (annual, sick, etc.)
-    const normalizedLeaveType = (leave.leaveType || '').toLowerCase();
+    // Pass leaveType as-is to updateLeaveBalance - it will handle the mapping to camelCase
+    // The leaveType from frontend is already in camelCase (e.g., "lossOfPay")
     await this.leaveSummaryService.updateLeaveBalance(
       leave.userId as Types.ObjectId,
       new Date(leave.startDate).getFullYear(),
-      normalizedLeaveType,
+      leave.leaveType || '',
       leave.noOfDays as number,
       leave._id as Types.ObjectId
     );

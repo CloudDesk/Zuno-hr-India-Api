@@ -72,25 +72,43 @@ export class OptionalHolidayService extends BaseService {
   /**
    * Validate that the holiday date is an optional holiday in the calendar
    */
-  private async validateOptionalHoliday(userId: Types.ObjectId, holidayDate: Date): Promise<{ isValid: boolean; holidayName?: string }> {
+  private async validateOptionalHoliday(userId: Types.ObjectId, holidayDate: Date): Promise<{ isValid: boolean; holidayName?: string; error?: string }> {
     const user = await User.findById(userId).select('holidayCalendarId').lean();
-    if (!user || !user.holidayCalendarId) {
-      return { isValid: false };
+    if (!user) {
+      return { isValid: false, error: 'User not found' };
+    }
+    if (!user.holidayCalendarId) {
+      return { isValid: false, error: 'No holiday calendar assigned to your account. Please contact HR.' };
     }
 
     const calendar = await HolidayCalendar.findById(user.holidayCalendarId).lean();
     if (!calendar) {
-      return { isValid: false };
+      return { isValid: false, error: 'Holiday calendar not found. Please contact HR.' };
     }
 
-    const holidayDateStr = new Date(holidayDate).toISOString().split('T')[0];
+    // Normalize dates to YYYY-MM-DD format for comparison (ignore time)
+    const holidayDateObj = new Date(holidayDate);
+    const holidayDateStr = holidayDateObj.toISOString().split('T')[0];
+    
     const matchingHoliday = calendar.holidays.find((h) => {
-      const hDateStr = new Date(h.date).toISOString().split('T')[0];
+      const hDateObj = new Date(h.date);
+      const hDateStr = hDateObj.toISOString().split('T')[0];
       return hDateStr === holidayDateStr && h.type === 'optional';
     });
 
     if (!matchingHoliday) {
-      return { isValid: false };
+      // Check if the date exists in calendar but is not optional
+      const dateExists = calendar.holidays.find((h) => {
+        const hDateObj = new Date(h.date);
+        const hDateStr = hDateObj.toISOString().split('T')[0];
+        return hDateStr === holidayDateStr;
+      });
+      
+      if (dateExists) {
+        return { isValid: false, error: `The selected date (${holidayDateStr}) exists in your calendar but is not marked as an optional holiday. Only dates marked as "optional" in the holiday calendar can be requested.` };
+      } else {
+        return { isValid: false, error: `The selected date (${holidayDateStr}) is not found in your holiday calendar as an optional holiday. Please select a date that is marked as optional in your calendar.` };
+      }
     }
 
     return { isValid: true, holidayName: matchingHoliday.name };
@@ -140,9 +158,9 @@ export class OptionalHolidayService extends BaseService {
     }
     if (status) filter.status = status;
     if (year) filter.year = year;
-    // ✅ FIX: Convert appliedTo string to ObjectId for proper MongoDB query
+    // ✅ FIX: appliedTo._id is stored as String in the model, so use it as string
     if (appliedTo) {
-      filter['appliedTo._id'] = typeof appliedTo === 'string' ? new Types.ObjectId(appliedTo) : appliedTo;
+      filter['appliedTo._id'] = appliedTo;
     }
 
     // Search filter - search in holiday name, reason, status, and user name/email
@@ -253,7 +271,7 @@ export class OptionalHolidayService extends BaseService {
     // Validate that the date is an optional holiday in calendar
     const validation = await this.validateOptionalHoliday(userId, holidayDate);
     if (!validation.isValid) {
-      throw new Error('The selected date is not an optional holiday in your calendar');
+      throw new Error(validation.error || 'The selected date is not an optional holiday in your calendar');
     }
 
     // Use holiday name from calendar if not provided

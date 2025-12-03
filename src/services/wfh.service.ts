@@ -3,7 +3,7 @@ import { RequestContext } from '../types/context';
 import { IUser, User } from '../models';
 import { FilterQuery, Types } from 'mongoose';
 import { IWFH, WFH } from '../models/wfh.model';
-import { WFHSummaryService } from './wfh-summary.service';
+import { LeaveSummaryService } from './leave-summary.service';
 import { generateEmailTemplate } from '../emails/templates';
 import { emailService } from './email.service';
 
@@ -43,11 +43,11 @@ export interface IWFHStatusUpdate {
 }
 
 export class WFHService extends BaseService {
-  private wfhSummaryService: WFHSummaryService;
+  private leaveSummaryService: LeaveSummaryService;
 
   constructor(context: RequestContext) {
     super(context);
-    this.wfhSummaryService = new WFHSummaryService(context);
+    this.leaveSummaryService = new LeaveSummaryService(context);
   }
 
   async findById(id: string | Types.ObjectId): Promise<IWFH> {
@@ -98,9 +98,9 @@ export class WFHService extends BaseService {
       filter.userId = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
     }
     if (status) filter.status = status;
-    // ✅ FIX: Convert appliedTo string to ObjectId for proper MongoDB query
+    // ✅ FIX: appliedTo._id is stored as String in the model, so use it as string
     if (appliedTo) {
-      filter['appliedTo._id'] = typeof appliedTo === 'string' ? new Types.ObjectId(appliedTo) : appliedTo;
+      filter['appliedTo._id'] = appliedTo;
     }
 
     // Search filter - search in user name, email, reason, remarks, and status
@@ -344,11 +344,16 @@ export class WFHService extends BaseService {
 
     const year = startDate.getFullYear();
 
-    // Get WFH balance for the year
-    const balance = await this.wfhSummaryService.getWFHBalance(
+    // Get WFH balance for the year (from LeaveSummary workFromHome category)
+    const leaveSummary = await this.leaveSummaryService.getLeaveSummary(
       new Types.ObjectId(wfhData.userId.toString()),
       year
     );
+    const balance = {
+      alloted: leaveSummary.workFromHome?.alloted || 0,
+      availed: leaveSummary.workFromHome?.availed || 0,
+      remaining: leaveSummary.workFromHome?.remaining || 0,
+    };
 
     // Calculate total days used this year (only approved WFH)
     const totalUsedThisYear = await this.getTotalDaysUsedInYear(
@@ -389,11 +394,13 @@ export class WFHService extends BaseService {
     });
 
     // Track WFH request (don't deduct yet - will deduct on approval)
-    await this.wfhSummaryService.createOrUpdateWFHSummary(
+    await this.leaveSummaryService.createOrUpdateLeaveSummary(
       new Types.ObjectId(wfh.userId.toString()),
       year,
+      'workFromHome',
+      'Pending',
       {
-        wfhRequestId: wfh._id as Types.ObjectId,
+        leaveRequestId: wfh._id as Types.ObjectId,
       }
     );
 
@@ -465,18 +472,21 @@ export class WFHService extends BaseService {
     if (updateData.remarks) wfh.remarks = updateData.remarks;
     await wfh.save();
 
-    // Update WFH summary based on status change
+    // Update WFH summary based on status change (using LeaveSummary workFromHome category)
     const year = new Date(wfh.startDate).getFullYear();
     const totalUsedThisYear = await this.getTotalDaysUsedInYear(
       new Types.ObjectId(wfh.userId.toString()),
       year
     );
 
-    await this.wfhSummaryService.createOrUpdateWFHSummary(
+    await this.leaveSummaryService.createOrUpdateLeaveSummary(
       new Types.ObjectId(wfh.userId.toString()),
       year,
+      'workFromHome',
+      updateData.status,
       {
         availed: totalUsedThisYear,
+        leaveRequestId: wfh._id as Types.ObjectId,
       }
     );
 
@@ -528,18 +538,21 @@ export class WFHService extends BaseService {
     wfh.cancelledAt = new Date();
     await wfh.save();
 
-    // Update summary
+    // Update summary (using LeaveSummary workFromHome category)
     const year = new Date(wfh.startDate).getFullYear();
     const totalUsedThisYear = await this.getTotalDaysUsedInYear(
       new Types.ObjectId(wfh.userId.toString()),
       year
     );
 
-    await this.wfhSummaryService.createOrUpdateWFHSummary(
+    await this.leaveSummaryService.createOrUpdateLeaveSummary(
       new Types.ObjectId(wfh.userId.toString()),
       year,
+      'workFromHome',
+      'Cancelled',
       {
         availed: totalUsedThisYear,
+        leaveRequestId: wfh._id as Types.ObjectId,
       }
     );
 
@@ -551,7 +564,12 @@ export class WFHService extends BaseService {
     availed: number;
     remaining: number;
   }> {
-    return this.wfhSummaryService.getWFHBalance(userId, year);
+    const leaveSummary = await this.leaveSummaryService.getLeaveSummary(userId, year);
+    return {
+      alloted: leaveSummary.workFromHome?.alloted || 0,
+      availed: leaveSummary.workFromHome?.availed || 0,
+      remaining: leaveSummary.workFromHome?.remaining || 0,
+    };
   }
 
   private async getTotalDaysUsedInYear(userId: Types.ObjectId, year: number): Promise<number> {

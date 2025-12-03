@@ -98,9 +98,9 @@ export class PermissionService extends BaseService {
       filter.userId = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
     }
     if (status) filter.status = status;
-    // ✅ FIX: Convert appliedTo string to ObjectId for proper MongoDB query
+    // ✅ FIX: appliedTo._id is stored as String in the model, so use it as string
     if (appliedTo) {
-      filter['appliedTo._id'] = typeof appliedTo === 'string' ? new Types.ObjectId(appliedTo) : appliedTo;
+      filter['appliedTo._id'] = appliedTo;
     }
 
     // Search filter - search in user name, email, reason, remarks, and status
