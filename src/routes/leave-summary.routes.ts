@@ -795,4 +795,216 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
       }
     }
   );
+
+  // Admin: Get all leave releases with employee details
+  fastify.get(
+    '/releases',
+    {
+      schema: {
+        tags: ['Leave Summary'],
+        summary: 'Get all leave releases with employee details (Admin only)',
+        description: 'List all leave releases across all employees with filtering options',
+        security: [{ bearerAuth: [] }],
+        querystring: {
+          type: 'object',
+          properties: {
+            employeeId: { type: 'string', description: 'Filter by employee ID' },
+            search: { type: 'string', description: 'Search by employee name, email, employee code, leave type, release type, or notes' },
+            year: { type: 'number', description: 'Filter by year' },
+            leaveType: { 
+              type: 'string', 
+              enum: ['annual', 'sick', 'compOff', 'lossOfPay', 'otherPaid', 'otherUnpaid'],
+              description: 'Filter by leave type'
+            },
+            releaseType: {
+              type: 'string',
+              enum: ['monthly', 'quarterly'],
+              description: 'Filter by release type'
+            },
+            page: { type: 'number', minimum: 1, default: 1, description: 'Page number' },
+            limit: { type: 'number', minimum: 1, maximum: 100, default: 50, description: 'Items per page' }
+          }
+        },
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              success: { type: 'boolean' },
+              data: {
+                type: 'object',
+                properties: {
+                  releases: { type: 'array' },
+                  total: { type: 'number' },
+                  page: { type: 'number' },
+                  limit: { type: 'number' },
+                  totalPages: { type: 'number' }
+                }
+              }
+            }
+          },
+          403: {
+            type: 'object',
+            properties: {
+              success: { type: 'boolean' },
+              error: {
+                type: 'object',
+                properties: {
+                  message: { type: 'string' }
+                }
+              }
+            }
+          }
+        }
+      },
+      preHandler: [authenticate],
+    },
+    async (request, reply) => {
+      try {
+        // Check if user is admin
+        const userRole = (request.user as any)?.role?.toLowerCase();
+        if (userRole !== 'admin' && userRole !== 'superadmin') {
+          return reply.status(403).send({
+            success: false,
+            error: { message: 'Access denied. Admin role required.' }
+          });
+        }
+
+        const queryParams = request.query as any;
+        const employeeId = queryParams.employeeId || undefined;
+        const year = queryParams.year ? parseInt(queryParams.year, 10) : undefined;
+        const leaveType = queryParams.leaveType || undefined;
+        const releaseType = queryParams.releaseType || undefined;
+        const search = queryParams.search || undefined;
+        const page = queryParams.page ? parseInt(queryParams.page, 10) : 1;
+        const limit = queryParams.limit ? parseInt(queryParams.limit, 10) : 50;
+
+        const { LeaveReleaseService } = await import('../services/leave-release.service');
+        const leaveReleaseService = new LeaveReleaseService(request.container!.requestContext);
+        
+        const result = await leaveReleaseService.getAllReleases({
+          employeeId,
+          year,
+          leaveType,
+          releaseType,
+          search,
+          page,
+          limit
+        });
+        
+        return reply.send({
+          success: true,
+          data: result
+        });
+      } catch (error: any) {
+        return reply.status(400).send({
+          success: false,
+          error: { message: error.message }
+        });
+      }
+    }
+  );
+
+  // Admin: Get all carry-forwards with employee details
+  fastify.get(
+    '/carry-forwards',
+    {
+      schema: {
+        tags: ['Leave Summary'],
+        summary: 'Get all carry-forwards with employee details (Admin only)',
+        description: 'List all leave carry-forwards across all employees with filtering options',
+        security: [{ bearerAuth: [] }],
+        querystring: {
+          type: 'object',
+          properties: {
+            employeeId: { type: 'string', description: 'Filter by employee ID' },
+            search: { type: 'string', description: 'Search by employee name, email, employee code, leave type, notes, or year' },
+            fromYear: { type: 'number', description: 'Filter by from year' },
+            toYear: { type: 'number', description: 'Filter by to year' },
+            leaveType: { 
+              type: 'string', 
+              enum: ['annual', 'sick', 'compOff', 'lossOfPay', 'otherPaid', 'otherUnpaid'],
+              description: 'Filter by leave type'
+            },
+            page: { type: 'number', minimum: 1, default: 1, description: 'Page number' },
+            limit: { type: 'number', minimum: 1, maximum: 100, default: 50, description: 'Items per page' }
+          }
+        },
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              success: { type: 'boolean' },
+              data: {
+                type: 'object',
+                properties: {
+                  carryForwards: { type: 'array' },
+                  total: { type: 'number' },
+                  page: { type: 'number' },
+                  limit: { type: 'number' },
+                  totalPages: { type: 'number' }
+                }
+              }
+            }
+          },
+          403: {
+            type: 'object',
+            properties: {
+              success: { type: 'boolean' },
+              error: {
+                type: 'object',
+                properties: {
+                  message: { type: 'string' }
+                }
+              }
+            }
+          }
+        }
+      },
+      preHandler: [authenticate],
+    },
+    async (request, reply) => {
+      try {
+        // Check if user is admin
+        const userRole = (request.user as any)?.role?.toLowerCase();
+        if (userRole !== 'admin' && userRole !== 'superadmin') {
+          return reply.status(403).send({
+            success: false,
+            error: { message: 'Access denied. Admin role required.' }
+          });
+        }
+
+        const queryParams = request.query as any;
+        const employeeId = queryParams.employeeId || undefined;
+        const fromYear = queryParams.fromYear ? parseInt(queryParams.fromYear, 10) : undefined;
+        const toYear = queryParams.toYear ? parseInt(queryParams.toYear, 10) : undefined;
+        const leaveType = queryParams.leaveType || undefined;
+        const search = queryParams.search || undefined;
+        const page = queryParams.page ? parseInt(queryParams.page, 10) : 1;
+        const limit = queryParams.limit ? parseInt(queryParams.limit, 10) : 50;
+
+        const { LeaveCarryForwardService } = await import('../services/leave-carry-forward.service');
+        const carryForwardService = new LeaveCarryForwardService(request.container!.requestContext);
+        
+        const result = await carryForwardService.getAllCarryForwards({
+          employeeId,
+          fromYear,
+          toYear,
+          leaveType,
+          search,
+          page,
+          limit
+        });
+        
+        return reply.send({
+          success: true,
+          data: result
+        });
+      } catch (error: any) {
+        return reply.status(400).send({
+          success: false,
+          error: { message: error.message }
+        });
+      }
+    }
+  );
 }

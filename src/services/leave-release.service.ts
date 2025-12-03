@@ -171,6 +171,125 @@ export class LeaveReleaseService extends BaseService {
   }
 
   /**
+   * Get all leave releases with employee details (Admin only)
+   */
+  async getAllReleases(filters?: {
+    employeeId?: string;
+    search?: string;
+    year?: number;
+    leaveType?: string;
+    releaseType?: 'monthly' | 'quarterly';
+    page?: number;
+    limit?: number;
+  }): Promise<{
+    releases: any[];
+    total: number;
+    page: number;
+    limit: number;
+    totalPages: number;
+  }> {
+    const query: any = {};
+
+    // Handle employeeId filter (if provided without search)
+    if (filters?.employeeId && !filters?.search) {
+      query.employeeId = new Types.ObjectId(filters.employeeId);
+    }
+
+    // Handle search - search in employee name, email, employeeCode, leaveType, releaseType, and notes
+    if (filters?.search) {
+      const searchRegex = new RegExp(filters.search, 'i');
+      
+      // Search in leave release document fields (leaveType, releaseType, notes)
+      const documentSearchFilter: any[] = [
+        { 'leaveType': { $regex: filters.search, $options: 'i' } },
+        { 'releaseType': { $regex: filters.search, $options: 'i' } },
+        { 'notes': { $regex: filters.search, $options: 'i' } },
+      ];
+      
+      // Search in user collection to find matching employees
+      const matchingEmployees = await User.find({
+        $or: [
+          { name: searchRegex },
+          { email: searchRegex },
+          { employeeCode: searchRegex }
+        ]
+      }).select('_id').lean();
+
+      const employeeIds = matchingEmployees.map(emp => emp._id);
+      
+      // Combine employee search with document field search
+      if (employeeIds.length > 0) {
+        documentSearchFilter.push({ employeeId: { $in: employeeIds } });
+      }
+      
+      // If no matches found in any field, return empty result
+      if (employeeIds.length === 0 && documentSearchFilter.length === 3) {
+        return {
+          releases: [],
+          total: 0,
+          page: filters?.page || 1,
+          limit: filters?.limit || 50,
+          totalPages: 0
+        };
+      }
+      
+      // Combine search with existing filters using $and
+      const existingFilters = { ...query };
+      query.$and = [
+        existingFilters,
+        { $or: documentSearchFilter }
+      ];
+    }
+
+    if (filters?.year) {
+      if (query.$and) {
+        query.$and.push({ 'period.year': filters.year });
+      } else {
+        query['period.year'] = filters.year;
+      }
+    }
+
+    if (filters?.leaveType) {
+      if (query.$and) {
+        query.$and.push({ leaveType: filters.leaveType });
+      } else {
+        query.leaveType = filters.leaveType;
+      }
+    }
+
+    if (filters?.releaseType) {
+      if (query.$and) {
+        query.$and.push({ releaseType: filters.releaseType });
+      } else {
+        query.releaseType = filters.releaseType;
+      }
+    }
+
+    const page = filters?.page || 1;
+    const limit = filters?.limit || 50;
+    const skip = (page - 1) * limit;
+
+    const [releases, total] = await Promise.all([
+      LeaveRelease.find(query)
+        .populate('employeeId', 'name email employeeCode country')
+        .populate('releasedBy', 'name email')
+        .sort({ releasedAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      LeaveRelease.countDocuments(query)
+    ]);
+
+    return {
+      releases,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit)
+    };
+  }
+
+  /**
    * Helper: Get month name from number
    */
   private getMonthName(month: number): string {

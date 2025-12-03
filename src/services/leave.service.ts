@@ -198,7 +198,7 @@ export class LeaveService extends BaseService {
     const filter: any = {};
     if (userId) filter.userId = userId;
     if (status) filter.status = status;
-    
+
     // Handle date filters
     if (startDate || endDate) {
       filter.$or = [
@@ -215,6 +215,63 @@ export class LeaveService extends BaseService {
           },
         },
       ];
+
+      // Also search in user collection to find matching users
+      const userSearchFilter: any = {
+        $or: [
+          { name: { $regex: search, $options: 'i' } },
+          { email: { $regex: search, $options: 'i' } },
+        ]
+      };
+
+      // If userId is already filtered, combine with user search
+      if (userId) {
+        userSearchFilter._id = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
+      }
+
+      const matchingUsers = await User.find(userSearchFilter).select('_id').lean();
+
+      // If users found, add userId filter
+      if (matchingUsers.length > 0) {
+        const userIds = matchingUsers.map(u => u._id);
+        searchFilter.push({ userId: { $in: userIds } });
+      }
+
+      // Combine search with existing filters using $and
+      const existingFilters = { ...filter };
+      filter.$and = [
+        existingFilters,
+        { $or: searchFilter }
+      ];
+    }
+
+    // Date range filter - handle separately from search
+    if (startDate || endDate) {
+      const dateFilter: any = {
+        $or: [
+          {
+            startDate: {
+              ...(startDate && { $gte: startDate }),
+              ...(endDate && { $lte: endDate }),
+            },
+          },
+          {
+            endDate: {
+              ...(startDate && { $gte: startDate }),
+              ...(endDate && { $lte: endDate }),
+            },
+          },
+        ]
+      };
+
+      // Combine date filter with existing filters
+      if (filter.$and) {
+        filter.$and.push(dateFilter);
+      } else {
+        // If we have other filters, use $and to combine
+        const existingFilters = { ...filter };
+        filter.$and = [existingFilters, dateFilter];
+      }
     }
 
     // Handle search filter
@@ -300,23 +357,23 @@ export class LeaveService extends BaseService {
       if (!lov) {
         throw new Error(`Leave type Lov not found for ID: ${leaveData.leaveTypeId}`);
       }
-      
+
       // Find the first active value
       let selectedValue = lov.values.find(v => v.isActive !== false);
-      
+
       // Fallback to first value if no active value found
       if (!selectedValue && lov.values.length > 0) {
         selectedValue = lov.values[0];
       }
-      
+
       if (!selectedValue) {
         throw new Error('No leave type value found in Lov document');
       }
-      
+
       leaveData.leaveType = selectedValue.value; // Set the value (e.g., "annual", "sick")
       console.log(`✅ [Leave Type] Fetched from Lov: ${leaveData.leaveType} for leaveTypeId: ${leaveData.leaveTypeId}`);
     }
-    
+
     // Ensure leaveType is set before proceeding
     if (!leaveData.leaveType) {
       throw new Error('Leave type is required. Please provide leaveType or ensure leaveTypeId points to a valid Lov with values.');
@@ -327,19 +384,19 @@ export class LeaveService extends BaseService {
       if (user.country !== 'IN') {
         throw new Error('Half-day leaves are only available for India employees');
       }
-      
+
       // Validate half-day specific rules
       const startDateStr = new Date(leaveData.startDate).toDateString();
       const endDateStr = new Date(leaveData.endDate).toDateString();
-      
+
       if (startDateStr !== endDateStr) {
         throw new Error('Half-day leaves must be on the same day (startDate = endDate)');
       }
-      
+
       if (!leaveData.halfDayType) {
         throw new Error('halfDayType is required for half-day leaves');
       }
-      
+
       // Set noOfDays to 0.5 for half-day leaves
       leaveData.noOfDays = 0.5;
     } else {
@@ -378,7 +435,7 @@ export class LeaveService extends BaseService {
       dayStart.setHours(0, 0, 0, 0);
       const dayEnd = new Date(leaveDate);
       dayEnd.setHours(23, 59, 59, 999);
-      
+
       // Check 1: Same halfDayType on same date
       const sameHalfDayQuery = {
         ...baseQuery,
@@ -397,7 +454,7 @@ export class LeaveService extends BaseService {
           }
         ]
       };
-      
+
       // Check 2: Full-day leave on same date
       // Check if any full-day leave (or leave without leaveDuration field) overlaps with the half-day date
       const fullDayQuery = {
@@ -409,15 +466,15 @@ export class LeaveService extends BaseService {
           { leaveDuration: { $exists: false } } // Old leaves without leaveDuration field are treated as full-day
         ]
       };
-      
+
       const sameHalfDayLeave = await Leave.findOne(sameHalfDayQuery);
       const fullDayLeave = await Leave.findOne(fullDayQuery);
-      
+
       if (sameHalfDayLeave) {
         const sessionName = leaveData.halfDayType === 'first-half' ? 'morning' : 'afternoon';
         throw new Error(`A ${sessionName} half-day leave already exists for this date`);
       }
-      
+
       if (fullDayLeave) {
         throw new Error('A full-day leave already exists for this date. Cannot apply half-day leave.');
       }
@@ -427,7 +484,7 @@ export class LeaveService extends BaseService {
       // 2. Check if any half-day leave exists on any date in the range
       const startDate = new Date(leaveData.startDate);
       const endDate = new Date(leaveData.endDate);
-      
+
       // Check 1: Full-day leave overlap
       // Check if any full-day leave (or leave without leaveDuration field) overlaps with the date range
       const fullDayOverlapQuery = {
@@ -439,7 +496,7 @@ export class LeaveService extends BaseService {
           { leaveDuration: { $exists: false } } // Old leaves without leaveDuration field are treated as full-day
         ]
       };
-      
+
       // Check 2: Any half-day leave in the date range
       // For each day in the range, check if any half-day exists
       const halfDayOverlapQuery = {
@@ -454,14 +511,14 @@ export class LeaveService extends BaseService {
           }
         ]
       };
-      
+
       const fullDayOverlap = await Leave.findOne(fullDayOverlapQuery);
       const halfDayOverlap = await Leave.findOne(halfDayOverlapQuery);
-      
+
       if (fullDayOverlap) {
         throw new Error('Leave dates overlap with existing full-day leave request');
       }
-      
+
       if (halfDayOverlap) {
         throw new Error('A half-day leave already exists in the selected date range. Cannot apply full-day leave.');
       }

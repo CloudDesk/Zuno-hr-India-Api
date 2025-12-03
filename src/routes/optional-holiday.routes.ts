@@ -116,6 +116,8 @@ export const optionalHolidayRoutes: RouteHandler = async (
           properties: {
             userId: { type: 'string' },
             status: { type: 'string', enum: ['Pending', 'Approved', 'Rejected', 'Cancelled'] },
+            appliedTo: { type: 'string', description: 'Filter by manager ID (Admin only)' },
+            search: { type: 'string', description: 'Search in holiday name, reason, or user name' },
             startDate: { type: 'string', format: 'date' },
             endDate: { type: 'string', format: 'date' },
             year: { type: 'number' },
@@ -158,6 +160,7 @@ export const optionalHolidayRoutes: RouteHandler = async (
         }
 
         if (status) query.status = status;
+        if (search) query.search = search;
         if (startDate) query.startDate = startDate;
         if (endDate) query.endDate = endDate;
         if (year) query.year = Number(year);

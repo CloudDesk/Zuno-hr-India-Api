@@ -14,7 +14,7 @@ export const shiftChangeRoutes: RouteHandler = async (
     try {
       // Convert body to string if it's a Buffer
       const bodyStr = typeof body === 'string' ? body : body.toString();
-      
+
       // Handle empty body by converting to empty object
       if (!bodyStr || bodyStr.trim() === '' || bodyStr === 'null') {
         return done(null, {});
@@ -141,9 +141,10 @@ export const shiftChangeRoutes: RouteHandler = async (
               type: 'string',
               enum: ['Pending', 'Approved', 'Rejected', 'Cancelled'],
             },
+            appliedTo: { type: 'string', description: 'Filter by manager ID (Admin only)' },
+            search: { type: 'string', description: 'Search in user name, email, reason, or remarks' },
             startDate: { type: 'string', format: 'date' },
             endDate: { type: 'string', format: 'date' },
-            appliedTo: { type: 'string' },
             page: { type: 'number', minimum: 1, default: 1 },
             limit: { type: 'number', minimum: 1, maximum: 100, default: 20 },
             search: { type: 'string', description: 'Search by applied by (employee name/email), applied to (manager name), reason, status, current shift name/code, or requested shift name/code' },
@@ -183,6 +184,7 @@ export const shiftChangeRoutes: RouteHandler = async (
         }
 
         if (status) query.status = status;
+        if (search) query.search = search;
         if (startDate) query.startDate = startDate;
         if (endDate) query.endDate = endDate;
         if (appliedTo && (userRole === 'admin' || userRole === 'superadmin')) {

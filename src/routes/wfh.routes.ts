@@ -130,6 +130,8 @@ export const wfhRoutes: RouteHandler = async (
             status: { type: 'string', enum: ['Pending', 'Approved', 'Rejected', 'Cancelled'] },
             startDate: { type: 'string', format: 'date' },
             endDate: { type: 'string', format: 'date' },
+            appliedTo: { type: 'string' },
+            search: { type: 'string' },
             page: { type: 'number', minimum: 1, default: 1 },
             limit: { type: 'number', minimum: 1, maximum: 100, default: 10 },
             search: { type: 'string', description: 'Search by employee name, reason, manager name, or status' },
@@ -139,7 +141,7 @@ export const wfhRoutes: RouteHandler = async (
     },
     async (request, reply) => {
       try {
-        const { userId, status, startDate, endDate, page, limit, search } = request.query as any;
+        const { userId, status, startDate, endDate, appliedTo, search, page, limit } = request.query as any;
         const currentUser = request.user!;
         const userRole = (currentUser as any).role?.toLowerCase() || '';
 
@@ -159,6 +161,10 @@ export const wfhRoutes: RouteHandler = async (
           // - For regular users: show only their own requests
           if (userRole === 'admin' || userRole === 'superadmin') {
             // Admin sees all - no userId filter
+            // Admin can filter by appliedTo if provided
+            if (appliedTo) {
+              query.appliedTo = appliedTo;
+            }
           } else if (userRole === 'manager') {
             // Manager sees requests assigned to them
             query.appliedTo = (currentUser as any)._id.toString();
@@ -277,8 +283,8 @@ export const wfhRoutes: RouteHandler = async (
     async (request, reply) => {
       try {
         const { id } = request.params as { id: string };
-        const userId = request.user!._id instanceof Types.ObjectId 
-          ? request.user!._id 
+        const userId = request.user!._id instanceof Types.ObjectId
+          ? request.user!._id
           : new Types.ObjectId(request.user!._id);
         const result = await request.container!.wfhService.cancel(id, userId);
         return reply.send({
@@ -307,8 +313,8 @@ export const wfhRoutes: RouteHandler = async (
     async (request, reply) => {
       try {
         const { year } = request.params as { year: string };
-        const userId = request.user!._id instanceof Types.ObjectId 
-          ? request.user!._id 
+        const userId = request.user!._id instanceof Types.ObjectId
+          ? request.user!._id
           : new Types.ObjectId(request.user!._id);
         const balance = await request.container!.wfhService.getWFHBalance(
           userId,

@@ -1,4 +1,5 @@
 import { createApp } from './app';
+import './utilis/corn'; // Initialize cron job for automatic shift status updates
 
 const start = async () => {
   try {

@@ -235,6 +235,14 @@ export const leaveRoutes: RouteHandler = async (
               enum: ['Pending', 'Approved', 'Rejected', 'Cancelled'],
               description: 'Filter by leave status'
             },
+            appliedTo: {
+              type: 'string',
+              description: 'Filter by manager ID (Admin only)'
+            },
+            search: {
+              type: 'string',
+              description: 'Search in user name, email, reason, remarks, or leave type'
+            },
             startDate: {
               type: 'string',
               format: 'date',
@@ -315,6 +323,20 @@ export const leaveRoutes: RouteHandler = async (
           limit: limit ? Number(limit) : undefined,
           search: search,
         };
+
+        // If userId is provided, filter by that user
+        if (userId) {
+          query.userId = userId;
+        }
+
+        if (status) query.status = status as 'Pending' | 'Approved' | 'Rejected';
+        if (search) query.search = search;
+        if (startDate) query.startDate = new Date(startDate);
+        if (endDate) query.endDate = new Date(endDate);
+        // Allow admins to filter by manager (appliedTo)
+        if (appliedTo && (userRole === 'admin' || userRole === 'superadmin')) {
+          query.appliedTo = appliedTo;
+        }
         console.log(query, "1 query");
         const result = await request.container!.leaveService.findAll(query);
         return reply.send({

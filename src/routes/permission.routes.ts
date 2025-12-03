@@ -169,6 +169,7 @@ export const permissionRoutes: RouteHandler = async (
         }
 
         if (status) query.status = status;
+        if (search) query.search = search;
         if (startDate) query.startDate = startDate;
         if (endDate) query.endDate = endDate;
         if (search) query.search = search;
@@ -277,8 +278,8 @@ export const permissionRoutes: RouteHandler = async (
     async (request, reply) => {
       try {
         const { id } = request.params as { id: string };
-        const userId = request.user!._id instanceof Types.ObjectId 
-          ? request.user!._id 
+        const userId = request.user!._id instanceof Types.ObjectId
+          ? request.user!._id
           : new Types.ObjectId(request.user!._id);
         const result = await request.container!.permissionService.cancel(id, userId);
         return reply.send({
@@ -307,8 +308,8 @@ export const permissionRoutes: RouteHandler = async (
     async (request, reply) => {
       try {
         const { year, month } = request.params as { year: string; month: string };
-        const userId = request.user!._id instanceof Types.ObjectId 
-          ? request.user!._id 
+        const userId = request.user!._id instanceof Types.ObjectId
+          ? request.user!._id
           : new Types.ObjectId(request.user!._id);
         const balance = await request.container!.permissionService.getPermissionBalance(
           userId,
