@@ -1034,6 +1034,10 @@ export class ShiftService extends BaseService {
     }
 
     const currentDate = new Date();
+    // Set to start of day for proper date comparison (UTC)
+    const currentDateStart = new Date(currentDate);
+    currentDateStart.setUTCHours(0, 0, 0, 0);
+    
     let currentShiftAssignment = null;
     let upcomingShiftAssignment = null;
 
@@ -1053,9 +1057,14 @@ export class ShiftService extends BaseService {
     }
 
     // Find upcoming shift assignment (startDate > now)
+    // Compare dates properly: upcoming shift starts in the future
     upcomingShiftAssignment = shiftAssignments.find(assignment => {
       const startDate = new Date(assignment.startDate);
-      return startDate > currentDate && assignment._id.toString() !== (currentShiftAssignment?._id.toString() || '');
+      // Set to start of day for comparison
+      const startDateStart = new Date(startDate);
+      startDateStart.setUTCHours(0, 0, 0, 0);
+      // Upcoming if start date is after today (at start of day)
+      return startDateStart > currentDateStart && assignment._id.toString() !== (currentShiftAssignment?._id.toString() || '');
     });
 
     // Update status for upcoming shift assignment
@@ -1074,7 +1083,10 @@ export class ShiftService extends BaseService {
         assignment.status !== 'past'
       ) {
         await ShiftAssignment.findByIdAndUpdate(assignment._id, {
-          $set: { status: 'past' }
+          $set: { 
+            status: 'past',
+            isActive: false
+          }
         });
       }
     }

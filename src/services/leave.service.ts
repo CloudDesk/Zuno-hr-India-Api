@@ -192,27 +192,87 @@ export class LeaveService extends BaseService {
 
 
   async findAll(query: ILeaveQuery): Promise<{ leaves: ILeave[], meta: { page: number, limit: number, total: number, totalPages: number } }> {
-    const { userId, status, startDate, endDate, page = 1, limit = 10 } = query;
+    const { userId, status, startDate, endDate, search, appliedTo, page = 1, limit = 10 } = query;
     const skip = (page - 1) * limit;
 
-    const filter: ILeaveQuery = {};
-    if (userId) filter.userId = userId;
+    const filter: any = {};
+    // ✅ FIX: Convert userId string to ObjectId for proper MongoDB query
+    if (userId) {
+      filter.userId = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
+    }
     if (status) filter.status = status;
-    if (startDate || endDate) {
-      filter.$or = [
-        {
-          startDate: {
-            ...(startDate && { $gte: startDate }),
-            ...(endDate && { $lte: endDate }),
-          },
-        },
-        {
-          endDate: {
-            ...(startDate && { $gte: startDate }),
-            ...(endDate && { $lte: endDate }),
-          },
-        },
+    // ✅ FIX: Convert appliedTo string to ObjectId for proper MongoDB query
+    if (appliedTo) {
+      filter['appliedTo._id'] = typeof appliedTo === 'string' ? new Types.ObjectId(appliedTo) : appliedTo;
+    }
+
+    // Search filter - search in user name, email, reason, remarks, leaveType, and status
+    // Since user data is populated after query, we need to search users first
+    if (search) {
+      // Search in reason, remarks, leaveType, and status (stored in document)
+      const searchFilter: any[] = [
+        { 'reason': { $regex: search, $options: 'i' } },
+        { 'remarks': { $regex: search, $options: 'i' } },
+        { 'leaveType': { $regex: search, $options: 'i' } },
+        { 'status': { $regex: search, $options: 'i' } },
       ];
+      
+      // Also search in user collection to find matching users
+      const userSearchFilter: any = {
+        $or: [
+          { name: { $regex: search, $options: 'i' } },
+          { email: { $regex: search, $options: 'i' } },
+        ]
+      };
+      
+      // If userId is already filtered, combine with user search
+      if (userId) {
+        userSearchFilter._id = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
+      }
+      
+      const matchingUsers = await User.find(userSearchFilter).select('_id').lean();
+      
+      // If users found, add userId filter
+      if (matchingUsers.length > 0) {
+        const userIds = matchingUsers.map(u => u._id);
+        searchFilter.push({ userId: { $in: userIds } });
+      }
+      
+      // Combine search with existing filters using $and
+      const existingFilters = { ...filter };
+      filter.$and = [
+        existingFilters,
+        { $or: searchFilter }
+      ];
+    }
+
+    // Date range filter - handle separately from search
+    if (startDate || endDate) {
+      const dateFilter: any = {
+        $or: [
+          {
+            startDate: {
+              ...(startDate && { $gte: startDate }),
+              ...(endDate && { $lte: endDate }),
+            },
+          },
+          {
+            endDate: {
+              ...(startDate && { $gte: startDate }),
+              ...(endDate && { $lte: endDate }),
+            },
+          },
+        ]
+      };
+      
+      // Combine date filter with existing filters
+      if (filter.$and) {
+        filter.$and.push(dateFilter);
+      } else {
+        // If we have other filters, use $and to combine
+        const existingFilters = { ...filter };
+        filter.$and = [existingFilters, dateFilter];
+      }
     }
 
     console.log(filter);

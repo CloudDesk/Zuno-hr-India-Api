@@ -138,7 +138,7 @@ export const permissionRoutes: RouteHandler = async (
     },
     async (request, reply) => {
       try {
-        const { userId, status, startDate, endDate, page, limit } = request.query as any;
+        const { userId, status, startDate, endDate, appliedTo, search, page, limit } = request.query as any;
         const currentUser = request.user!;
         const userRole = (currentUser as any).role?.toLowerCase() || '';
 
@@ -168,8 +168,13 @@ export const permissionRoutes: RouteHandler = async (
         }
 
         if (status) query.status = status;
+        if (search) query.search = search;
         if (startDate) query.startDate = startDate;
         if (endDate) query.endDate = endDate;
+        // Allow admins to filter by manager (appliedTo)
+        if (appliedTo && (userRole === 'admin' || userRole === 'superadmin')) {
+          query.appliedTo = appliedTo;
+        }
 
         const result = await request.container!.permissionService.findAll(query);
         return reply.send({
@@ -275,8 +280,8 @@ export const permissionRoutes: RouteHandler = async (
     async (request, reply) => {
       try {
         const { id } = request.params as { id: string };
-        const userId = request.user!._id instanceof Types.ObjectId 
-          ? request.user!._id 
+        const userId = request.user!._id instanceof Types.ObjectId
+          ? request.user!._id
           : new Types.ObjectId(request.user!._id);
         const result = await request.container!.permissionService.cancel(id, userId);
         return reply.send({
@@ -305,8 +310,8 @@ export const permissionRoutes: RouteHandler = async (
     async (request, reply) => {
       try {
         const { year, month } = request.params as { year: string; month: string };
-        const userId = request.user!._id instanceof Types.ObjectId 
-          ? request.user!._id 
+        const userId = request.user!._id instanceof Types.ObjectId
+          ? request.user!._id
           : new Types.ObjectId(request.user!._id);
         const balance = await request.container!.permissionService.getPermissionBalance(
           userId,

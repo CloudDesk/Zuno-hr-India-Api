@@ -134,31 +134,78 @@ export class OptionalHolidayService extends BaseService {
     const skip = (page - 1) * limit;
 
     const filter: any = {};
-    if (userId) filter.userId = userId;
+    // ✅ FIX: Convert userId string to ObjectId for proper MongoDB query
+    if (userId) {
+      filter.userId = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
+    }
     if (status) filter.status = status;
     if (year) filter.year = year;
-    if (appliedTo) filter['appliedTo._id'] = appliedTo;
+    // ✅ FIX: Convert appliedTo string to ObjectId for proper MongoDB query
+    if (appliedTo) {
+      filter['appliedTo._id'] = typeof appliedTo === 'string' ? new Types.ObjectId(appliedTo) : appliedTo;
+    }
 
+    // Search filter - search in holiday name, reason, status, and user name/email
+    // Since user data is populated after query, we need to search users first
+    if (search) {
+      // Search in holidayName, reason, and status (stored in document)
+      const searchFilter: any[] = [
+        { 'holidayName': { $regex: search, $options: 'i' } },
+        { 'reason': { $regex: search, $options: 'i' } },
+        { 'status': { $regex: search, $options: 'i' } },
+      ];
+      
+      // Also search in user collection to find matching users
+      const userSearchFilter: any = {
+        $or: [
+          { name: { $regex: search, $options: 'i' } },
+          { email: { $regex: search, $options: 'i' } },
+        ]
+      };
+      
+      // If userId is already filtered, combine with user search
+      if (userId) {
+        userSearchFilter._id = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
+      }
+      
+      const matchingUsers = await User.find(userSearchFilter).select('_id').lean();
+      
+      // If users found, add userId filter
+      if (matchingUsers.length > 0) {
+        const userIds = matchingUsers.map(u => u._id);
+        searchFilter.push({ userId: { $in: userIds } });
+      }
+      
+      // Combine search with existing filters using $and
+      const existingFilters = { ...filter };
+      filter.$and = [
+        existingFilters,
+        { $or: searchFilter }
+      ];
+    }
+
+    // Date range filter - handle separately from search
     if (startDate || endDate) {
-      filter.holidayDate = {};
+      const dateFilter: any = {
+        holidayDate: {}
+      };
       if (startDate) {
         const start = new Date(startDate);
         start.setUTCHours(0, 0, 0, 0);
-        filter.holidayDate.$gte = start;
+        dateFilter.holidayDate.$gte = start;
       }
       if (endDate) {
         const end = new Date(endDate);
         end.setUTCHours(23, 59, 59, 999);
-        filter.holidayDate.$lte = end;
+        dateFilter.holidayDate.$lte = end;
       }
-    }
-
-    if (search) {
-      filter.$or = [
-        { holidayName: { $regex: search, $options: 'i' } },
-        { reason: { $regex: search, $options: 'i' } },
-        { 'user.name': { $regex: search, $options: 'i' } },
-      ];
+      
+      // Combine date filter with existing filters
+      if (filter.$and) {
+        filter.$and.push(dateFilter);
+      } else {
+        Object.assign(filter, dateFilter);
+      }
     }
 
     const sortOrder = sort === 'asc' ? 1 : -1;

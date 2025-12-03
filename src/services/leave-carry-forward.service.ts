@@ -362,5 +362,132 @@ export class LeaveCarryForwardService extends BaseService {
       otherUnpaid: summary.otherUnpaid?.remaining || 0
     };
   }
+
+  /**
+   * Get all carry-forwards with employee details (Admin only)
+   */
+  async getAllCarryForwards(filters?: {
+    employeeId?: string;
+    search?: string;
+    fromYear?: number;
+    toYear?: number;
+    leaveType?: string;
+    page?: number;
+    limit?: number;
+  }): Promise<{
+    carryForwards: any[];
+    total: number;
+    page: number;
+    limit: number;
+    totalPages: number;
+  }> {
+    const query: any = {};
+
+    // Handle employeeId filter (if provided without search)
+    if (filters?.employeeId && !filters?.search) {
+      query.employeeId = new Types.ObjectId(filters.employeeId);
+    }
+
+    // Handle search - search in employee name, email, employeeCode, leaveType, notes, and years
+    if (filters?.search) {
+      const searchRegex = new RegExp(filters.search, 'i');
+      
+      // Search in carry forward document fields (leaveType, notes, fromYear, toYear)
+      const documentSearchFilter: any[] = [
+        { 'leaveType': { $regex: filters.search, $options: 'i' } },
+        { 'notes': { $regex: filters.search, $options: 'i' } },
+      ];
+      
+      // Also check if search is a year number
+      const searchYear = parseInt(filters.search, 10);
+      if (!isNaN(searchYear)) {
+        documentSearchFilter.push(
+          { 'fromYear': searchYear },
+          { 'toYear': searchYear }
+        );
+      }
+      
+      // Search in user collection to find matching employees
+      const matchingEmployees = await User.find({
+        $or: [
+          { name: searchRegex },
+          { email: searchRegex },
+          { employeeCode: searchRegex }
+        ]
+      }).select('_id').lean();
+
+      const employeeIds = matchingEmployees.map(emp => emp._id);
+      
+      // Combine employee search with document field search
+      if (employeeIds.length > 0) {
+        documentSearchFilter.push({ employeeId: { $in: employeeIds } });
+      }
+      
+      // If no matches found in any field, return empty result
+      if (employeeIds.length === 0 && documentSearchFilter.length === 2 && isNaN(searchYear)) {
+        return {
+          carryForwards: [],
+          total: 0,
+          page: filters?.page || 1,
+          limit: filters?.limit || 50,
+          totalPages: 0
+        };
+      }
+      
+      // Combine search with existing filters using $and
+      const existingFilters = { ...query };
+      query.$and = [
+        existingFilters,
+        { $or: documentSearchFilter }
+      ];
+    }
+
+    if (filters?.fromYear) {
+      if (query.$and) {
+        query.$and.push({ fromYear: filters.fromYear });
+      } else {
+        query.fromYear = filters.fromYear;
+      }
+    }
+
+    if (filters?.toYear) {
+      if (query.$and) {
+        query.$and.push({ toYear: filters.toYear });
+      } else {
+        query.toYear = filters.toYear;
+      }
+    }
+
+    if (filters?.leaveType) {
+      if (query.$and) {
+        query.$and.push({ leaveType: filters.leaveType });
+      } else {
+        query.leaveType = filters.leaveType;
+      }
+    }
+
+    const page = filters?.page || 1;
+    const limit = filters?.limit || 50;
+    const skip = (page - 1) * limit;
+
+    const [carryForwards, total] = await Promise.all([
+      LeaveCarryForward.find(query)
+        .populate('employeeId', 'name email employeeCode country')
+        .populate('processedBy', 'name email')
+        .sort({ fromYear: -1, processedAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      LeaveCarryForward.countDocuments(query)
+    ]);
+
+    return {
+      carryForwards,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit)
+    };
+  }
 }
 

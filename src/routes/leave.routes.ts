@@ -235,6 +235,14 @@ export const leaveRoutes: RouteHandler = async (
               enum: ['Pending', 'Approved', 'Rejected'],
               description: 'Filter by leave status'
             },
+            appliedTo: {
+              type: 'string',
+              description: 'Filter by manager ID (Admin only)'
+            },
+            search: {
+              type: 'string',
+              description: 'Search in user name, email, reason, remarks, or leave type'
+            },
             startDate: {
               type: 'string',
               format: 'date',
@@ -301,15 +309,29 @@ export const leaveRoutes: RouteHandler = async (
     },
     async (request, reply) => {
       try {
-        const { userId, status, startDate, endDate, page, limit } = request.query as any;
+        const { userId, status, startDate, endDate, appliedTo, search, page, limit } = request.query as any;
+        const currentUser = request.user!;
+        const userRole = (currentUser as any).role?.toLowerCase() || '';
+
+        // Build query
         const query: ILeaveQuery = {
-          userId: userId,
-          status: status ? status : undefined,
-          startDate: startDate ? new Date(startDate) : undefined,
-          endDate: endDate ? new Date(endDate) : undefined,
-          page: page ? Number(page) : undefined,
-          limit: limit ? Number(limit) : undefined,
+          page: page ? Number(page) : 1,
+          limit: limit ? Number(limit) : 10,
         };
+
+        // If userId is provided, filter by that user
+        if (userId) {
+          query.userId = userId;
+        }
+
+        if (status) query.status = status as 'Pending' | 'Approved' | 'Rejected';
+        if (search) query.search = search;
+        if (startDate) query.startDate = new Date(startDate);
+        if (endDate) query.endDate = new Date(endDate);
+        // Allow admins to filter by manager (appliedTo)
+        if (appliedTo && (userRole === 'admin' || userRole === 'superadmin')) {
+          query.appliedTo = appliedTo;
+        }
         console.log(query, "1 query");
         const result = await request.container!.leaveService.findAll(query);
         return reply.send({
