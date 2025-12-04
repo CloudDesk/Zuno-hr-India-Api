@@ -638,6 +638,66 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
             // Don't fail the request if email fails - log the error but continue
         }
 
+        // Send email notification to all admins
+        try {
+            const admins = await User.find({
+                $or: [
+                    { role: 'admin' },
+                    { isSuperAdmin: true }
+                ],
+                active: true
+            }).select('name email').lean();
+
+            if (admins && admins.length > 0) {
+                const shiftDayFormatted = regularization.shiftDay.toLocaleDateString('en-US', {
+                    weekday: 'long',
+                    year: 'numeric',
+                    month: 'long',
+                    day: 'numeric'
+                });
+
+                const fromTimeFormatted = this.formatTimeLocal(regularization.from, userCountry);
+                const toTimeFormatted = this.formatTimeLocal(regularization.to, userCountry);
+
+                const adminEmails = admins.map(admin => admin.email).filter(Boolean);
+                
+                if (adminEmails.length > 0) {
+                    const adminEmailText = `Dear Admin,
+
+An attendance regularization request has been ${regularization.status.toLowerCase()} by ${approver.name}.
+
+Request Details:
+- Employee: ${employee.name} (${employee.email})
+- Date: ${shiftDayFormatted}
+- From Time: ${fromTimeFormatted}
+- To Time: ${toTimeFormatted}
+- Reason: ${regularization.reason}
+- Status: ${regularization.status}
+${regularization.comments ? `- Comments: ${regularization.comments}` : ''}
+- Approved/Rejected By: ${approver.name}
+
+This is an automated notification for your records.
+
+Regards,
+${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
+
+                    await emailService.sendEmail({
+                        body: {
+                            to: adminEmails,
+                            subject: `Attendance Regularization ${regularization.status} - ${employee.name}`,
+                            text: adminEmailText,
+                            html: adminEmailText.replace(/\n/g, '<br>'),
+                        }
+                    });
+
+                    console.log(`Email notification sent to ${adminEmails.length} admin(s) for attendance regularization ${regularization._id} - Status: ${regularization.status}`);
+                }
+            }
+        } catch (adminEmailError) {
+            console.error('Failed to send email to admins for attendance regularization:', adminEmailError);
+            // Don't fail the request if admin email fails
+        }
+
         return regularization;
     }
 

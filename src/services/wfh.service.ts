@@ -561,6 +561,72 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
       // Don't fail the request if email fails - log the error but continue
     }
 
+    // Send email notification to all admins
+    try {
+      const admins = await User.find({
+        $or: [
+          { role: 'admin' },
+          { isSuperAdmin: true }
+        ],
+        active: true
+      }).select('name email').lean();
+
+      if (admins && admins.length > 0) {
+        const employee: IUser = await User.findById(new Types.ObjectId(wfh.userId)).select('name email');
+        const approver: IUser = await User.findById(wfh.approvedById).select('name email');
+
+        const fromDateFormatted = wfh.startDate.toLocaleDateString('en-US', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        });
+        const toDateFormatted = wfh.endDate.toLocaleDateString('en-US', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        });
+
+        const adminEmails = admins.map(admin => admin.email).filter(Boolean);
+        
+        if (adminEmails.length > 0) {
+          const adminEmailText = `Dear Admin,
+
+A Work From Home (WFH) request has been ${wfh.status.toLowerCase()} by ${approver?.name || 'Manager'}.
+
+Request Details:
+- Employee: ${employee?.name || 'N/A'} (${employee?.email || 'N/A'})
+- From Date: ${fromDateFormatted}
+- To Date: ${toDateFormatted}
+- Total Days: ${wfh.noOfDays}
+- Reason: ${wfh.reason || 'N/A'}
+- Status: ${wfh.status}
+${wfh.remarks ? `- Remarks: ${wfh.remarks}` : ''}
+- Approved/Rejected By: ${approver?.name || 'Manager'}
+
+This is an automated notification for your records.
+
+Regards,
+${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
+
+          await emailService.sendEmail({
+            body: {
+              to: adminEmails,
+              subject: `WFH Request ${wfh.status} - ${employee?.name || 'Employee'}`,
+              text: adminEmailText,
+              html: adminEmailText.replace(/\n/g, '<br>'),
+            }
+          });
+
+          console.log(`Email notification sent to ${adminEmails.length} admin(s) for WFH request ${wfh._id} - Status: ${wfh.status}`);
+        }
+      }
+    } catch (adminEmailError) {
+      console.error('Failed to send email to admins for WFH request:', adminEmailError);
+      // Don't fail the request if admin email fails
+    }
+
     return this.findById(wfh._id as string);
   }
 
