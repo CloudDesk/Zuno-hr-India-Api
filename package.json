@@ -19,21 +19,12 @@
     "db:migrate:dry-run": "node scripts/migrate-to-production-db.js --dry-run",
     "db:clone": "ts-node scripts/simpleCloneDatabase.ts",
     "db:clone:advanced": "ts-node scripts/cloneDatabase.ts",
-<<<<<<< HEAD
     "set-project": "gcloud config set project zuno-hr-2025",
     "hrms-build": "docker build -t zuno-cd-hr-india .",
     "hrms-tag": "docker tag zuno-cd-hr-india gcr.io/zuno-hr-2025/zuno-cd-hr-india",
     "hrms-push": "docker push gcr.io/zuno-hr-2025/zuno-cd-hr-india",
     "hrms-deploy": "gcloud run deploy zuno-cd-hr-india --image gcr.io/zuno-hr-2025/zuno-cd-hr-india:latest --platform managed --region asia-south1 --allow-unauthenticated --port 5800  --execution-environment gen2 --memory 512Mi --cpu 1",
     "full-deploy": "npm run set-project && npm run hrms-build && npm run hrms-tag && npm run hrms-push && npm run hrms-deploy"
-=======
-    "set-project": "gcloud config set project cloud-desk-447206",
-    "hrms-prod-build": "docker build -t zuno-cd-hr-prod-india .",
-    "hrms-prod-tag": "docker tag zuno-cd-hr-prod-india gcr.io/cloud-desk-447206/zuno-cd-hr-prod-india",
-    "hrms-prod-push": "docker push gcr.io/cloud-desk-447206/zuno-cd-hr-prod-india",
-    "hrms-prod-deploy": "gcloud run deploy zuno-cd-hr-prod-india --image gcr.io/cloud-desk-447206/zuno-cd-hr-prod-india:latest --platform managed --region asia-south1 --allow-unauthenticated --port 5800  --execution-environment gen2",
-    "full-prod-deploy": "npm run set-project && npm run hrms-prod-build && npm run hrms-prod-tag && npm run hrms-prod-push && npm run hrms-prod-deploy"
->>>>>>> PROD
   },
   "dependencies": {
     "@fastify/aws-lambda": "^3.5.0",
