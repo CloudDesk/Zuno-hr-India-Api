@@ -649,6 +649,11 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
             }).select('name email').lean();
 
             if (admins && admins.length > 0) {
+                // Fetch employee and user country for admin email
+                const employeeForAdmin = await User.findById(regularization.userId).select('name email').lean();
+                const userForCountry = await User.findById(regularization.userId).select('country').lean();
+                const userCountryForAdmin = userForCountry?.country || 'IN';
+
                 const shiftDayFormatted = regularization.shiftDay.toLocaleDateString('en-US', {
                     weekday: 'long',
                     year: 'numeric',
@@ -656,18 +661,18 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
                     day: 'numeric'
                 });
 
-                const fromTimeFormatted = this.formatTimeLocal(regularization.from, userCountry);
-                const toTimeFormatted = this.formatTimeLocal(regularization.to, userCountry);
+                const fromTimeFormatted = this.formatTimeLocal(regularization.from, userCountryForAdmin);
+                const toTimeFormatted = this.formatTimeLocal(regularization.to, userCountryForAdmin);
 
                 const adminEmails = admins.map(admin => admin.email).filter(Boolean);
                 
-                if (adminEmails.length > 0) {
+                if (adminEmails.length > 0 && employeeForAdmin) {
                     const adminEmailText = `Dear Admin,
 
 An attendance regularization request has been ${regularization.status.toLowerCase()} by ${approver.name}.
 
 Request Details:
-- Employee: ${employee.name} (${employee.email})
+- Employee: ${employeeForAdmin.name} (${employeeForAdmin.email})
 - Date: ${shiftDayFormatted}
 - From Time: ${fromTimeFormatted}
 - To Time: ${toTimeFormatted}
@@ -684,7 +689,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
                     await emailService.sendEmail({
                         body: {
                             to: adminEmails,
-                            subject: `Attendance Regularization ${regularization.status} - ${employee.name}`,
+                            subject: `Attendance Regularization ${regularization.status} - ${employeeForAdmin.name}`,
                             text: adminEmailText,
                             html: adminEmailText.replace(/\n/g, '<br>'),
                         }
