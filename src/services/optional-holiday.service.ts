@@ -509,25 +509,66 @@ export class OptionalHolidayService extends BaseService {
     if (updateData.remarks) request.remarks = updateData.remarks;
     await request.save();
 
-    // Send email notification to employee
-    const employee = await User.findById(request.userId).select('name email').lean();
-    if (employee) {
-      const htmlContent = generateEmailTemplate('optionalHolidayStatus', {
-        employeeName: employee.name,
-        holidayName: request.holidayName,
-        holidayDate: request.holidayDate.toLocaleDateString(),
-        status: updateData.status,
-        remarks: updateData.remarks || 'No remarks provided',
-      });
+    // Send email notification to employee (the person who applied)
+    try {
+      const employee = await User.findById(request.userId).select('name email').lean();
+      const approver = await User.findById(updateData.approvedById).select('name email').lean();
 
-      await emailService.sendEmail({
-        body: {
-          to: employee.email,
-          subject: `Optional Holiday Request ${updateData.status} - ${request.holidayName}`,
-          text: `Your optional holiday request for ${request.holidayName} on ${request.holidayDate.toLocaleDateString()} has been ${updateData.status.toLowerCase()}.`,
-          html: htmlContent,
-        },
-      });
+      if (employee && employee.email) {
+        const holidayDateFormatted = request.holidayDate.toLocaleDateString('en-US', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        });
+
+        const htmlContent = generateEmailTemplate('optionalHolidayStatus', {
+          employeeName: employee.name,
+          approverName: approver?.name || 'Manager',
+          holidayName: request.holidayName,
+          holidayDate: holidayDateFormatted,
+          status: updateData.status,
+          remarks: updateData.remarks || '',
+          companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS',
+        });
+
+        const emailText = `Dear ${employee.name},
+
+Your optional holiday request has been ${updateData.status.toLowerCase()} by ${approver?.name || 'Manager'}.
+
+Holiday Details:
+- Holiday Name: ${request.holidayName}
+- Date: ${holidayDateFormatted}
+- Year: ${request.year}
+${request.reason ? `- Reason: ${request.reason}` : ''}
+${updateData.remarks ? `- Remarks: ${updateData.remarks}` : ''}
+
+${updateData.status === 'Approved' 
+  ? '✅ Your optional holiday has been approved. This day will be counted as a holiday in your payroll.'
+  : '❌ Your optional holiday request has been rejected. This day will be treated as a working day.'}
+
+Thank you for your understanding.
+
+Regards,
+${approver?.name || 'Manager'}
+${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
+
+        await emailService.sendEmail({
+          body: {
+            to: employee.email,
+            subject: `Optional Holiday Request ${updateData.status} - ${request.holidayName}`,
+            text: emailText,
+            html: htmlContent,
+          },
+        });
+
+        console.log(`Email notification sent to ${employee.email} for optional holiday request ${request._id} - Status: ${updateData.status}`);
+      } else {
+        console.warn(`Cannot send email: Employee not found or email missing for userId: ${request.userId}`);
+      }
+    } catch (emailError) {
+      console.error('Failed to send email to employee for optional holiday request:', emailError);
+      // Don't fail the request if email fails - log the error but continue
     }
 
     return this.findById(request._id);

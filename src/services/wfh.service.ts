@@ -491,31 +491,74 @@ export class WFHService extends BaseService {
       }
     );
 
-    // Send email notification
-    const employee: IUser = await User.findById(new Types.ObjectId(wfh.userId)).select('name email');
-    const approver: IUser = await User.findById(wfh.approvedById).select('name');
+    // Send email notification to employee (the person who applied)
+    try {
+      const employee: IUser = await User.findById(new Types.ObjectId(wfh.userId)).select('name email');
+      const approver: IUser = await User.findById(wfh.approvedById).select('name email');
 
-    if (employee) {
-      const htmlContent = generateEmailTemplate('leaveApprovalEmail', {
-        employeeName: employee.name,
-        approverName: approver?.name || 'Manager',
-        leaveType: 'Work From Home',
-        fromDate: wfh.startDate.toDateString(),
-        toDate: wfh.endDate.toDateString(),
-        totalDays: wfh.noOfDays,
-        remarks: wfh.remarks || '',
-        status: wfh.status,
-        companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS',
-      });
+      if (employee && employee.email) {
+        const fromDateFormatted = wfh.startDate.toLocaleDateString('en-US', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        });
+        const toDateFormatted = wfh.endDate.toLocaleDateString('en-US', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        });
 
-      await emailService.sendEmail({
-        body: {
-          to: employee.email,
-          subject: `Your WFH Request has been ${wfh.status}`,
-          text: `Your WFH request from ${wfh.startDate.toDateString()} to ${wfh.endDate.toDateString()} has been ${wfh.status.toLowerCase()} by ${approver?.name || 'manager'}.`,
-          html: htmlContent,
-        },
-      });
+        const htmlContent = generateEmailTemplate('leaveApprovalEmail', {
+          employeeName: employee.name,
+          approverName: approver?.name || 'Manager',
+          leaveType: 'Work From Home',
+          fromDate: fromDateFormatted,
+          toDate: toDateFormatted,
+          totalDays: wfh.noOfDays,
+          remarks: wfh.remarks || '',
+          status: wfh.status,
+          companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS',
+        });
+
+        const emailText = `Dear ${employee.name},
+
+Your Work From Home (WFH) request has been ${wfh.status.toLowerCase()} by ${approver?.name || 'Manager'}.
+
+WFH Details:
+- From Date: ${fromDateFormatted}
+- To Date: ${toDateFormatted}
+- Total Days: ${wfh.noOfDays}
+- Reason: ${wfh.reason || 'N/A'}
+${wfh.remarks ? `- Remarks: ${wfh.remarks}` : ''}
+
+${wfh.status === 'Approved' 
+  ? 'Your WFH request has been approved. Please ensure you have a proper workspace setup and maintain regular communication with your team during the WFH period.'
+  : 'Unfortunately, your WFH request has been rejected. If you have any questions, please contact your manager.'}
+
+Thank you for your understanding.
+
+Regards,
+${approver?.name || 'Manager'}
+${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
+
+        await emailService.sendEmail({
+          body: {
+            to: employee.email,
+            subject: `Your WFH Request has been ${wfh.status}`,
+            text: emailText,
+            html: htmlContent,
+          },
+        });
+
+        console.log(`Email notification sent to ${employee.email} for WFH request ${wfh._id} - Status: ${wfh.status}`);
+      } else {
+        console.warn(`Cannot send email: Employee not found or email missing for userId: ${wfh.userId}`);
+      }
+    } catch (emailError) {
+      console.error('Failed to send email to employee for WFH request:', emailError);
+      // Don't fail the request if email fails - log the error but continue
     }
 
     return this.findById(wfh._id as string);

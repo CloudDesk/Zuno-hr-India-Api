@@ -469,31 +469,67 @@ export class PermissionService extends BaseService {
       }
     );
 
-    // Send email notification
-    const employee: IUser = await User.findById(new Types.ObjectId(permission.userId)).select('name email');
-    const approver: IUser = await User.findById(permission.approvedById).select('name');
+    // Send email notification to employee (the person who applied)
+    try {
+      const employee: IUser = await User.findById(new Types.ObjectId(permission.userId)).select('name email');
+      const approver: IUser = await User.findById(permission.approvedById).select('name email');
 
-    if (employee) {
-      const htmlContent = generateEmailTemplate('leaveApprovalEmail', {
-        employeeName: employee.name,
-        approverName: approver?.name || 'Manager',
-        leaveType: 'Permission',
-        fromDate: permission.permissionDate.toDateString(),
-        toDate: permission.permissionDate.toDateString(),
-        totalDays: `${permission.hours} hours`,
-        remarks: permission.remarks || '',
-        status: permission.status,
-        companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS',
-      });
+      if (employee && employee.email) {
+        const permissionDateFormatted = permission.permissionDate.toLocaleDateString('en-US', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        });
 
-      await emailService.sendEmail({
-        body: {
-          to: employee.email,
-          subject: `Your Permission Request has been ${permission.status}`,
-          text: `Your permission request for ${permission.hours} hours on ${permission.permissionDate.toDateString()} has been ${permission.status.toLowerCase()} by ${approver?.name || 'manager'}.`,
-          html: htmlContent,
-        },
-      });
+        const htmlContent = generateEmailTemplate('leaveApprovalEmail', {
+          employeeName: employee.name,
+          approverName: approver?.name || 'Manager',
+          leaveType: 'Permission',
+          fromDate: permissionDateFormatted,
+          toDate: permissionDateFormatted,
+          totalDays: `${permission.hours} hours`,
+          remarks: permission.remarks || '',
+          status: permission.status,
+          companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS',
+        });
+
+        const emailText = `Dear ${employee.name},
+
+Your permission request has been ${permission.status.toLowerCase()} by ${approver?.name || 'Manager'}.
+
+Permission Details:
+- Date: ${permissionDateFormatted}
+- Duration: ${permission.hours} hours
+- Reason: ${permission.reason || 'N/A'}
+${permission.remarks ? `- Remarks: ${permission.remarks}` : ''}
+
+${permission.status === 'Approved' 
+  ? 'Your permission request has been approved. Please ensure you coordinate with your team regarding your absence.'
+  : 'Unfortunately, your permission request has been rejected. If you have any questions, please contact your manager.'}
+
+Thank you for your understanding.
+
+Regards,
+${approver?.name || 'Manager'}
+${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
+
+        await emailService.sendEmail({
+          body: {
+            to: employee.email,
+            subject: `Your Permission Request has been ${permission.status}`,
+            text: emailText,
+            html: htmlContent,
+          },
+        });
+
+        console.log(`Email notification sent to ${employee.email} for permission request ${permission._id} - Status: ${permission.status}`);
+      } else {
+        console.warn(`Cannot send email: Employee not found or email missing for userId: ${permission.userId}`);
+      }
+    } catch (emailError) {
+      console.error('Failed to send email to employee for permission request:', emailError);
+      // Don't fail the request if email fails - log the error but continue
     }
 
     return this.findById(permission._id as string);

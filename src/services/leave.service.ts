@@ -611,29 +611,76 @@ export class LeaveService extends BaseService {
     if (updateData.remarks) leave.remarks = updateData.remarks;
     await leave.save();
 
-    const employee: IUser = await User.findById(new Types.ObjectId(leave.userId)).select('name email');
-    const approver: IUser = await User.findById((leave.approvedBy?._id)).select('name');
+    // Send email notification to employee (the person who applied)
+    try {
+      const employee: IUser = await User.findById(new Types.ObjectId(leave.userId)).select('name email');
+      const approver: IUser = await User.findById((leave.approvedBy?._id)).select('name email');
 
+      if (employee && employee.email) {
+        const fromDateFormatted = leave.startDate.toLocaleDateString('en-US', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        });
+        const toDateFormatted = leave.endDate.toLocaleDateString('en-US', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        });
 
-    const htmlContent = generateEmailTemplate('leaveApprovalEmail', {
-      employeeName: employee.name,
-      approverName: approver?.name || 'Manager',
-      leaveType: leave.leaveType,
-      fromDate: leave.startDate.toDateString(),
-      toDate: leave.endDate.toDateString(),
-      totalDays: leave.noOfDays,
-      remarks: leave.remarks || '',
-      status: leave.status, // 'Approved' or 'Rejected'
-      companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS',
-    });
-    await emailService.sendEmail({
-      body: {
-        to: employee.email,
-        subject: `Your Leave Request has been ${leave.status}`,
-        text: `Your leave from ${leave.startDate.toDateString()} to ${leave.endDate.toDateString()} has been ${leave.status.toLowerCase()} by ${approver?.name || 'manager'}.`,
-        html: htmlContent,
+        const htmlContent = generateEmailTemplate('leaveApprovalEmail', {
+          employeeName: employee.name,
+          approverName: approver?.name || 'Manager',
+          leaveType: leave.leaveType,
+          fromDate: fromDateFormatted,
+          toDate: toDateFormatted,
+          totalDays: leave.noOfDays,
+          remarks: leave.remarks || '',
+          status: leave.status, // 'Approved' or 'Rejected'
+          companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS',
+        });
+
+        const emailText = `Dear ${employee.name},
+
+Your leave request has been ${leave.status.toLowerCase()} by ${approver?.name || 'Manager'}.
+
+Leave Details:
+- Leave Type: ${leave.leaveType}
+- From Date: ${fromDateFormatted}
+- To Date: ${toDateFormatted}
+- Total Days: ${leave.noOfDays}
+- Reason: ${leave.reason || 'N/A'}
+${leave.remarks ? `- Remarks: ${leave.remarks}` : ''}
+
+${leave.status === 'Approved' 
+  ? 'Your leave request has been approved. Please ensure you have completed all pending work before your leave period.'
+  : 'Unfortunately, your leave request has been rejected. If you have any questions, please contact your manager.'}
+
+Thank you for your understanding.
+
+Regards,
+${approver?.name || 'Manager'}
+${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
+
+        await emailService.sendEmail({
+          body: {
+            to: employee.email,
+            subject: `Your Leave Request has been ${leave.status}`,
+            text: emailText,
+            html: htmlContent,
+          }
+        });
+
+        console.log(`Email notification sent to ${employee.email} for leave request ${leave._id} - Status: ${leave.status}`);
+      } else {
+        console.warn(`Cannot send email: Employee not found or email missing for userId: ${leave.userId}`);
       }
-    });
+    } catch (emailError) {
+      console.error('Failed to send email to employee for leave request:', emailError);
+      // Don't fail the request if email fails - log the error but continue
+    }
 
 
     // If leave is approved, mark attendance records as onLeave

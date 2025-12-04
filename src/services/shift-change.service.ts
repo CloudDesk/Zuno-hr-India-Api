@@ -1081,23 +1081,71 @@ export class ShiftChangeService extends BaseService {
       await this.applyApprovedShiftChange(request);
     }
 
-    // Send email notification to employee
+    // Send email notification to employee (the person who applied)
     try {
       const employee = await User.findById(request.userId).select('name email');
-      const approver = await User.findById(updateData.approvedById).select('name');
-      if (employee) {
-        const requestedShift = await Shift.findById(request.requestedShiftId).select('name code');
+      const approver = await User.findById(updateData.approvedById).select('name email');
+      
+      if (employee && employee.email) {
+        // Get current shift assignment details
+        const currentShiftAssignment = await ShiftAssignment.findById(request.currentShiftId).populate('shiftId', 'name code startTime endTime');
+        const requestedShift = await Shift.findById(request.requestedShiftId).select('name code startTime endTime');
+        
+        const currentShift = currentShiftAssignment?.shiftId as any;
+        const currentShiftName = currentShift?.name || 'N/A';
+        const currentShiftCode = currentShiftAssignment?.shiftCode || currentShift?.code || 'N/A';
+        const currentShiftTime = currentShift?.startTime && currentShift?.endTime 
+          ? `${currentShift.startTime} - ${currentShift.endTime}`
+          : 'N/A';
+        
+        const requestedShiftName = requestedShift?.name || 'N/A';
+        const requestedShiftCode = requestedShift?.code || 'N/A';
+        const requestedShiftTime = requestedShift?.startTime && requestedShift?.endTime
+          ? `${requestedShift.startTime} - ${requestedShift.endTime}`
+          : 'N/A';
 
-        const emailText = `Dear ${employee.name},\n\nYour shift change request has been ${updateData.status.toLowerCase()}.\n\nEffective Date: ${new Date(request.effectiveDate).toLocaleDateString()}\nRequested Shift: ${requestedShift?.code || 'N/A'} (${requestedShift?.name || 'N/A'})\nRemarks: ${updateData.remarks || 'No remarks provided'}\n\nRegards,\n${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
+        const effectiveDateFormatted = new Date(request.effectiveDate).toLocaleDateString('en-US', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        });
 
+        // Build email text content
+        const emailText = `Dear ${employee.name},
+
+Your shift change request has been ${updateData.status.toLowerCase()} by ${approver?.name || 'Manager'}.
+
+Request Details:
+- Current Shift: ${currentShiftCode} (${currentShiftName}) - ${currentShiftTime}
+- Requested Shift: ${requestedShiftCode} (${requestedShiftName}) - ${requestedShiftTime}
+- Effective Date: ${effectiveDateFormatted}
+- Reason: ${request.reason}
+${updateData.remarks ? `- Remarks: ${updateData.remarks}` : ''}
+
+${updateData.status === 'Approved' 
+  ? `Your shift change has been approved and will be effective from ${effectiveDateFormatted}. Please ensure you are available for the new shift timing.`
+  : `Unfortunately, your shift change request has been rejected. If you have any questions, please contact your manager.`}
+
+Thank you for your understanding.
+
+Regards,
+${approver?.name || 'Manager'}
+${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
+
+        // Build HTML content
         let html = emailText.replace(/\n/g, '<br>');
         try {
           const emailParams = {
             employeeName: employee.name,
             approverName: approver?.name || 'Manager',
-            effectiveDate: new Date(request.effectiveDate).toLocaleDateString(),
-            requestedShift: `${requestedShift?.code || 'N/A'} (${requestedShift?.name || 'N/A'})`,
-            remarks: updateData.remarks || 'No remarks provided',
+            currentShift: `${currentShiftCode} (${currentShiftName})`,
+            currentShiftTime: currentShiftTime,
+            requestedShift: `${requestedShiftCode} (${requestedShiftName})`,
+            requestedShiftTime: requestedShiftTime,
+            effectiveDate: effectiveDateFormatted,
+            reason: request.reason,
+            remarks: updateData.remarks || '',
             status: updateData.status,
             companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS',
           };
@@ -1106,6 +1154,7 @@ export class ShiftChangeService extends BaseService {
           console.warn('Email template not found, using simple HTML');
         }
 
+        // Send email to the employee who applied
         await emailService.sendEmail({
           body: {
             to: employee.email,
@@ -1114,10 +1163,14 @@ export class ShiftChangeService extends BaseService {
             html,
           },
         });
+        
+        console.log(`Email notification sent to ${employee.email} for shift change request ${request._id} - Status: ${updateData.status}`);
+      } else {
+        console.warn(`Cannot send email: Employee not found or email missing for userId: ${request.userId}`);
       }
     } catch (emailError) {
       console.error('Failed to send email to employee:', emailError);
-      // Don't fail if email fails
+      // Don't fail the request if email fails - log the error but continue
     }
 
     return this.findById(request._id as string);
