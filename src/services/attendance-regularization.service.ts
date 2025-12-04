@@ -565,43 +565,78 @@ export class AttendanceRegularizationService extends BaseService {
             await this.handleApproval(regularization);
         }
 
-        // 1. Fetch employee user details
-        const employee = await User.findById(regularization.userId).select('name email');
-        if (!employee?.email) return regularization; // Exit if no email
-
-        // 2. Prepare email
-        // const appUrl = process.env.APP_URL || 'http://localhost:5173';
-
-        // Get user details for timezone formatting
-        const user = await User.findById(regularization.userId).select('country').lean();
-        const userCountry = user?.country || 'IN';
-
-        const htmlContent = generateEmailTemplate('attendanceRegularizeApproval', {
-            employeeName: employee.name,
-            approverName: approver.name,
-            shiftDay: regularization.shiftDay.toDateString(),
-            fromTime: this.formatTimeLocal(regularization.from, userCountry),
-            toTime: this.formatTimeLocal(regularization.to, userCountry),
-            reason: regularization.reason,
-            comments: regularization.comments || '',
-            status: regularization.status,
-            companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS'
-        });
-        // Optional: use text fallback
-        const textContent = `${employee.name}, your attendance regularization on ${regularization.shiftDay.toDateString()} was ${regularization.status} by ${approver.name}.
-                From: ${this.formatTimeLocal(regularization.from, userCountry)} To: ${this.formatTimeLocal(regularization.to, userCountry)}
-                Reason: ${regularization.reason}
-                ${regularization.comments ? 'Comments: ' + regularization.comments : ''}`;
-
-        // 3. Send the email
-        await emailService.sendEmail({
-            body: {
-                to: employee.email,
-                subject: `Your Attendance Regularization has been ${regularization.status}`,
-                text: textContent,
-                html: htmlContent
+        // Send email notification to employee (the person who applied)
+        try {
+            // 1. Fetch employee user details
+            const employee = await User.findById(regularization.userId).select('name email');
+            if (!employee?.email) {
+                console.warn(`Cannot send email: Employee not found or email missing for userId: ${regularization.userId}`);
+                return regularization; // Exit if no email
             }
-        });
+
+            // Get user details for timezone formatting
+            const user = await User.findById(regularization.userId).select('country').lean();
+            const userCountry = user?.country || 'IN';
+
+            const shiftDayFormatted = regularization.shiftDay.toLocaleDateString('en-US', {
+                weekday: 'long',
+                year: 'numeric',
+                month: 'long',
+                day: 'numeric'
+            });
+
+            const fromTimeFormatted = this.formatTimeLocal(regularization.from, userCountry);
+            const toTimeFormatted = this.formatTimeLocal(regularization.to, userCountry);
+
+            const htmlContent = generateEmailTemplate('attendanceRegularizeApproval', {
+                employeeName: employee.name,
+                approverName: approver.name,
+                shiftDay: shiftDayFormatted,
+                fromTime: fromTimeFormatted,
+                toTime: toTimeFormatted,
+                reason: regularization.reason,
+                comments: regularization.comments || '',
+                status: regularization.status,
+                companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS'
+            });
+
+            // Build detailed text content
+            const textContent = `Dear ${employee.name},
+
+Your attendance regularization request has been ${regularization.status.toLowerCase()} by ${approver.name}.
+
+Regularization Details:
+- Date: ${shiftDayFormatted}
+- From Time: ${fromTimeFormatted}
+- To Time: ${toTimeFormatted}
+- Reason: ${regularization.reason}
+${regularization.comments ? `- Comments: ${regularization.comments}` : ''}
+
+${regularization.status === 'Approved' 
+  ? '✅ Your attendance regularization has been approved. The attendance record has been updated accordingly.'
+  : '❌ Your attendance regularization request has been rejected. The attendance record remains unchanged.'}
+
+Thank you for your understanding.
+
+Regards,
+${approver.name}
+${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
+
+            // Send the email
+            await emailService.sendEmail({
+                body: {
+                    to: employee.email,
+                    subject: `Your Attendance Regularization has been ${regularization.status}`,
+                    text: textContent,
+                    html: htmlContent
+                }
+            });
+
+            console.log(`Email notification sent to ${employee.email} for attendance regularization ${regularization._id} - Status: ${regularization.status}`);
+        } catch (emailError) {
+            console.error('Failed to send email to employee for attendance regularization:', emailError);
+            // Don't fail the request if email fails - log the error but continue
+        }
 
         return regularization;
     }

@@ -31,6 +31,7 @@ export interface ILeaveCreate {
 export interface ILeaveQuery {
   userId?: string | Types.ObjectId;
   status?: 'Pending' | 'Approved' | 'Rejected';
+  leaveType?: string;
   startDate?: Date;
   endDate?: Date;
   page?: number;
@@ -125,15 +126,7 @@ export class LeaveService extends BaseService {
       query.leaveType = { $regex: leaveType, $options: 'i' }; // Case-insensitive search
     }
 
-    if (search) {
-      query.$or = [
-        { 'user.name': { $regex: search, $options: 'i' } },
-        { leaveType: { $regex: search, $options: 'i' } },
-        { reason: { $regex: search, $options: 'i' } },
-      ];
-    }
-
-    // Handle date filters
+    // Handle date filters first
     if (startDate) {
       const start = new Date(startDate);
       start.setUTCHours(0, 0, 0, 0);
@@ -144,6 +137,49 @@ export class LeaveService extends BaseService {
       const end = new Date(endDate);
       end.setUTCHours(23, 59, 59, 999);
       query.endDate = { $lte: end };
+    }
+
+    // Handle search filter
+    if (search) {
+      // Escape special regex characters in search string
+      const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      
+      // Search in document fields (leaveType, reason, status)
+      const searchConditions: any[] = [
+        { leaveType: { $regex: escapedSearch, $options: 'i' } },
+        { reason: { $regex: escapedSearch, $options: 'i' } },
+        { status: { $regex: escapedSearch, $options: 'i' } },
+      ];
+
+      // Search in User collection to find matching users
+      // Since user data is populated after query, we need to search users first
+      const userSearchFilter: any = {
+        $or: [
+          { name: { $regex: escapedSearch, $options: 'i' } },
+          { email: { $regex: escapedSearch, $options: 'i' } },
+        ]
+      };
+
+      // Combine with userId filter since we're already filtering by userId
+      userSearchFilter._id = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
+
+      const matchingUsers = await User.find(userSearchFilter).select('_id').lean();
+
+      // If users found, add userId filter (though it should match since we're already filtering by userId)
+      if (matchingUsers.length > 0) {
+        const userIds = matchingUsers.map(u => u._id);
+        searchConditions.push({ userId: { $in: userIds } });
+      }
+
+      // Combine search with existing filters using $and
+      // This ensures search works correctly with date filters and other filters
+      const existingFilters = { ...query };
+      delete existingFilters.$or;
+      
+      query.$and = [
+        existingFilters,
+        { $or: searchConditions }
+      ];
     }
 
     // Fetch leaves and total count concurrently
@@ -192,12 +228,15 @@ export class LeaveService extends BaseService {
 
 
   async findAll(query: ILeaveQuery): Promise<{ leaves: ILeave[], meta: { page: number, limit: number, total: number, totalPages: number } }> {
-    const { userId, status, startDate, endDate, page = 1, limit = 10 } = query;
+    const { userId, status, leaveType, startDate, endDate, page = 1, limit = 10, search } = query;
     const skip = (page - 1) * limit;
 
-    const filter: ILeaveQuery = {};
+    const filter: any = {};
     if (userId) filter.userId = userId;
     if (status) filter.status = status;
+    if (leaveType) filter.leaveType = { $regex: `^${leaveType}$`, $options: 'i' }; // Case-insensitive exact match
+    
+    // Handle date filters
     if (startDate || endDate) {
       filter.$or = [
         {
@@ -213,6 +252,53 @@ export class LeaveService extends BaseService {
           },
         },
       ];
+    }
+
+    // Handle search filter
+    if (search) {
+      // Escape special regex characters in search string
+      const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      
+      // Search in document fields (leaveType, reason, appliedTo.name, status)
+      const searchConditions: any[] = [
+        { leaveType: { $regex: escapedSearch, $options: 'i' } },
+        { reason: { $regex: escapedSearch, $options: 'i' } },
+        { 'appliedTo.name': { $regex: escapedSearch, $options: 'i' } },
+        { status: { $regex: escapedSearch, $options: 'i' } },
+      ];
+
+      // Search in User collection to find matching users
+      const userSearchFilter: any = {
+        $or: [
+          { name: { $regex: escapedSearch, $options: 'i' } },
+          { email: { $regex: escapedSearch, $options: 'i' } },
+        ]
+      };
+
+      // If userId is already filtered, combine with user search
+      if (userId) {
+        userSearchFilter._id = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
+      }
+
+      const matchingUsers = await User.find(userSearchFilter).select('_id').lean();
+
+      // If users found, add userId filter
+      if (matchingUsers.length > 0) {
+        const userIds = matchingUsers.map(u => u._id);
+        searchConditions.push({ userId: { $in: userIds } });
+      }
+
+      // If there's already a $or for dates, we need to combine them properly
+      if (filter.$or) {
+        // We need to use $and to combine date filter with search filter
+        filter.$and = [
+          { $or: filter.$or },
+          { $or: searchConditions }
+        ];
+        delete filter.$or;
+      } else {
+        filter.$or = searchConditions;
+      }
     }
 
     console.log(filter);
@@ -275,23 +361,23 @@ export class LeaveService extends BaseService {
       if (!lov) {
         throw new Error(`Leave type Lov not found for ID: ${leaveData.leaveTypeId}`);
       }
-      
+
       // Find the first active value
       let selectedValue = lov.values.find(v => v.isActive !== false);
-      
+
       // Fallback to first value if no active value found
       if (!selectedValue && lov.values.length > 0) {
         selectedValue = lov.values[0];
       }
-      
+
       if (!selectedValue) {
         throw new Error('No leave type value found in Lov document');
       }
-      
+
       leaveData.leaveType = selectedValue.value; // Set the value (e.g., "annual", "sick")
       console.log(`✅ [Leave Type] Fetched from Lov: ${leaveData.leaveType} for leaveTypeId: ${leaveData.leaveTypeId}`);
     }
-    
+
     // Ensure leaveType is set before proceeding
     if (!leaveData.leaveType) {
       throw new Error('Leave type is required. Please provide leaveType or ensure leaveTypeId points to a valid Lov with values.');
@@ -302,19 +388,19 @@ export class LeaveService extends BaseService {
       if (user.country !== 'IN') {
         throw new Error('Half-day leaves are only available for India employees');
       }
-      
+
       // Validate half-day specific rules
       const startDateStr = new Date(leaveData.startDate).toDateString();
       const endDateStr = new Date(leaveData.endDate).toDateString();
-      
+
       if (startDateStr !== endDateStr) {
         throw new Error('Half-day leaves must be on the same day (startDate = endDate)');
       }
-      
+
       if (!leaveData.halfDayType) {
         throw new Error('halfDayType is required for half-day leaves');
       }
-      
+
       // Set noOfDays to 0.5 for half-day leaves
       leaveData.noOfDays = 0.5;
     } else {
@@ -353,7 +439,7 @@ export class LeaveService extends BaseService {
       dayStart.setHours(0, 0, 0, 0);
       const dayEnd = new Date(leaveDate);
       dayEnd.setHours(23, 59, 59, 999);
-      
+
       // Check 1: Same halfDayType on same date
       const sameHalfDayQuery = {
         ...baseQuery,
@@ -372,7 +458,7 @@ export class LeaveService extends BaseService {
           }
         ]
       };
-      
+
       // Check 2: Full-day leave on same date
       // Check if any full-day leave (or leave without leaveDuration field) overlaps with the half-day date
       const fullDayQuery = {
@@ -384,15 +470,15 @@ export class LeaveService extends BaseService {
           { leaveDuration: { $exists: false } } // Old leaves without leaveDuration field are treated as full-day
         ]
       };
-      
+
       const sameHalfDayLeave = await Leave.findOne(sameHalfDayQuery);
       const fullDayLeave = await Leave.findOne(fullDayQuery);
-      
+
       if (sameHalfDayLeave) {
         const sessionName = leaveData.halfDayType === 'first-half' ? 'morning' : 'afternoon';
         throw new Error(`A ${sessionName} half-day leave already exists for this date`);
       }
-      
+
       if (fullDayLeave) {
         throw new Error('A full-day leave already exists for this date. Cannot apply half-day leave.');
       }
@@ -402,7 +488,7 @@ export class LeaveService extends BaseService {
       // 2. Check if any half-day leave exists on any date in the range
       const startDate = new Date(leaveData.startDate);
       const endDate = new Date(leaveData.endDate);
-      
+
       // Check 1: Full-day leave overlap
       // Check if any full-day leave (or leave without leaveDuration field) overlaps with the date range
       const fullDayOverlapQuery = {
@@ -414,7 +500,7 @@ export class LeaveService extends BaseService {
           { leaveDuration: { $exists: false } } // Old leaves without leaveDuration field are treated as full-day
         ]
       };
-      
+
       // Check 2: Any half-day leave in the date range
       // For each day in the range, check if any half-day exists
       const halfDayOverlapQuery = {
@@ -429,14 +515,14 @@ export class LeaveService extends BaseService {
           }
         ]
       };
-      
+
       const fullDayOverlap = await Leave.findOne(fullDayOverlapQuery);
       const halfDayOverlap = await Leave.findOne(halfDayOverlapQuery);
-      
+
       if (fullDayOverlap) {
         throw new Error('Leave dates overlap with existing full-day leave request');
       }
-      
+
       if (halfDayOverlap) {
         throw new Error('A half-day leave already exists in the selected date range. Cannot apply full-day leave.');
       }
@@ -479,12 +565,12 @@ export class LeaveService extends BaseService {
 
 
     console.log("first")
-    // Normalize leaveType to lowercase to match leave summary keys (annual, sick, etc.)
-    const normalizedLeaveType = (leave.leaveType || '').toLowerCase();
+    // Pass leaveType as-is to updateLeaveBalance - it will handle the mapping to camelCase
+    // The leaveType from frontend is already in camelCase (e.g., "lossOfPay")
     await this.leaveSummaryService.updateLeaveBalance(
       leave.userId as Types.ObjectId,
       new Date(leave.startDate).getFullYear(),
-      normalizedLeaveType,
+      leave.leaveType || '',
       leave.noOfDays as number,
       leave._id as Types.ObjectId
     );
@@ -525,29 +611,76 @@ export class LeaveService extends BaseService {
     if (updateData.remarks) leave.remarks = updateData.remarks;
     await leave.save();
 
-    const employee: IUser = await User.findById(new Types.ObjectId(leave.userId)).select('name email');
-    const approver: IUser = await User.findById((leave.approvedBy?._id)).select('name');
+    // Send email notification to employee (the person who applied)
+    try {
+      const employee: IUser = await User.findById(new Types.ObjectId(leave.userId)).select('name email');
+      const approver: IUser = await User.findById((leave.approvedBy?._id)).select('name email');
 
+      if (employee && employee.email) {
+        const fromDateFormatted = leave.startDate.toLocaleDateString('en-US', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        });
+        const toDateFormatted = leave.endDate.toLocaleDateString('en-US', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        });
 
-    const htmlContent = generateEmailTemplate('leaveApprovalEmail', {
-      employeeName: employee.name,
-      approverName: approver?.name || 'Manager',
-      leaveType: leave.leaveType,
-      fromDate: leave.startDate.toDateString(),
-      toDate: leave.endDate.toDateString(),
-      totalDays: leave.noOfDays,
-      remarks: leave.remarks || '',
-      status: leave.status, // 'Approved' or 'Rejected'
-      companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS',
-    });
-    await emailService.sendEmail({
-      body: {
-        to: employee.email,
-        subject: `Your Leave Request has been ${leave.status}`,
-        text: `Your leave from ${leave.startDate.toDateString()} to ${leave.endDate.toDateString()} has been ${leave.status.toLowerCase()} by ${approver?.name || 'manager'}.`,
-        html: htmlContent,
+        const htmlContent = generateEmailTemplate('leaveApprovalEmail', {
+          employeeName: employee.name,
+          approverName: approver?.name || 'Manager',
+          leaveType: leave.leaveType,
+          fromDate: fromDateFormatted,
+          toDate: toDateFormatted,
+          totalDays: leave.noOfDays,
+          remarks: leave.remarks || '',
+          status: leave.status, // 'Approved' or 'Rejected'
+          companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS',
+        });
+
+        const emailText = `Dear ${employee.name},
+
+Your leave request has been ${leave.status.toLowerCase()} by ${approver?.name || 'Manager'}.
+
+Leave Details:
+- Leave Type: ${leave.leaveType}
+- From Date: ${fromDateFormatted}
+- To Date: ${toDateFormatted}
+- Total Days: ${leave.noOfDays}
+- Reason: ${leave.reason || 'N/A'}
+${leave.remarks ? `- Remarks: ${leave.remarks}` : ''}
+
+${leave.status === 'Approved' 
+  ? 'Your leave request has been approved. Please ensure you have completed all pending work before your leave period.'
+  : 'Unfortunately, your leave request has been rejected. If you have any questions, please contact your manager.'}
+
+Thank you for your understanding.
+
+Regards,
+${approver?.name || 'Manager'}
+${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
+
+        await emailService.sendEmail({
+          body: {
+            to: employee.email,
+            subject: `Your Leave Request has been ${leave.status}`,
+            text: emailText,
+            html: htmlContent,
+          }
+        });
+
+        console.log(`Email notification sent to ${employee.email} for leave request ${leave._id} - Status: ${leave.status}`);
+      } else {
+        console.warn(`Cannot send email: Employee not found or email missing for userId: ${leave.userId}`);
       }
-    });
+    } catch (emailError) {
+      console.error('Failed to send email to employee for leave request:', emailError);
+      // Don't fail the request if email fails - log the error but continue
+    }
 
 
     // If leave is approved, mark attendance records as onLeave
@@ -688,13 +821,13 @@ export class LeaveService extends BaseService {
     }
   }> {
     console.log(query, "2, query")
-    const { appliedTo, userId, status, startDate, endDate, page = 1, limit = 5 } = query;
+    const { appliedTo, userId, status, startDate, endDate, page = 1, limit = 5, search } = query;
     const skip = (page - 1) * limit;
 
-    const filter: any = { 'appliedTo._id': appliedTo, status: status || 'Pending' }; // Initialize filter with appliedTo
+    const filter: any = { 'appliedTo._id': appliedTo }; // Initialize filter with appliedTo
 
     if (userId) filter.userId = userId;
-    if (status) filter.status = status;
+    if (status) filter.status = status; // Only filter by status if explicitly provided
     if (startDate || endDate) {
       filter.$or = [
         {
@@ -710,6 +843,53 @@ export class LeaveService extends BaseService {
           },
         },
       ];
+    }
+
+    // Handle search filter
+    if (search) {
+      // Escape special regex characters in search string
+      const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      
+      // Search in document fields (leaveType, reason, appliedTo.name, status)
+      const searchConditions: any[] = [
+        { leaveType: { $regex: escapedSearch, $options: 'i' } },
+        { reason: { $regex: escapedSearch, $options: 'i' } },
+        { 'appliedTo.name': { $regex: escapedSearch, $options: 'i' } },
+        { status: { $regex: escapedSearch, $options: 'i' } },
+      ];
+
+      // Search in User collection to find matching users
+      const userSearchFilter: any = {
+        $or: [
+          { name: { $regex: escapedSearch, $options: 'i' } },
+          { email: { $regex: escapedSearch, $options: 'i' } },
+        ]
+      };
+
+      // If userId is already filtered, combine with user search
+      if (userId) {
+        userSearchFilter._id = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
+      }
+
+      const matchingUsers = await User.find(userSearchFilter).select('_id').lean();
+
+      // If users found, add userId filter
+      if (matchingUsers.length > 0) {
+        const userIds = matchingUsers.map(u => u._id);
+        searchConditions.push({ userId: { $in: userIds } });
+      }
+
+      // If there's already a $or for dates, we need to combine them properly
+      if (filter.$or) {
+        // We need to use $and to combine date filter with search filter
+        filter.$and = [
+          { $or: filter.$or },
+          { $or: searchConditions }
+        ];
+        delete filter.$or;
+      } else {
+        filter.$or = searchConditions;
+      }
     }
 
     console.log('Filter:', filter);

@@ -494,38 +494,9 @@ export const shiftRoutes: RouteHandler = async (
             type: 'object',
             properties: {
               success: { type: 'boolean' },
-              data: {
-                type: 'array',
-                items: {
-                  type: 'object',
-                  properties: {
-                    _id: { type: 'string' },
-                    userId: { type: 'string' },
-                    shiftId: { 
-                      type: 'object',
-                      properties: {
-                        _id: { type: 'string' },
-                        name: { type: 'string' },
-                        code: { type: 'string' },
-                        startTime: { type: 'string' },
-                        endTime: { type: 'string' },
-                        graceTimeInMinutes: { type: 'number' }
-                      }
-                    },
-                    shiftCode: { type: 'string' },
-                    startDate: { type: 'string', format: 'date-time' },
-                    endDate: { type: 'string', format: 'date-time', nullable: true },
-                    isActive: { type: 'boolean' },
-                    status: { type: 'string' },
-                    assignedBy: { type: 'string' },
-                    weekendDays: { type: 'array', items: { type: 'number' } },
-                    assignedAt: { type: 'string', format: 'date-time' },
-                    createdAt: { type: 'string', format: 'date-time' },
-                    updatedAt: { type: 'string', format: 'date-time' }
-                  }
-                }
-              }
-            }
+              data: {} // Allow any type (object or null)
+            },
+            required: ['success']
           }
         }
       }

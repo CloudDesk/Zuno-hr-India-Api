@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyPluginOptions } from 'fastify';
 import { RouteHandler } from '../types/routes';
 import { authenticate } from '../middleware/auth';
-import { IWFHCreate } from '../services/wfh.service';
+import { IWFHCreate, IWFHQuery } from '../services/wfh.service';
 import { Types } from 'mongoose';
 import { User } from '../models';
 
@@ -73,9 +73,9 @@ export const wfhRoutes: RouteHandler = async (
         const body = request.body as IWFHCreate;
         const userId = (request.user as any)._id;
 
-        // Get user to find manager if appliedTo is not provided
+        // Get user to find manager if appliedTo is not provided or has empty _id
         let appliedTo = body.appliedTo;
-        if (!appliedTo) {
+        if (!appliedTo || !appliedTo._id || appliedTo._id.trim() === '') {
           const user = await User.findById(userId).select('managerId managerName');
           if (user && (user as any).managerId) {
             const manager = await User.findById((user as any).managerId).select('name');
@@ -84,10 +84,8 @@ export const wfhRoutes: RouteHandler = async (
               name: manager?.name || (user as any).managerName || 'Manager',
             };
           } else {
-            appliedTo = {
-              _id: '',
-              name: 'Manager',
-            };
+            // If no manager found, set appliedTo to undefined (will skip email notification)
+            appliedTo = undefined;
           }
         }
 
@@ -127,18 +125,22 @@ export const wfhRoutes: RouteHandler = async (
           type: 'object',
           properties: {
             userId: { type: 'string' },
-            status: { type: 'string', enum: ['Pending', 'Approved', 'Rejected'] },
+            status: { type: 'string', enum: ['Pending', 'Approved', 'Rejected', 'Cancelled'] },
             startDate: { type: 'string', format: 'date' },
             endDate: { type: 'string', format: 'date' },
+            appliedTo: { type: 'string' },
             page: { type: 'number', minimum: 1, default: 1 },
             limit: { type: 'number', minimum: 1, maximum: 100, default: 10 },
+            search: {
+              description: 'Search by employee name, reason, manager name, or status'
+            },
           },
         },
       },
     },
     async (request, reply) => {
       try {
-        const { userId, status, startDate, endDate, page, limit } = request.query as any;
+        const { userId, status, startDate, endDate, appliedTo, search, page, limit } = request.query as any;
         const currentUser = request.user!;
         const userRole = (currentUser as any).role?.toLowerCase() || '';
 
@@ -158,6 +160,10 @@ export const wfhRoutes: RouteHandler = async (
           // - For regular users: show only their own requests
           if (userRole === 'admin' || userRole === 'superadmin') {
             // Admin sees all - no userId filter
+            // Admin can filter by appliedTo if provided
+            if (appliedTo) {
+              query.appliedTo = appliedTo;
+            }
           } else if (userRole === 'manager') {
             // Manager sees requests assigned to them
             query.appliedTo = (currentUser as any)._id.toString();
@@ -170,6 +176,10 @@ export const wfhRoutes: RouteHandler = async (
         if (status) query.status = status;
         if (startDate) query.startDate = startDate;
         if (endDate) query.endDate = endDate;
+        // Normalize search parameter (handle case where it might be an array from duplicate query params)
+        if (search) {
+          query.search = Array.isArray(search) ? search[0] : search;
+        }
 
         const result = await request.container!.wfhService.findAll(query);
         return reply.send({
@@ -177,6 +187,115 @@ export const wfhRoutes: RouteHandler = async (
           data: result.wfhs,
           total: result.total,
           meta: result.meta,
+        });
+      } catch (error: any) {
+        return reply.status(400).send({
+          success: false,
+          error: { message: error.message },
+        });
+      }
+    },
+  );
+
+  // Get WFH requests by appliedTo
+  fastify.get(
+    '/applied-to/:appliedTo',
+    {
+      onRequest: [authenticate],
+      schema: {
+        tags: ['WFH Management'],
+        summary: 'Get WFH requests by appliedTo',
+        description: 'Get WFH Data Based on appliedTo field',
+        querystring: {
+          type: 'object',
+          properties: {
+            userId: { type: 'string' },
+            status: { type: 'string', enum: ['Pending', 'Approved', 'Rejected', 'Cancelled'] },
+            startDate: { type: 'string', format: 'date' },
+            endDate: { type: 'string', format: 'date' },
+            page: { type: 'number', minimum: 1, default: 1 },
+            limit: { type: 'number', minimum: 1, maximum: 100, default: 5 },
+            search: {
+              description: 'Search by employee name, reason, manager name, or status'
+            },
+          },
+        },
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              success: { type: 'boolean' },
+              data: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    _id: { type: 'string' },
+                    userId: { type: 'string' },
+                    startDate: { type: 'string', format: 'date' },
+                    endDate: { type: 'string', format: 'date' },
+                    noOfDays: { type: 'number' },
+                    status: { type: 'string', enum: ['Pending', 'Approved', 'Rejected', 'Cancelled'] },
+                    reason: { type: 'string' },
+                    remarks: { type: 'string' },
+                    appliedTo: {
+                      type: 'object',
+                      properties: {
+                        _id: { type: 'string' },
+                        name: { type: 'string' },
+                      },
+                    },
+                    user: {
+                      type: 'object',
+                      properties: {
+                        name: { type: 'string' },
+                        email: { type: 'string' },
+                      },
+                    },
+                    createdAt: { type: 'string', format: 'date-time' },
+                    updatedAt: { type: 'string', format: 'date-time' }
+                  }
+                }
+              },
+              meta: {
+                type: 'object',
+                properties: {
+                  page: { type: 'number' },
+                  limit: { type: 'number' },
+                  total: { type: 'number' },
+                  totalPages: { type: 'number' }
+                }
+              }
+            },
+            required: ['success', 'data', 'meta']
+          }
+        }
+      }
+    },
+    async (request, reply) => {
+      try {
+        const { appliedTo } = request.params as { appliedTo: string };
+        const { userId, status, startDate, endDate, page, limit, search } = request.query as any;
+        
+        const normalizedSearch = search ? (Array.isArray(search) ? search[0] : search) : undefined;
+        
+        const query: IWFHQuery = {
+          appliedTo,
+          userId: userId,
+          status: status ? status : undefined,
+          startDate: startDate ? new Date(startDate) : undefined,
+          endDate: endDate ? new Date(endDate) : undefined,
+          page: page ? Number(page) : undefined,
+          limit: limit ? Number(limit) : undefined,
+          search: normalizedSearch,
+        };
+
+        const wfhData = await request.container!.wfhService.getWFHsByAppliedTo(query);
+
+        return reply.send({
+          success: true,
+          data: wfhData.data,
+          meta: wfhData.meta
         });
       } catch (error: any) {
         return reply.status(400).send({
@@ -275,8 +394,8 @@ export const wfhRoutes: RouteHandler = async (
     async (request, reply) => {
       try {
         const { id } = request.params as { id: string };
-        const userId = request.user!._id instanceof Types.ObjectId 
-          ? request.user!._id 
+        const userId = request.user!._id instanceof Types.ObjectId
+          ? request.user!._id
           : new Types.ObjectId(request.user!._id);
         const result = await request.container!.wfhService.cancel(id, userId);
         return reply.send({
@@ -305,8 +424,8 @@ export const wfhRoutes: RouteHandler = async (
     async (request, reply) => {
       try {
         const { year } = request.params as { year: string };
-        const userId = request.user!._id instanceof Types.ObjectId 
-          ? request.user!._id 
+        const userId = request.user!._id instanceof Types.ObjectId
+          ? request.user!._id
           : new Types.ObjectId(request.user!._id);
         const balance = await request.container!.wfhService.getWFHBalance(
           userId,

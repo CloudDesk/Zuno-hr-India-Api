@@ -1,5 +1,6 @@
 import { BaseService } from './base.service';
 import { User } from '../models/user.model';
+import { LOV } from '../models/lov.model';
 import { RequestContext } from '../types/context';
 import { Types } from 'mongoose';
 import { emailService } from './email.service';
@@ -220,10 +221,55 @@ export class UserService extends BaseService {
 
     // Apply filters
     if (search) {
-      filter.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } },
+      // Escape special regex characters in search string
+      const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      
+      const searchConditions: any[] = [
+        { name: { $regex: escapedSearch, $options: 'i' } },
+        { email: { $regex: escapedSearch, $options: 'i' } },
+        { role: { $regex: escapedSearch, $options: 'i' } },
+        { specificRole: { $regex: escapedSearch, $options: 'i' } },
+        { licenseType: { $regex: escapedSearch, $options: 'i' } },
       ];
+
+      // Search active status - handle common status terms
+      const searchLower = search.toLowerCase();
+      if (searchLower === 'active' || searchLower === 'true' || searchLower === '1') {
+        searchConditions.push({ active: true });
+      } else if (searchLower === 'inactive' || searchLower === 'false' || searchLower === '0' || searchLower === 'on hold' || searchLower === 'resigned') {
+        searchConditions.push({ active: false });
+      } else {
+        // For partial matches, check if search contains status-related terms
+        if (searchLower.includes('active') || searchLower.includes('true')) {
+          searchConditions.push({ active: true });
+        } else if (searchLower.includes('inactive') || searchLower.includes('false') || searchLower.includes('hold') || searchLower.includes('resign')) {
+          searchConditions.push({ active: false });
+        }
+      }
+
+      // Search departments by name in LOV collection
+      try {
+        const departmentLOV = await LOV.findOne({ type: 'department' }).lean();
+        if (departmentLOV && departmentLOV.values) {
+          // Use original search (not escaped) for simple string matching
+          const matchingDepartments = departmentLOV.values.filter(
+            (dept: any) => 
+              dept.isActive !== false && 
+              dept.label && 
+              dept.label.toLowerCase().includes(searchLower)
+          );
+          
+          if (matchingDepartments.length > 0) {
+            const departmentIds = matchingDepartments.map((dept: any) => dept.value);
+            searchConditions.push({ departmentId: { $in: departmentIds } });
+          }
+        }
+      } catch (error) {
+        console.error('Error searching departments:', error);
+        // Continue without department search if there's an error
+      }
+
+      filter.$or = searchConditions;
     }
 
     if (role) {
@@ -820,9 +866,16 @@ export class UserService extends BaseService {
       }
     }
 
+    // RESTRICTION: active field cannot be updated manually
+    // It can only be set to false during final settlement process
+    if (data.active !== undefined) {
+      delete (data as any).active;
+      console.log('⚠️ [User Update] active field is restricted and cannot be updated manually. It can only be set to false during final settlement.');
+    }
+
     // Validate email uniqueness only for active users
     // Inactive users can have duplicate emails (for rehired employees)
-    const willBeActive = data.active !== undefined ? data.active : user.active;
+    const willBeActive = user.active; // Use current user's active status, not from data
     if (willBeActive && data.email && data.email.toLowerCase().trim() !== user.email.toLowerCase().trim()) {
       const existingUser = await User.findOne({
         email: data.email.toLowerCase().trim(),

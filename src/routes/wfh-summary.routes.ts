@@ -29,11 +29,15 @@ export async function wfhSummaryRoutes(fastify: FastifyInstance): Promise<void> 
         const { year = new Date().getFullYear() } = request.query as { year?: number };
         const userId = new Types.ObjectId((request.params as any).userId as string);
 
-        const summary = await request.container!.wfhSummaryService.getWFHSummary(userId, year);
+        const summary = await request.container!.leaveSummaryService.getLeaveSummary(userId, year);
 
         return reply.send({
           success: true,
-          data: summary,
+          data: {
+            userId: summary.userId,
+            year: summary.year,
+            wfh: summary.workFromHome || { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] },
+          },
         });
       } catch (error: any) {
         return reply.status(400).send({
@@ -70,7 +74,12 @@ export async function wfhSummaryRoutes(fastify: FastifyInstance): Promise<void> 
         const { year = new Date().getFullYear() } = request.query as { year?: number };
         const userId = new Types.ObjectId((request.params as any).userId as string);
 
-        const balance = await request.container!.wfhSummaryService.getWFHBalance(userId, year);
+        const summary = await request.container!.leaveSummaryService.getLeaveSummary(userId, year);
+        const balance = {
+          alloted: summary.workFromHome?.alloted || 0,
+          availed: summary.workFromHome?.availed || 0,
+          remaining: summary.workFromHome?.remaining || 0,
+        };
 
         return reply.send({
           success: true,
@@ -148,15 +157,19 @@ export async function wfhSummaryRoutes(fastify: FastifyInstance): Promise<void> 
           alloted: number;
         };
 
-        const updatedSummary = await request.container!.wfhSummaryService.updateWFHAllotments(
+        const updatedSummary = await request.container!.leaveSummaryService.updateLeaveAllotments(
           new Types.ObjectId(userId),
           year,
-          alloted
+          { workFromHome: alloted }
         );
 
         return reply.send({
           success: true,
-          data: updatedSummary,
+          data: {
+            userId: updatedSummary.userId,
+            year: updatedSummary.year,
+            wfh: updatedSummary.workFromHome || { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] },
+          },
         });
       } catch (error: any) {
         return reply.status(400).send({
@@ -203,9 +216,14 @@ export async function wfhSummaryRoutes(fastify: FastifyInstance): Promise<void> 
         const userIdList = userIds.split(',').map((id) => new Types.ObjectId(id.trim()));
 
         const summaries = await Promise.all(
-          userIdList.map((userId) =>
-            request.container!.wfhSummaryService.getWFHSummary(userId, year)
-          )
+          userIdList.map(async (userId) => {
+            const summary = await request.container!.leaveSummaryService.getLeaveSummary(userId, year);
+            return {
+              userId: summary.userId,
+              year: summary.year,
+              wfh: summary.workFromHome || { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] },
+            };
+          })
         );
 
         return reply.send({
@@ -314,14 +332,41 @@ export async function wfhSummaryRoutes(fastify: FastifyInstance): Promise<void> 
           alloted: a.alloted,
         }));
 
-        const result = await request.container!.wfhSummaryService.bulkUpdateWFHAllotments(
-          allotmentsWithObjectId,
-          year
+        // Convert to LeaveSummary format and update
+        const results = {
+          successCount: 0,
+          failedCount: 0,
+          errors: [] as Array<{ userId: string; error: string }>,
+          updated: [] as any[],
+        };
+
+        await Promise.all(
+          allotmentsWithObjectId.map(async ({ userId, alloted }) => {
+            try {
+              const updated = await request.container!.leaveSummaryService.updateLeaveAllotments(
+                userId,
+                year,
+                { workFromHome: alloted }
+              );
+              results.successCount++;
+              results.updated.push({
+                userId: updated.userId,
+                year: updated.year,
+                wfh: updated.workFromHome || { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] },
+              });
+            } catch (error: any) {
+              results.failedCount++;
+              results.errors.push({
+                userId: userId.toString(),
+                error: error.message || 'Unknown error',
+              });
+            }
+          })
         );
 
         return reply.send({
           success: true,
-          data: result,
+          data: results,
         });
       } catch (error: any) {
         return reply.status(400).send({

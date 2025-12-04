@@ -116,18 +116,26 @@ export const optionalHolidayRoutes: RouteHandler = async (
           properties: {
             userId: { type: 'string' },
             status: { type: 'string', enum: ['Pending', 'Approved', 'Rejected', 'Cancelled'] },
+            appliedTo: { type: 'string', description: 'Filter by manager ID (Admin only)' },
             startDate: { type: 'string', format: 'date' },
             endDate: { type: 'string', format: 'date' },
             year: { type: 'number' },
             page: { type: 'number', minimum: 1, default: 1 },
             limit: { type: 'number', minimum: 1, maximum: 100, default: 10 },
+            search: {
+              oneOf: [
+                { type: 'string' },
+                { type: 'array', items: { type: 'string' } }
+              ],
+              description: 'Search by holiday name, reason, employee name, status, or applied to (manager name)'
+            },
           },
         },
       },
     },
     async (request, reply) => {
       try {
-        const { userId, status, startDate, endDate, year, page, limit } = request.query as any;
+        const { userId, status, startDate, endDate, year, page, limit, search } = request.query as any;
         const currentUser = request.user!;
         const userRole = (currentUser as any).role?.toLowerCase() || '';
 
@@ -137,17 +145,33 @@ export const optionalHolidayRoutes: RouteHandler = async (
           limit: limit ? Number(limit) : 10,
         };
 
-        // Non-admin/manager users can only see their own requests
-        if (userRole !== 'admin' && userRole !== 'manager') {
-          query.userId = (currentUser as any)._id.toString();
-        } else if (userId) {
+        // If userId is provided, filter by that user
+        if (userId) {
           query.userId = userId;
+        } else {
+          // If no userId provided:
+          // - For admins: show all requests
+          // - For managers: show requests where they are the approver (appliedTo)
+          // - For regular users: show only their own requests
+          if (userRole === 'admin' || userRole === 'superadmin') {
+            // Admin sees all - no userId filter
+          } else if (userRole === 'manager') {
+            // Manager sees requests assigned to them
+            query.appliedTo = (currentUser as any)._id.toString();
+          } else {
+            // Regular user sees only their own
+            query.userId = (currentUser as any)._id.toString();
+          }
         }
 
         if (status) query.status = status;
         if (startDate) query.startDate = startDate;
         if (endDate) query.endDate = endDate;
         if (year) query.year = Number(year);
+        // Normalize search parameter (handle case where it might be an array from duplicate query params)
+        if (search) {
+          query.search = Array.isArray(search) ? search[0] : search;
+        }
 
         const result = await request.container!.optionalHolidayService.findAll(query);
         return reply.send({
@@ -367,6 +391,118 @@ export const optionalHolidayRoutes: RouteHandler = async (
         });
       }
     },
+  );
+
+  // Get optional holiday requests by appliedTo
+  fastify.get(
+    '/applied-to/:appliedTo',
+    {
+      onRequest: [authenticate],
+      schema: {
+        tags: ['Optional Holiday Management'],
+        summary: 'Get optional holiday requests by appliedTo',
+        description: 'Get Optional Holiday Data Based on appliedTo field',
+        querystring: {
+          type: 'object',
+          properties: {
+            userId: { type: 'string' },
+            status: { type: 'string', enum: ['Pending', 'Approved', 'Rejected', 'Cancelled'] },
+            startDate: { type: 'string', format: 'date' },
+            endDate: { type: 'string', format: 'date' },
+            year: { type: 'number' },
+            page: { type: 'number', minimum: 1, default: 1 },
+            limit: { type: 'number', minimum: 1, maximum: 100, default: 5 },
+            search: {
+              description: 'Search by holiday name, reason, employee name, status, or applied to (manager name)'
+            },
+          },
+        },
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              success: { type: 'boolean' },
+              data: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    _id: { type: 'string' },
+                    userId: { type: 'string' },
+                    holidayDate: { type: 'string', format: 'date' },
+                    holidayName: { type: 'string' },
+                    status: { type: 'string', enum: ['Pending', 'Approved', 'Rejected', 'Cancelled'] },
+                    reason: { type: 'string' },
+                    appliedTo: {
+                      type: 'object',
+                      properties: {
+                        _id: { type: 'string' },
+                        name: { type: 'string' },
+                      },
+                    },
+                    user: {
+                      type: 'object',
+                      properties: {
+                        name: { type: 'string' },
+                        email: { type: 'string' },
+                      },
+                    },
+                    createdAt: { type: 'string', format: 'date-time' },
+                    updatedAt: { type: 'string', format: 'date-time' }
+                  }
+                }
+              },
+              meta: {
+                type: 'object',
+                properties: {
+                  page: { type: 'number' },
+                  limit: { type: 'number' },
+                  total: { type: 'number' },
+                  totalPages: { type: 'number' }
+                }
+              }
+            },
+            required: ['success', 'data', 'meta']
+          }
+        }
+      }
+    },
+    async (request, reply) => {
+      try {
+        const { appliedTo } = request.params as { appliedTo: string };
+        const { userId, status, startDate, endDate, year, page, limit, search } = request.query as any;
+
+        // Normalize search parameter (handle case where it might be an array from duplicate query params)
+        const normalizedSearch = search ? (Array.isArray(search) ? search[0] : search) : undefined;
+
+        const query: any = {
+          appliedTo,
+          userId: userId,
+          status: status ? status : undefined,
+          startDate: startDate ? new Date(startDate) : undefined,
+          endDate: endDate ? new Date(endDate) : undefined,
+          year: year ? Number(year) : undefined,
+          page: page ? Number(page) : undefined,
+          limit: limit ? Number(limit) : undefined,
+          search: normalizedSearch,
+        };
+
+        const optionalHolidayData = await request.container!.optionalHolidayService.getOptionalHolidaysByAppliedTo(query);
+        console.log(optionalHolidayData, 'Route optional holiday');
+
+        return reply.send({
+          success: true,
+          data: optionalHolidayData.data,
+          meta: optionalHolidayData.meta
+        });
+      } catch (error: any) {
+        console.log(error, 'error');
+        return reply.status(400).send({
+          success: false,
+          error: { message: error.message },
+        });
+      }
+    }
   );
 };
 

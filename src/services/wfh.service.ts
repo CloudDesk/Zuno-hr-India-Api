@@ -3,7 +3,7 @@ import { RequestContext } from '../types/context';
 import { IUser, User } from '../models';
 import { FilterQuery, Types } from 'mongoose';
 import { IWFH, WFH } from '../models/wfh.model';
-import { WFHSummaryService } from './wfh-summary.service';
+import { LeaveSummaryService } from './leave-summary.service';
 import { generateEmailTemplate } from '../emails/templates';
 import { emailService } from './email.service';
 
@@ -29,6 +29,7 @@ export interface IWFHQuery {
   sort?: 'asc' | 'desc';
   sortBy?: keyof IWFH;
   search?: string;
+  appliedTo?: string;
 }
 
 export interface IWFHStatusUpdate {
@@ -43,11 +44,11 @@ export interface IWFHStatusUpdate {
 }
 
 export class WFHService extends BaseService {
-  private wfhSummaryService: WFHSummaryService;
+  private leaveSummaryService: LeaveSummaryService;
 
   constructor(context: RequestContext) {
     super(context);
-    this.wfhSummaryService = new WFHSummaryService(context);
+    this.leaveSummaryService = new LeaveSummaryService(context);
   }
 
   async findById(id: string | Types.ObjectId): Promise<IWFH> {
@@ -87,30 +88,96 @@ export class WFHService extends BaseService {
     appliedTo?: string; // Manager ID to filter by
     page?: number;
     limit?: number;
+    search?: string; // Search in user name, reason, manager name, or status
   }): Promise<{ wfhs: IWFH[]; total: number; meta: { page: number; limit: number; total: number; totalPages: number } }> {
-    const { userId, status, startDate, endDate, appliedTo, page = 1, limit = 10 } = query;
+    const { userId, status, startDate, endDate, appliedTo, page = 1, limit = 10, search } = query;
     const skip = (page - 1) * limit;
 
     const filter: any = {};
-    if (userId) filter.userId = userId;
+    // ✅ FIX: Convert userId string to ObjectId for proper MongoDB query
+    if (userId) {
+      filter.userId = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
+    }
     if (status) filter.status = status;
-    if (appliedTo) filter['appliedTo._id'] = appliedTo;
+    // ✅ FIX: appliedTo._id is stored as String in the model, so use it as string
+    if (appliedTo) {
+      filter['appliedTo._id'] = appliedTo;
+    }
 
-    if (startDate || endDate) {
-      filter.$or = [
-        {
-          startDate: {
-            ...(startDate && { $gte: new Date(startDate) }),
-            ...(endDate && { $lte: new Date(endDate) }),
-          },
-        },
-        {
-          endDate: {
-            ...(startDate && { $gte: new Date(startDate) }),
-            ...(endDate && { $lte: new Date(endDate) }),
-          },
-        },
+    // Search filter - search in user name, email, reason, remarks, and status
+    // Since user data is populated after query, we need to search users first
+    if (search) {
+      // Escape special regex characters in search string
+      const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      
+      // Search in reason, remarks, status, and appliedTo name (stored in document)
+      const searchFilter: any[] = [
+        { 'reason': { $regex: escapedSearch, $options: 'i' } },
+        { 'remarks': { $regex: escapedSearch, $options: 'i' } },
+        { 'status': { $regex: escapedSearch, $options: 'i' } },
+        { 'appliedTo.name': { $regex: escapedSearch, $options: 'i' } },
       ];
+
+      // Also search in user collection to find matching users
+      const userSearchFilter: any = {
+        $or: [
+          { name: { $regex: escapedSearch, $options: 'i' } },
+          { email: { $regex: escapedSearch, $options: 'i' } },
+        ]
+      };
+
+      // If userId is already filtered, combine with user search
+      if (userId) {
+        userSearchFilter._id = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
+      }
+
+      const matchingUsers = await User.find(userSearchFilter).select('_id').lean();
+
+      // If users found, add userId filter
+      if (matchingUsers.length > 0) {
+        const userIds = matchingUsers.map(u => u._id);
+        searchFilter.push({ userId: { $in: userIds } });
+      }
+
+      // Combine search with existing filters using $and
+      const existingFilters = { ...filter };
+      filter.$and = [
+        existingFilters,
+        { $or: searchFilter }
+      ];
+    }
+
+    // Date range filter - handle separately from search
+    if (startDate || endDate) {
+      const dateFilter: any = {
+        $or: [
+          {
+            startDate: {
+              ...(startDate && { $gte: new Date(startDate) }),
+              ...(endDate && { $lte: new Date(endDate) }),
+            },
+          },
+          {
+            endDate: {
+              ...(startDate && { $gte: new Date(startDate) }),
+              ...(endDate && { $lte: new Date(endDate) }),
+            },
+          },
+        ],
+      };
+
+      // Combine date filter with existing filters
+      if (filter.$and) {
+        // If search is present, add date filter to $and array
+        filter.$and.push(dateFilter);
+      } else {
+        // If no search, use $and to combine base filters with date filter
+        const existingFilters = { ...filter };
+        filter.$and = [
+          existingFilters,
+          dateFilter
+        ];
+      }
     }
 
     const [wfhs, total] = await Promise.all([
@@ -278,11 +345,16 @@ export class WFHService extends BaseService {
 
     const year = startDate.getFullYear();
 
-    // Get WFH balance for the year
-    const balance = await this.wfhSummaryService.getWFHBalance(
+    // Get WFH balance for the year (from LeaveSummary workFromHome category)
+    const leaveSummary = await this.leaveSummaryService.getLeaveSummary(
       new Types.ObjectId(wfhData.userId.toString()),
       year
     );
+    const balance = {
+      alloted: leaveSummary.workFromHome?.alloted || 0,
+      availed: leaveSummary.workFromHome?.availed || 0,
+      remaining: leaveSummary.workFromHome?.remaining || 0,
+    };
 
     // Calculate total days used this year (only approved WFH)
     const totalUsedThisYear = await this.getTotalDaysUsedInYear(
@@ -323,18 +395,23 @@ export class WFHService extends BaseService {
     });
 
     // Track WFH request (don't deduct yet - will deduct on approval)
-    await this.wfhSummaryService.createOrUpdateWFHSummary(
+    await this.leaveSummaryService.createOrUpdateLeaveSummary(
       new Types.ObjectId(wfh.userId.toString()),
       year,
+      'workFromHome',
+      'Pending',
       {
-        wfhRequestId: wfh._id as Types.ObjectId,
+        leaveRequestId: wfh._id as Types.ObjectId,
       }
     );
 
-    // Send email to manager
-    const manager: IUser = await User.findById(
-      new Types.ObjectId(wfh.appliedTo?._id)
-    ).select('name email');
+    // Send email to manager (only if appliedTo._id is valid)
+    let manager: IUser | null = null;
+    if (wfh.appliedTo?._id && wfh.appliedTo._id.trim() !== '' && Types.ObjectId.isValid(wfh.appliedTo._id)) {
+      manager = await User.findById(
+        new Types.ObjectId(wfh.appliedTo._id)
+      ).select('name email').lean();
+    }
 
     if (manager) {
       const appUrl = process.env.APP_URL || 'http://localhost:5173';
@@ -377,12 +454,12 @@ export class WFHService extends BaseService {
     wfh.approvedById = updateData.approvedById;
     wfh.approvedBy = updateData.approvedBy
       ? {
-          _id: typeof updateData.approvedBy._id === 'string'
-            ? updateData.approvedBy._id
-            : updateData.approvedBy._id.toString(),
-          name: updateData.approvedBy.name,
-          email: updateData.approvedBy.email,
-        }
+        _id: typeof updateData.approvedBy._id === 'string'
+          ? updateData.approvedBy._id
+          : updateData.approvedBy._id.toString(),
+        name: updateData.approvedBy.name,
+        email: updateData.approvedBy.email,
+      }
       : undefined;
 
     if (updateData.status === 'Approved') {
@@ -396,46 +473,92 @@ export class WFHService extends BaseService {
     if (updateData.remarks) wfh.remarks = updateData.remarks;
     await wfh.save();
 
-    // Update WFH summary based on status change
+    // Update WFH summary based on status change (using LeaveSummary workFromHome category)
     const year = new Date(wfh.startDate).getFullYear();
     const totalUsedThisYear = await this.getTotalDaysUsedInYear(
       new Types.ObjectId(wfh.userId.toString()),
       year
     );
 
-    await this.wfhSummaryService.createOrUpdateWFHSummary(
+    await this.leaveSummaryService.createOrUpdateLeaveSummary(
       new Types.ObjectId(wfh.userId.toString()),
       year,
+      'workFromHome',
+      updateData.status,
       {
         availed: totalUsedThisYear,
+        leaveRequestId: wfh._id as Types.ObjectId,
       }
     );
 
-    // Send email notification
-    const employee: IUser = await User.findById(new Types.ObjectId(wfh.userId)).select('name email');
-    const approver: IUser = await User.findById(wfh.approvedById).select('name');
+    // Send email notification to employee (the person who applied)
+    try {
+      const employee: IUser = await User.findById(new Types.ObjectId(wfh.userId)).select('name email');
+      const approver: IUser = await User.findById(wfh.approvedById).select('name email');
 
-    if (employee) {
-      const htmlContent = generateEmailTemplate('leaveApprovalEmail', {
-        employeeName: employee.name,
-        approverName: approver?.name || 'Manager',
-        leaveType: 'Work From Home',
-        fromDate: wfh.startDate.toDateString(),
-        toDate: wfh.endDate.toDateString(),
-        totalDays: wfh.noOfDays,
-        remarks: wfh.remarks || '',
-        status: wfh.status,
-        companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS',
-      });
+      if (employee && employee.email) {
+        const fromDateFormatted = wfh.startDate.toLocaleDateString('en-US', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        });
+        const toDateFormatted = wfh.endDate.toLocaleDateString('en-US', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        });
 
-      await emailService.sendEmail({
-        body: {
-          to: employee.email,
-          subject: `Your WFH Request has been ${wfh.status}`,
-          text: `Your WFH request from ${wfh.startDate.toDateString()} to ${wfh.endDate.toDateString()} has been ${wfh.status.toLowerCase()} by ${approver?.name || 'manager'}.`,
-          html: htmlContent,
-        },
-      });
+        const htmlContent = generateEmailTemplate('leaveApprovalEmail', {
+          employeeName: employee.name,
+          approverName: approver?.name || 'Manager',
+          leaveType: 'Work From Home',
+          fromDate: fromDateFormatted,
+          toDate: toDateFormatted,
+          totalDays: wfh.noOfDays,
+          remarks: wfh.remarks || '',
+          status: wfh.status,
+          companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS',
+        });
+
+        const emailText = `Dear ${employee.name},
+
+Your Work From Home (WFH) request has been ${wfh.status.toLowerCase()} by ${approver?.name || 'Manager'}.
+
+WFH Details:
+- From Date: ${fromDateFormatted}
+- To Date: ${toDateFormatted}
+- Total Days: ${wfh.noOfDays}
+- Reason: ${wfh.reason || 'N/A'}
+${wfh.remarks ? `- Remarks: ${wfh.remarks}` : ''}
+
+${wfh.status === 'Approved' 
+  ? 'Your WFH request has been approved. Please ensure you have a proper workspace setup and maintain regular communication with your team during the WFH period.'
+  : 'Unfortunately, your WFH request has been rejected. If you have any questions, please contact your manager.'}
+
+Thank you for your understanding.
+
+Regards,
+${approver?.name || 'Manager'}
+${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
+
+        await emailService.sendEmail({
+          body: {
+            to: employee.email,
+            subject: `Your WFH Request has been ${wfh.status}`,
+            text: emailText,
+            html: htmlContent,
+          },
+        });
+
+        console.log(`Email notification sent to ${employee.email} for WFH request ${wfh._id} - Status: ${wfh.status}`);
+      } else {
+        console.warn(`Cannot send email: Employee not found or email missing for userId: ${wfh.userId}`);
+      }
+    } catch (emailError) {
+      console.error('Failed to send email to employee for WFH request:', emailError);
+      // Don't fail the request if email fails - log the error but continue
     }
 
     return this.findById(wfh._id as string);
@@ -459,18 +582,21 @@ export class WFHService extends BaseService {
     wfh.cancelledAt = new Date();
     await wfh.save();
 
-    // Update summary
+    // Update summary (using LeaveSummary workFromHome category)
     const year = new Date(wfh.startDate).getFullYear();
     const totalUsedThisYear = await this.getTotalDaysUsedInYear(
       new Types.ObjectId(wfh.userId.toString()),
       year
     );
 
-    await this.wfhSummaryService.createOrUpdateWFHSummary(
+    await this.leaveSummaryService.createOrUpdateLeaveSummary(
       new Types.ObjectId(wfh.userId.toString()),
       year,
+      'workFromHome',
+      'Cancelled',
       {
         availed: totalUsedThisYear,
+        leaveRequestId: wfh._id as Types.ObjectId,
       }
     );
 
@@ -482,7 +608,12 @@ export class WFHService extends BaseService {
     availed: number;
     remaining: number;
   }> {
-    return this.wfhSummaryService.getWFHBalance(userId, year);
+    const leaveSummary = await this.leaveSummaryService.getLeaveSummary(userId, year);
+    return {
+      alloted: leaveSummary.workFromHome?.alloted || 0,
+      availed: leaveSummary.workFromHome?.availed || 0,
+      remaining: leaveSummary.workFromHome?.remaining || 0,
+    };
   }
 
   private async getTotalDaysUsedInYear(userId: Types.ObjectId, year: number): Promise<number> {
@@ -518,6 +649,153 @@ export class WFHService extends BaseService {
     });
 
     return pendingWFHs.reduce((total, wfh) => total + wfh.noOfDays, 0);
+  }
+
+  // Service method to get WFH requests by appliedTo
+  async getWFHsByAppliedTo(query: IWFHQuery): Promise<{
+    data: IWFH[],
+    meta: {
+      page: number,
+      limit: number,
+      total: number,
+      totalPages: number
+    }
+  }> {
+    const { appliedTo, userId, status, startDate, endDate, page = 1, limit = 5, search } = query;
+    const skip = (page - 1) * limit;
+
+    const filter: any = { 'appliedTo._id': appliedTo }; // Initialize filter with appliedTo
+
+    if (userId) {
+      filter.userId = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
+    }
+    if (status) filter.status = status;
+    
+    if (startDate || endDate) {
+      const dateFilter: any = {
+        $or: [
+          {
+            startDate: {
+              ...(startDate && { $gte: new Date(startDate) }),
+              ...(endDate && { $lte: new Date(endDate) }),
+            },
+          },
+          {
+            endDate: {
+              ...(startDate && { $gte: new Date(startDate) }),
+              ...(endDate && { $lte: new Date(endDate) }),
+            },
+          },
+        ],
+      };
+
+      if (filter.$or) {
+        filter.$and = [
+          { 'appliedTo._id': appliedTo },
+          ...(status ? [{ status }] : []),
+          ...(userId ? [{ userId: typeof userId === 'string' ? new Types.ObjectId(userId) : userId }] : []),
+          dateFilter
+        ];
+        delete filter.$or;
+      } else {
+        Object.assign(filter, dateFilter);
+      }
+    }
+
+    // Handle search filter
+    if (search) {
+      const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      
+      const searchConditions: any[] = [
+        { reason: { $regex: escapedSearch, $options: 'i' } },
+        { remarks: { $regex: escapedSearch, $options: 'i' } },
+        { 'appliedTo.name': { $regex: escapedSearch, $options: 'i' } },
+        { status: { $regex: escapedSearch, $options: 'i' } },
+      ];
+
+      const userSearchFilter: any = {
+        $or: [
+          { name: { $regex: escapedSearch, $options: 'i' } },
+          { email: { $regex: escapedSearch, $options: 'i' } },
+        ]
+      };
+
+      if (userId) {
+        userSearchFilter._id = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
+      }
+
+      const matchingUsers = await User.find(userSearchFilter).select('_id').lean();
+
+      if (matchingUsers.length > 0) {
+        const userIds = matchingUsers.map(u => u._id);
+        searchConditions.push({ userId: { $in: userIds } });
+      }
+
+      // Combine search with existing filters
+      if (filter.$or || filter.$and) {
+        const existingFilters: any = { 'appliedTo._id': appliedTo };
+        if (status) existingFilters.status = status;
+        if (userId) {
+          existingFilters.userId = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
+        }
+
+        filter.$and = [
+          existingFilters,
+          ...(filter.$or ? [filter.$or] : []),
+          { $or: searchConditions }
+        ];
+        delete filter.$or;
+        delete filter.status;
+        delete filter.userId;
+        delete filter['appliedTo._id'];
+      } else {
+        filter.$or = searchConditions;
+      }
+    }
+
+    const [wfhs, total] = await Promise.all([
+      WFH.find(filter as FilterQuery<IWFH>)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit),
+      WFH.countDocuments(filter as FilterQuery<IWFH>),
+    ]);
+
+    const populatedWFHs = await Promise.all(
+      wfhs.map(async (wfh) => {
+        const [user, approver] = await Promise.all([
+          User.findById(wfh.userId).select('name email'),
+          wfh.approvedById ? User.findById(wfh.approvedById).select('name email') : null,
+        ]);
+
+        if (user) {
+          wfh.user = {
+            name: user.name,
+            email: user.email,
+          };
+        }
+
+        if (approver) {
+          wfh.approvedBy = {
+            _id: approver._id,
+            name: approver.name,
+            email: approver.email,
+          };
+        }
+
+        return wfh;
+      })
+    );
+
+    return {
+      data: populatedWFHs,
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
   }
 }
 

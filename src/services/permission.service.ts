@@ -29,6 +29,7 @@ export interface IPermissionQuery {
   sort?: 'asc' | 'desc';
   sortBy?: keyof IPermission;
   search?: string;
+  appliedTo?: string;
 }
 
 export interface IPermissionStatusUpdate {
@@ -87,26 +88,86 @@ export class PermissionService extends BaseService {
     appliedTo?: string; // Manager ID to filter by
     page?: number;
     limit?: number;
+    search?: string; // Search in user name, reason, manager name, or status
   }): Promise<{ permissions: IPermission[]; total: number; meta: { page: number; limit: number; total: number; totalPages: number } }> {
-    const { userId, status, startDate, endDate, appliedTo, page = 1, limit = 10 } = query;
+    const { userId, status, startDate, endDate, appliedTo, page = 1, limit = 10, search } = query;
     const skip = (page - 1) * limit;
 
     const filter: any = {};
-    if (userId) filter.userId = userId;
+    // ✅ FIX: Convert userId string to ObjectId for proper MongoDB query
+    if (userId) {
+      filter.userId = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
+    }
     if (status) filter.status = status;
-    if (appliedTo) filter['appliedTo._id'] = appliedTo;
+    // ✅ FIX: appliedTo._id is stored as String in the model, so use it as string
+    if (appliedTo) {
+      filter['appliedTo._id'] = appliedTo;
+    }
 
+    // Search filter - search in user name, email, reason, remarks, and status
+    // Since user data is populated after query, we need to search users first
+    if (search) {
+      // Escape special regex characters in search string
+      const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      
+      // Search in reason, remarks, status, and appliedTo name (stored in document)
+      const searchFilter: any[] = [
+        { 'reason': { $regex: escapedSearch, $options: 'i' } },
+        { 'remarks': { $regex: escapedSearch, $options: 'i' } },
+        { 'status': { $regex: escapedSearch, $options: 'i' } },
+        { 'appliedTo.name': { $regex: escapedSearch, $options: 'i' } },
+      ];
+
+      // Also search in user collection to find matching users
+      const userSearchFilter: any = {
+        $or: [
+          { name: { $regex: escapedSearch, $options: 'i' } },
+          { email: { $regex: escapedSearch, $options: 'i' } },
+        ]
+      };
+
+      // If userId is already filtered, combine with user search
+      if (userId) {
+        userSearchFilter._id = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
+      }
+
+      const matchingUsers = await User.find(userSearchFilter).select('_id').lean();
+
+      // If users found, add userId filter
+      if (matchingUsers.length > 0) {
+        const userIds = matchingUsers.map(u => u._id);
+        searchFilter.push({ userId: { $in: userIds } });
+      }
+
+      // Combine search with existing filters using $and
+      const existingFilters = { ...filter };
+      filter.$and = [
+        existingFilters,
+        { $or: searchFilter }
+      ];
+    }
+
+    // Date range filter - handle separately from search
     if (startDate || endDate) {
-      filter.permissionDate = {};
+      const dateFilter: any = {
+        permissionDate: {}
+      };
       if (startDate) {
         const start = new Date(startDate);
         start.setUTCHours(0, 0, 0, 0);
-        filter.permissionDate.$gte = start;
+        dateFilter.permissionDate.$gte = start;
       }
       if (endDate) {
         const end = new Date(endDate);
         end.setUTCHours(23, 59, 59, 999);
-        filter.permissionDate.$lte = end;
+        dateFilter.permissionDate.$lte = end;
+      }
+
+      // Combine date filter with existing filters
+      if (filter.$and) {
+        filter.$and.push(dateFilter);
+      } else {
+        Object.assign(filter, dateFilter);
       }
     }
 
@@ -294,7 +355,7 @@ export class PermissionService extends BaseService {
     dateStart.setHours(0, 0, 0, 0);
     const dateEnd = new Date(permissionDate);
     dateEnd.setHours(23, 59, 59, 999);
-    
+
     const existingPermission = await Permission.findOne({
       userId: permissionData.userId,
       permissionDate: {
@@ -367,12 +428,12 @@ export class PermissionService extends BaseService {
     permission.approvedById = updateData.approvedById;
     permission.approvedBy = updateData.approvedBy
       ? {
-          _id: typeof updateData.approvedBy._id === 'string'
-            ? updateData.approvedBy._id
-            : updateData.approvedBy._id.toString(),
-          name: updateData.approvedBy.name,
-          email: updateData.approvedBy.email,
-        }
+        _id: typeof updateData.approvedBy._id === 'string'
+          ? updateData.approvedBy._id
+          : updateData.approvedBy._id.toString(),
+        name: updateData.approvedBy.name,
+        email: updateData.approvedBy.email,
+      }
       : undefined;
 
     if (updateData.status === 'Approved') {
@@ -408,31 +469,67 @@ export class PermissionService extends BaseService {
       }
     );
 
-    // Send email notification
-    const employee: IUser = await User.findById(new Types.ObjectId(permission.userId)).select('name email');
-    const approver: IUser = await User.findById(permission.approvedById).select('name');
+    // Send email notification to employee (the person who applied)
+    try {
+      const employee: IUser = await User.findById(new Types.ObjectId(permission.userId)).select('name email');
+      const approver: IUser = await User.findById(permission.approvedById).select('name email');
 
-    if (employee) {
-      const htmlContent = generateEmailTemplate('leaveApprovalEmail', {
-        employeeName: employee.name,
-        approverName: approver?.name || 'Manager',
-        leaveType: 'Permission',
-        fromDate: permission.permissionDate.toDateString(),
-        toDate: permission.permissionDate.toDateString(),
-        totalDays: `${permission.hours} hours`,
-        remarks: permission.remarks || '',
-        status: permission.status,
-        companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS',
-      });
+      if (employee && employee.email) {
+        const permissionDateFormatted = permission.permissionDate.toLocaleDateString('en-US', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        });
 
-      await emailService.sendEmail({
-        body: {
-          to: employee.email,
-          subject: `Your Permission Request has been ${permission.status}`,
-          text: `Your permission request for ${permission.hours} hours on ${permission.permissionDate.toDateString()} has been ${permission.status.toLowerCase()} by ${approver?.name || 'manager'}.`,
-          html: htmlContent,
-        },
-      });
+        const htmlContent = generateEmailTemplate('leaveApprovalEmail', {
+          employeeName: employee.name,
+          approverName: approver?.name || 'Manager',
+          leaveType: 'Permission',
+          fromDate: permissionDateFormatted,
+          toDate: permissionDateFormatted,
+          totalDays: `${permission.hours} hours`,
+          remarks: permission.remarks || '',
+          status: permission.status,
+          companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS',
+        });
+
+        const emailText = `Dear ${employee.name},
+
+Your permission request has been ${permission.status.toLowerCase()} by ${approver?.name || 'Manager'}.
+
+Permission Details:
+- Date: ${permissionDateFormatted}
+- Duration: ${permission.hours} hours
+- Reason: ${permission.reason || 'N/A'}
+${permission.remarks ? `- Remarks: ${permission.remarks}` : ''}
+
+${permission.status === 'Approved' 
+  ? 'Your permission request has been approved. Please ensure you coordinate with your team regarding your absence.'
+  : 'Unfortunately, your permission request has been rejected. If you have any questions, please contact your manager.'}
+
+Thank you for your understanding.
+
+Regards,
+${approver?.name || 'Manager'}
+${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
+
+        await emailService.sendEmail({
+          body: {
+            to: employee.email,
+            subject: `Your Permission Request has been ${permission.status}`,
+            text: emailText,
+            html: htmlContent,
+          },
+        });
+
+        console.log(`Email notification sent to ${employee.email} for permission request ${permission._id} - Status: ${permission.status}`);
+      } else {
+        console.warn(`Cannot send email: Employee not found or email missing for userId: ${permission.userId}`);
+      }
+    } catch (emailError) {
+      console.error('Failed to send email to employee for permission request:', emailError);
+      // Don't fail the request if email fails - log the error but continue
     }
 
     return this.findById(permission._id as string);
@@ -527,6 +624,153 @@ export class PermissionService extends BaseService {
     });
 
     return pendingPermissions.reduce((total, perm) => total + perm.hours, 0);
+  }
+
+  // Service method to get permissions by appliedTo
+  async getPermissionsByAppliedTo(query: IPermissionQuery): Promise<{
+    data: IPermission[],
+    meta: {
+      page: number,
+      limit: number,
+      total: number,
+      totalPages: number
+    }
+  }> {
+    const { appliedTo, userId, status, startDate, endDate, page = 1, limit = 5, search } = query;
+    const skip = (page - 1) * limit;
+
+    const filter: any = { 'appliedTo._id': appliedTo }; // Initialize filter with appliedTo
+
+    if (userId) {
+      filter.userId = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
+    }
+    if (status) filter.status = status; // Only filter by status if explicitly provided
+    
+    if (startDate || endDate) {
+      const dateFilter: any = {
+        permissionDate: {}
+      };
+      if (startDate) {
+        const start = new Date(startDate);
+        start.setUTCHours(0, 0, 0, 0);
+        dateFilter.permissionDate.$gte = start;
+      }
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setUTCHours(23, 59, 59, 999);
+        dateFilter.permissionDate.$lte = end;
+      }
+      Object.assign(filter, dateFilter);
+    }
+
+    // Handle search filter
+    if (search) {
+      // Escape special regex characters in search string
+      const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      
+      // Search in document fields (reason, remarks, appliedTo.name, status)
+      const searchConditions: any[] = [
+        { reason: { $regex: escapedSearch, $options: 'i' } },
+        { remarks: { $regex: escapedSearch, $options: 'i' } },
+        { 'appliedTo.name': { $regex: escapedSearch, $options: 'i' } },
+        { status: { $regex: escapedSearch, $options: 'i' } },
+      ];
+
+      // Search in User collection to find matching users
+      const userSearchFilter: any = {
+        $or: [
+          { name: { $regex: escapedSearch, $options: 'i' } },
+          { email: { $regex: escapedSearch, $options: 'i' } },
+        ]
+      };
+
+      // If userId is already filtered, combine with user search
+      if (userId) {
+        userSearchFilter._id = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
+      }
+
+      const matchingUsers = await User.find(userSearchFilter).select('_id').lean();
+
+      // If users found, add userId filter
+      if (matchingUsers.length > 0) {
+        const userIds = matchingUsers.map(u => u._id);
+        searchConditions.push({ userId: { $in: userIds } });
+      }
+
+      // Combine search with existing filters
+      if (filter.$or || filter.permissionDate) {
+        // We need to use $and to combine date filter with search filter
+        const existingFilters: any = {};
+        if (filter.permissionDate) {
+          existingFilters.permissionDate = filter.permissionDate;
+        }
+        if (filter.status) {
+          existingFilters.status = filter.status;
+        }
+        if (filter.userId) {
+          existingFilters.userId = filter.userId;
+        }
+        if (filter['appliedTo._id']) {
+          existingFilters['appliedTo._id'] = filter['appliedTo._id'];
+        }
+
+        filter.$and = [
+          existingFilters,
+          { $or: searchConditions }
+        ];
+        delete filter.permissionDate;
+        delete filter.status;
+        delete filter.userId;
+        delete filter['appliedTo._id'];
+      } else {
+        filter.$or = searchConditions;
+      }
+    }
+
+    const [permissions, total] = await Promise.all([
+      Permission.find(filter as FilterQuery<IPermission>)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit),
+      Permission.countDocuments(filter as FilterQuery<IPermission>),
+    ]);
+
+    // Populate all references in parallel for better performance
+    const populatedPermissions = await Promise.all(
+      permissions.map(async (permission) => {
+        const [user, approver] = await Promise.all([
+          User.findById(permission.userId).select('name email'),
+          permission.approvedById ? User.findById(permission.approvedById).select('name email') : null,
+        ]);
+
+        if (user) {
+          permission.user = {
+            name: user.name,
+            email: user.email,
+          };
+        }
+
+        if (approver) {
+          permission.approvedBy = {
+            _id: approver._id,
+            name: approver.name,
+            email: approver.email,
+          };
+        }
+
+        return permission;
+      })
+    );
+
+    return {
+      data: populatedPermissions,
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
   }
 }
 

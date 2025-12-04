@@ -22,6 +22,7 @@ export interface ILeaveSummary extends Document {
   otherPaid: ILeaveCategoryDetail;
   otherUnpaid: ILeaveCategoryDetail;
   maternity: ILeaveCategoryDetail;  // NEW: UAE-specific maternity leave
+  workFromHome: ILeaveCategoryDetail;  // NEW: Work From Home (merged from WFHSummary)
   createdAt: Date;
   updatedAt: Date;
 }
@@ -48,7 +49,8 @@ const leaveSummarySchema = new Schema<ILeaveSummary>(
     lossOfPay: leaveCategoryDetailSchema,
     otherPaid: leaveCategoryDetailSchema,
     otherUnpaid: leaveCategoryDetailSchema,
-    maternity: leaveCategoryDetailSchema  // NEW: UAE-specific maternity leave
+    maternity: leaveCategoryDetailSchema,  // NEW: UAE-specific maternity leave
+    workFromHome: leaveCategoryDetailSchema  // NEW: Work From Home (merged from WFHSummary)
   },
   {
     timestamps: true
@@ -61,7 +63,7 @@ leaveSummarySchema.index({ userId: 1, year: 1 }, { unique: true });
 // Pre-save hook to calculate remaining days
 leaveSummarySchema.pre('save', function (this: ILeaveSummary & Document, next) {
   // Calculate remaining days for each leave category
-  const categories = ['annual', 'sick', 'compOff', 'lossOfPay', 'otherPaid', 'otherUnpaid', 'maternity'] as const;
+  const categories = ['annual', 'sick', 'compOff', 'lossOfPay', 'otherPaid', 'otherUnpaid', 'maternity', 'workFromHome'] as const;
 
   categories.forEach(category => {
     const leaveCategory = this[category];
@@ -84,7 +86,7 @@ leaveSummarySchema.pre('save', async function (this: ILeaveSummary & Document, n
       return next();
     }
 
-    const categories = ['annual', 'sick', 'compOff', 'lossOfPay', 'otherPaid', 'otherUnpaid', 'maternity'] as const;
+    const categories = ['annual', 'sick', 'compOff', 'lossOfPay', 'otherPaid', 'otherUnpaid', 'maternity', 'workFromHome'] as const;
 
     // Only apply expiry logic for UAE users
     if (user.country === 'AE') {

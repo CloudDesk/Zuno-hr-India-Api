@@ -161,6 +161,7 @@ export class DataMigrationService extends BaseService {
         '• All numeric fields must be >= 0',
         '• Effective To must be > Effective From',
         '• If Is Active = Yes, other active assignments for same employee will be deactivated',
+        '• Note: User Active status defaults to Yes, but can be set to No for historical data migration',
         '• Date formats: YYYY-MM-DD or DD/MM/YYYY'
       ],
       'salary-structure': [
@@ -207,7 +208,7 @@ export class DataMigrationService extends BaseService {
   private createUserTemplate(worksheet: ExcelJS.Worksheet): void {
     const headers = [
       'Name (Required)',
-      'Email (Required if Active=Yes, Optional if Active=No)',
+      'Email (Required if Active=Yes, Optional if Active=No for historical data)',
       'Role (Required)',
       'Specific Role (Optional)',
       'Department ID (Required)',
@@ -215,7 +216,7 @@ export class DataMigrationService extends BaseService {
       'Employee No (Optional)',
       'Check-in ID (Optional)',
       'Biometric ID (Optional - Non-IN/AE only)',
-      'Active (Optional - Default: Yes)',
+      'Active (Optional - Default: Yes. Can be set to No for historical data migration)',
       'Joining Date (Optional - Default: Today)',
       'Confirmation Date (Required)',
       'Probation Date (Required)',
@@ -249,7 +250,7 @@ export class DataMigrationService extends BaseService {
     // Add detailed notes to header cells
     this.addFieldRequirementNotes(worksheet, {
       1: { required: true, note: 'Full name of the user' },
-      2: { required: false, note: 'Valid email address, must be unique. Required if Active=Yes, optional if Active=No' },
+      2: { required: false, note: 'Valid email address, must be unique. Required if Active=Yes, optional if Active=No (for historical data migration)' },
       3: { required: true, note: 'Must be one of: admin, manager, staff, external' },
       4: { required: false, note: 'Specific role designation' },
       5: { required: true, note: 'Must exist in Department LOV' },
@@ -257,7 +258,7 @@ export class DataMigrationService extends BaseService {
       7: { required: false, note: 'Employee number, must be unique if provided' },
       8: { required: false, note: 'Check-in ID, must be unique if provided' },
       9: { required: false, note: 'Only for non-IN/AE countries, must be unique if provided' },
-      10: { required: false, note: 'Yes/No, defaults to Yes' },
+      10: { required: false, note: 'Yes/No, defaults to Yes. Can be set to No for historical data migration' },
       11: { required: false, note: 'Format: YYYY-MM-DD or DD/MM/YYYY' },
       12: { required: true, note: 'Format: YYYY-MM-DD or DD/MM/YYYY. Employee confirmation date (Required)' },
       13: { required: true, note: 'Format: YYYY-MM-DD or DD/MM/YYYY. Employee probation date (Required)' },
@@ -1381,8 +1382,7 @@ export class DataMigrationService extends BaseService {
         });
       }
 
-      // Email is required only if user is active (Active = Yes)
-      // If Active = No, email is optional
+      // Email validation: Required for active users, optional for inactive users (historical data)
       const isActive = row.active !== undefined ? row.active : true; // Default to true if not specified
 
       if (!row.email?.trim()) {
@@ -1395,7 +1395,7 @@ export class DataMigrationService extends BaseService {
             severity: 'error'
           });
         }
-        // If inactive, email is optional - no error
+        // If inactive, email is optional - no error (for historical data migration)
       } else {
         // Email format validation - accepts formats like: user@domain.com, user@domain.ae, user@subdomain.domain.com
         // Examples: pravinraja@clouddesk.ae, john@example.com, user.name@company.co.uk
@@ -2952,21 +2952,21 @@ export class DataMigrationService extends BaseService {
         // Use default password for imported users (users should change it after first login)
         const defaultPassword = '123456';
 
-        // Determine if user is active
-        const isActive = row.active !== undefined ? row.active : true;
+        // During data migration, active can be set to false for historical data
+        // This is different from manual API creation where active is always true
+        const isActive = row.active !== undefined ? row.active : true; // Default to true if not specified
 
-        // Handle email: required for active users, optional for inactive users
-        // If inactive user has no email, generate a placeholder email
+        // Handle email: required for active users, optional for inactive users (historical data)
         let userEmail = row.email?.toLowerCase().trim();
         if (!userEmail) {
-          if (!isActive) {
-            // Generate placeholder email for inactive users
+          if (isActive) {
+            // Email is required for active users
+            throw new Error('Email is required for active users (Active=Yes)');
+          } else {
+            // For inactive users (historical data), generate placeholder email
             const timestamp = Date.now();
             const employeeCode = row.employeeNo?.trim() || 'user';
             userEmail = `inactive-${employeeCode}-${timestamp}@placeholder.local`;
-          } else {
-            // This should not happen as validation ensures email for active users
-            throw new Error('Email is required for active users');
           }
         }
 
@@ -2980,7 +2980,7 @@ export class DataMigrationService extends BaseService {
           departmentId: row.departmentId?.trim(),
           employeeCode: row.employeeNo?.trim() || undefined,
           checkinId: row.checkinId?.trim() || undefined,
-          active: row.active !== undefined ? row.active : true,
+          active: isActive, // Can be false for historical data migration
           joiningDate: row.joiningDate ? this.parseDate(row.joiningDate) : new Date(),
           confirmationDate: this.parseDate(row.confirmationDate!), // Required - validated earlier
           probationDate: this.parseDate(row.probationDate!), // Required - validated earlier

@@ -72,25 +72,43 @@ export class OptionalHolidayService extends BaseService {
   /**
    * Validate that the holiday date is an optional holiday in the calendar
    */
-  private async validateOptionalHoliday(userId: Types.ObjectId, holidayDate: Date): Promise<{ isValid: boolean; holidayName?: string }> {
+  private async validateOptionalHoliday(userId: Types.ObjectId, holidayDate: Date): Promise<{ isValid: boolean; holidayName?: string; error?: string }> {
     const user = await User.findById(userId).select('holidayCalendarId').lean();
-    if (!user || !user.holidayCalendarId) {
-      return { isValid: false };
+    if (!user) {
+      return { isValid: false, error: 'User not found' };
+    }
+    if (!user.holidayCalendarId) {
+      return { isValid: false, error: 'No holiday calendar assigned to your account. Please contact HR.' };
     }
 
     const calendar = await HolidayCalendar.findById(user.holidayCalendarId).lean();
     if (!calendar) {
-      return { isValid: false };
+      return { isValid: false, error: 'Holiday calendar not found. Please contact HR.' };
     }
 
-    const holidayDateStr = new Date(holidayDate).toISOString().split('T')[0];
+    // Normalize dates to YYYY-MM-DD format for comparison (ignore time)
+    const holidayDateObj = new Date(holidayDate);
+    const holidayDateStr = holidayDateObj.toISOString().split('T')[0];
+    
     const matchingHoliday = calendar.holidays.find((h) => {
-      const hDateStr = new Date(h.date).toISOString().split('T')[0];
+      const hDateObj = new Date(h.date);
+      const hDateStr = hDateObj.toISOString().split('T')[0];
       return hDateStr === holidayDateStr && h.type === 'optional';
     });
 
     if (!matchingHoliday) {
-      return { isValid: false };
+      // Check if the date exists in calendar but is not optional
+      const dateExists = calendar.holidays.find((h) => {
+        const hDateObj = new Date(h.date);
+        const hDateStr = hDateObj.toISOString().split('T')[0];
+        return hDateStr === holidayDateStr;
+      });
+      
+      if (dateExists) {
+        return { isValid: false, error: `The selected date (${holidayDateStr}) exists in your calendar but is not marked as an optional holiday. Only dates marked as "optional" in the holiday calendar can be requested.` };
+      } else {
+        return { isValid: false, error: `The selected date (${holidayDateStr}) is not found in your holiday calendar as an optional holiday. Please select a date that is marked as optional in your calendar.` };
+      }
     }
 
     return { isValid: true, holidayName: matchingHoliday.name };
@@ -134,31 +152,81 @@ export class OptionalHolidayService extends BaseService {
     const skip = (page - 1) * limit;
 
     const filter: any = {};
-    if (userId) filter.userId = userId;
+    // ✅ FIX: Convert userId string to ObjectId for proper MongoDB query
+    if (userId) {
+      filter.userId = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
+    }
     if (status) filter.status = status;
     if (year) filter.year = year;
-    if (appliedTo) filter['appliedTo._id'] = appliedTo;
+    // ✅ FIX: appliedTo._id is stored as String in the model, so use it as string
+    if (appliedTo) {
+      filter['appliedTo._id'] = appliedTo;
+    }
 
+    // Search filter - search in holiday name, reason, status, and user name/email
+    // Since user data is populated after query, we need to search users first
+    if (search) {
+      // Escape special regex characters in search string
+      const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      
+      // Search in holidayName, reason, and status (stored in document)
+      const searchFilter: any[] = [
+        { 'holidayName': { $regex: escapedSearch, $options: 'i' } },
+        { 'reason': { $regex: escapedSearch, $options: 'i' } },
+        { 'status': { $regex: escapedSearch, $options: 'i' } },
+      ];
+
+      // Also search in user collection to find matching users
+      const userSearchFilter: any = {
+        $or: [
+          { name: { $regex: escapedSearch, $options: 'i' } },
+          { email: { $regex: escapedSearch, $options: 'i' } },
+        ]
+      };
+
+      // If userId is already filtered, combine with user search
+      if (userId) {
+        userSearchFilter._id = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
+      }
+
+      const matchingUsers = await User.find(userSearchFilter).select('_id').lean();
+
+      // If users found, add userId filter
+      if (matchingUsers.length > 0) {
+        const userIds = matchingUsers.map(u => u._id);
+        searchFilter.push({ userId: { $in: userIds } });
+      }
+
+      // Combine search with existing filters using $and
+      const existingFilters = { ...filter };
+      filter.$and = [
+        existingFilters,
+        { $or: searchFilter }
+      ];
+    }
+
+    // Date range filter - handle separately from search
     if (startDate || endDate) {
-      filter.holidayDate = {};
+      const dateFilter: any = {
+        holidayDate: {}
+      };
       if (startDate) {
         const start = new Date(startDate);
         start.setUTCHours(0, 0, 0, 0);
-        filter.holidayDate.$gte = start;
+        dateFilter.holidayDate.$gte = start;
       }
       if (endDate) {
         const end = new Date(endDate);
         end.setUTCHours(23, 59, 59, 999);
-        filter.holidayDate.$lte = end;
+        dateFilter.holidayDate.$lte = end;
       }
-    }
 
-    if (search) {
-      filter.$or = [
-        { holidayName: { $regex: search, $options: 'i' } },
-        { reason: { $regex: search, $options: 'i' } },
-        { 'user.name': { $regex: search, $options: 'i' } },
-      ];
+      // Combine date filter with existing filters
+      if (filter.$and) {
+        filter.$and.push(dateFilter);
+      } else {
+        Object.assign(filter, dateFilter);
+      }
     }
 
     const sortOrder = sort === 'asc' ? 1 : -1;
@@ -186,6 +254,131 @@ export class OptionalHolidayService extends BaseService {
     };
   }
 
+  // Service method to get optional holiday requests by appliedTo
+  async getOptionalHolidaysByAppliedTo(query: IOptionalHolidayQuery): Promise<{
+    data: IOptionalHolidayRequest[],
+    meta: {
+      page: number,
+      limit: number,
+      total: number,
+      totalPages: number
+    }
+  }> {
+    const { appliedTo, userId, status, startDate, endDate, year, page = 1, limit = 5, search } = query;
+    const skip = (page - 1) * limit;
+
+    const filter: any = {};
+    // appliedTo._id is stored as String in the model
+    if (appliedTo) {
+      filter['appliedTo._id'] = appliedTo;
+    }
+
+    if (userId) {
+      filter.userId = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
+    }
+    if (status) filter.status = status;
+    if (year) filter.year = year;
+    
+    if (startDate || endDate) {
+      const dateFilter: any = {
+        holidayDate: {}
+      };
+      if (startDate) {
+        const start = new Date(startDate);
+        start.setUTCHours(0, 0, 0, 0);
+        dateFilter.holidayDate.$gte = start;
+      }
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setUTCHours(23, 59, 59, 999);
+        dateFilter.holidayDate.$lte = end;
+      }
+      Object.assign(filter, dateFilter);
+    }
+
+    // Handle search filter
+    if (search) {
+      const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      
+      const searchConditions: any[] = [
+        { holidayName: { $regex: escapedSearch, $options: 'i' } },
+        { reason: { $regex: escapedSearch, $options: 'i' } },
+        { status: { $regex: escapedSearch, $options: 'i' } },
+        { 'appliedTo.name': { $regex: escapedSearch, $options: 'i' } },
+      ];
+
+      const userSearchFilter: any = {
+        $or: [
+          { name: { $regex: escapedSearch, $options: 'i' } },
+          { email: { $regex: escapedSearch, $options: 'i' } },
+        ]
+      };
+
+      if (userId) {
+        userSearchFilter._id = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
+      }
+
+      const matchingUsers = await User.find(userSearchFilter).select('_id').lean();
+
+      if (matchingUsers.length > 0) {
+        const userIds = matchingUsers.map(u => u._id);
+        searchConditions.push({ userId: { $in: userIds } });
+      }
+
+      // Combine search with existing filters
+      if (filter.$or || filter.holidayDate) {
+        const existingFilters: any = {};
+        if (filter.holidayDate) {
+          existingFilters.holidayDate = filter.holidayDate;
+        }
+        if (filter.status) {
+          existingFilters.status = filter.status;
+        }
+        if (filter.year) {
+          existingFilters.year = filter.year;
+        }
+        if (filter.userId) {
+          existingFilters.userId = filter.userId;
+        }
+        if (filter['appliedTo._id']) {
+          existingFilters['appliedTo._id'] = filter['appliedTo._id'];
+        }
+
+        filter.$and = [
+          existingFilters,
+          { $or: searchConditions }
+        ];
+        delete filter.holidayDate;
+        delete filter.status;
+        delete filter.year;
+        delete filter.userId;
+        delete filter['appliedTo._id'];
+      } else {
+        filter.$or = searchConditions;
+      }
+    }
+
+    const [requests, total] = await Promise.all([
+      OptionalHolidayRequest.find(filter)
+        .sort({ holidayDate: -1 })
+        .skip(skip)
+        .limit(limit)
+        .populate('userId', 'name email employeeCode')
+        .lean(),
+      OptionalHolidayRequest.countDocuments(filter),
+    ]);
+
+    return {
+      data: requests as IOptionalHolidayRequest[],
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
   async create(data: IOptionalHolidayCreate): Promise<IOptionalHolidayRequest> {
     const userId = typeof data.userId === 'string' ? new Types.ObjectId(data.userId) : data.userId;
     const holidayDate = new Date(data.holidayDate);
@@ -203,7 +396,7 @@ export class OptionalHolidayService extends BaseService {
     // Validate that the date is an optional holiday in calendar
     const validation = await this.validateOptionalHoliday(userId, holidayDate);
     if (!validation.isValid) {
-      throw new Error('The selected date is not an optional holiday in your calendar');
+      throw new Error(validation.error || 'The selected date is not an optional holiday in your calendar');
     }
 
     // Use holiday name from calendar if not provided
@@ -212,7 +405,7 @@ export class OptionalHolidayService extends BaseService {
     // Check for duplicate request - same date, any status except Rejected/Cancelled
     const startOfDay = new Date(holidayDate);
     startOfDay.setUTCHours(0, 0, 0, 0);
-    
+
     const endOfDay = new Date(holidayDate);
     endOfDay.setUTCHours(23, 59, 59, 999);
 
@@ -299,10 +492,10 @@ export class OptionalHolidayService extends BaseService {
     request.approvedById = updateData.approvedById;
     request.approvedBy = updateData.approvedBy
       ? {
-          _id: typeof updateData.approvedBy._id === 'string' ? updateData.approvedBy._id : updateData.approvedBy._id.toString(),
-          name: updateData.approvedBy.name,
-          email: updateData.approvedBy.email,
-        }
+        _id: typeof updateData.approvedBy._id === 'string' ? updateData.approvedBy._id : updateData.approvedBy._id.toString(),
+        name: updateData.approvedBy.name,
+        email: updateData.approvedBy.email,
+      }
       : undefined;
 
     if (updateData.status === 'Approved') {
@@ -316,25 +509,66 @@ export class OptionalHolidayService extends BaseService {
     if (updateData.remarks) request.remarks = updateData.remarks;
     await request.save();
 
-    // Send email notification to employee
-    const employee = await User.findById(request.userId).select('name email').lean();
-    if (employee) {
-      const htmlContent = generateEmailTemplate('optionalHolidayStatus', {
-        employeeName: employee.name,
-        holidayName: request.holidayName,
-        holidayDate: request.holidayDate.toLocaleDateString(),
-        status: updateData.status,
-        remarks: updateData.remarks || 'No remarks provided',
-      });
+    // Send email notification to employee (the person who applied)
+    try {
+      const employee = await User.findById(request.userId).select('name email').lean();
+      const approver = await User.findById(updateData.approvedById).select('name email').lean();
 
-      await emailService.sendEmail({
-        body: {
-          to: employee.email,
-          subject: `Optional Holiday Request ${updateData.status} - ${request.holidayName}`,
-          text: `Your optional holiday request for ${request.holidayName} on ${request.holidayDate.toLocaleDateString()} has been ${updateData.status.toLowerCase()}.`,
-          html: htmlContent,
-        },
-      });
+      if (employee && employee.email) {
+        const holidayDateFormatted = request.holidayDate.toLocaleDateString('en-US', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        });
+
+        const htmlContent = generateEmailTemplate('optionalHolidayStatus', {
+          employeeName: employee.name,
+          approverName: approver?.name || 'Manager',
+          holidayName: request.holidayName,
+          holidayDate: holidayDateFormatted,
+          status: updateData.status,
+          remarks: updateData.remarks || '',
+          companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS',
+        });
+
+        const emailText = `Dear ${employee.name},
+
+Your optional holiday request has been ${updateData.status.toLowerCase()} by ${approver?.name || 'Manager'}.
+
+Holiday Details:
+- Holiday Name: ${request.holidayName}
+- Date: ${holidayDateFormatted}
+- Year: ${request.year}
+${request.reason ? `- Reason: ${request.reason}` : ''}
+${updateData.remarks ? `- Remarks: ${updateData.remarks}` : ''}
+
+${updateData.status === 'Approved' 
+  ? '✅ Your optional holiday has been approved. This day will be counted as a holiday in your payroll.'
+  : '❌ Your optional holiday request has been rejected. This day will be treated as a working day.'}
+
+Thank you for your understanding.
+
+Regards,
+${approver?.name || 'Manager'}
+${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
+
+        await emailService.sendEmail({
+          body: {
+            to: employee.email,
+            subject: `Optional Holiday Request ${updateData.status} - ${request.holidayName}`,
+            text: emailText,
+            html: htmlContent,
+          },
+        });
+
+        console.log(`Email notification sent to ${employee.email} for optional holiday request ${request._id} - Status: ${updateData.status}`);
+      } else {
+        console.warn(`Cannot send email: Employee not found or email missing for userId: ${request.userId}`);
+      }
+    } catch (emailError) {
+      console.error('Failed to send email to employee for optional holiday request:', emailError);
+      // Don't fail the request if email fails - log the error but continue
     }
 
     return this.findById(request._id);

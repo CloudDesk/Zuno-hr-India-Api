@@ -19,6 +19,17 @@ export interface IShiftChangeCreate {
   };
 }
 
+export interface IShiftChangeQuery {
+  appliedTo?: string;
+  userId?: string | Types.ObjectId;
+  status?: string;
+  startDate?: string | Date;
+  endDate?: string | Date;
+  page?: number;
+  limit?: number;
+  search?: string;
+}
+
 export class ShiftChangeService extends BaseService {
   private shiftService: ShiftService;
 
@@ -46,7 +57,7 @@ export class ShiftChangeService extends BaseService {
 
     const currentShiftAssignmentId = user.currentShiftAssignmentData.shiftAssignmentId;
     const currentShiftAssignment = await ShiftAssignment.findById(currentShiftAssignmentId).populate('shiftId');
-    
+
     if (!currentShiftAssignment) {
       throw new Error('Current shift assignment not found');
     }
@@ -63,14 +74,14 @@ export class ShiftChangeService extends BaseService {
       throw new Error('Requested shift must be different from current shift');
     }
 
-    // Validate effective date is today or future
+    // Validate effective date is future (not today or past)
     const effectiveDateObj = new Date(effectiveDate);
-    effectiveDateObj.setHours(0, 0, 0, 0);
+    effectiveDateObj.setUTCHours(0, 0, 0, 0);
     const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    today.setUTCHours(0, 0, 0, 0);
 
-    if (effectiveDateObj < today) {
-      throw new Error('Effective date must be today or a future date');
+    if (effectiveDateObj <= today) {
+      throw new Error('Effective date must be a future date (cannot be today or past)');
     }
 
     // Validate reason length
@@ -163,14 +174,23 @@ export class ShiftChangeService extends BaseService {
     appliedTo?: string;
     page?: number;
     limit?: number;
+    search?: string; // Search by applied by (employee name/email), applied to (manager name), reason, status, current shift name/code, or requested shift name/code
   }): Promise<{ requests: IShiftChangeRequest[]; total: number; meta: { page: number; limit: number; total: number; totalPages: number } }> {
-    const { userId, status, startDate, endDate, appliedTo, page = 1, limit = 20 } = query;
+    const { userId, status, startDate, endDate, appliedTo, page = 1, limit = 20, search } = query;
     const skip = (page - 1) * limit;
 
     const filter: any = {};
-    if (userId) filter.userId = userId;
+    // ✅ FIX: Convert userId string to ObjectId for proper MongoDB query
+    if (userId) {
+      filter.userId = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
+    }
     if (status) filter.status = status;
-    if (appliedTo) filter['appliedTo._id'] = appliedTo;
+    if (appliedTo) {
+      // Convert to ObjectId since appliedTo._id is stored as ObjectId in the model
+      filter['appliedTo._id'] = Types.ObjectId.isValid(appliedTo)
+        ? new Types.ObjectId(appliedTo)
+        : appliedTo;
+    }
 
     if (startDate || endDate) {
       filter.effectiveDate = {};
@@ -184,6 +204,237 @@ export class ShiftChangeService extends BaseService {
         end.setUTCHours(23, 59, 59, 999);
         filter.effectiveDate.$lte = end;
       }
+    }
+
+    // Handle search filter - use aggregation to search by shift names
+    if (search) {
+      // Escape special regex characters in search string
+      const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      
+      // First, search User collection for matching names/emails
+      const userSearchFilter: any = {
+        $or: [
+          { name: { $regex: escapedSearch, $options: 'i' } },
+          { email: { $regex: escapedSearch, $options: 'i' } },
+        ]
+      };
+
+      // If userId is already filtered, combine with user search
+      if (userId) {
+        userSearchFilter._id = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
+      }
+
+      const matchingUsers = await User.find(userSearchFilter).select('_id').lean();
+      const matchingUserIds = matchingUsers.map(u => u._id);
+
+      // Search conditions for fields stored in the document
+      const documentSearchConditions: any[] = [
+        { reason: { $regex: escapedSearch, $options: 'i' } },
+        { 'appliedTo.name': { $regex: escapedSearch, $options: 'i' } },
+        { status: { $regex: escapedSearch, $options: 'i' } },
+      ];
+
+      // If users found, add userId filter
+      if (matchingUserIds.length > 0) {
+        documentSearchConditions.push({ userId: { $in: matchingUserIds } });
+      }
+
+      // Build base match filter (without search conditions)
+      const baseMatchFilter = { ...filter };
+
+      // Use aggregation to search by shift names
+      const pipeline: any[] = [
+        { $match: baseMatchFilter },
+        {
+          $lookup: {
+            from: 'shifts',
+            localField: 'requestedShiftId',
+            foreignField: '_id',
+            as: 'requestedShiftData'
+          }
+        },
+        {
+          $lookup: {
+            from: 'shiftassignments',
+            localField: 'currentShiftId',
+            foreignField: '_id',
+            as: 'currentShiftAssignmentData'
+          }
+        },
+        {
+          $lookup: {
+            from: 'shifts',
+            localField: 'currentShiftAssignmentData.shiftId',
+            foreignField: '_id',
+            as: 'currentShiftData'
+          }
+        },
+        {
+          $match: {
+            $or: [
+              ...documentSearchConditions,
+              { 'requestedShiftData.name': { $regex: escapedSearch, $options: 'i' } },
+              { 'requestedShiftData.code': { $regex: escapedSearch, $options: 'i' } },
+              { 'currentShiftData.name': { $regex: escapedSearch, $options: 'i' } },
+              { 'currentShiftData.code': { $regex: escapedSearch, $options: 'i' } },
+            ]
+          }
+        },
+        { $sort: { createdAt: -1 } },
+        { $skip: skip },
+        { $limit: Number(limit) },
+        {
+          $project: {
+            requestedShiftData: 0,
+            currentShiftAssignmentData: 0,
+            currentShiftData: 0
+          }
+        }
+      ];
+
+      const countPipeline = [
+        { $match: baseMatchFilter },
+        {
+          $lookup: {
+            from: 'shifts',
+            localField: 'requestedShiftId',
+            foreignField: '_id',
+            as: 'requestedShiftData'
+          }
+        },
+        {
+          $lookup: {
+            from: 'shiftassignments',
+            localField: 'currentShiftId',
+            foreignField: '_id',
+            as: 'currentShiftAssignmentData'
+          }
+        },
+        {
+          $lookup: {
+            from: 'shifts',
+            localField: 'currentShiftAssignmentData.shiftId',
+            foreignField: '_id',
+            as: 'currentShiftData'
+          }
+        },
+        {
+          $match: {
+            $or: [
+              ...documentSearchConditions,
+              { 'requestedShiftData.name': { $regex: escapedSearch, $options: 'i' } },
+              { 'requestedShiftData.code': { $regex: escapedSearch, $options: 'i' } },
+              { 'currentShiftData.name': { $regex: escapedSearch, $options: 'i' } },
+              { 'currentShiftData.code': { $regex: escapedSearch, $options: 'i' } },
+            ]
+          }
+        },
+        { $count: 'total' }
+      ];
+
+      const [requests, totalResult] = await Promise.all([
+        ShiftChangeRequest.aggregate(pipeline),
+        ShiftChangeRequest.aggregate(countPipeline)
+      ]);
+
+      const total = totalResult[0]?.total || 0;
+      const requestsDocs = requests.map((req: any) => new ShiftChangeRequest(req));
+
+      // Populate related data for each request
+      const populatedRequests = await Promise.all(
+        requestsDocs.map(async (req) => {
+          const [user, requestedShift, currentShiftAssignment, approver, appliedToUser] = await Promise.all([
+            User.findById(req.userId).select('name email'),
+            Shift.findById(req.requestedShiftId).select('name code startTime endTime'),
+            ShiftAssignment.findById(req.currentShiftId).populate('shiftId', 'name code startTime endTime'),
+            req.approvedById ? User.findById(req.approvedById).select('name email') : null,
+            req.appliedTo?._id ? User.findById(req.appliedTo._id).select('name email') : null,
+          ]);
+
+          // Add user data
+          if (user) {
+            req.user = {
+              name: user.name,
+              email: user.email,
+            };
+          }
+
+          // Add requested shift data as dynamic property
+          if (requestedShift) {
+            (req as any).requestedShift = {
+              _id: requestedShift._id,
+              name: requestedShift.name,
+              code: requestedShift.code,
+              startTime: requestedShift.startTime,
+              endTime: requestedShift.endTime,
+            };
+          } else {
+            (req as any).requestedShift = null;
+          }
+
+          // Add current shift data as dynamic property
+          if (currentShiftAssignment) {
+            let currentShift = (currentShiftAssignment.shiftId as any);
+
+            if (!currentShift || typeof currentShift === 'string' || currentShift instanceof Types.ObjectId || !currentShift.name) {
+              const shiftIdToFetch = typeof currentShift === 'object' && currentShift?._id
+                ? currentShift._id
+                : currentShiftAssignment.shiftId;
+
+              if (shiftIdToFetch) {
+                currentShift = await Shift.findById(shiftIdToFetch).select('name code startTime endTime');
+              }
+            }
+
+            (req as any).currentShift = currentShift ? {
+              _id: currentShift._id,
+              name: currentShift.name,
+              code: currentShift.code,
+              startTime: currentShift.startTime,
+              endTime: currentShift.endTime,
+            } : null;
+          } else {
+            (req as any).currentShift = null;
+          }
+
+          // Add approver data
+          if (approver) {
+            req.approvedBy = {
+              _id: approver._id,
+              name: approver.name,
+              email: approver.email,
+            };
+          }
+
+          // Add appliedTo user data as dynamic property
+          if (appliedToUser) {
+            (req as any).appliedToUser = {
+              _id: appliedToUser._id,
+              name: appliedToUser.name,
+              email: appliedToUser.email,
+            };
+          }
+
+          // Convert to plain object
+          const reqObj: any = req.toObject();
+          reqObj.requestedShift = (req as any).requestedShift ?? null;
+          reqObj.currentShift = (req as any).currentShift ?? null;
+          reqObj.appliedToUser = (req as any).appliedToUser ?? null;
+
+          return reqObj;
+        })
+      );
+
+      return {
+        requests: populatedRequests,
+        total,
+        meta: {
+          page,
+          limit,
+          total,
+          totalPages: Math.ceil(total / limit),
+        },
+      };
     }
 
     const [requests, total] = await Promise.all([
@@ -231,18 +482,18 @@ export class ShiftChangeService extends BaseService {
         // currentShiftId points to a ShiftAssignment, we need to get the Shift from it
         if (currentShiftAssignment) {
           let currentShift = (currentShiftAssignment.shiftId as any);
-          
+
           // If shiftId is not populated (might be ObjectId string), fetch it directly
           if (!currentShift || typeof currentShift === 'string' || currentShift instanceof Types.ObjectId || !currentShift.name) {
-            const shiftIdToFetch = typeof currentShift === 'object' && currentShift?._id 
-              ? currentShift._id 
+            const shiftIdToFetch = typeof currentShift === 'object' && currentShift?._id
+              ? currentShift._id
               : currentShiftAssignment.shiftId;
-            
+
             if (shiftIdToFetch) {
               currentShift = await Shift.findById(shiftIdToFetch).select('name code startTime endTime');
             }
           }
-          
+
           (req as any).currentShift = currentShift ? {
             _id: currentShift._id,
             name: currentShift.name,
@@ -275,7 +526,7 @@ export class ShiftChangeService extends BaseService {
 
         // Convert to plain object to ensure all dynamic properties are included in JSON
         const reqObj: any = req.toObject();
-        
+
         // Add dynamic properties to plain object
         reqObj.requestedShift = (req as any).requestedShift ?? null;
         reqObj.currentShift = (req as any).currentShift ?? null;
@@ -295,6 +546,377 @@ export class ShiftChangeService extends BaseService {
         limit: Number(limit),
         total,
         totalPages: Math.ceil(total / Number(limit)),
+      },
+    };
+  }
+
+  /**
+   * Get shift change requests by appliedTo (manager/approver ID)
+   */
+  async getShiftChangesByAppliedTo(query: IShiftChangeQuery): Promise<{
+    data: IShiftChangeRequest[];
+    meta: {
+      page: number;
+      limit: number;
+      total: number;
+      totalPages: number;
+    };
+  }> {
+    const { appliedTo, userId, status, startDate, endDate, page = 1, limit = 5, search } = query;
+    const skip = (page - 1) * limit;
+
+    const filter: any = { 'appliedTo._id': appliedTo ? new Types.ObjectId(appliedTo) : undefined };
+
+    if (userId) {
+      filter.userId = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
+    }
+    if (status) filter.status = status;
+
+    if (startDate || endDate) {
+      filter.effectiveDate = {};
+      if (startDate) {
+        const start = new Date(startDate);
+        start.setUTCHours(0, 0, 0, 0);
+        filter.effectiveDate.$gte = start;
+      }
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setUTCHours(23, 59, 59, 999);
+        filter.effectiveDate.$lte = end;
+      }
+    }
+
+    // Handle search filter - use aggregation to search by shift names
+    if (search) {
+      // Escape special regex characters in search string
+      const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      
+      // First, search User collection for matching names/emails
+      const userSearchFilter: any = {
+        $or: [
+          { name: { $regex: escapedSearch, $options: 'i' } },
+          { email: { $regex: escapedSearch, $options: 'i' } },
+        ]
+      };
+
+      // If userId is already filtered, combine with user search
+      if (userId) {
+        userSearchFilter._id = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
+      }
+
+      const matchingUsers = await User.find(userSearchFilter).select('_id').lean();
+      const matchingUserIds = matchingUsers.map(u => u._id);
+
+      // Search conditions for fields stored in the document
+      const documentSearchConditions: any[] = [
+        { reason: { $regex: escapedSearch, $options: 'i' } },
+        { 'appliedTo.name': { $regex: escapedSearch, $options: 'i' } },
+        { status: { $regex: escapedSearch, $options: 'i' } },
+      ];
+
+      // If users found, add userId filter
+      if (matchingUserIds.length > 0) {
+        documentSearchConditions.push({ userId: { $in: matchingUserIds } });
+      }
+
+      // Build base match filter (without search conditions)
+      const baseMatchFilter = { ...filter };
+
+      // Use aggregation to search by shift names
+      const pipeline: any[] = [
+        { $match: baseMatchFilter },
+        {
+          $lookup: {
+            from: 'shifts',
+            localField: 'requestedShiftId',
+            foreignField: '_id',
+            as: 'requestedShiftData'
+          }
+        },
+        {
+          $lookup: {
+            from: 'shiftassignments',
+            localField: 'currentShiftId',
+            foreignField: '_id',
+            as: 'currentShiftAssignmentData'
+          }
+        },
+        {
+          $lookup: {
+            from: 'shifts',
+            localField: 'currentShiftAssignmentData.shiftId',
+            foreignField: '_id',
+            as: 'currentShiftData'
+          }
+        },
+        {
+          $match: {
+            $or: [
+              ...documentSearchConditions,
+              { 'requestedShiftData.name': { $regex: escapedSearch, $options: 'i' } },
+              { 'requestedShiftData.code': { $regex: escapedSearch, $options: 'i' } },
+              { 'currentShiftData.name': { $regex: escapedSearch, $options: 'i' } },
+              { 'currentShiftData.code': { $regex: escapedSearch, $options: 'i' } },
+            ]
+          }
+        },
+        { $sort: { createdAt: -1 } },
+        { $skip: skip },
+        { $limit: Number(limit) },
+        {
+          $project: {
+            requestedShiftData: 0,
+            currentShiftAssignmentData: 0,
+            currentShiftData: 0
+          }
+        }
+      ];
+
+      const countPipeline = [
+        { $match: baseMatchFilter },
+        {
+          $lookup: {
+            from: 'shifts',
+            localField: 'requestedShiftId',
+            foreignField: '_id',
+            as: 'requestedShiftData'
+          }
+        },
+        {
+          $lookup: {
+            from: 'shiftassignments',
+            localField: 'currentShiftId',
+            foreignField: '_id',
+            as: 'currentShiftAssignmentData'
+          }
+        },
+        {
+          $lookup: {
+            from: 'shifts',
+            localField: 'currentShiftAssignmentData.shiftId',
+            foreignField: '_id',
+            as: 'currentShiftData'
+          }
+        },
+        {
+          $match: {
+            $or: [
+              ...documentSearchConditions,
+              { 'requestedShiftData.name': { $regex: escapedSearch, $options: 'i' } },
+              { 'requestedShiftData.code': { $regex: escapedSearch, $options: 'i' } },
+              { 'currentShiftData.name': { $regex: escapedSearch, $options: 'i' } },
+              { 'currentShiftData.code': { $regex: escapedSearch, $options: 'i' } },
+            ]
+          }
+        },
+        { $count: 'total' }
+      ];
+
+      const [requests, totalResult] = await Promise.all([
+        ShiftChangeRequest.aggregate(pipeline),
+        ShiftChangeRequest.aggregate(countPipeline)
+      ]);
+
+      const total = totalResult[0]?.total || 0;
+      const requestsDocs = requests.map((req: any) => new ShiftChangeRequest(req));
+
+      // Populate related data for each request
+      const populatedRequests = await Promise.all(
+        requestsDocs.map(async (req) => {
+          const [user, requestedShift, currentShiftAssignment, approver, appliedToUser] = await Promise.all([
+            User.findById(req.userId).select('name email'),
+            Shift.findById(req.requestedShiftId).select('name code startTime endTime'),
+            ShiftAssignment.findById(req.currentShiftId).populate('shiftId', 'name code startTime endTime'),
+            req.approvedById ? User.findById(req.approvedById).select('name email') : null,
+            req.appliedTo?._id ? User.findById(req.appliedTo._id).select('name email') : null,
+          ]);
+
+          // Add user data
+          if (user) {
+            req.user = {
+              name: user.name,
+              email: user.email,
+            };
+          }
+
+          // Add requested shift data as dynamic property
+          if (requestedShift) {
+            (req as any).requestedShift = {
+              _id: requestedShift._id,
+              name: requestedShift.name,
+              code: requestedShift.code,
+              startTime: requestedShift.startTime,
+              endTime: requestedShift.endTime,
+            };
+          } else {
+            (req as any).requestedShift = null;
+          }
+
+          // Add current shift data as dynamic property
+          if (currentShiftAssignment) {
+            let currentShift = (currentShiftAssignment.shiftId as any);
+
+            if (!currentShift || typeof currentShift === 'string' || currentShift instanceof Types.ObjectId || !currentShift.name) {
+              const shiftIdToFetch = typeof currentShift === 'object' && currentShift?._id
+                ? currentShift._id
+                : currentShiftAssignment.shiftId;
+
+              if (shiftIdToFetch) {
+                currentShift = await Shift.findById(shiftIdToFetch).select('name code startTime endTime');
+              }
+            }
+
+            (req as any).currentShift = currentShift ? {
+              _id: currentShift._id,
+              name: currentShift.name,
+              code: currentShift.code,
+              startTime: currentShift.startTime,
+              endTime: currentShift.endTime,
+            } : null;
+          } else {
+            (req as any).currentShift = null;
+          }
+
+          // Add approver data
+          if (approver) {
+            req.approvedBy = {
+              _id: approver._id,
+              name: approver.name,
+              email: approver.email,
+            };
+          }
+
+          // Add appliedTo user data as dynamic property
+          if (appliedToUser) {
+            (req as any).appliedToUser = {
+              _id: appliedToUser._id,
+              name: appliedToUser.name,
+              email: appliedToUser.email,
+            };
+          }
+
+          // Convert to plain object
+          const reqObj: any = req.toObject();
+          reqObj.requestedShift = (req as any).requestedShift ?? null;
+          reqObj.currentShift = (req as any).currentShift ?? null;
+          reqObj.appliedToUser = (req as any).appliedToUser ?? null;
+
+          return reqObj;
+        })
+      );
+
+      return {
+        data: populatedRequests,
+        meta: {
+          page,
+          limit,
+          total,
+          totalPages: Math.ceil(total / limit),
+        },
+      };
+    }
+
+    // No search - use simple query
+    const [requests, total] = await Promise.all([
+      ShiftChangeRequest.find(filter as FilterQuery<IShiftChangeRequest>)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(Number(limit)),
+      ShiftChangeRequest.countDocuments(filter as FilterQuery<IShiftChangeRequest>),
+    ]);
+
+    // Populate related data for each request
+    const populatedRequests = await Promise.all(
+      requests.map(async (req) => {
+        const [user, requestedShift, currentShiftAssignment, approver, appliedToUser] = await Promise.all([
+          User.findById(req.userId).select('name email'),
+          Shift.findById(req.requestedShiftId).select('name code startTime endTime'),
+          ShiftAssignment.findById(req.currentShiftId).populate('shiftId', 'name code startTime endTime'),
+          req.approvedById ? User.findById(req.approvedById).select('name email') : null,
+          req.appliedTo?._id ? User.findById(req.appliedTo._id).select('name email') : null,
+        ]);
+
+        // Add user data
+        if (user) {
+          req.user = {
+            name: user.name,
+            email: user.email,
+          };
+        }
+
+        // Add requested shift data as dynamic property
+        if (requestedShift) {
+          (req as any).requestedShift = {
+            _id: requestedShift._id,
+            name: requestedShift.name,
+            code: requestedShift.code,
+            startTime: requestedShift.startTime,
+            endTime: requestedShift.endTime,
+          };
+        } else {
+          (req as any).requestedShift = null;
+        }
+
+        // Add current shift data as dynamic property
+        if (currentShiftAssignment) {
+          let currentShift = (currentShiftAssignment.shiftId as any);
+
+          if (!currentShift || typeof currentShift === 'string' || currentShift instanceof Types.ObjectId || !currentShift.name) {
+            const shiftIdToFetch = typeof currentShift === 'object' && currentShift?._id
+              ? currentShift._id
+              : currentShiftAssignment.shiftId;
+
+            if (shiftIdToFetch) {
+              currentShift = await Shift.findById(shiftIdToFetch).select('name code startTime endTime');
+            }
+          }
+
+          (req as any).currentShift = currentShift ? {
+            _id: currentShift._id,
+            name: currentShift.name,
+            code: currentShift.code,
+            startTime: currentShift.startTime,
+            endTime: currentShift.endTime,
+          } : null;
+        } else {
+          (req as any).currentShift = null;
+        }
+
+        // Add approver data
+        if (approver) {
+          req.approvedBy = {
+            _id: approver._id,
+            name: approver.name,
+            email: approver.email,
+          };
+        }
+
+        // Add appliedTo user data as dynamic property
+        if (appliedToUser) {
+          (req as any).appliedToUser = {
+            _id: appliedToUser._id,
+            name: appliedToUser.name,
+            email: appliedToUser.email,
+          };
+        }
+
+        // Convert to plain object
+        const reqObj: any = req.toObject();
+        reqObj.requestedShift = (req as any).requestedShift ?? null;
+        reqObj.currentShift = (req as any).currentShift ?? null;
+        reqObj.appliedToUser = (req as any).appliedToUser ?? null;
+
+        return reqObj;
+      })
+    );
+
+    return {
+      data: populatedRequests,
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
       },
     };
   }
@@ -341,18 +963,18 @@ export class ShiftChangeService extends BaseService {
     // currentShiftId points to a ShiftAssignment, we need to get the Shift from it
     if (currentShiftAssignment) {
       let currentShift = (currentShiftAssignment.shiftId as any);
-      
+
       // If shiftId is not populated (might be ObjectId string), fetch it directly
       if (!currentShift || typeof currentShift === 'string' || currentShift instanceof Types.ObjectId || !currentShift.name) {
-        const shiftIdToFetch = typeof currentShift === 'object' && currentShift?._id 
-          ? currentShift._id 
+        const shiftIdToFetch = typeof currentShift === 'object' && currentShift?._id
+          ? currentShift._id
           : currentShiftAssignment.shiftId;
-        
+
         if (shiftIdToFetch) {
           currentShift = await Shift.findById(shiftIdToFetch).select('name code startTime endTime');
         }
       }
-      
+
       (request as any).currentShift = currentShift ? {
         _id: currentShift._id,
         name: currentShift.name,
@@ -388,7 +1010,7 @@ export class ShiftChangeService extends BaseService {
 
     // Convert to plain object to ensure all dynamic properties are included in JSON
     const requestObj: any = request.toObject();
-    
+
     // Add dynamic properties to plain object (these are set above)
     requestObj.requestedShift = (request as any).requestedShift ?? null;
     requestObj.currentShift = (request as any).currentShift ?? null;
@@ -421,16 +1043,28 @@ export class ShiftChangeService extends BaseService {
       throw new Error('Shift change request has already been processed');
     }
 
+    // If approving, validate effective date is not today or past
+    if (updateData.status === 'Approved') {
+      const effectiveDate = new Date(request.effectiveDate);
+      effectiveDate.setUTCHours(0, 0, 0, 0);
+      const today = new Date();
+      today.setUTCHours(0, 0, 0, 0);
+
+      if (effectiveDate <= today) {
+        throw new Error('Cannot approve shift change with effective date as today or in the past. Effective date must be a future date.');
+      }
+    }
+
     request.status = updateData.status;
     request.approvedById = updateData.approvedById;
     request.approvedBy = updateData.approvedBy
       ? {
-          _id: typeof updateData.approvedBy._id === 'string'
-            ? new Types.ObjectId(updateData.approvedBy._id)
-            : updateData.approvedBy._id,
-          name: updateData.approvedBy.name,
-          email: updateData.approvedBy.email,
-        }
+        _id: typeof updateData.approvedBy._id === 'string'
+          ? new Types.ObjectId(updateData.approvedBy._id)
+          : updateData.approvedBy._id,
+        name: updateData.approvedBy.name,
+        email: updateData.approvedBy.email,
+      }
       : undefined;
 
     if (updateData.status === 'Approved') {
@@ -447,23 +1081,71 @@ export class ShiftChangeService extends BaseService {
       await this.applyApprovedShiftChange(request);
     }
 
-    // Send email notification to employee
+    // Send email notification to employee (the person who applied)
     try {
       const employee = await User.findById(request.userId).select('name email');
-      const approver = await User.findById(updateData.approvedById).select('name');
-      if (employee) {
-        const requestedShift = await Shift.findById(request.requestedShiftId).select('name code');
+      const approver = await User.findById(updateData.approvedById).select('name email');
+      
+      if (employee && employee.email) {
+        // Get current shift assignment details
+        const currentShiftAssignment = await ShiftAssignment.findById(request.currentShiftId).populate('shiftId', 'name code startTime endTime');
+        const requestedShift = await Shift.findById(request.requestedShiftId).select('name code startTime endTime');
         
-        const emailText = `Dear ${employee.name},\n\nYour shift change request has been ${updateData.status.toLowerCase()}.\n\nEffective Date: ${new Date(request.effectiveDate).toLocaleDateString()}\nRequested Shift: ${requestedShift?.code || 'N/A'} (${requestedShift?.name || 'N/A'})\nRemarks: ${updateData.remarks || 'No remarks provided'}\n\nRegards,\n${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
+        const currentShift = currentShiftAssignment?.shiftId as any;
+        const currentShiftName = currentShift?.name || 'N/A';
+        const currentShiftCode = currentShiftAssignment?.shiftCode || currentShift?.code || 'N/A';
+        const currentShiftTime = currentShift?.startTime && currentShift?.endTime 
+          ? `${currentShift.startTime} - ${currentShift.endTime}`
+          : 'N/A';
+        
+        const requestedShiftName = requestedShift?.name || 'N/A';
+        const requestedShiftCode = requestedShift?.code || 'N/A';
+        const requestedShiftTime = requestedShift?.startTime && requestedShift?.endTime
+          ? `${requestedShift.startTime} - ${requestedShift.endTime}`
+          : 'N/A';
 
+        const effectiveDateFormatted = new Date(request.effectiveDate).toLocaleDateString('en-US', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        });
+
+        // Build email text content
+        const emailText = `Dear ${employee.name},
+
+Your shift change request has been ${updateData.status.toLowerCase()} by ${approver?.name || 'Manager'}.
+
+Request Details:
+- Current Shift: ${currentShiftCode} (${currentShiftName}) - ${currentShiftTime}
+- Requested Shift: ${requestedShiftCode} (${requestedShiftName}) - ${requestedShiftTime}
+- Effective Date: ${effectiveDateFormatted}
+- Reason: ${request.reason}
+${updateData.remarks ? `- Remarks: ${updateData.remarks}` : ''}
+
+${updateData.status === 'Approved' 
+  ? `Your shift change has been approved and will be effective from ${effectiveDateFormatted}. Please ensure you are available for the new shift timing.`
+  : `Unfortunately, your shift change request has been rejected. If you have any questions, please contact your manager.`}
+
+Thank you for your understanding.
+
+Regards,
+${approver?.name || 'Manager'}
+${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
+
+        // Build HTML content
         let html = emailText.replace(/\n/g, '<br>');
         try {
           const emailParams = {
             employeeName: employee.name,
             approverName: approver?.name || 'Manager',
-            effectiveDate: new Date(request.effectiveDate).toLocaleDateString(),
-            requestedShift: `${requestedShift?.code || 'N/A'} (${requestedShift?.name || 'N/A'})`,
-            remarks: updateData.remarks || 'No remarks provided',
+            currentShift: `${currentShiftCode} (${currentShiftName})`,
+            currentShiftTime: currentShiftTime,
+            requestedShift: `${requestedShiftCode} (${requestedShiftName})`,
+            requestedShiftTime: requestedShiftTime,
+            effectiveDate: effectiveDateFormatted,
+            reason: request.reason,
+            remarks: updateData.remarks || '',
             status: updateData.status,
             companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS',
           };
@@ -472,6 +1154,7 @@ export class ShiftChangeService extends BaseService {
           console.warn('Email template not found, using simple HTML');
         }
 
+        // Send email to the employee who applied
         await emailService.sendEmail({
           body: {
             to: employee.email,
@@ -480,10 +1163,14 @@ export class ShiftChangeService extends BaseService {
             html,
           },
         });
+        
+        console.log(`Email notification sent to ${employee.email} for shift change request ${request._id} - Status: ${updateData.status}`);
+      } else {
+        console.warn(`Cannot send email: Employee not found or email missing for userId: ${request.userId}`);
       }
     } catch (emailError) {
       console.error('Failed to send email to employee:', emailError);
-      // Don't fail if email fails
+      // Don't fail the request if email fails - log the error but continue
     }
 
     return this.findById(request._id as string);
@@ -530,32 +1217,33 @@ export class ShiftChangeService extends BaseService {
     }
 
     const effectiveDate = new Date(request.effectiveDate);
-    effectiveDate.setHours(0, 0, 0, 0);
+    effectiveDate.setUTCHours(0, 0, 0, 0);
 
     const currentDate = new Date();
-    currentDate.setHours(0, 0, 0, 0);
+    currentDate.setUTCHours(0, 0, 0, 0);
 
     // Store original end date before modifying
     const originalEndDate = currentAssignment.endDate;
 
     // If effective date is in the future
     if (effectiveDate > currentDate) {
-      // End current assignment one day before effective date
+      // End current assignment on the effective date (end of day)
+      // This ensures past shift's effective end date = new shift's effective start date
+      // No overlap: past shift ends at 23:59:59, new shift starts at 00:00:00 of same date
       const endDate = new Date(effectiveDate);
-      endDate.setDate(endDate.getDate() - 1);
-      endDate.setHours(23, 59, 59, 999);
+      endDate.setUTCHours(23, 59, 59, 999);
 
       currentAssignment.endDate = endDate;
-      // Keep assignment active until endDate passes (don't set inactive yet)
-      // Status will be updated by recalculateUserShiftStatus based on dates
+      // Keep assignment active and current until effective date arrives
+      // Status will be updated to 'past' by recalculateUserShiftStatus or cron job when endDate passes
       await currentAssignment.save();
 
-      // Create new assignment starting from effective date
+      // Create new assignment starting from effective date (not joining date)
       const newAssignment = new ShiftAssignment({
         userId: request.userId,
         shiftId: request.requestedShiftId,
         shiftCode: requestedShift.code,
-        startDate: effectiveDate,
+        startDate: effectiveDate, // Use effective date, not joining date
         endDate: originalEndDate || undefined,
         weekendDays: currentAssignment.weekendDays || [0],
         isActive: true,
@@ -566,15 +1254,53 @@ export class ShiftChangeService extends BaseService {
 
       await newAssignment.save();
 
-      // Recalculate user shift status to update currentShiftAssignmentData
+      // Ensure the assignment is persisted before recalculating
+      // Recalculate user shift status to update currentShiftAssignmentData and upcomingShiftAssignmentData
       await this.shiftService.recalculateUserShiftStatus(request.userId);
     } else {
-      // If effective date is today or past, update immediately
-      currentAssignment.shiftId = request.requestedShiftId;
-      currentAssignment.shiftCode = requestedShift.code;
-      currentAssignment.modifiedBy = request.approvedById || request.userId;
-      currentAssignment.modifiedAt = new Date();
-      await currentAssignment.save();
+      // If effective date is today or past, we need to:
+      // 1. Mark the current assignment as past (if it started before effective date)
+      // 2. Create a new assignment with effective date as start date
+
+      const currentStartDate = new Date(currentAssignment.startDate);
+      currentStartDate.setUTCHours(0, 0, 0, 0);
+
+      // If current assignment started before effective date, mark it as past
+      if (currentStartDate < effectiveDate) {
+        // End the previous assignment one day before effective date
+        const previousEndDate = new Date(effectiveDate);
+        previousEndDate.setUTCDate(previousEndDate.getUTCDate() - 1);
+        previousEndDate.setUTCHours(23, 59, 59, 999);
+
+        currentAssignment.endDate = previousEndDate;
+        currentAssignment.status = 'past';
+        currentAssignment.isActive = false;
+        await currentAssignment.save();
+
+        // Create new assignment with effective date as start date
+        const newAssignment = new ShiftAssignment({
+          userId: request.userId,
+          shiftId: request.requestedShiftId,
+          shiftCode: requestedShift.code,
+          startDate: effectiveDate, // Use effective date, not joining date
+          endDate: originalEndDate || undefined,
+          weekendDays: currentAssignment.weekendDays || [0],
+          isActive: true,
+          status: 'current',
+          assignedBy: request.approvedById || request.userId,
+          assignedAt: new Date(),
+        });
+        await newAssignment.save();
+      } else {
+        // Current assignment started on or after effective date, just update it
+        currentAssignment.shiftId = request.requestedShiftId;
+        currentAssignment.shiftCode = requestedShift.code;
+        // Ensure startDate is set to effective date, not joining date
+        currentAssignment.startDate = effectiveDate;
+        currentAssignment.modifiedBy = request.approvedById || request.userId;
+        currentAssignment.modifiedAt = new Date();
+        await currentAssignment.save();
+      }
 
       // Recalculate user shift status to update currentShiftAssignmentData
       await this.shiftService.recalculateUserShiftStatus(request.userId);
