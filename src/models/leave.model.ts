@@ -28,6 +28,13 @@ export interface ILeave extends Document {
   // India-specific: Half-day leave support
   leaveDuration?: 'full-day' | 'half-day'; // Default: 'full-day'
   halfDayType?: 'first-half' | 'second-half'; // Required when leaveDuration = 'half-day'
+  // Weekend exclusion information for UI display
+  weekendExclusion?: {
+    weekendDays: number[]; // Array of weekend day numbers (0=Sunday, 6=Saturday)
+    excludedDates: Date[]; // Array of dates that were excluded (weekend dates)
+    totalCalendarDays: number; // Total calendar days in the requested range
+    actualDays: number; // Actual working days after excluding weekends (same as noOfDays)
+  };
 }
 
 const leaveSchema = new Schema<ILeave>(
@@ -74,6 +81,25 @@ const leaveSchema = new Schema<ILeave>(
       enum: ['first-half', 'second-half'],
       required: function(this: ILeave) {
         return this.leaveDuration === 'half-day';
+      }
+    },
+    // Weekend exclusion information for UI display
+    weekendExclusion: {
+      weekendDays: {
+        type: [Number],
+        default: undefined
+      },
+      excludedDates: {
+        type: [Date],
+        default: undefined
+      },
+      totalCalendarDays: {
+        type: Number,
+        default: undefined
+      },
+      actualDays: {
+        type: Number,
+        default: undefined
       }
     },
   },

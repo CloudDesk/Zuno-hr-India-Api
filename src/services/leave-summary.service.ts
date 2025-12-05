@@ -677,4 +677,63 @@ export class LeaveSummaryService extends BaseService {
       leaveRequestId
     });
   }
+
+  /**
+   * Decrease leave balance when leave is cancelled or rejected
+   * Removes the leaveRequestId from leaveRequests array and decreases availed days
+   */
+  async decreaseLeaveBalance(
+    userId: Types.ObjectId,
+    year: number,
+    categoryType: string,
+    daysToRestore: number,
+    leaveRequestId: Types.ObjectId
+  ): Promise<ILeaveSummary> {
+    const summary: ILeaveSummary = await this.getLeaveSummary(userId, year);
+    
+    // Map leave type to proper category key (camelCase)
+    const categoryTypeKey = this.mapLeaveTypeToCategoryKey(categoryType);
+    
+    // Ensure category exists
+    const category = summary[categoryTypeKey];
+    if (!category) {
+      throw new Error(`Leave category '${categoryType}' (mapped to: '${categoryTypeKey}') not found in leave summary. Available categories: annual, sick, compOff, lossOfPay, otherPaid, otherUnpaid, maternity, workFromHome`);
+    }
+    
+    // Get current values
+    const currentAvailed = (category && category.availed) ? category.availed : 0;
+    const currentAlloted = category.alloted || 0;
+    const currentLeaveRequests = (category as any).leaveRequests || [];
+    
+    // Remove leaveRequestId from the array
+    const leaveRequestIdStr = leaveRequestId.toString();
+    const updatedLeaveRequests = currentLeaveRequests.filter((id: any) => 
+      (typeof id === 'string' ? id : id.toString()) !== leaveRequestIdStr
+    );
+    
+    // Calculate new availed (decrease by daysToRestore, but don't go below 0)
+    const newAvailed = Math.max(0, currentAvailed - daysToRestore);
+    
+    // Calculate remaining
+    const newRemaining = Math.max(0, currentAlloted - newAvailed);
+    
+    // Update leave summary directly (since we need to update leaveRequests array which createOrUpdateLeaveSummary doesn't handle)
+    const updatedSummary = await LeaveSummary.findOneAndUpdate(
+      { userId, year },
+      {
+        $set: {
+          [`${categoryTypeKey}.availed`]: newAvailed,
+          [`${categoryTypeKey}.remaining`]: newRemaining,
+          [`${categoryTypeKey}.leaveRequests`]: updatedLeaveRequests
+        }
+      },
+      { new: true }
+    );
+    
+    if (!updatedSummary) {
+      throw new Error('Leave summary not found');
+    }
+    
+    return updatedSummary;
+  }
 }

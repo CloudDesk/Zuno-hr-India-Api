@@ -4,11 +4,11 @@ import { IUser, Leave, User, LOV } from '../models';
 import { FilterQuery, Types } from 'mongoose';
 import { ILeave } from '../models/leave.model';
 import { LeaveSummaryService } from './leave-summary.service';
-import { ILeaveSummary } from '../models/leave-summary.model';
 import { AttendanceRecord } from '../models/attendance-record.model';
 import { generateEmailTemplate } from '../emails/templates';
 import { emailService } from './email.service';
 import { validateLeaveTypeForCountry } from '../utilis/leave-type-constants';
+import { ShiftAssignment, IShiftAssignment } from '../models/shift.model';
 
 export interface ILeaveCreate {
   userId: string | Types.ObjectId;
@@ -26,6 +26,13 @@ export interface ILeaveCreate {
   // India-specific: Half-day leave support
   leaveDuration?: 'full-day' | 'half-day';
   halfDayType?: 'first-half' | 'second-half';
+  // Weekend exclusion information for UI display
+  weekendExclusion?: {
+    weekendDays: number[];
+    excludedDates: Date[];
+    totalCalendarDays: number;
+    actualDays: number;
+  };
 }
 
 export interface ILeaveQuery {
@@ -62,6 +69,126 @@ export class LeaveService extends BaseService {
   constructor(context: RequestContext) {
     super(context);
     this.leaveSummaryService = new LeaveSummaryService(context);
+  }
+
+  /**
+   * Get active shift assignment for a user within a date range
+   * Returns the shift assignment that is active during the requested date range
+   */
+  private async getShiftAssignmentForDateRange(
+    userId: Types.ObjectId,
+    startDate: Date,
+    endDate: Date
+  ): Promise<IShiftAssignment | null> {
+    const startDateOnly = new Date(startDate);
+    startDateOnly.setUTCHours(0, 0, 0, 0);
+    
+    const endDateOnly = new Date(endDate);
+    endDateOnly.setUTCHours(23, 59, 59, 999);
+
+    // Find active shift assignment that overlaps with the leave date range
+    const shiftAssignment = await ShiftAssignment.findOne({
+      userId,
+      isActive: true,
+      startDate: { $lte: endDateOnly },
+      $or: [
+        { endDate: { $gte: startDateOnly } },
+        { endDate: null },
+      ],
+    }).sort({ startDate: -1 }); // Get the most recent assignment
+
+    return shiftAssignment;
+  }
+
+  /**
+   * Calculate working days excluding weekends
+   * @param startDate - Start date of leave
+   * @param endDate - End date of leave
+   * @param weekendDays - Array of weekend day numbers (0=Sunday, 6=Saturday)
+   * @returns Number of working days (excluding weekends)
+   */
+  private calculateWorkingDaysExcludingWeekends(
+    startDate: Date,
+    endDate: Date,
+    weekendDays: number[]
+  ): number {
+    const start = new Date(startDate);
+    start.setUTCHours(0, 0, 0, 0);
+    
+    const end = new Date(endDate);
+    end.setUTCHours(23, 59, 59, 999);
+
+    let workingDays = 0;
+    const currentDate = new Date(start);
+
+    while (currentDate <= end) {
+      const dayOfWeek = currentDate.getDay(); // 0 = Sunday, 6 = Saturday
+      
+      // If the day is not a weekend, count it as a working day
+      if (!weekendDays.includes(dayOfWeek)) {
+        workingDays++;
+      }
+      
+      // Move to next day
+      currentDate.setDate(currentDate.getDate() + 1);
+    }
+
+    return workingDays;
+  }
+
+  /**
+   * Get excluded dates (weekend dates) within a date range
+   * @param startDate - Start date of leave
+   * @param endDate - End date of leave
+   * @param weekendDays - Array of weekend day numbers (0=Sunday, 6=Saturday)
+   * @returns Array of excluded dates (weekend dates)
+   */
+  private getExcludedDates(
+    startDate: Date,
+    endDate: Date,
+    weekendDays: number[]
+  ): Date[] {
+    const start = new Date(startDate);
+    start.setUTCHours(0, 0, 0, 0);
+    
+    const end = new Date(endDate);
+    end.setUTCHours(23, 59, 59, 999);
+
+    const excludedDates: Date[] = [];
+    const currentDate = new Date(start);
+
+    while (currentDate <= end) {
+      const dayOfWeek = currentDate.getDay(); // 0 = Sunday, 6 = Saturday
+      
+      // If the day is a weekend, add it to excluded dates
+      if (weekendDays.includes(dayOfWeek)) {
+        excludedDates.push(new Date(currentDate));
+      }
+      
+      // Move to next day
+      currentDate.setDate(currentDate.getDate() + 1);
+    }
+
+    return excludedDates;
+  }
+
+  /**
+   * Calculate total calendar days in a date range
+   * @param startDate - Start date
+   * @param endDate - End date
+   * @returns Total calendar days (inclusive)
+   */
+  private calculateTotalCalendarDays(startDate: Date, endDate: Date): number {
+    const start = new Date(startDate);
+    start.setUTCHours(0, 0, 0, 0);
+    
+    const end = new Date(endDate);
+    end.setUTCHours(23, 59, 59, 999);
+
+    const diffTime = end.getTime() - start.getTime();
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1; // +1 to include both start and end dates
+    
+    return diffDays;
   }
 
   async findById(id: string | Types.ObjectId): Promise<ILeave> {
@@ -348,6 +475,10 @@ export class LeaveService extends BaseService {
   }
 
   async create(leaveData: ILeaveCreate): Promise<ILeave> {
+    // Ensure weekendExclusion is not passed from frontend - it will be calculated by backend
+    // Remove any weekendExclusion that might have been passed
+    delete leaveData.weekendExclusion;
+
     // VALIDATION 1: Check if leave type is valid for employee's country
     const user = await User.findById(leaveData.userId).select('country name email');
     if (!user) {
@@ -527,6 +658,69 @@ export class LeaveService extends BaseService {
         throw new Error('A half-day leave already exists in the selected date range. Cannot apply full-day leave.');
       }
     }
+
+    // Calculate noOfDays excluding weekends for full-day leaves
+    if (leaveData.leaveDuration !== 'half-day') {
+      const userIdObj = typeof leaveData.userId === 'string' 
+        ? new Types.ObjectId(leaveData.userId) 
+        : leaveData.userId;
+
+      // Get active shift assignment for the date range
+      const shiftAssignment = await this.getShiftAssignmentForDateRange(
+        userIdObj,
+        leaveData.startDate,
+        leaveData.endDate
+      );
+
+      // Get weekendDays from shift assignment, or default to [0, 6] (Sunday and Saturday)
+      const weekendDays = shiftAssignment?.weekendDays && shiftAssignment.weekendDays.length > 0
+        ? shiftAssignment.weekendDays
+        : [0, 6]; // Default: Sunday (0) and Saturday (6)
+
+      // Calculate working days excluding weekends
+      const workingDays = this.calculateWorkingDaysExcludingWeekends(
+        leaveData.startDate,
+        leaveData.endDate,
+        weekendDays
+      );
+
+      // Validate that there's at least one working day
+      if (workingDays <= 0) {
+        const weekendNames = weekendDays.map(day => {
+          const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+          return days[day];
+        }).join(', ');
+        throw new Error(`All days in the requested date range fall on weekends (${weekendNames}). Please select dates that include at least one working day.`);
+      }
+
+      // Get excluded dates (weekend dates)
+      const excludedDates = this.getExcludedDates(
+        leaveData.startDate,
+        leaveData.endDate,
+        weekendDays
+      );
+
+      // Calculate total calendar days
+      const totalCalendarDays = this.calculateTotalCalendarDays(
+        leaveData.startDate,
+        leaveData.endDate
+      );
+
+      // Update noOfDays to exclude weekends
+      leaveData.noOfDays = workingDays;
+
+      // Store weekend exclusion information for UI display
+      leaveData.weekendExclusion = {
+        weekendDays: weekendDays,
+        excludedDates: excludedDates,
+        totalCalendarDays: totalCalendarDays,
+        actualDays: workingDays
+      };
+      
+      console.log(`✅ [Weekend Exclusion] Calculated ${workingDays} working days (excluding weekends: ${weekendDays.join(', ')}) for leave from ${leaveData.startDate.toISOString().split('T')[0]} to ${leaveData.endDate.toISOString().split('T')[0]}`);
+      console.log(`📅 [Weekend Exclusion] Excluded ${excludedDates.length} weekend date(s): ${excludedDates.map(d => d.toISOString().split('T')[0]).join(', ')}`);
+    }
+
     console.log(leaveData, 'leaveData 2 data');
     const leave: ILeave = await Leave.create(leaveData);
     // Update leave summary when leave is created
@@ -589,6 +783,7 @@ export class LeaveService extends BaseService {
     if (leave.status !== 'Pending') {
       throw new Error('Leave request has already been processed');
     }
+    
     console.log(updateData, 'updateData in update Status');
     leave.status = updateData.status;
     leave.approvedById = updateData.approvedById;
@@ -806,7 +1001,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
               // status: 'present',
               attendanceStatus: "Absent",
               updatedAt: new Date(),
-              updatedBy: updateData.rejectedById,
+              updatedBy: updateData.rejectedById || updateData.approvedById,
             },
             $unset: {
               leaveRequestId: '',
@@ -819,18 +1014,32 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
         currentDate.setDate(currentDate.getDate() + 1);
       }
 
-      let result = await this.leaveSummaryService.createOrUpdateLeaveSummary(
-        leave.userId as Types.ObjectId,
-        startDate.getFullYear(),
-        leave.leaveType as keyof ILeaveSummary,
-        updateData.status as string,
-        { availed: (leave.noOfDays as number) }
-      );
-      console.log(result, 'result');
+      // Decrease leave balance and remove leaveRequestId from leave summary
+      // This reverses the effect of creating the leave request
+      // The balance was increased when the leave was created (even if Pending),
+      // so we need to decrease it when rejected/cancelled
+      // NOTE: This is ONLY called for Rejected/Cancelled, NOT for Approved
+      try {
+        await this.leaveSummaryService.decreaseLeaveBalance(
+          leave.userId as Types.ObjectId,
+          startDate.getFullYear(),
+          leave.leaveType || '',
+          leave.noOfDays as number,
+          leave._id as Types.ObjectId
+        );
+        console.log(`✅ [Leave ${updateData.status}] Decreased leave balance by ${leave.noOfDays} days for leave ${leave._id}`);
+      } catch (error: any) {
+        console.error(`❌ [Leave ${updateData.status}] Failed to update leave summary: ${error.message}`);
+        // Continue even if summary update fails
+      }
 
-      // Optionally log the rejection event or notify the user
-      console.log(`Leave request ${leave._id} rejected by user ${updateData.rejectedById}`);
+      // Optionally log the rejection/cancellation event
+      console.log(`Leave request ${leave._id} ${updateData.status.toLowerCase()} by user ${updateData.rejectedById || updateData.approvedById}`);
     }
+    
+    // NOTE: When status is 'Approved', we do NOT call decreaseLeaveBalance
+    // because the balance was already increased when the leave was created,
+    // and we want to keep it that way for approved leaves
 
 
     return this.findById(id);
@@ -848,6 +1057,22 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
 
     if (leave.status !== 'Pending') {
       throw new Error('Cannot cancel processed leave request');
+    }
+
+    // Decrease leave balance and remove leaveRequestId from leave summary
+    // This reverses the effect of creating the leave request
+    try {
+      await this.leaveSummaryService.decreaseLeaveBalance(
+        leave.userId as Types.ObjectId,
+        new Date(leave.startDate).getFullYear(),
+        leave.leaveType || '',
+        leave.noOfDays as number,
+        leave._id as Types.ObjectId
+      );
+      console.log(`✅ [Leave Cancel] Decreased leave balance by ${leave.noOfDays} days for leave ${leave._id}`);
+    } catch (error: any) {
+      console.error(`❌ [Leave Cancel] Failed to update leave summary: ${error.message}`);
+      // Continue with deletion even if summary update fails
     }
 
     await leave.deleteOne();
