@@ -9,6 +9,7 @@ import { generateEmailTemplate } from '../emails/templates';
 import { emailService } from './email.service';
 import { validateLeaveTypeForCountry } from '../utilis/leave-type-constants';
 import { ShiftAssignment, IShiftAssignment } from '../models/shift.model';
+import { HolidayCalendar } from '../models/holiday-calendar.model';
 
 export interface ILeaveCreate {
   userId: string | Types.ObjectId;
@@ -26,10 +27,11 @@ export interface ILeaveCreate {
   // India-specific: Half-day leave support
   leaveDuration?: 'full-day' | 'half-day';
   halfDayType?: 'first-half' | 'second-half';
-  // Weekend exclusion information for UI display
+  // Weekend and holiday exclusion information for UI display
   weekendExclusion?: {
     weekendDays: number[];
     excludedDates: Date[];
+    excludedHolidays?: Date[];
     totalCalendarDays: number;
     actualDays: number;
   };
@@ -101,78 +103,6 @@ export class LeaveService extends BaseService {
   }
 
   /**
-   * Calculate working days excluding weekends
-   * @param startDate - Start date of leave
-   * @param endDate - End date of leave
-   * @param weekendDays - Array of weekend day numbers (0=Sunday, 6=Saturday)
-   * @returns Number of working days (excluding weekends)
-   */
-  private calculateWorkingDaysExcludingWeekends(
-    startDate: Date,
-    endDate: Date,
-    weekendDays: number[]
-  ): number {
-    const start = new Date(startDate);
-    start.setUTCHours(0, 0, 0, 0);
-    
-    const end = new Date(endDate);
-    end.setUTCHours(23, 59, 59, 999);
-
-    let workingDays = 0;
-    const currentDate = new Date(start);
-
-    while (currentDate <= end) {
-      const dayOfWeek = currentDate.getDay(); // 0 = Sunday, 6 = Saturday
-      
-      // If the day is not a weekend, count it as a working day
-      if (!weekendDays.includes(dayOfWeek)) {
-        workingDays++;
-      }
-      
-      // Move to next day
-      currentDate.setDate(currentDate.getDate() + 1);
-    }
-
-    return workingDays;
-  }
-
-  /**
-   * Get excluded dates (weekend dates) within a date range
-   * @param startDate - Start date of leave
-   * @param endDate - End date of leave
-   * @param weekendDays - Array of weekend day numbers (0=Sunday, 6=Saturday)
-   * @returns Array of excluded dates (weekend dates)
-   */
-  private getExcludedDates(
-    startDate: Date,
-    endDate: Date,
-    weekendDays: number[]
-  ): Date[] {
-    const start = new Date(startDate);
-    start.setUTCHours(0, 0, 0, 0);
-    
-    const end = new Date(endDate);
-    end.setUTCHours(23, 59, 59, 999);
-
-    const excludedDates: Date[] = [];
-    const currentDate = new Date(start);
-
-    while (currentDate <= end) {
-      const dayOfWeek = currentDate.getDay(); // 0 = Sunday, 6 = Saturday
-      
-      // If the day is a weekend, add it to excluded dates
-      if (weekendDays.includes(dayOfWeek)) {
-        excludedDates.push(new Date(currentDate));
-      }
-      
-      // Move to next day
-      currentDate.setDate(currentDate.getDate() + 1);
-    }
-
-    return excludedDates;
-  }
-
-  /**
    * Calculate total calendar days in a date range
    * @param startDate - Start date
    * @param endDate - End date
@@ -189,6 +119,163 @@ export class LeaveService extends BaseService {
     const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1; // +1 to include both start and end dates
     
     return diffDays;
+  }
+
+  /**
+   * Get mandatory holidays for a date range from user's holiday calendar
+   * @param userId - User ID
+   * @param startDate - Start date of leave
+   * @param endDate - End date of leave
+   * @returns Array of mandatory holiday dates
+   */
+  private async getMandatoryHolidays(
+    userId: Types.ObjectId,
+    startDate: Date,
+    endDate: Date
+  ): Promise<Date[]> {
+    // Get user with holidayCalendarId
+    const user = await User.findById(userId).select('holidayCalendarId');
+    if (!user || !user.holidayCalendarId) {
+      // If no holiday calendar assigned, return empty array (skip all holidays)
+      return [];
+    }
+
+    const start = new Date(startDate);
+    start.setUTCHours(0, 0, 0, 0);
+    
+    const end = new Date(endDate);
+    end.setUTCHours(23, 59, 59, 999);
+
+    // Get holiday calendar
+    const holidayCalendar = await HolidayCalendar.findById(user.holidayCalendarId);
+    if (!holidayCalendar) {
+      console.warn(`Holiday calendar ${user.holidayCalendarId} not found for user ${userId}`);
+      return [];
+    }
+
+    // Filter mandatory holidays within the date range
+    const mandatoryHolidays: Date[] = [];
+    const startTime = start.getTime();
+    const endTime = end.getTime();
+
+    for (const holiday of holidayCalendar.holidays) {
+      if (holiday.type === 'mandatory') {
+        const holidayDate = new Date(holiday.date);
+        holidayDate.setUTCHours(0, 0, 0, 0);
+        const holidayTime = holidayDate.getTime();
+
+        // Check if holiday falls within the date range
+        if (holidayTime >= startTime && holidayTime <= endTime) {
+          mandatoryHolidays.push(holidayDate);
+        }
+      }
+    }
+
+    return mandatoryHolidays;
+  }
+
+  /**
+   * Calculate working days excluding weekends and mandatory holidays
+   * @param startDate - Start date of leave
+   * @param endDate - End date of leave
+   * @param weekendDays - Array of weekend day numbers (0=Sunday, 6=Saturday)
+   * @param mandatoryHolidays - Array of mandatory holiday dates
+   * @returns Number of working days (excluding weekends and holidays)
+   */
+  private calculateWorkingDaysExcludingWeekendsAndHolidays(
+    startDate: Date,
+    endDate: Date,
+    weekendDays: number[],
+    mandatoryHolidays: Date[]
+  ): number {
+    const start = new Date(startDate);
+    start.setUTCHours(0, 0, 0, 0);
+    
+    const end = new Date(endDate);
+    end.setUTCHours(23, 59, 59, 999);
+
+    // Create a Set of holiday dates for quick lookup (normalize to date string for comparison)
+    const holidayDatesSet = new Set(
+      mandatoryHolidays.map(holiday => {
+        const d = new Date(holiday);
+        d.setUTCHours(0, 0, 0, 0);
+        return d.getTime();
+      })
+    );
+
+    let workingDays = 0;
+    const currentDate = new Date(start);
+
+    while (currentDate <= end) {
+      const dayOfWeek = currentDate.getDay(); // 0 = Sunday, 6 = Saturday
+      const currentTime = currentDate.getTime();
+      
+      // Check if the day is not a weekend and not a mandatory holiday
+      if (!weekendDays.includes(dayOfWeek) && !holidayDatesSet.has(currentTime)) {
+        workingDays++;
+      }
+      
+      // Move to next day
+      currentDate.setDate(currentDate.getDate() + 1);
+    }
+
+    return workingDays;
+  }
+
+  /**
+   * Get excluded dates (weekend dates and mandatory holidays) within a date range
+   * @param startDate - Start date of leave
+   * @param endDate - End date of leave
+   * @param weekendDays - Array of weekend day numbers (0=Sunday, 6=Saturday)
+   * @param mandatoryHolidays - Array of mandatory holiday dates
+   * @returns Object with excludedDates (weekends + holidays) and excludedHolidays
+   */
+  private getExcludedDatesWithHolidays(
+    startDate: Date,
+    endDate: Date,
+    weekendDays: number[],
+    mandatoryHolidays: Date[]
+  ): { excludedDates: Date[]; excludedHolidays: Date[] } {
+    const start = new Date(startDate);
+    start.setUTCHours(0, 0, 0, 0);
+    
+    const end = new Date(endDate);
+    end.setUTCHours(23, 59, 59, 999);
+
+    const excludedDates: Date[] = [];
+    const excludedHolidays: Date[] = [];
+    const currentDate = new Date(start);
+
+    // Create a Set of holiday dates for quick lookup
+    const holidayDatesSet = new Set(
+      mandatoryHolidays.map(holiday => {
+        const d = new Date(holiday);
+        d.setUTCHours(0, 0, 0, 0);
+        return d.getTime();
+      })
+    );
+
+    while (currentDate <= end) {
+      const dayOfWeek = currentDate.getDay();
+      const currentTime = currentDate.getTime();
+      const currentDateCopy = new Date(currentDate);
+
+      // Check if it's a weekend
+      if (weekendDays.includes(dayOfWeek)) {
+        excludedDates.push(currentDateCopy);
+      }
+      
+      // Check if it's a mandatory holiday
+      if (holidayDatesSet.has(currentTime)) {
+        excludedDates.push(currentDateCopy);
+        excludedHolidays.push(currentDateCopy);
+      }
+      
+      // Move to next day
+      currentDate.setDate(currentDate.getDate() + 1);
+    }
+
+    return { excludedDates, excludedHolidays };
   }
 
   async findById(id: string | Types.ObjectId): Promise<ILeave> {
@@ -478,9 +565,14 @@ export class LeaveService extends BaseService {
     // Ensure weekendExclusion is not passed from frontend - it will be calculated by backend
     // Remove any weekendExclusion that might have been passed
     delete leaveData.weekendExclusion;
+    
+    // noOfDays will be calculated by backend - ignore any value passed from frontend
+    // It will be set based on:
+    // - Half-day leaves: 0.5
+    // - Full-day leaves: working days excluding weekends and mandatory holidays
 
     // VALIDATION 1: Check if leave type is valid for employee's country
-    const user = await User.findById(leaveData.userId).select('country name email');
+    const user = await User.findById(leaveData.userId).select('country name email holidayCalendarId');
     if (!user) {
       throw new Error('User not found');
     }
@@ -556,6 +648,7 @@ export class LeaveService extends BaseService {
 
     // Check for overlapping leaves (handle half-day leaves)
     // Exclude 'Rejected' and 'Cancelled' statuses - cancelled leaves can be re-applied
+    // Note: Overlap check is based on calendar dates, not working days
     const baseQuery: any = {
       userId: leaveData.userId,
       status: { $nin: ['Rejected', 'Cancelled'] },
@@ -615,12 +708,12 @@ export class LeaveService extends BaseService {
       }
     } else {
       // For full-day leaves:
-      // 1. Check if any full-day leave overlaps with date range
-      // 2. Check if any half-day leave exists on any date in the range
+      // 1. Check if any full-day leave overlaps with date range (calendar dates)
+      // 2. Check if any half-day leave exists on any date in the range (calendar dates)
       const startDate = new Date(leaveData.startDate);
       const endDate = new Date(leaveData.endDate);
 
-      // Check 1: Full-day leave overlap
+      // Check 1: Full-day leave overlap (based on calendar dates)
       // Check if any full-day leave (or leave without leaveDuration field) overlaps with the date range
       const fullDayOverlapQuery = {
         ...baseQuery,
@@ -632,7 +725,7 @@ export class LeaveService extends BaseService {
         ]
       };
 
-      // Check 2: Any half-day leave in the date range
+      // Check 2: Any half-day leave in the date range (based on calendar dates)
       // For each day in the range, check if any half-day exists
       const halfDayOverlapQuery = {
         ...baseQuery,
@@ -659,7 +752,7 @@ export class LeaveService extends BaseService {
       }
     }
 
-    // Calculate noOfDays excluding weekends for full-day leaves
+    // Calculate noOfDays excluding weekends and mandatory holidays for full-day leaves
     if (leaveData.leaveDuration !== 'half-day') {
       const userIdObj = typeof leaveData.userId === 'string' 
         ? new Types.ObjectId(leaveData.userId) 
@@ -677,11 +770,19 @@ export class LeaveService extends BaseService {
         ? shiftAssignment.weekendDays
         : [0, 6]; // Default: Sunday (0) and Saturday (6)
 
-      // Calculate working days excluding weekends
-      const workingDays = this.calculateWorkingDaysExcludingWeekends(
+      // Get mandatory holidays for the date range (if user has holidayCalendarId)
+      const mandatoryHolidays = await this.getMandatoryHolidays(
+        userIdObj,
+        leaveData.startDate,
+        leaveData.endDate
+      );
+
+      // Calculate working days excluding weekends and mandatory holidays
+      const workingDays = this.calculateWorkingDaysExcludingWeekendsAndHolidays(
         leaveData.startDate,
         leaveData.endDate,
-        weekendDays
+        weekendDays,
+        mandatoryHolidays
       );
 
       // Validate that there's at least one working day
@@ -690,14 +791,17 @@ export class LeaveService extends BaseService {
           const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
           return days[day];
         }).join(', ');
-        throw new Error(`All days in the requested date range fall on weekends (${weekendNames}). Please select dates that include at least one working day.`);
+        const holidayCount = mandatoryHolidays.length;
+        const holidayText = holidayCount > 0 ? ` and ${holidayCount} mandatory holiday(s)` : '';
+        throw new Error(`All days in the requested date range fall on weekends (${weekendNames})${holidayText}. Please select dates that include at least one working day.`);
       }
 
-      // Get excluded dates (weekend dates)
-      const excludedDates = this.getExcludedDates(
+      // Get excluded dates (weekend dates and mandatory holidays)
+      const { excludedDates, excludedHolidays } = this.getExcludedDatesWithHolidays(
         leaveData.startDate,
         leaveData.endDate,
-        weekendDays
+        weekendDays,
+        mandatoryHolidays
       );
 
       // Calculate total calendar days
@@ -706,19 +810,20 @@ export class LeaveService extends BaseService {
         leaveData.endDate
       );
 
-      // Update noOfDays to exclude weekends
+      // Update noOfDays to exclude weekends and mandatory holidays
       leaveData.noOfDays = workingDays;
 
-      // Store weekend exclusion information for UI display
+      // Store weekend and holiday exclusion information for UI display
       leaveData.weekendExclusion = {
         weekendDays: weekendDays,
         excludedDates: excludedDates,
+        excludedHolidays: excludedHolidays,
         totalCalendarDays: totalCalendarDays,
         actualDays: workingDays
       };
       
-      console.log(`✅ [Weekend Exclusion] Calculated ${workingDays} working days (excluding weekends: ${weekendDays.join(', ')}) for leave from ${leaveData.startDate.toISOString().split('T')[0]} to ${leaveData.endDate.toISOString().split('T')[0]}`);
-      console.log(`📅 [Weekend Exclusion] Excluded ${excludedDates.length} weekend date(s): ${excludedDates.map(d => d.toISOString().split('T')[0]).join(', ')}`);
+      console.log(`✅ [Weekend & Holiday Exclusion] Calculated ${workingDays} working days (excluding weekends: ${weekendDays.join(', ')} and ${mandatoryHolidays.length} mandatory holiday(s)) for leave from ${leaveData.startDate.toISOString().split('T')[0]} to ${leaveData.endDate.toISOString().split('T')[0]}`);
+      console.log(`📅 [Exclusion] Excluded ${excludedDates.length} date(s) total (${excludedDates.length - excludedHolidays.length} weekend(s) + ${excludedHolidays.length} holiday(s))`);
     }
 
     console.log(leaveData, 'leaveData 2 data');
