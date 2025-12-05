@@ -86,13 +86,14 @@ export class LeaveReleaseService extends BaseService {
         // Add daysReleased to existing balance
         const newAlloted = currentAlloted + daysReleased;
 
-        // Update leave summary - ADD to existing balance
+        // Update leave summary - ADD to existing balance (skip email, we'll send release-specific email)
         await this.leaveSummaryService.updateLeaveAllotments(
           new Types.ObjectId(employeeId),
           period.year,
           {
             [leaveType]: newAlloted
-          }
+          },
+          { skipEmail: true }  // Skip allotment email, send release-specific email instead
         );
 
         // Create leave release record

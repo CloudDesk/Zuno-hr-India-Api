@@ -133,12 +133,14 @@ export class LeaveCarryForwardService extends BaseService {
     // Update FROM year: reduce alloted by carried forward days
     // This will make remaining = (alloted - daysCarriedForward) - availed
     // So remaining decreases by daysCarriedForward without affecting availed
+    // Skip email - we'll send carry-forward specific email later
     await this.leaveSummaryService.updateLeaveAllotments(
       new Types.ObjectId(employeeId),
       fromYear,
       {
         [leaveType]: currentFromYearAlloted - daysCarriedForward
-      }
+      },
+      { skipEmail: true }  // Skip allotment email, send carry-forward email instead
     );
 
     // Verify FROM year's alloted and remaining balance were correctly updated
@@ -197,12 +199,14 @@ export class LeaveCarryForwardService extends BaseService {
     // Update allotted - pre-save hook will recalculate remaining
     // remaining = alloted - availed = finalAlloted - availed
     // This gives employee access to: (original quota - carried forward) + carried forward = original quota + carried forward
+    // Skip email - we'll send carry-forward specific email later
     await this.leaveSummaryService.updateLeaveAllotments(
       new Types.ObjectId(employeeId),
       toYear,
       {
         [leaveType]: finalAlloted
-      }
+      },
+      { skipEmail: true }  // Skip allotment email, send carry-forward email instead
     );
 
     // Verify the update was successful and remaining balance includes carried forward days

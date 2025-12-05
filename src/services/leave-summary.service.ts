@@ -289,7 +289,8 @@ export class LeaveSummaryService extends BaseService {
       compOffExpiryDate?: Date;
       maternityExpiryDate?: Date;  // NEW: UAE-specific
       workFromHomeExpiryDate?: Date;  // NEW: Work From Home
-    }
+    },
+    options?: { skipEmail?: boolean }  // Option to skip email notification
   ): Promise<ILeaveSummary> {
     let summary = await this.getLeaveSummary(userId, year);
     let isNew = false;
@@ -542,8 +543,27 @@ export class LeaveSummaryService extends BaseService {
       await summary.save();
       // return summary;
     }
+
+    // Reload the summary to ensure we have the latest data after all hooks have run
+    const reloadedSummary = await LeaveSummary.findOne({ userId, year });
+    if (!reloadedSummary) {
+      throw new Error('Failed to retrieve leave summary after update');
+    }
+    summary = reloadedSummary;
+
+    // Send email notification only once with the latest data (unless skipped)
+    if (options?.skipEmail) {
+      return summary;
+    }
+
     const user = await User.findById(userId);
     if (user?.email) {
+      // Ensure we have valid summary data before sending email
+      if (!summary.annual || summary.annual.alloted === undefined) {
+        console.error(`[Leave Allotment Email] Skipping email - Invalid summary data for userId: ${userId}, year: ${year}`);
+        return summary;
+      }
+
       const html = generateEmailTemplate("leaveBalanceAllotmentEmail", {
         userName: user.name,
         year,
