@@ -2,6 +2,7 @@ import { BaseService } from './base.service';
 import { RequestContext } from '../types/context';
 import { LeaveCarryForward, ILeaveCarryForward } from '../models/leave-carry-forward.model';
 import { LeaveSummaryService } from './leave-summary.service';
+import { LeaveSummary } from '../models/leave-summary.model';
 import { User } from '../models';
 import { Types } from 'mongoose';
 import { emailService } from './email.service';
@@ -61,7 +62,19 @@ export class LeaveCarryForwardService extends BaseService {
       throw new Error('Leave carry-forward is only available for India employees');
     }
 
-    // Get leave summary for fromYear
+    // Get leave summary for fromYear - check if it exists first without creating
+    // We should NOT create a record for fromYear if it doesn't exist
+    // Carry-forward should only work on existing leave summaries with actual balance
+    const fromYearSummaryDoc = await LeaveSummary.findOne({ 
+      userId: new Types.ObjectId(employeeId), 
+      year: fromYear 
+    });
+
+    if (!fromYearSummaryDoc) {
+      throw new Error(`Cannot carry forward from year ${fromYear}. No leave summary record exists for this year. Please create leave allotments first.`);
+    }
+
+    // Now get the summary (it exists, so this won't create a new record)
     const fromYearSummary = await this.leaveSummaryService.getLeaveSummary(
       new Types.ObjectId(employeeId),
       fromYear
@@ -124,42 +137,44 @@ export class LeaveCarryForwardService extends BaseService {
     });
 
     // IMPORTANT: Subtract carried forward days from FROM year's remaining balance
-    // We do this by reducing 'alloted' in the FROM year
-    // This way: remaining = alloted - availed will automatically decrease
-    // And 'availed' stays accurate (only actual leave days, not administrative operations)
+    // We keep 'alloted' unchanged (it represents the original allocation for that year)
+    // We directly update 'remaining' to subtract the carried forward days
+    // This preserves the original allocation while reducing available balance
     const fromYearCategory = fromYearSummary[leaveType as keyof typeof fromYearSummary];
     const currentFromYearAlloted = fromYearCategory?.alloted || 0;
+    const newRemaining = balanceBefore - daysCarriedForward;
 
-    // Update FROM year: reduce alloted by carried forward days
-    // This will make remaining = (alloted - daysCarriedForward) - availed
-    // So remaining decreases by daysCarriedForward without affecting availed
-    // Skip email - we'll send carry-forward specific email later
-    await this.leaveSummaryService.updateLeaveAllotments(
-      new Types.ObjectId(employeeId),
-      fromYear,
-      {
-        [leaveType]: currentFromYearAlloted - daysCarriedForward
+    // Update FROM year: keep alloted unchanged, directly update remaining
+    // Use findOneAndUpdate to bypass pre-save hook and directly set remaining
+    // IMPORTANT: We use $set to directly update remaining without triggering pre-save hook recalculation
+    const updatedFromYearDoc = await LeaveSummary.findOneAndUpdate(
+      { userId: new Types.ObjectId(employeeId), year: fromYear },
+      { 
+        $set: { 
+          [`${leaveType}.remaining`]: Math.max(0, newRemaining)
+        }
       },
-      { skipEmail: true }  // Skip allotment email, send carry-forward email instead
+      { new: true }
     );
+
+    if (!updatedFromYearDoc) {
+      throw new Error(`Failed to update leave summary for year ${fromYear}`);
+    }
 
     // Verify FROM year's alloted and remaining balance were correctly updated
-    const updatedFromYearSummary = await this.leaveSummaryService.getLeaveSummary(
-      new Types.ObjectId(employeeId),
-      fromYear
-    );
-    const updatedFromYearCategory = updatedFromYearSummary[leaveType as keyof typeof updatedFromYearSummary];
-    const expectedFromYearAlloted = currentFromYearAlloted - daysCarriedForward;
+    // Use the document we just updated instead of calling getLeaveSummary again
+    const updatedFromYearCategory = updatedFromYearDoc[leaveType as keyof typeof updatedFromYearDoc] as any;
+    const expectedFromYearAlloted = currentFromYearAlloted; // Should remain unchanged
     const expectedFromYearRemaining = balanceBefore - daysCarriedForward;
 
-    // Verify alloted was reduced correctly
+    // Verify alloted was NOT changed (should remain the same)
     if (Math.abs((updatedFromYearCategory?.alloted || 0) - expectedFromYearAlloted) > 0.01) {
       console.warn(`Carry forward FROM year alloted mismatch. Expected: ${expectedFromYearAlloted}, Got: ${updatedFromYearCategory?.alloted}.`);
     }
 
-    // Verify remaining balance was correctly updated (should be auto-calculated: alloted - availed)
+    // Verify remaining balance was correctly updated
     if (Math.abs((updatedFromYearCategory?.remaining || 0) - expectedFromYearRemaining) > 0.01) {
-      console.warn(`Carry forward FROM year remaining balance mismatch. Expected: ${expectedFromYearRemaining}, Got: ${updatedFromYearCategory?.remaining}. This may be recalculated on next save.`);
+      console.warn(`Carry forward FROM year remaining balance mismatch. Expected: ${expectedFromYearRemaining}, Got: ${updatedFromYearCategory?.remaining}.`);
     }
 
     // Get next year's leave summary
@@ -176,9 +191,10 @@ export class LeaveCarryForwardService extends BaseService {
     // 
     // FROM YEAR (2024):
     // - Original: alloted = 20, availed = 10, remaining = 10
-    // - After carry-forward: alloted = 20 - 5 = 15, availed = 10, remaining = 5
-    // - We reduce 'alloted' (not 'availed') to keep availed accurate for reports
-    // - The 5 days are subtracted from 2024's quota
+    // - After carry-forward: alloted = 20 (unchanged), availed = 10, remaining = 5
+    // - We keep 'alloted' unchanged to preserve the original allocation
+    // - We directly update 'remaining' to subtract the carried forward days
+    // - The 5 days are subtracted from 2024's remaining balance
     // 
     // TO YEAR (2025):
     // - Original: alloted = 20, availed = 0, remaining = 20
@@ -186,11 +202,11 @@ export class LeaveCarryForwardService extends BaseService {
     // - The 5 days are added to 2025's allotted quota
     // 
     // Example:
-    // 2024: alloted = 20, remaining = 10, carry forward 5 → alloted = 15, remaining = 5
+    // 2024: alloted = 20, remaining = 10, carry forward 5 → alloted = 20, remaining = 5
     // 2025: alloted = 20, carry forward 5 → alloted = 25
     // 
-    // Result: Employee has 5 less days quota in 2024, 5 more days quota in 2025
-    // Note: 'availed' stays accurate (only actual leave days, not administrative operations)
+    // Result: Employee has 5 less days remaining in 2024, 5 more days quota in 2025
+    // Note: 'alloted' in FROM year stays accurate (original allocation), 'availed' stays accurate (only actual leave days)
 
     // Add carried forward days to next year's allotted
     // This increases the remaining balance: remaining = alloted - availed
@@ -210,12 +226,17 @@ export class LeaveCarryForwardService extends BaseService {
     );
 
     // Verify the update was successful and remaining balance includes carried forward days
-    const updatedSummary = await this.leaveSummaryService.getLeaveSummary(
-      new Types.ObjectId(employeeId),
-      toYear
-    );
+    // Use findOne to get the updated document instead of getLeaveSummary (which might create records)
+    const updatedSummaryDoc = await LeaveSummary.findOne({
+      userId: new Types.ObjectId(employeeId),
+      year: toYear
+    });
 
-    const updatedCategory = updatedSummary[leaveType as keyof typeof updatedSummary];
+    if (!updatedSummaryDoc) {
+      throw new Error(`Failed to retrieve updated leave summary for year ${toYear}`);
+    }
+
+    const updatedCategory = updatedSummaryDoc[leaveType as keyof typeof updatedSummaryDoc] as any;
     if (!updatedCategory) {
       throw new Error(`Failed to retrieve updated leave summary for ${leaveType}`);
     }
@@ -340,6 +361,7 @@ export class LeaveCarryForwardService extends BaseService {
 
   /**
    * Get available balance for carry-forward (end of year balance)
+   * IMPORTANT: Does NOT create records - only returns balance if record exists
    */
   async getAvailableBalanceForCarryForward(
     employeeId: string,
@@ -352,10 +374,24 @@ export class LeaveCarryForwardService extends BaseService {
     otherPaid?: number;
     otherUnpaid?: number;
   }> {
-    const summary = await this.leaveSummaryService.getLeaveSummary(
-      new Types.ObjectId(employeeId),
+    // Use findOne instead of getLeaveSummary to avoid creating records
+    // Only return balance if the record actually exists
+    const summary = await LeaveSummary.findOne({
+      userId: new Types.ObjectId(employeeId),
       year
-    );
+    });
+
+    // If no record exists, return all zeros (don't create a record)
+    if (!summary) {
+      return {
+        annual: 0,
+        sick: 0,
+        compOff: 0,
+        lossOfPay: 0,
+        otherPaid: 0,
+        otherUnpaid: 0
+      };
+    }
 
     return {
       annual: summary.annual?.remaining || 0,

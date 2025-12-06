@@ -10,6 +10,7 @@ export interface ILeaveRelease extends Document {
   };
   leaveType: 'annual' | 'sick' | 'compOff' | 'lossOfPay' | 'otherPaid' | 'otherUnpaid';
   daysReleased: number;  // Can be decimal (e.g., 4.5)
+  
   releasedAt: Date;
   releasedBy: Types.ObjectId;  // Admin user
   notes?: string;

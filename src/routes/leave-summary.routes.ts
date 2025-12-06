@@ -33,10 +33,6 @@ const getLeaveSummarySchema = {
                 availed: { type: 'number' },
                 remaining: { type: 'number' },
                 leaveRequests: { type: 'array', items: { type: 'string' } },
-                allocationDate: { type: 'string', format: 'date-time' },
-                expiryDate: { type: 'string', format: 'date-time' },
-                originalExpiryDate: { type: 'string', format: 'date-time' },
-                manuallyAdjusted: { type: 'boolean' },
               },
             },
             sick: {
@@ -46,10 +42,6 @@ const getLeaveSummarySchema = {
                 availed: { type: 'number' },
                 remaining: { type: 'number' },
                 leaveRequests: { type: 'array', items: { type: 'string' } },
-                allocationDate: { type: 'string', format: 'date-time' },
-                expiryDate: { type: 'string', format: 'date-time' },
-                originalExpiryDate: { type: 'string', format: 'date-time' },
-                manuallyAdjusted: { type: 'boolean' },
               },
             },
             compOff: {
@@ -59,10 +51,6 @@ const getLeaveSummarySchema = {
                 availed: { type: 'number' },
                 remaining: { type: 'number' },
                 leaveRequests: { type: 'array', items: { type: 'string' } },
-                allocationDate: { type: 'string', format: 'date-time' },
-                expiryDate: { type: 'string', format: 'date-time' },
-                originalExpiryDate: { type: 'string', format: 'date-time' },
-                manuallyAdjusted: { type: 'boolean' },
               },
             },
             lossOfPay: {
@@ -99,10 +87,6 @@ const getLeaveSummarySchema = {
                 availed: { type: 'number' },
                 remaining: { type: 'number' },
                 leaveRequests: { type: 'array', items: { type: 'string' } },
-                allocationDate: { type: 'string', format: 'date-time' },
-                expiryDate: { type: 'string', format: 'date-time' },
-                originalExpiryDate: { type: 'string', format: 'date-time' },
-                manuallyAdjusted: { type: 'boolean' },
               },
             },
             workFromHome: {
@@ -112,10 +96,6 @@ const getLeaveSummarySchema = {
                 availed: { type: 'number' },
                 remaining: { type: 'number' },
                 leaveRequests: { type: 'array', items: { type: 'string' } },
-                allocationDate: { type: 'string', format: 'date-time' },
-                expiryDate: { type: 'string', format: 'date-time' },
-                originalExpiryDate: { type: 'string', format: 'date-time' },
-                manuallyAdjusted: { type: 'boolean' },
               },
             },
           },
@@ -236,84 +216,12 @@ const updateLeaveAllotmentSchema = {
       maternity: {
         type: 'number',
         minimum: 0,
-        description: 'Maternity leave days (UAE-specific)',
+        description: 'Maternity leave days',
       },
       workFromHome: {
         type: 'number',
         minimum: 0,
         description: 'Work From Home days',
-      },
-      // UAE-specific: Optional allocation dates
-      annualAllocationDate: {
-        type: 'string',
-        format: 'date-time',
-        description: 'Allocation date for annual leave (UAE - auto sets expiry to +1 year)',
-      },
-      sickAllocationDate: {
-        type: 'string',
-        format: 'date-time',
-        description: 'Allocation date for sick leave (UAE)',
-      },
-      otherPaidAllocationDate: {
-        type: 'string',
-        format: 'date-time',
-        description: 'Allocation date for other paid leave (UAE)',
-      },
-      otherUnpaidAllocationDate: {
-        type: 'string',
-        format: 'date-time',
-        description: 'Allocation date for other unpaid leave (UAE)',
-      },
-      compOffAllocationDate: {
-        type: 'string',
-        format: 'date-time',
-        description: 'Allocation date for comp-off (UAE)',
-      },
-      maternityAllocationDate: {
-        type: 'string',
-        format: 'date-time',
-        description: 'Allocation date for maternity leave (UAE)',
-      },
-      workFromHomeAllocationDate: {
-        type: 'string',
-        format: 'date-time',
-        description: 'Allocation date for work from home (UAE)',
-      },
-      // UAE-specific: Optional manual expiry dates
-      annualExpiryDate: {
-        type: 'string',
-        format: 'date-time',
-        description: 'Manual expiry date for annual leave (UAE)',
-      },
-      sickExpiryDate: {
-        type: 'string',
-        format: 'date-time',
-        description: 'Manual expiry date for sick leave (UAE)',
-      },
-      otherPaidExpiryDate: {
-        type: 'string',
-        format: 'date-time',
-        description: 'Manual expiry date for other paid leave (UAE)',
-      },
-      otherUnpaidExpiryDate: {
-        type: 'string',
-        format: 'date-time',
-        description: 'Manual expiry date for other unpaid leave (UAE)',
-      },
-      compOffExpiryDate: {
-        type: 'string',
-        format: 'date-time',
-        description: 'Manual expiry date for comp-off (UAE)',
-      },
-      maternityExpiryDate: {
-        type: 'string',
-        format: 'date-time',
-        description: 'Manual expiry date for maternity leave (UAE)',
-      },
-      workFromHomeExpiryDate: {
-        type: 'string',
-        format: 'date-time',
-        description: 'Manual expiry date for work from home (UAE)',
       }
     },
   },
@@ -459,20 +367,6 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
           compOff,
           maternity,
           workFromHome,
-          annualAllocationDate,
-          sickAllocationDate,
-          otherPaidAllocationDate,
-          otherUnpaidAllocationDate,
-          compOffAllocationDate,
-          maternityAllocationDate,
-          workFromHomeAllocationDate,
-          annualExpiryDate,
-          sickExpiryDate,
-          otherPaidExpiryDate,
-          otherUnpaidExpiryDate,
-          compOffExpiryDate,
-          maternityExpiryDate,
-          workFromHomeExpiryDate,
         } = request.body as {
           userId: string;
           year: number;
@@ -483,22 +377,6 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
           compOff?: number;
           maternity?: number;
           workFromHome?: number;
-          // UAE-specific allocation dates
-          annualAllocationDate?: string;
-          sickAllocationDate?: string;
-          otherPaidAllocationDate?: string;
-          otherUnpaidAllocationDate?: string;
-          compOffAllocationDate?: string;
-          maternityAllocationDate?: string;
-          workFromHomeAllocationDate?: string;
-          // UAE-specific manual expiry dates
-          annualExpiryDate?: string;
-          sickExpiryDate?: string;
-          otherPaidExpiryDate?: string;
-          otherUnpaidExpiryDate?: string;
-          compOffExpiryDate?: string;
-          maternityExpiryDate?: string;
-          workFromHomeExpiryDate?: string;
         };
 
         const updatedSummary = await request.container!.leaveSummaryService.updateLeaveAllotments(
@@ -512,22 +390,6 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
             compOff,
             maternity,
             workFromHome,
-            // Convert allocation date strings to Date objects if provided
-            annualAllocationDate: annualAllocationDate ? new Date(annualAllocationDate) : undefined,
-            sickAllocationDate: sickAllocationDate ? new Date(sickAllocationDate) : undefined,
-            otherPaidAllocationDate: otherPaidAllocationDate ? new Date(otherPaidAllocationDate) : undefined,
-            otherUnpaidAllocationDate: otherUnpaidAllocationDate ? new Date(otherUnpaidAllocationDate) : undefined,
-            compOffAllocationDate: compOffAllocationDate ? new Date(compOffAllocationDate) : undefined,
-            maternityAllocationDate: maternityAllocationDate ? new Date(maternityAllocationDate) : undefined,
-            workFromHomeAllocationDate: workFromHomeAllocationDate ? new Date(workFromHomeAllocationDate) : undefined,
-            // Convert expiry date strings to Date objects if provided (manual override)
-            annualExpiryDate: annualExpiryDate ? new Date(annualExpiryDate) : undefined,
-            sickExpiryDate: sickExpiryDate ? new Date(sickExpiryDate) : undefined,
-            otherPaidExpiryDate: otherPaidExpiryDate ? new Date(otherPaidExpiryDate) : undefined,
-            otherUnpaidExpiryDate: otherUnpaidExpiryDate ? new Date(otherUnpaidExpiryDate) : undefined,
-            compOffExpiryDate: compOffExpiryDate ? new Date(compOffExpiryDate) : undefined,
-            maternityExpiryDate: maternityExpiryDate ? new Date(maternityExpiryDate) : undefined,
-            workFromHomeExpiryDate: workFromHomeExpiryDate ? new Date(workFromHomeExpiryDate) : undefined,
           }
         );
 

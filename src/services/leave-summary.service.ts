@@ -144,7 +144,9 @@ export class LeaveSummaryService extends BaseService {
   async getLeaveSummary(userId: Types.ObjectId, year: number): Promise<ILeaveSummary> {
     let summary = await LeaveSummary.findOne({ userId, year });
     if (!summary) {
-      summary = new LeaveSummary({
+      // Create and save the leave summary record immediately
+      // This ensures one user has one leave summary record per year
+      summary = await LeaveSummary.create({
         userId,
         year,
         annual: { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] },
@@ -156,6 +158,7 @@ export class LeaveSummaryService extends BaseService {
         maternity: { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] },
         workFromHome: { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] }
       });
+      console.log(`✅ [Leave Summary] Created new leave summary for user ${userId}, year ${year}`);
     } else {
       // Initialize workFromHome if it doesn't exist (for backward compatibility with existing documents)
       // Only initialize if workFromHome is completely undefined/null - preserve existing values even if 0
@@ -170,21 +173,10 @@ export class LeaveSummaryService extends BaseService {
   }
 
   /**
-   * Get formatted leave summary with country-specific fields
-   * UAE employees get allocation/expiry dates, India employees don't
+   * Get formatted leave summary
    */
   async getFormattedLeaveSummary(userId: Types.ObjectId, year: number): Promise<any> {
-    // Get user to check country
-    const user = await User.findById(userId).select('country joiningDate');
-    if (!user) {
-      throw new Error('User not found');
-    }
-
-    const isUAE = user.country === 'AE';
     const summary = await this.getLeaveSummary(userId, year);
-    
-    // Debug: Log workFromHome value to verify it's being loaded
-    console.log('workFromHome from DB:', summary.workFromHome);
     
     // Ensure workFromHome exists (double-check for safety, but don't overwrite existing values)
     if (summary.workFromHome === undefined || summary.workFromHome === null) {
@@ -192,55 +184,29 @@ export class LeaveSummaryService extends BaseService {
       summary.markModified('workFromHome');
     }
 
-    // Helper function to format leave category based on country
+    // Helper function to format leave category
     const formatCategory = (category: any) => {
-      const baseData = {
+      return {
         alloted: category?.alloted || 0,
         availed: category?.availed || 0,
         remaining: category?.remaining || 0,
         leaveRequests: category?.leaveRequests || []
       };
-
-      // For UAE, include allocation/expiry dates ONLY if leave is allocated (alloted > 0)
-      if (isUAE && category && category.alloted > 0) {
-        return {
-          ...baseData,
-          allocationDate: category.allocationDate || null,
-          expiryDate: category.expiryDate || null,
-          originalExpiryDate: category.originalExpiryDate || null,
-          manuallyAdjusted: category.manuallyAdjusted || false
-        };
-      }
-
-      return baseData;
     };
 
-    // Format based on country
-    if (isUAE) {
-      // UAE: Include only UAE-specific leave types with dates
-      return {
-        userId: summary.userId,
-        year: summary.year,
-        annual: formatCategory(summary.annual),
-        sick: formatCategory(summary.sick),
-        compOff: formatCategory(summary.compOff),
-        maternity: formatCategory(summary.maternity),
-        workFromHome: formatCategory(summary.workFromHome)
-      };
-    } else {
-      // India: Include India-specific leave types without dates
-      return {
-        userId: summary.userId,
-        year: summary.year,
-        annual: formatCategory(summary.annual),
-        sick: formatCategory(summary.sick),
-        compOff: formatCategory(summary.compOff),
-        lossOfPay: formatCategory(summary.lossOfPay),
-        otherPaid: formatCategory(summary.otherPaid),
-        otherUnpaid: formatCategory(summary.otherUnpaid),
-        workFromHome: formatCategory(summary.workFromHome)
-      };
-    }
+    // Return formatted summary with all leave types
+    return {
+      userId: summary.userId,
+      year: summary.year,
+      annual: formatCategory(summary.annual),
+      sick: formatCategory(summary.sick),
+      compOff: formatCategory(summary.compOff),
+      lossOfPay: formatCategory(summary.lossOfPay),
+      otherPaid: formatCategory(summary.otherPaid),
+      otherUnpaid: formatCategory(summary.otherUnpaid),
+      maternity: formatCategory(summary.maternity),
+      workFromHome: formatCategory(summary.workFromHome)
+    };
   }
 
   async getAllUserLeaveSummaries(
@@ -271,114 +237,29 @@ export class LeaveSummaryService extends BaseService {
       otherPaid?: number;
       otherUnpaid?: number;
       compOff?: number;
-      maternity?: number;  // NEW: UAE-specific maternity leave
-      workFromHome?: number;  // NEW: Work From Home (merged from WFHSummary)
-      // UAE-specific: Allow passing allocation dates
-      annualAllocationDate?: Date;
-      sickAllocationDate?: Date;
-      otherPaidAllocationDate?: Date;
-      otherUnpaidAllocationDate?: Date;
-      compOffAllocationDate?: Date;
-      maternityAllocationDate?: Date;  // NEW: UAE-specific
-      workFromHomeAllocationDate?: Date;  // NEW: Work From Home
-      // UAE-specific: Allow manual expiry date override
-      annualExpiryDate?: Date;
-      sickExpiryDate?: Date;
-      otherPaidExpiryDate?: Date;
-      otherUnpaidExpiryDate?: Date;
-      compOffExpiryDate?: Date;
-      maternityExpiryDate?: Date;  // NEW: UAE-specific
-      workFromHomeExpiryDate?: Date;  // NEW: Work From Home
+      maternity?: number;
+      workFromHome?: number;
     },
     options?: { skipEmail?: boolean }  // Option to skip email notification
   ): Promise<ILeaveSummary> {
+    // getLeaveSummary ensures the record exists (creates if not found)
+    // This guarantees one user has one leave summary record per year
     let summary = await this.getLeaveSummary(userId, year);
-    let isNew = false;
+    
+    // Check if this is a newly created summary (no record existed for this year)
+    // A record is considered "new" if ALL leave types have 0 alloted (freshly created record)
+    // This is more accurate than checking just 3 categories
+    const isNew = summary.annual?.alloted === 0 && 
+                  summary.sick?.alloted === 0 && 
+                  summary.compOff?.alloted === 0 &&
+                  summary.lossOfPay?.alloted === 0 &&
+                  summary.otherPaid?.alloted === 0 &&
+                  summary.otherUnpaid?.alloted === 0 &&
+                  summary.maternity?.alloted === 0 &&
+                  summary.workFromHome?.alloted === 0;
 
-    if (!summary) {
-      isNew = true;
-
-      // Check if user is from UAE for allocation date logic
-      const user = await User.findById(userId);
-      const today = new Date();
-
-      const createData: any = {
-        userId,
-        year,
-        annual: { alloted: allotments.annual || 0, availed: 0, remaining: 0, leaveRequests: [] },
-        sick: { alloted: allotments.sick || 0, availed: 0, remaining: 0, leaveRequests: [] },
-        compOff: { alloted: allotments.compOff || 0, availed: 0, remaining: 0, leaveRequests: [] },
-        lossOfPay: { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] },
-        otherPaid: { alloted: allotments.otherPaid || 0, availed: 0, remaining: 0, leaveRequests: [] },
-        otherUnpaid: { alloted: allotments.otherUnpaid || 0, availed: 0, remaining: 0, leaveRequests: [] },
-        maternity: { alloted: allotments.maternity || 0, availed: 0, remaining: 0, leaveRequests: [] },
-        workFromHome: { alloted: allotments.workFromHome || 0, availed: 0, remaining: 0, leaveRequests: [] }
-      };
-
-      // UAE-specific: Set allocation dates for new leave summaries
-      // For ALL leave types with alloted > 0, set allocation date
-      if (user && user.country === 'AE') {
-        // Annual Leave - Only set dates if allocated > 0
-        if (allotments.annual && allotments.annual > 0) {
-          createData.annual.allocationDate = allotments.annualAllocationDate || today;
-          if (allotments.annualExpiryDate) {
-            createData.annual.expiryDate = allotments.annualExpiryDate;
-          }
-        }
-
-        // Sick Leave - Only set dates if allocated > 0
-        if (allotments.sick && allotments.sick > 0) {
-          createData.sick.allocationDate = allotments.sickAllocationDate || today;
-          if (allotments.sickExpiryDate) {
-            createData.sick.expiryDate = allotments.sickExpiryDate;
-          }
-        }
-
-        // Comp Off - Only set dates if allocated > 0
-        if (allotments.compOff && allotments.compOff > 0) {
-          createData.compOff.allocationDate = allotments.compOffAllocationDate || today;
-          if (allotments.compOffExpiryDate) {
-            createData.compOff.expiryDate = allotments.compOffExpiryDate;
-          }
-        }
-
-        // Other Paid Leave - Only set dates if allocated > 0
-        if (allotments.otherPaid && allotments.otherPaid > 0) {
-          createData.otherPaid.allocationDate = allotments.otherPaidAllocationDate || today;
-          if (allotments.otherPaidExpiryDate) {
-            createData.otherPaid.expiryDate = allotments.otherPaidExpiryDate;
-          }
-        }
-
-        // Other Unpaid Leave - Only set dates if allocated > 0
-        if (allotments.otherUnpaid && allotments.otherUnpaid > 0) {
-          createData.otherUnpaid.allocationDate = allotments.otherUnpaidAllocationDate || today;
-          if (allotments.otherUnpaidExpiryDate) {
-            createData.otherUnpaid.expiryDate = allotments.otherUnpaidExpiryDate;
-          }
-        }
-
-        // Maternity Leave - Only set dates if allocated > 0
-        if (allotments.maternity && allotments.maternity > 0) {
-          createData.maternity.allocationDate = allotments.maternityAllocationDate || today;
-          if (allotments.maternityExpiryDate) {
-            createData.maternity.expiryDate = allotments.maternityExpiryDate;
-          }
-        }
-
-        console.log(`🇦🇪 [UAE Leave Allocation] New summary for user ${userId} - Year ${year} with allocation dates`);
-        console.log(`📊 Creating leave allocation with dates:`, {
-          annual: { alloted: allotments.annual, hasDate: !!(allotments.annual && allotments.annual > 0) },
-          sick: { alloted: allotments.sick, hasDate: !!(allotments.sick && allotments.sick > 0) },
-          compOff: { alloted: allotments.compOff, hasDate: !!(allotments.compOff && allotments.compOff > 0) },
-          maternity: { alloted: allotments.maternity, hasDate: !!(allotments.maternity && allotments.maternity > 0) }
-        });
-      }
-
-      summary = await LeaveSummary.create(createData);
-      // return summary;
-    }
-    else {
+    // Always update the existing summary (getLeaveSummary ensures it exists)
+    {
       // Only update leave types that are explicitly provided in allotments
       // This prevents overwriting other leave types with 0 when updating a single type
       if (allotments.annual !== undefined) {
@@ -405,139 +286,6 @@ export class LeaveSummaryService extends BaseService {
           summary.workFromHome = { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] };
         }
         summary.workFromHome.alloted = allotments.workFromHome;
-      }
-
-      // UAE-specific: Set allocation dates if provided, otherwise use today
-      const user = await User.findById(userId);
-      if (user && user.country === 'AE') {
-        const today = new Date();
-
-        // Set allocation dates for ALL leave types with alloted > 0
-        // This ensures existing allocated leaves also get dates if they don't have them
-
-        // Annual Leave - Only set dates if allocated > 0
-        if (allotments.annual !== undefined) {
-          if (allotments.annual > 0) {
-            summary.annual.allocationDate = allotments.annualAllocationDate || summary.annual.allocationDate || today;
-            if (allotments.annualExpiryDate) {
-              summary.annual.expiryDate = allotments.annualExpiryDate;
-            }
-          } else {
-            // Remove dates if allocation is set to 0
-            summary.annual.allocationDate = undefined;
-            summary.annual.expiryDate = undefined;
-            summary.annual.originalExpiryDate = undefined;
-            summary.annual.manuallyAdjusted = false;
-          }
-        }
-
-        // Sick Leave - Only set dates if allocated > 0
-        if (allotments.sick !== undefined) {
-          if (allotments.sick > 0) {
-            summary.sick.allocationDate = allotments.sickAllocationDate || summary.sick.allocationDate || today;
-            if (allotments.sickExpiryDate) {
-              summary.sick.expiryDate = allotments.sickExpiryDate;
-            }
-          } else {
-            // Remove dates if allocation is set to 0
-            summary.sick.allocationDate = undefined;
-            summary.sick.expiryDate = undefined;
-            summary.sick.originalExpiryDate = undefined;
-            summary.sick.manuallyAdjusted = false;
-          }
-        }
-
-        // Other Paid Leave - Only set dates if allocated > 0
-        if (allotments.otherPaid !== undefined) {
-          if (allotments.otherPaid > 0) {
-            summary.otherPaid.allocationDate = allotments.otherPaidAllocationDate || summary.otherPaid.allocationDate || today;
-            if (allotments.otherPaidExpiryDate) {
-              summary.otherPaid.expiryDate = allotments.otherPaidExpiryDate;
-            }
-          } else {
-            // Remove dates if allocation is set to 0
-            summary.otherPaid.allocationDate = undefined;
-            summary.otherPaid.expiryDate = undefined;
-            summary.otherPaid.originalExpiryDate = undefined;
-            summary.otherPaid.manuallyAdjusted = false;
-          }
-        }
-
-        // Other Unpaid Leave - Only set dates if allocated > 0
-        if (allotments.otherUnpaid !== undefined) {
-          if (allotments.otherUnpaid > 0) {
-            summary.otherUnpaid.allocationDate = allotments.otherUnpaidAllocationDate || summary.otherUnpaid.allocationDate || today;
-            if (allotments.otherUnpaidExpiryDate) {
-              summary.otherUnpaid.expiryDate = allotments.otherUnpaidExpiryDate;
-            }
-          } else {
-            // Remove dates if allocation is set to 0
-            summary.otherUnpaid.allocationDate = undefined;
-            summary.otherUnpaid.expiryDate = undefined;
-            summary.otherUnpaid.originalExpiryDate = undefined;
-            summary.otherUnpaid.manuallyAdjusted = false;
-          }
-        }
-
-        // Comp Off - Only set dates if allocated > 0
-        if (allotments.compOff !== undefined) {
-          if (allotments.compOff > 0) {
-            summary.compOff.allocationDate = allotments.compOffAllocationDate || summary.compOff.allocationDate || today;
-            if (allotments.compOffExpiryDate) {
-              summary.compOff.expiryDate = allotments.compOffExpiryDate;
-            }
-          } else {
-            // Remove dates if allocation is set to 0
-            summary.compOff.allocationDate = undefined;
-            summary.compOff.expiryDate = undefined;
-            summary.compOff.originalExpiryDate = undefined;
-            summary.compOff.manuallyAdjusted = false;
-          }
-        }
-
-        // Maternity Leave - Only set dates if allocated > 0
-        if (allotments.maternity !== undefined) {
-          if (allotments.maternity > 0) {
-            summary.maternity.allocationDate = allotments.maternityAllocationDate || summary.maternity.allocationDate || today;
-            if (allotments.maternityExpiryDate) {
-              summary.maternity.expiryDate = allotments.maternityExpiryDate;
-            }
-          } else {
-            // Remove dates if allocation is set to 0
-            summary.maternity.allocationDate = undefined;
-            summary.maternity.expiryDate = undefined;
-            summary.maternity.originalExpiryDate = undefined;
-            summary.maternity.manuallyAdjusted = false;
-          }
-        }
-
-        // Work From Home - Only set dates if allocated > 0
-        if (allotments.workFromHome !== undefined) {
-          // Initialize workFromHome if it doesn't exist (for backward compatibility)
-          if (!summary.workFromHome) {
-            summary.workFromHome = { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] };
-          }
-          if (allotments.workFromHome > 0) {
-            summary.workFromHome.allocationDate = allotments.workFromHomeAllocationDate || summary.workFromHome.allocationDate || today;
-            if (allotments.workFromHomeExpiryDate) {
-              summary.workFromHome.expiryDate = allotments.workFromHomeExpiryDate;
-            }
-          } else {
-            // Remove dates if allocation is set to 0
-            summary.workFromHome.allocationDate = undefined;
-            summary.workFromHome.expiryDate = undefined;
-            summary.workFromHome.originalExpiryDate = undefined;
-            summary.workFromHome.manuallyAdjusted = false;
-          }
-        }
-
-        console.log(`🇦🇪 [UAE Leave Allocation] User ${userId} - Setting allocation dates for leave year ${year}`);
-        console.log(`📊 Leave allocation status:`, {
-          annual: { alloted: summary.annual.alloted, hasDate: !!summary.annual.allocationDate },
-          sick: { alloted: summary.sick.alloted, hasDate: !!summary.sick.allocationDate },
-          compOff: { alloted: summary.compOff.alloted, hasDate: !!summary.compOff.allocationDate },
-          maternity: { alloted: summary.maternity.alloted, hasDate: !!summary.maternity.allocationDate }
-        });
       }
 
       await summary.save();
