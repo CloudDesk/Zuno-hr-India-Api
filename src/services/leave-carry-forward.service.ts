@@ -261,6 +261,14 @@ export class LeaveCarryForwardService extends BaseService {
         year: toYear,
         carryForwardInfo: `${daysCarriedForward} days carried forward from ${fromYear}`,
         leaveType,
+        // Include all leave type values for the email template
+        annual: updatedSummaryDoc.annual?.alloted || 0,
+        sick: updatedSummaryDoc.sick?.alloted || 0,
+        compOff: updatedSummaryDoc.compOff?.alloted || 0,
+        otherPaid: updatedSummaryDoc.otherPaid?.alloted || 0,
+        otherUnpaid: updatedSummaryDoc.otherUnpaid?.alloted || 0,
+        maternity: updatedSummaryDoc.maternity?.alloted || 0,
+        workFromHome: updatedSummaryDoc.workFromHome?.alloted || 0,
         companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS'
       };
 

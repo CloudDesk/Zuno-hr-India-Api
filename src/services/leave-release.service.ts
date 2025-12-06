@@ -87,7 +87,7 @@ export class LeaveReleaseService extends BaseService {
         const newAlloted = currentAlloted + daysReleased;
 
         // Update leave summary - ADD to existing balance (skip email, we'll send release-specific email)
-        await this.leaveSummaryService.updateLeaveAllotments(
+        const updatedSummary = await this.leaveSummaryService.updateLeaveAllotments(
           new Types.ObjectId(employeeId),
           period.year,
           {
@@ -121,6 +121,14 @@ export class LeaveReleaseService extends BaseService {
             year: period.year,
             releaseInfo: `${daysReleased} days released for ${periodDescription}`,
             leaveType,
+            // Include all leave type values for the email template
+            annual: updatedSummary.annual?.alloted || 0,
+            sick: updatedSummary.sick?.alloted || 0,
+            compOff: updatedSummary.compOff?.alloted || 0,
+            otherPaid: updatedSummary.otherPaid?.alloted || 0,
+            otherUnpaid: updatedSummary.otherUnpaid?.alloted || 0,
+            maternity: updatedSummary.maternity?.alloted || 0,
+            workFromHome: updatedSummary.workFromHome?.alloted || 0,
             companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS'
           });
 
