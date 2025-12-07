@@ -440,6 +440,7 @@ export class LeaveCarryForwardService extends BaseService {
     search?: string;
     fromYear?: number;
     toYear?: number;
+    yearLessThan?: number;
     leaveType?: string;
     page?: number;
     limit?: number;
@@ -511,11 +512,21 @@ export class LeaveCarryForwardService extends BaseService {
       ];
     }
 
+    // Handle year filtering - exact year takes precedence over yearLessThan
     if (filters?.fromYear) {
       if (query.$and) {
         query.$and.push({ fromYear: filters.fromYear });
       } else {
         query.fromYear = filters.fromYear;
+      }
+    } else if (filters?.yearLessThan) {
+      // If yearLessThan is provided, filter by fromYear <= yearLessThan
+      // $lte means "less than or equal to"
+      // Example: yearLessThan=2021 returns carry-forwards where fromYear <= 2021 (2021, 2020, 2019, etc.)
+      if (query.$and) {
+        query.$and.push({ fromYear: { $lte: filters.yearLessThan } });
+      } else {
+        query.fromYear = { $lte: filters.yearLessThan };
       }
     }
 

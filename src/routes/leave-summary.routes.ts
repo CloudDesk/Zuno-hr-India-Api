@@ -875,8 +875,9 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
           properties: {
             employeeId: { type: 'string', description: 'Filter by employee ID' },
             search: { type: 'string', description: 'Search by employee name, email, employee code, leave type, notes, or year' },
-            fromYear: { type: 'number', description: 'Filter by from year' },
+            fromYear: { type: 'number', description: 'Filter by exact from year. Takes precedence over yearLessThan if both are provided.' },
             toYear: { type: 'number', description: 'Filter by to year' },
+            yearLessThan: { type: 'number', description: 'Filter by from years less than or equal to this value (e.g., 2021 returns all carry-forwards where fromYear <= 2021 - includes 2021, 2020, 2019, and all earlier years). Useful for viewing older year data.' },
             leaveType: { 
               type: 'string', 
               enum: ['annual', 'sick', 'compOff', 'lossOfPay', 'otherPaid', 'otherUnpaid'],
@@ -934,6 +935,7 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
         const employeeId = queryParams.employeeId || undefined;
         const fromYear = queryParams.fromYear ? parseInt(queryParams.fromYear, 10) : undefined;
         const toYear = queryParams.toYear ? parseInt(queryParams.toYear, 10) : undefined;
+        const yearLessThan = queryParams.yearLessThan ? parseInt(queryParams.yearLessThan, 10) : undefined;
         const leaveType = queryParams.leaveType || undefined;
         const search = queryParams.search || undefined;
         const page = queryParams.page ? parseInt(queryParams.page, 10) : 1;
@@ -946,6 +948,7 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
           employeeId,
           fromYear,
           toYear,
+          yearLessThan,
           leaveType,
           search,
           page,

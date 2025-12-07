@@ -654,10 +654,19 @@ leaveReleaseSchema.index({ employeeId: 1, 'period.year': -1 });
   - `page` (number, optional): Page number (default: 1)
   - `limit` (number, optional): Items per page (default: 50, max: 100)
   - `search` (string, optional): Search query (searches employee name, email, employee code, leave type, notes, or year)
-  - `fromYear` (number, optional): Filter by from year
+  - `fromYear` (number, optional): Filter by exact from year. Takes precedence over `yearLessThan` if both are provided.
   - `toYear` (number, optional): Filter by to year
+  - `yearLessThan` (number, optional): Filter by from years less than or equal to this value (e.g., `2021` returns all carry-forwards where `fromYear <= 2021` - includes 2021, 2020, 2019, and all earlier years). Useful for viewing older year data.
   - `leaveType` (string, optional): Filter by leave type (`annual`, `sick`, `compOff`, `lossOfPay`, `otherPaid`, `otherUnpaid`)
   - `employeeId` (string, optional): Filter by employee ID
+- **Filter Behavior:**
+  - If `fromYear` is provided: Returns carry-forwards for that exact from year only
+  - If `yearLessThan` is provided (and `fromYear` is not): Returns all carry-forwards where `fromYear <= yearLessThan`
+  - If both `fromYear` and `yearLessThan` are provided: `fromYear` takes precedence (exact match)
+- **Examples:**
+  - `?fromYear=2024` - Returns only carry-forwards from 2024
+  - `?yearLessThan=2021` - Returns all carry-forwards where `fromYear <= 2021` (2021, 2020, 2019, etc.)
+  - `?yearLessThan=2021&fromYear=2024` - Returns only carry-forwards from 2024 (exact year takes precedence)
 - **Purpose:** Get paginated list of all carry-forwards with filtering and search capabilities. Admin only.
 - **Response:**
   ```json
