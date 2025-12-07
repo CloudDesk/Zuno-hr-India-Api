@@ -1,6 +1,7 @@
 import { BaseService } from './base.service';
 import { RequestContext } from '../types/context';
 import { LeaveCarryForward, ILeaveCarryForward } from '../models/leave-carry-forward.model';
+import { LeaveRelease } from '../models/leave-release.model';
 import { LeaveSummaryService } from './leave-summary.service';
 import { LeaveSummary } from '../models/leave-summary.model';
 import { User } from '../models';
@@ -252,6 +253,26 @@ export class LeaveCarryForwardService extends BaseService {
     const expectedRemaining = finalAlloted - (updatedCategory.availed || 0);
     if (Math.abs(updatedCategory.remaining - expectedRemaining) > 0.01) {
       console.warn(`Carry forward remaining balance mismatch. Expected: ${expectedRemaining}, Got: ${updatedCategory.remaining}. This may be recalculated on next save.`);
+    }
+
+    // Create LeaveRelease record for carry-forward (for tracking in release history)
+    // This allows carry-forward to appear in the release history alongside monthly/quarterly releases
+    try {
+      await LeaveRelease.create({
+        employeeId: new Types.ObjectId(employeeId),
+        releaseType: 'carryforward',
+        period: {
+          year: toYear  // toYear is the year the leaves are carried forward to
+        },
+        leaveType,
+        daysReleased: daysCarriedForward,
+        releasedBy: processedBy,
+        notes: notes || `Carried forward from ${fromYear}`
+      });
+    } catch (releaseError) {
+      console.error(`Failed to create LeaveRelease record for carry-forward:`, releaseError);
+      // Don't fail the carry-forward if LeaveRelease creation fails
+      // The LeaveCarryForward record is already created, which is the primary audit trail
     }
 
     // Send email notification

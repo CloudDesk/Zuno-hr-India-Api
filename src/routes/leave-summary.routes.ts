@@ -530,7 +530,8 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
         querystring: {
           type: 'object',
           properties: {
-            year: { type: 'number' }
+            year: { type: 'number' },
+            yearLessThan: { type: 'number', description: 'Filter by years less than or equal to this value (e.g., 2020 for all records from 2020 and earlier)' }
           }
         }
       },
@@ -539,12 +540,12 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
     async (request, reply) => {
       try {
         const { userId } = request.params as { userId: string };
-        const { year } = request.query as { year?: number };
+        const { year, yearLessThan } = request.query as { year?: number; yearLessThan?: number };
         
         const { LeaveReleaseService } = await import('../services/leave-release.service');
         const leaveReleaseService = new LeaveReleaseService(request.container!.requestContext);
         
-        const history = await leaveReleaseService.getReleaseHistory(userId, year);
+        const history = await leaveReleaseService.getReleaseHistory(userId, year, yearLessThan);
         
         return reply.send({
           success: true,
@@ -763,7 +764,8 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
           properties: {
             employeeId: { type: 'string', description: 'Filter by employee ID' },
             search: { type: 'string', description: 'Search by employee name, email, employee code, leave type, release type, or notes' },
-            year: { type: 'number', description: 'Filter by year' },
+            year: { type: 'number', description: 'Filter by exact year. Takes precedence over yearLessThan if both are provided.' },
+            yearLessThan: { type: 'number', description: 'Filter by years less than or equal to this value (e.g., 2021 returns all records from 2021 and earlier). Useful for viewing older year data.' },
             leaveType: { 
               type: 'string', 
               enum: ['annual', 'sick', 'compOff', 'lossOfPay', 'otherPaid', 'otherUnpaid'],
@@ -771,7 +773,7 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
             },
             releaseType: {
               type: 'string',
-              enum: ['monthly', 'quarterly'],
+              enum: ['monthly', 'quarterly', 'carryforward'],
               description: 'Filter by release type'
             },
             page: { type: 'number', minimum: 1, default: 1, description: 'Page number' },
@@ -825,6 +827,7 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
         const queryParams = request.query as any;
         const employeeId = queryParams.employeeId || undefined;
         const year = queryParams.year ? parseInt(queryParams.year, 10) : undefined;
+        const yearLessThan = queryParams.yearLessThan ? parseInt(queryParams.yearLessThan, 10) : undefined;
         const leaveType = queryParams.leaveType || undefined;
         const releaseType = queryParams.releaseType || undefined;
         const search = queryParams.search || undefined;
@@ -837,6 +840,7 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
         const result = await leaveReleaseService.getAllReleases({
           employeeId,
           year,
+          yearLessThan,
           leaveType,
           releaseType,
           search,

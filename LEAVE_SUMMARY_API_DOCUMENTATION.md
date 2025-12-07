@@ -191,7 +191,7 @@ Complete documentation of all leave summary API routes with parameters, payloads
   ```json
   {
     "employeeIds": ["employeeId1", "employeeId2", "employeeId3"],
-    "releaseType": "monthly" | "quarterly",
+    "releaseType": "monthly" | "quarterly",  // Note: "carryforward" is automatically created during carry-forward operations
     "period": {
       "year": 2025,
       "month": 1,        // Required if releaseType === "monthly" (1-12)
@@ -203,6 +203,7 @@ Complete documentation of all leave summary API routes with parameters, payloads
   }
   ```
 - **Purpose:** Release leaves to multiple employees for a specific period (monthly or quarterly). Only available for India employees. Adds to existing balance.
+- **Note:** Carry-forward operations automatically create `LeaveRelease` records with `releaseType: "carryforward"` and `period.year: toYear` for tracking purposes.
 - **Response:**
   ```json
   {
@@ -239,6 +240,7 @@ period: {
   month?: number;      // 1-12 (required for monthly)
   quarter?: number;    // 1-4 (required for quarterly)
   year: number;        // ✅ REQUIRED - Used for leave summary creation
+  // For carryforward: year represents toYear (year the leaves are carried forward to)
 }
 ```
 
@@ -248,8 +250,14 @@ period: {
   month: { type: Number, min: 1, max: 12, required: function() { return this.releaseType === 'monthly'; } },
   quarter: { type: Number, min: 1, max: 4, required: function() { return this.releaseType === 'quarterly'; } },
   year: { type: Number, required: true }  // ✅ REQUIRED, inside period object
+  // For carryforward: month and quarter are not set, only year (toYear) is used
 }
 ```
+
+**Release Types:**
+- `monthly`: Requires `period.month` (1-12)
+- `quarterly`: Requires `period.quarter` (1-4)
+- `carryforward`: Only requires `period.year` (represents toYear). Automatically created during carry-forward operations.
 
 #### Flow Steps (Release)
 1. ✅ Validates India country (`country === 'IN'`)
@@ -262,6 +270,17 @@ period: {
    - Calls `updateLeaveAllotments(employeeId, period.year, { [leaveType]: newAlloted })`
    - Creates `LeaveRelease` record (with `period.year`)
    - Sends release-specific email
+
+#### Flow Steps (Carry-Forward - Creates LeaveRelease Record)
+When carry-forward is processed, it also creates a `LeaveRelease` record for tracking:
+1. ✅ Creates `LeaveCarryForward` record (primary audit trail)
+2. ✅ Creates `LeaveRelease` record with:
+   - `releaseType: "carryforward"`
+   - `period.year: toYear` (year the leaves are carried forward to)
+   - `daysReleased: daysCarriedForward`
+   - `leaveType: leaveType`
+   - `notes: "Carried forward from {fromYear}"` (or custom notes)
+3. ✅ This allows carry-forward to appear in release history alongside monthly/quarterly releases
 
 #### ✅ Usage in Code
 **Service Usage (lines 78-92 in `leave-release.service.ts`):**
@@ -283,15 +302,25 @@ await this.leaveSummaryService.updateLeaveAllotments(
 );
 ```
 
-**MongoDB Query (line 165 in `leave-release.service.ts`):**
+**MongoDB Query (line 164-180 in `leave-release.service.ts`):**
 ```typescript
-async getReleaseHistory(employeeId: string, year?: number): Promise<ILeaveRelease[]> {
+async getReleaseHistory(
+  employeeId: string,
+  year?: number,
+  yearLessThan?: number
+): Promise<ILeaveRelease[]> {
   const query: any = {
     employeeId: new Types.ObjectId(employeeId)
   };
 
+  // If exact year is provided, use it (takes precedence)
   if (year) {
     query['period.year'] = year;  // ✅ CORRECT: MongoDB dot notation for nested field
+  } else if (yearLessThan) {
+    // If yearLessThan is provided, filter by period.year <= yearLessThan
+    // $lte means "less than or equal to"
+    // Example: yearLessThan=2020 returns 2020, 2019, 2018, 2017, and all earlier years
+    query['period.year'] = { $lte: yearLessThan };  // ✅ Returns all years <= yearLessThan
   }
 
   return await LeaveRelease.find(query)
@@ -320,8 +349,17 @@ leaveReleaseSchema.index({ employeeId: 1, 'period.year': -1 });
 - **Path Parameters:**
   - `userId` (string, required): Employee ID
 - **Query Parameters:**
-  - `year` (number, optional): Filter by year (e.g., `2025`)
-- **Purpose:** Get leave release history for a specific employee. Can filter by year.
+  - `year` (number, optional): Filter by exact year (e.g., `2025`). Takes precedence over `yearLessThan` if both are provided.
+  - `yearLessThan` (number, optional): Filter by years less than or equal to this value. Uses MongoDB `$lte` operator (less than or equal to). Useful for viewing older year data.
+- **Purpose:** Get leave release history for a specific employee. Can filter by exact year or by years less than/equal to a specified value.
+- **Filter Behavior:**
+  - If `year` is provided: Returns records for that exact year only
+  - If `yearLessThan` is provided (and `year` is not): Returns all records where `period.year <= yearLessThan` (includes the specified year and all years before it)
+  - If neither is provided: Returns all records for the employee
+- **Examples:**
+  - `?year=2025` - Returns only 2025 records
+  - `?yearLessThan=2020` - Returns all records where `period.year <= 2020` (includes: 2020, 2019, 2018, 2017, and all earlier years)
+  - `?yearLessThan=2020&year=2025` - Returns only 2025 records (exact year takes precedence)
 - **Response:**
   ```json
   {
@@ -357,10 +395,15 @@ leaveReleaseSchema.index({ employeeId: 1, 'period.year': -1 });
   - `page` (number, optional): Page number (default: 1)
   - `limit` (number, optional): Items per page (default: 50, max: 100)
   - `search` (string, optional): Search query (searches employee name, email, employee code, leave type, release type, or notes)
-  - `year` (number, optional): Filter by year
+  - `year` (number, optional): Filter by exact year. Takes precedence over `yearLessThan` if both are provided.
+  - `yearLessThan` (number, optional): Filter by years less than or equal to this value (e.g., `2021` returns all records where `period.year <= 2021` - includes 2021, 2020, 2019, and all earlier years). Useful for viewing older year data.
   - `leaveType` (string, optional): Filter by leave type (`annual`, `sick`, `compOff`, `lossOfPay`, `otherPaid`, `otherUnpaid`)
-  - `releaseType` (string, optional): Filter by release type (`monthly`, `quarterly`)
+  - `releaseType` (string, optional): Filter by release type (`monthly`, `quarterly`, `carryforward`)
   - `employeeId` (string, optional): Filter by employee ID
+- **Filter Behavior:**
+  - If `year` is provided: Returns records for that exact year only
+  - If `yearLessThan` is provided (and `year` is not): Returns all records where `period.year <= yearLessThan`
+  - If both `year` and `yearLessThan` are provided: `year` takes precedence (exact match)
 - **Purpose:** Get paginated list of all leave releases with filtering and search capabilities. Admin only.
 - **Response:**
   ```json
@@ -479,9 +522,9 @@ leaveReleaseSchema.index({ employeeId: 1, 'period.year': -1 });
    - **If record doesn't exist:** Creates new record with all zeros
 2. ✅ Validates balance > 0
 3. ✅ Validates `daysCarriedForward <= balanceBefore`
-4. ✅ Creates `LeaveCarryForward` record
-5. ✅ Reduces `alloted` by `daysCarriedForward`
-6. ✅ Calls `updateLeaveAllotments(employeeId, fromYear, { [leaveType]: reducedAlloted })`
+4. ✅ Creates `LeaveCarryForward` record (primary audit trail)
+5. ✅ Reduces `remaining` balance (keeps `alloted` unchanged)
+6. ✅ Updates `LeaveSummary` for fromYear
 
 ##### TO YEAR (2025)
 1. ✅ Calls `getLeaveSummary(employeeId, toYear)`
@@ -489,14 +532,22 @@ leaveReleaseSchema.index({ employeeId: 1, 'period.year': -1 });
    - **If record doesn't exist:** Creates new record with all zeros
 2. ✅ Increases `alloted` by `daysCarriedForward`
 3. ✅ Calls `updateLeaveAllotments(employeeId, toYear, { [leaveType]: increasedAlloted })`
+4. ✅ Creates `LeaveRelease` record with:
+   - `releaseType: "carryforward"`
+   - `period.year: toYear` (2025 in this example)
+   - `daysReleased: daysCarriedForward`
+   - This allows carry-forward to appear in release history
 
 #### ✅ Confirmation
 - **FROM YEAR: Creates if not exists:** ✅ YES (line 65-68 in `leave-carry-forward.service.ts`)
-- **TO YEAR: Creates if not exists:** ✅ YES (line 166-169 in `leave-carry-forward.service.ts`)
+- **TO YEAR: Creates if not exists:** ✅ YES (line 181-184 in `leave-carry-forward.service.ts`)
 - **FROM YEAR: Updates if exists:** ✅ YES
 - **TO YEAR: Updates if exists:** ✅ YES
 - **Year Source:** From request body `fromYear` and `toYear` fields
 - **One user, one year, one record:** ✅ ENFORCED (for both years)
+- **LeaveRelease Record Created:** ✅ YES (for toYear with `releaseType: "carryforward"`)
+  - Allows carry-forward to appear in release history
+  - `period.year` is set to `toYear` (the year the leaves are carried forward to)
 
 ### 9. Batch Carry-Forward
 - **Method:** `POST`
@@ -737,7 +788,7 @@ async getLeaveSummary(userId: Types.ObjectId, year: number): Promise<ILeaveSumma
 | 2 | GET | `/leave-summary/leave-summaries?userIds={ids}&year={year}` | Get multiple users summaries | None |
 | 3 | POST | `/leave-summary/allotments` | Update leave allotments | None |
 | 4 | POST | `/leave-summary/release` | Release leaves to employees | India only |
-| 5 | GET | `/leave-summary/release-history/:userId?year={year}` | Get release history for employee | India only |
+| 5 | GET | `/leave-summary/release-history/:userId?year={year}&yearLessThan={year}` | Get release history for employee | India only |
 | 6 | GET | `/leave-summary/releases?{filters}` | Get all leave releases | Admin only |
 | 7 | GET | `/leave-summary/carry-forward-balance/:userId?year={year}` | Get carry-forward balance | India only |
 | 8 | POST | `/leave-summary/carry-forward` | Single employee carry-forward | India only |
@@ -771,7 +822,10 @@ async getLeaveSummary(userId: Types.ObjectId, year: number): Promise<ILeaveSumma
 
 7. **Year Filtering:**
    - Leave summary: Use `?year=2025` query parameter (defaults to current year)
-   - Release history: Use `?year=2025` query parameter (optional, returns all if not provided)
+   - Release history: 
+     - Use `?year=2025` for exact year filtering (optional, returns all if not provided)
+     - Use `?yearLessThan=2020` to get all records where `period.year <= 2020` (includes 2020, 2019, 2018, and all earlier years - useful for viewing older year data)
+     - If both `year` and `yearLessThan` are provided, `year` takes precedence
 
 8. **Record Creation:**
    - All operations automatically create leave summary records if they don't exist for the specified user and year
