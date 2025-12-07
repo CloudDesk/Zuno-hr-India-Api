@@ -606,6 +606,19 @@ export class LeaveService extends BaseService {
       throw new Error('Leave type is required. Please provide leaveType or ensure leaveTypeId points to a valid Lov with values.');
     }
 
+    // VALIDATION: Check that startDate and endDate are in the same year
+    // Leave cannot span across multiple years - user must apply for separate leaves for each year
+    const startYear = new Date(leaveData.startDate).getFullYear();
+    const endYear = new Date(leaveData.endDate).getFullYear();
+    
+    if (startYear !== endYear) {
+      throw new Error(
+        `Leave cannot span across multiple years. ` +
+        `Start date (${startYear}) and end date (${endYear}) must be in the same year. ` +
+        `Please apply for separate leaves for each year.`
+      );
+    }
+
     // India-specific: Validate half-day leave restrictions
     if (leaveData.leaveDuration === 'half-day') {
       if (user.country !== 'IN') {
