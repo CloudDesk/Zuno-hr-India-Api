@@ -34,11 +34,11 @@ interface IUserCreate {
   role: string;
   specificRole?: string;
   departmentId: string;
-  managerId?: string;
+  managerId: string; // Required
   employeeCode: string;
   biometricId?: string | null;
   active?: boolean;
-  joiningDate?: Date;
+  joiningDate: Date; // Required
   confirmationDate?: Date; // Optional - defaults to joiningDate if not provided
   probationDate?: Date; // Optional - defaults to joiningDate if not provided
   location?: string;
@@ -46,7 +46,7 @@ interface IUserCreate {
   emergencyContact?: string;
   address?: string;
   bloodGroup?: string;
-  dateOfBirth?: Date;
+  dateOfBirth: Date; // Required
   fatherName?: string;
   maritalStatus?: string;
   spouseName?: string;
@@ -160,6 +160,7 @@ export class UserService extends BaseService {
     search?: string;
     role?: string;
     status?: string;
+    active?: boolean;
     departmentId?: string;
     country?: string;
     licenseType?: string;
@@ -176,6 +177,7 @@ export class UserService extends BaseService {
       search,
       role,
       status,
+      active,
       departmentId,
       country,
       licenseType,
@@ -223,7 +225,7 @@ export class UserService extends BaseService {
     if (search) {
       // Escape special regex characters in search string
       const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      
+
       const searchConditions: any[] = [
         { name: { $regex: escapedSearch, $options: 'i' } },
         { email: { $regex: escapedSearch, $options: 'i' } },
@@ -253,12 +255,12 @@ export class UserService extends BaseService {
         if (departmentLOV && departmentLOV.values) {
           // Use original search (not escaped) for simple string matching
           const matchingDepartments = departmentLOV.values.filter(
-            (dept: any) => 
-              dept.isActive !== false && 
-              dept.label && 
+            (dept: any) =>
+              dept.isActive !== false &&
+              dept.label &&
               dept.label.toLowerCase().includes(searchLower)
           );
-          
+
           if (matchingDepartments.length > 0) {
             const departmentIds = matchingDepartments.map((dept: any) => dept.value);
             searchConditions.push({ departmentId: { $in: departmentIds } });
@@ -276,7 +278,11 @@ export class UserService extends BaseService {
       filter.role = role;
     }
 
-    if (status) {
+    // Handle active filter - direct boolean (takes precedence over status)
+    if (typeof active === 'boolean') {
+      filter.active = active;
+    } else if (status) {
+      // Fallback to status enum if active is not provided
       filter.active = status === 'active';
     }
 
@@ -431,9 +437,10 @@ export class UserService extends BaseService {
     departmentId?: string;
     role?: string;
     status?: ('Active' | 'On Hold' | 'Resigned')[];
+    active?: boolean;
     country?: 'AE' | 'IN';
   }) {
-    const { page = 1, limit = 10, search, month, departmentId, role, status, country } = query;
+    const { page = 1, limit = 10, search, month, departmentId, role, status, active, country } = query;
     const skip = (page - 1) * limit;
     // const filter: any = {};
     const andConditions: any[] = [];
@@ -469,7 +476,11 @@ export class UserService extends BaseService {
     if (country) {
       andConditions.push({ country });
     }
-    // 6. Status filter
+    // 6. Active filter (direct boolean filter)
+    if (typeof active === 'boolean') {
+      andConditions.push({ active });
+    }
+    // 7. Status filter
     if (status?.length) {
       const statusFilters: any[] = [];
 
@@ -762,6 +773,17 @@ export class UserService extends BaseService {
     console.log('📋 Data type:', typeof data);
     console.log('📋 Data keys:', Object.keys(data || {}));
 
+    // Validate required fields
+    if (!data.managerId) {
+      throw new Error('Manager ID is required');
+    }
+    if (!data.joiningDate) {
+      throw new Error('Joining date is required');
+    }
+    if (!data.dateOfBirth) {
+      throw new Error('Date of birth is required');
+    }
+
     // Validate employeeCode uniqueness before creating
     if (data.employeeCode) {
       const existingUser = await User.findOne({ employeeCode: data.employeeCode });
@@ -817,11 +839,11 @@ export class UserService extends BaseService {
     // Store plain password before hashing (for email notification if it's default password)
     const plainPassword = data.password === '123456' ? data.password : undefined;
 
-    // Set default confirmationDate and probationDate if not provided (use joiningDate or current date)
+    // Set default confirmationDate and probationDate if not provided (optional fields)
     const userDataWithDefaults = {
       ...data,
-      confirmationDate: (data as any).confirmationDate || data.joiningDate || new Date(),
-      probationDate: (data as any).probationDate || data.joiningDate || new Date(),
+      confirmationDate: (data as any).confirmationDate || data.joiningDate || undefined,
+      probationDate: (data as any).probationDate || data.joiningDate || undefined,
     };
 
     const user = new User(userDataWithDefaults);
@@ -846,13 +868,46 @@ export class UserService extends BaseService {
   }
 
   async update(id: string, data: IUserUpdate) {
-    console.log(data, 'update data');
-    console.log(id, 'userid');
+    console.log('📝 [User Update] Update request received');
+    console.log('📦 Update data:', JSON.stringify(data, null, 2));
+    console.log('🔍 Active field in update data:', data.active, '(type:', typeof data.active, ')');
+    console.log('🆔 User ID:', id);
 
     const user = await User.findById(id);
-    console.log(user, 'user data');
     if (!user) {
       throw new Error('User not found');
+    }
+    console.log('👤 Current user active status:', user.active);
+
+    // Check if user is trying to edit their own profile (restrict sensitive fields for employees)
+    const currentUser = this.context.user;
+    const isSelfEdit = currentUser && currentUser._id.toString() === id;
+    const isEmployee = currentUser && (currentUser.role === 'staff' || currentUser.role === 'external');
+
+    if (isSelfEdit && isEmployee) {
+      // Employees cannot edit these sensitive fields on their own profile
+      const restrictedFields = [
+        'role', 'specificRole', 'departmentId', 'managerId', 'employeeCode',
+        'active', 'joiningDate', 'confirmationDate', 'probationDate', 'dateOfBirth',
+        'country', 'currency', 'licenseType', 'portalAccess', 'visaDetails', 'client'
+      ];
+
+      for (const field of restrictedFields) {
+        if (data[field as keyof IUserUpdate] !== undefined) {
+          throw new Error(`You cannot edit ${field} on your own profile. Please contact an administrator.`);
+        }
+      }
+    }
+
+    // Validate required fields if being updated
+    if (data.managerId !== undefined && !data.managerId) {
+      throw new Error('Manager ID is required');
+    }
+    if (data.joiningDate !== undefined && !data.joiningDate) {
+      throw new Error('Joining date is required');
+    }
+    if (data.dateOfBirth !== undefined && !data.dateOfBirth) {
+      throw new Error('Date of birth is required');
     }
 
     // Validate employeeCode uniqueness if it's being updated
@@ -866,16 +921,16 @@ export class UserService extends BaseService {
       }
     }
 
-    // RESTRICTION: active field cannot be updated manually
-    // It can only be set to false during final settlement process
+    // Allow active field to be updated
+    // Log the active field update for tracking
     if (data.active !== undefined) {
-      delete (data as any).active;
-      console.log('⚠️ [User Update] active field is restricted and cannot be updated manually. It can only be set to false during final settlement.');
+      console.log(`🔄 [User Update] Updating active field from ${user.active} to ${data.active}`);
     }
 
     // Validate email uniqueness only for active users
     // Inactive users can have duplicate emails (for rehired employees)
-    const willBeActive = user.active; // Use current user's active status, not from data
+    // Use the new active value from data if provided, otherwise use current user's active status
+    const willBeActive = data.active !== undefined ? data.active : user.active;
     if (willBeActive && data.email && data.email.toLowerCase().trim() !== user.email.toLowerCase().trim()) {
       const existingUser = await User.findOne({
         email: data.email.toLowerCase().trim(),
@@ -908,8 +963,18 @@ export class UserService extends BaseService {
       }
     }
 
+    // Log before assignment
+    console.log('🔄 [User Update] Before Object.assign - user.active:', user.active);
+    console.log('🔄 [User Update] data.active:', data.active);
+
     Object.assign(user, data);
-    return user.save();
+
+    // Log after assignment
+    console.log('✅ [User Update] After Object.assign - user.active:', user.active);
+
+    const savedUser = await user.save();
+    console.log('💾 [User Update] After save - savedUser.active:', savedUser.active);
+    return savedUser;
   }
 
   async delete(id: string) {

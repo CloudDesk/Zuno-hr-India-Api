@@ -1294,10 +1294,11 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
 
     // If effective date is in the future
     if (effectiveDate > currentDate) {
-      // End current assignment on the effective date (end of day)
-      // This ensures past shift's effective end date = new shift's effective start date
-      // No overlap: past shift ends at 23:59:59, new shift starts at 00:00:00 of same date
+      // End current assignment the day BEFORE the effective date (end of day)
+      // This ensures clean transition: past shift ends Day 7, new shift starts Day 8
+      // No overlap or same-day boundary issues
       const endDate = new Date(effectiveDate);
+      endDate.setUTCDate(endDate.getUTCDate() - 1); // Day before effective date
       endDate.setUTCHours(23, 59, 59, 999);
 
       currentAssignment.endDate = endDate;

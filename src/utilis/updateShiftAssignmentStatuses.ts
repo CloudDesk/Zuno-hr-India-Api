@@ -36,14 +36,38 @@ export const updateShiftAssignmentStatuses = async () => {
         );
     }
 
-    // 2. UPCOMING → CURRENT if startDate === today
+    // 2. UPCOMING → CURRENT if startDate <= today (catches any upcoming shifts that should be current)
     const upcomingToCurrent = await ShiftAssignment.find({
         status: 'upcoming',
         isActive: true,
-        startDate: { $gte: todayStartUTC, $lte: todayEndUTC },
+        startDate: { $lte: todayEndUTC },
     });
 
     for (const assignment of upcomingToCurrent) {
+        // Check if there's already a current assignment for this user that needs to be ended
+        const existingCurrent = await ShiftAssignment.findOne({
+            userId: assignment.userId,
+            status: 'current',
+            isActive: true,
+            _id: { $ne: assignment._id }
+        });
+
+        // If there's an existing current assignment and this new one starts today or earlier,
+        // mark the old one as past (set endDate to day before new one starts)
+        if (existingCurrent) {
+            const assignmentStartDate = new Date(assignment.startDate);
+            assignmentStartDate.setUTCHours(0, 0, 0, 0);
+            const previousDay = new Date(assignmentStartDate);
+            previousDay.setUTCDate(previousDay.getUTCDate() - 1);
+            previousDay.setUTCHours(23, 59, 59, 999);
+
+            existingCurrent.endDate = previousDay;
+            existingCurrent.status = 'past';
+            existingCurrent.isActive = false;
+            await existingCurrent.save();
+        }
+
+        // Mark the upcoming assignment as current
         assignment.status = 'current';
         await assignment.save();
 
@@ -55,12 +79,29 @@ export const updateShiftAssignmentStatuses = async () => {
             shiftAssignmentId: assignment._id,
         };
 
+        // Find the next upcoming shift (if any) for this user after this one becomes current
+        const nextUpcoming = await ShiftAssignment.findOne({
+            userId: assignment.userId,
+            status: 'upcoming',
+            isActive: true,
+            startDate: { $gt: todayEndUTC },
+            _id: { $ne: assignment._id }
+        }).sort({ startDate: 1 });
+
+        const nextUpcomingData = nextUpcoming ? {
+            startDate: nextUpcoming.startDate,
+            endDate: nextUpcoming.endDate,
+            shiftCode: nextUpcoming.shiftCode,
+            shiftId: nextUpcoming.shiftId,
+            shiftAssignmentId: nextUpcoming._id,
+        } : null;
+
         await User.updateOne(
             { _id: assignment.userId },
             {
                 $set: {
                     currentShiftAssignmentData: shiftData,
-                    upcomingShiftAssignmentData: null,
+                    upcomingShiftAssignmentData: nextUpcomingData,
                 },
             }
         );

@@ -91,14 +91,14 @@ interface IShiftAssignmentBulk {
 
 /**   * Interface for bulk shift assignment update   */
 interface IShiftAssignmentBulkUpdate {
-  shiftAssignmentId: string;
+  shiftAssignmentId: string | Types.ObjectId;
   shiftId?: string | Types.ObjectId;
   shiftCode?: string;
   startDate?: Date | string;
   endDate?: Date | string | null;
   createNew?: boolean;
   weekends?: number[];
-  modifiedBy: string;
+  modifiedBy: string | Types.ObjectId;
 }
 
 export class ShiftService extends BaseService {
@@ -645,8 +645,14 @@ export class ShiftService extends BaseService {
     const { shiftAssignmentId, shiftId, startDate, endDate, modifiedBy, shiftCode, weekends, createNew = false } = data;
     const currentDate = new Date();
 
+    // Convert shiftAssignmentId to ObjectId for consistent handling
+    const shiftAssignmentIdObj = typeof shiftAssignmentId === 'string' 
+      ? new Types.ObjectId(shiftAssignmentId) 
+      : shiftAssignmentId;
+    const shiftAssignmentIdStr = shiftAssignmentIdObj.toString();
+
     // Validate shift assignment exists
-    const shiftAssignment = await ShiftAssignment.findById(shiftAssignmentId);
+    const shiftAssignment = await ShiftAssignment.findById(shiftAssignmentIdObj);
     console.log(shiftAssignment, "shiftAssignment");
     if (!shiftAssignment) {
       throw new Error('Shift assignment not found');
@@ -690,10 +696,17 @@ export class ShiftService extends BaseService {
 
 
     // Check if this shift is the current or upcoming shift for the user
-    const isCurrentForUser = user.currentShiftAssignmentData &&
-      user.currentShiftAssignmentData.shiftAssignmentId.toString() === shiftAssignmentId.toString();
-    const isUpcomingForUser = user.upcomingShiftAssignmentData &&
-      user.upcomingShiftAssignmentData.shiftAssignmentId.toString() === shiftAssignmentId.toString();
+    // Safely handle potential undefined shiftAssignmentId in user data
+    const currentShiftAssignmentId = user.currentShiftAssignmentData?.shiftAssignmentId;
+    const upcomingShiftAssignmentId = user.upcomingShiftAssignmentData?.shiftAssignmentId;
+    
+    const isCurrentForUser = currentShiftAssignmentId && 
+      (currentShiftAssignmentId.toString() === shiftAssignmentIdStr ||
+       (typeof currentShiftAssignmentId === 'object' && currentShiftAssignmentId.toString() === shiftAssignmentIdStr));
+    
+    const isUpcomingForUser = upcomingShiftAssignmentId && 
+      (upcomingShiftAssignmentId.toString() === shiftAssignmentIdStr ||
+       (typeof upcomingShiftAssignmentId === 'object' && upcomingShiftAssignmentId.toString() === shiftAssignmentIdStr));
 
     // HANDLE CREATE NEW ASSIGNMENT FLOW 
     // If createNew is true and changes are being made to a current assignment
@@ -705,13 +718,13 @@ export class ShiftService extends BaseService {
 
       // Update the existing assignment to end yesterday and set status to past
       await ShiftAssignment.findByIdAndUpdate(
-        shiftAssignmentId,
+        shiftAssignmentIdObj,
         {
           $set: {
             endDate: yesterday,
             status: 'past',
             modifiedAt: currentDate,
-            modifiedBy
+            modifiedBy: typeof modifiedBy === 'string' ? new Types.ObjectId(modifiedBy) : modifiedBy
           }
         }
       );
@@ -728,10 +741,10 @@ export class ShiftService extends BaseService {
         startDate: today,
         endDate: endDate || shiftAssignment.endDate,
         weekendDays: validatedWeekendDays,
-        assignedBy: modifiedBy || shiftAssignment.assignedBy,
+        assignedBy: typeof modifiedBy === 'string' ? new Types.ObjectId(modifiedBy) : (modifiedBy || shiftAssignment.assignedBy),
         assignedAt: currentDate,
         modifiedAt: currentDate,
-        modifiedBy: modifiedBy,
+        modifiedBy: typeof modifiedBy === 'string' ? new Types.ObjectId(modifiedBy) : modifiedBy,
         isActive: true,
         status: 'current'
       };
@@ -751,7 +764,7 @@ export class ShiftService extends BaseService {
     else if (createNew && shiftAssignment.status === 'upcoming') {
       const updateFields: any = {
         modifiedAt: currentDate,
-        modifiedBy,
+        modifiedBy: typeof modifiedBy === 'string' ? new Types.ObjectId(modifiedBy) : modifiedBy,
         weekendDays: validatedWeekendDays
       };
 
@@ -770,7 +783,7 @@ export class ShiftService extends BaseService {
       }
 
       const updatedShiftAssignment = await ShiftAssignment.findByIdAndUpdate(
-        shiftAssignmentId,
+        shiftAssignmentIdObj,
         { $set: updateFields },
         { new: true }
       );
@@ -828,6 +841,9 @@ export class ShiftService extends BaseService {
     // SCENARIO: We're updating a current shift
     if (isCurrentForUser && user.upcomingShiftAssignmentData) {
       const upcomingShiftId = user.upcomingShiftAssignmentData.shiftAssignmentId;
+      if (!upcomingShiftId) {
+        throw new Error('Upcoming shift assignment ID not found in user data');
+      }
       const upcomingShift = await ShiftAssignment.findById(upcomingShiftId);
 
       if (upcomingShift) {
@@ -853,7 +869,7 @@ export class ShiftService extends BaseService {
                 $set: {
                   startDate: newUpcomingStart,
                   modifiedAt: currentDate,
-                  modifiedBy
+                  modifiedBy: typeof modifiedBy === 'string' ? new Types.ObjectId(modifiedBy) : modifiedBy
                 }
               }
             );
@@ -881,7 +897,7 @@ export class ShiftService extends BaseService {
                   $set: {
                     startDate: newUpcomingStart,
                     modifiedAt: currentDate,
-                    modifiedBy
+                    modifiedBy: typeof modifiedBy === 'string' ? new Types.ObjectId(modifiedBy) : modifiedBy
                   }
                 }
               );
@@ -896,6 +912,9 @@ export class ShiftService extends BaseService {
     // SCENARIO: We're updating an upcoming shift
     else if (isUpcomingForUser && user.currentShiftAssignmentData) {
       const currentShiftId = user.currentShiftAssignmentData.shiftAssignmentId;
+      if (!currentShiftId) {
+        throw new Error('Current shift assignment ID not found in user data');
+      }
       const currentShift = await ShiftAssignment.findById(currentShiftId);
 
       if (currentShift) {
@@ -917,7 +936,7 @@ export class ShiftService extends BaseService {
                 $set: {
                   endDate: newCurrentEnd,
                   modifiedAt: currentDate,
-                  modifiedBy
+                  modifiedBy: typeof modifiedBy === 'string' ? new Types.ObjectId(modifiedBy) : modifiedBy
                 }
               }
             );
@@ -944,7 +963,7 @@ export class ShiftService extends BaseService {
                   $set: {
                     endDate: newCurrentEnd,
                     modifiedAt: currentDate,
-                    modifiedBy
+                    modifiedBy: typeof modifiedBy === 'string' ? new Types.ObjectId(modifiedBy) : modifiedBy
                   }
                 }
               );
@@ -973,7 +992,7 @@ export class ShiftService extends BaseService {
     // Update the shift assignment
     const updateFields: any = {
       modifiedAt: currentDate,
-      modifiedBy,
+      modifiedBy: typeof modifiedBy === 'string' ? new Types.ObjectId(modifiedBy) : modifiedBy,
       status: shiftStatus,
       weekendDays: validatedWeekendDays,
     };
@@ -996,7 +1015,7 @@ export class ShiftService extends BaseService {
     console.log(updateFields, "updateFields after updateShiftAssignment");
 
     const updatedShiftAssignment = await ShiftAssignment.findByIdAndUpdate(
-      shiftAssignmentId,
+      shiftAssignmentIdObj,
       { $set: updateFields },
       { new: true }
     );
@@ -1038,49 +1057,108 @@ export class ShiftService extends BaseService {
     const currentDateStart = new Date(currentDate);
     currentDateStart.setUTCHours(0, 0, 0, 0);
     
-    let currentShiftAssignment = null;
-    let upcomingShiftAssignment = null;
+    let currentShiftAssignment: IShiftAssignment | null = null;
+    let upcomingShiftAssignment: IShiftAssignment | null = null;
+
+    // First, mark any upcoming shifts that should be current now
+    for (const assignment of shiftAssignments) {
+      const startDate = new Date(assignment.startDate);
+      const endDate = assignment.endDate ? new Date(assignment.endDate) : null;
+      
+      // If this is an upcoming shift but its start date has arrived, convert it to current
+      if (assignment.status === 'upcoming' && startDate <= currentDate && (!endDate || endDate >= currentDate)) {
+        await ShiftAssignment.findByIdAndUpdate(assignment._id, {
+          $set: { status: 'current' }
+        });
+        assignment.status = 'current';
+        console.log(`🔄 [recalculateUserShiftStatus] Converted upcoming shift ${assignment._id} to current (startDate: ${startDate.toISOString()})`);
+      }
+    }
+
+    // Refresh assignments array to get any shifts that were just converted
+    // This ensures we have the latest status when filtering
+    const refreshedAssignments = await ShiftAssignment.find({
+      userId,
+      isActive: true
+    }).sort({ startDate: 1 });
 
     // Find current shift assignment (startDate <= now && (endDate >= now || endDate == null))
-    currentShiftAssignment = shiftAssignments.find(assignment => {
+    // Prioritize the one that started most recently (if multiple overlap)
+    const potentialCurrentAssignments = refreshedAssignments.filter(assignment => {
       const startDate = new Date(assignment.startDate);
       const endDate = assignment.endDate ? new Date(assignment.endDate) : null;
       return startDate <= currentDate && (!endDate || endDate >= currentDate);
-    });
+    }).sort((a, b) => new Date(b.startDate).getTime() - new Date(a.startDate).getTime());
+
+    currentShiftAssignment = potentialCurrentAssignments[0] || null; // Most recent first
+
+    // If there are multiple potential current assignments, mark older ones as past
+    if (potentialCurrentAssignments.length > 1 && currentShiftAssignment) {
+      for (let i = 1; i < potentialCurrentAssignments.length; i++) {
+        const olderAssignment = potentialCurrentAssignments[i];
+        // Set end date to day before the new current assignment starts
+        const newCurrentStart = new Date(currentShiftAssignment.startDate);
+        newCurrentStart.setUTCHours(0, 0, 0, 0);
+        const previousDay = new Date(newCurrentStart);
+        previousDay.setUTCDate(previousDay.getUTCDate() - 1);
+        previousDay.setUTCHours(23, 59, 59, 999);
+
+        olderAssignment.endDate = previousDay;
+        olderAssignment.status = 'past';
+        olderAssignment.isActive = false;
+        await ShiftAssignment.findByIdAndUpdate(olderAssignment._id, {
+          $set: {
+            endDate: previousDay,
+            status: 'past',
+            isActive: false
+          }
+        });
+      }
+    }
 
     // Update status for current shift assignment
     if (currentShiftAssignment) {
-      await ShiftAssignment.findByIdAndUpdate(currentShiftAssignment._id, {
-        $set: { status: 'current' }
-      });
-      currentShiftAssignment.status = 'current';
+      if (currentShiftAssignment.status !== 'current') {
+        await ShiftAssignment.findByIdAndUpdate(currentShiftAssignment._id, {
+          $set: { status: 'current' }
+        });
+        currentShiftAssignment.status = 'current';
+      }
     }
 
     // Find upcoming shift assignment (startDate > now)
     // Compare dates properly: upcoming shift starts in the future
-    upcomingShiftAssignment = shiftAssignments.find(assignment => {
+    // Use refreshedAssignments to ensure we have latest status
+    const foundUpcoming = refreshedAssignments.find(assignment => {
       const startDate = new Date(assignment.startDate);
       // Set to start of day for comparison
       const startDateStart = new Date(startDate);
       startDateStart.setUTCHours(0, 0, 0, 0);
-      // Upcoming if start date is after today (at start of day)
-      return startDateStart > currentDateStart && assignment._id.toString() !== (currentShiftAssignment?._id.toString() || '');
+      // Upcoming if start date is after today (at start of day) and it's not the current assignment
+      // Also exclude assignments that are already marked as past
+      return startDateStart > currentDateStart && 
+             assignment._id.toString() !== (currentShiftAssignment?._id.toString() || '') &&
+             assignment.status !== 'past';
     });
+    upcomingShiftAssignment = foundUpcoming || null;
 
     // Update status for upcoming shift assignment
     if (upcomingShiftAssignment) {
-      await ShiftAssignment.findByIdAndUpdate(upcomingShiftAssignment._id, {
-        $set: { status: 'upcoming' }
-      });
-      upcomingShiftAssignment.status = 'upcoming';
+      if (upcomingShiftAssignment.status !== 'upcoming') {
+        await ShiftAssignment.findByIdAndUpdate(upcomingShiftAssignment._id, {
+          $set: { status: 'upcoming' }
+        });
+        upcomingShiftAssignment.status = 'upcoming';
+      }
     }
 
-    // Mark past shift assignments
-    for (const assignment of shiftAssignments) {
+    // Mark past shift assignments - use refreshedAssignments which has latest status
+    for (const assignment of refreshedAssignments) {
       if (
         assignment.endDate &&
         new Date(assignment.endDate) < currentDate &&
-        assignment.status !== 'past'
+        assignment.status !== 'past' &&
+        assignment._id.toString() !== currentShiftAssignment?._id.toString()
       ) {
         await ShiftAssignment.findByIdAndUpdate(assignment._id, {
           $set: { 
@@ -1088,8 +1166,37 @@ export class ShiftService extends BaseService {
             isActive: false
           }
         });
+        assignment.status = 'past';
+        assignment.isActive = false;
+        console.log(`📅 [recalculateUserShiftStatus] Marked shift ${assignment._id} as past (endDate: ${assignment.endDate.toISOString()})`);
       }
     }
+    
+    // Final refresh after all status updates to ensure we have the latest data for user update
+    const finalAssignments = await ShiftAssignment.find({
+      userId,
+      isActive: true
+    }).sort({ startDate: 1 });
+    
+    // Re-find current and upcoming with final data
+    const finalCurrent = finalAssignments.find(assignment => {
+      const startDate = new Date(assignment.startDate);
+      const endDate = assignment.endDate ? new Date(assignment.endDate) : null;
+      return startDate <= currentDate && (!endDate || endDate >= currentDate);
+    });
+    
+    const finalUpcoming = finalAssignments.find(assignment => {
+      const startDate = new Date(assignment.startDate);
+      const startDateStart = new Date(startDate);
+      startDateStart.setUTCHours(0, 0, 0, 0);
+      return startDateStart > currentDateStart && 
+             assignment._id.toString() !== (finalCurrent?._id.toString() || '') &&
+             assignment.status !== 'past';
+    });
+    
+    // Use final assignments for user update
+    currentShiftAssignment = finalCurrent || currentShiftAssignment || null;
+    upcomingShiftAssignment = finalUpcoming || upcomingShiftAssignment || null;
 
     // Format the shift data for user update
     const currentShiftData = currentShiftAssignment ? {

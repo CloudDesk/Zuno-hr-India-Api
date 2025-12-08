@@ -232,6 +232,10 @@ export const userRoutes: RouteHandler = async (
               enum: ['active', 'inactive'],
               description: 'Filter by user status'
             },
+            active: {
+              type: 'boolean',
+              description: 'Filter by active status (true for active, false for inactive)'
+            },
             departmentId: {
               type: 'string',
               description: 'Filter by department ID'
@@ -327,6 +331,7 @@ export const userRoutes: RouteHandler = async (
           search?: string;
           role?: string;
           status?: string;
+          active?: boolean;
           departmentId?: string;
           country?: string;
           licenseType?: string;
@@ -463,6 +468,10 @@ export const userRoutes: RouteHandler = async (
               type: 'array',
               items: { type: 'string', enum: ['Active', 'On Hold', 'Resigned'] },
             },
+            active: {
+              type: 'boolean',
+              description: 'Filter by active status (true for active, false for inactive)'
+            },
             role: { type: 'string' },
             search: { type: 'string' },
             country: { type: 'string', enum: ['AE', 'IN'] },
@@ -480,6 +489,7 @@ export const userRoutes: RouteHandler = async (
           departmentId?: string;
           role?: string;
           status?: ('Active' | 'On Hold' | 'Resigned')[];
+          active?: boolean;
           country?: 'AE' | 'IN';
         });
         return reply.status(200).send({
@@ -753,7 +763,10 @@ export const userRoutes: RouteHandler = async (
             managerId: { type: 'string' },
             employeeCode: { type: 'string', maxLength: 50 },
             biometricId: { type: 'string', maxLength: 20 },
-            // active field is NOT allowed in update - it can only be set to false during final settlement
+            active: {
+              type: 'boolean',
+              description: 'User active status (can be updated to true or false)'
+            },
             joiningDate: { type: 'string', format: 'date-time' },
             location: { type: 'string', maxLength: 100 },
             phone: { type: 'string', maxLength: 20 },
@@ -867,12 +880,23 @@ export const userRoutes: RouteHandler = async (
     async (request, reply) => {
       try {
         const { id } = request.params as { id: string };
-        const user = await request.container!.userService.update(id, request.body as any);
+        const body = request.body as any;
+        
+        // Log the incoming request
+        console.log('📨 [PUT /users/:id] Update request received');
+        console.log('🔍 Active field in request body:', body.active, '(type:', typeof body.active, ')');
+        console.log('📦 Full request body:', JSON.stringify(body, null, 2));
+        
+        const user = await request.container!.userService.update(id, body);
+        
+        console.log('✅ [PUT /users/:id] Update successful - user.active:', user.active);
+        
         return reply.send({
           success: true,
           data: user,
         });
       } catch (error: any) {
+        console.error('❌ [PUT /users/:id] Update error:', error.message);
         return reply.status(400).send({
           success: false,
           error: { message: error.message },
