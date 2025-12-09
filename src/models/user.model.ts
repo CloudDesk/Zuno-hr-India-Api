@@ -11,6 +11,14 @@ interface IShiftAssignmentData {
   shiftAssignmentId: ObjectId;
 }
 
+interface IHolidayCalendarHistoryEntry {
+  calendarId: ObjectId;
+  year: number;
+  isActive: boolean;
+  assignedAt: Date;
+  assignedBy?: Types.ObjectId;
+}
+
 interface IBankDetails {
   accountHolderName: string;
   accountNumber: string;
@@ -78,6 +86,7 @@ export interface IUser extends Document {
   upcomingShiftAssignmentData: IShiftAssignmentData | null;
 
   holidayCalendarId?: string;
+  holidayCalendarHistory?: IHolidayCalendarHistoryEntry[];
   resignations?: IResignation[];
 
   bankDetails: IBankDetails[]; // Array for multiple bank accounts
@@ -308,6 +317,18 @@ const userSchema = new Schema<IUser>(
       type: Schema.Types.ObjectId,
       ref: 'holidaycalendar',
       required: false,
+    },
+    holidayCalendarHistory: {
+      type: [
+        {
+          calendarId: { type: ObjectId, ref: 'holidaycalendar', required: true },
+          year: { type: Number, required: true },
+          isActive: { type: Boolean, default: false },
+          assignedAt: { type: Date, default: () => new Date() },
+          assignedBy: { type: Schema.Types.ObjectId, ref: 'User', required: false },
+        }
+      ],
+      default: [],
     },
     resignations: [{
       status: {

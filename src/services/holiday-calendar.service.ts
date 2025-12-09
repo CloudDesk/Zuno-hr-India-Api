@@ -43,19 +43,132 @@ export class HolidayCalendarService extends BaseService {
         super(context);
         this.context = context;
     }
-    private async validateUserCalendars(userIds: string[], year: number, excludeCalendarId?: string) {
-        const usersWithCalendars = await User.find({
-            _id: { $in: userIds },
-            holidayCalendar: { $exists: true },
-        }).populate({
-            path: "holidayCalendar",
-            match: { year, _id: { $ne: excludeCalendarId } },
-        });
 
-        const usersWithConflict = usersWithCalendars.filter((user) => user.holidayCalendarId);
-        if (usersWithConflict.length > 0) {
+    /**
+     * Ensure only one active holiday calendar per user for a given year by
+     * deactivating existing entries, then adding/activating the provided calendar.
+     */
+    private async activateCalendarForUsers(calendarId: Types.ObjectId, year: number, userIds: Types.ObjectId[], session: any, assignedBy?: Types.ObjectId) {
+        if (!userIds.length) return;
+
+        // Ensure array exists
+        await User.updateMany(
+            { _id: { $in: userIds }, $or: [{ holidayCalendarHistory: { $exists: false } }, { holidayCalendarHistory: { $eq: null } }] },
+            { $set: { holidayCalendarHistory: [] } },
+            { session }
+        );
+
+        // Deactivate any active entry for the same year
+        await User.updateMany(
+            { _id: { $in: userIds }, "holidayCalendarHistory.year": year },
+            { $set: { "holidayCalendarHistory.$[entry].isActive": false } },
+            {
+                arrayFilters: [{ "entry.year": year }],
+                session
+            }
+        );
+
+        // Remove duplicate entry for this calendar/year before pushing a fresh active one
+        await User.updateMany(
+            { _id: { $in: userIds } },
+            { $pull: { holidayCalendarHistory: { calendarId, year } } },
+            { session }
+        );
+
+        // Add active entry and set current pointer
+        await User.updateMany(
+            { _id: { $in: userIds } },
+            {
+                $set: { holidayCalendarId: calendarId },
+                $push: {
+                    holidayCalendarHistory: {
+                        calendarId,
+                        year,
+                        isActive: true,
+                        assignedAt: new Date(),
+                        ...(assignedBy ? { assignedBy } : {})
+                    }
+                }
+            },
+            { session }
+        );
+    }
+
+    /**
+     * Mark the calendar inactive in history for the provided users.
+     */
+    private async deactivateCalendarForUsers(calendarId: Types.ObjectId, year: number, userIds: Types.ObjectId[], session: any) {
+        if (!userIds.length) return;
+
+        // Ensure array exists
+        await User.updateMany(
+            { _id: { $in: userIds }, $or: [{ holidayCalendarHistory: { $exists: false } }, { holidayCalendarHistory: { $eq: null } }] },
+            { $set: { holidayCalendarHistory: [] } },
+            { session }
+        );
+
+        await User.updateMany(
+            { _id: { $in: userIds } },
+            {
+                $unset: { holidayCalendarId: "" },
+                $set: { "holidayCalendarHistory.$[entry].isActive": false }
+            },
+            {
+                arrayFilters: [{ "entry.calendarId": calendarId, "entry.year": year }],
+                session
+            }
+        );
+    }
+    private async validateUserCalendars(userIds: string[], year: number, excludeCalendarId?: string) {
+        if (!userIds.length) return;
+
+        const toObjectId = (val: unknown): Types.ObjectId | null => {
+            if (!val) return null;
+            if (val instanceof Types.ObjectId) return val;
+            if (typeof val === 'string' && Types.ObjectId.isValid(val)) {
+                return new Types.ObjectId(val);
+            }
+            return null;
+        };
+
+        // Find users that already have a holidayCalendarId set
+        const usersWithCalendar = await User.find({
+            _id: { $in: userIds.map(id => new Types.ObjectId(id)) },
+            holidayCalendarId: { $exists: true, $ne: null },
+        }).select('_id holidayCalendarId').lean();
+
+        if (!usersWithCalendar.length) return;
+
+        const calendarIds = usersWithCalendar
+            .map(u => toObjectId(u.holidayCalendarId))
+            .filter((id): id is Types.ObjectId => !!id);
+
+        if (!calendarIds.length) return;
+
+        const excludedId = excludeCalendarId ? toObjectId(excludeCalendarId) : null;
+
+        const calendarFilter: any = { _id: { $in: calendarIds }, year };
+        if (excludedId) {
+            calendarFilter._id.$ne = excludedId;
+        }
+
+        const conflictCalendars = await HolidayCalendar.find(calendarFilter)
+            .select('_id')
+            .lean();
+
+        if (!conflictCalendars.length) return;
+
+        const conflictSet = new Set(conflictCalendars.map(c => c._id.toString()));
+        const conflictedUsers = usersWithCalendar
+            .filter(u => {
+                const oid = toObjectId(u.holidayCalendarId);
+                return oid ? conflictSet.has(oid.toString()) : false;
+            })
+            .map(u => u._id.toString());
+
+        if (conflictedUsers.length > 0) {
             throw new Error(
-                `Users ${usersWithConflict.map((u) => u._id.toString()).join(", ")} already have a calendar for ${year}`,
+                `Users ${conflictedUsers.join(", ")} already have a calendar for ${year}`,
             );
         }
     }
@@ -156,15 +269,29 @@ export class HolidayCalendarService extends BaseService {
                         { $unset: { holidayCalendar: 1 } },
                         { session },
                     );
+
+                    await this.deactivateCalendarForUsers(
+                        calendar._id,
+                        targetYear,
+                        removedUsers.map(id => new Types.ObjectId(id)),
+                        session
+                    );
                 }
 
                 // Add calendar to newly assigned users
                 const newUsers = data.userIds.filter((id) => !currentUserIds.includes(id));
                 if (newUsers.length > 0) {
-                    await User.updateMany(
-                        { _id: { $in: newUsers } },
-                        { $set: { holidayCalendar: calendar._id } },
-                        { session },
+                    const assignedBy = this.context.user?._id
+                        ? (this.context.user._id instanceof Types.ObjectId
+                            ? this.context.user._id
+                            : new Types.ObjectId(this.context.user._id))
+                        : undefined;
+                    await this.activateCalendarForUsers(
+                        calendar._id,
+                        targetYear,
+                        newUsers.map(id => new Types.ObjectId(id)),
+                        session,
+                        assignedBy
                     );
                 }
             }
@@ -239,6 +366,9 @@ export class HolidayCalendarService extends BaseService {
                         userId => !employeeObjectIds.some(empId => empId.equals(userId))
                     );
                     await otherCalendar.save({ session });
+
+                    // Deactivate history for removed calendar in same year
+                    await this.deactivateCalendarForUsers(otherCalendar._id, otherCalendar.year, employeeObjectIds, session);
                 }));
             }
 
@@ -246,6 +376,13 @@ export class HolidayCalendarService extends BaseService {
             // Update calendar's assignedTo array
             calendar.assignedTo = employeeObjectIds;
             await calendar.save({ session });
+
+            // Users previously on this calendar but not anymore
+            const usersPreviouslyOnCalendar = await User.find({
+                holidayCalendarId: calendarId,
+                _id: { $nin: employeeObjectIds }
+            }).select('_id').lean();
+            const removedUserIds = usersPreviouslyOnCalendar.map(u => u._id as Types.ObjectId);
 
             // Remove calendar assignment from users not in the list
             await User.updateMany(
@@ -259,14 +396,15 @@ export class HolidayCalendarService extends BaseService {
                 { session }
             );
 
+            await this.deactivateCalendarForUsers(new Types.ObjectId(calendarId), calendar.year, removedUserIds, session);
+
             // Update new users with calendar assignment
-            await User.updateMany(
-                { _id: { $in: employeeObjectIds } },
-                {
-                    $set: { holidayCalendarId: calendarId }
-                },
-                { session }
-            );
+            const assignedBy = this.context.user?._id
+                ? (this.context.user._id instanceof Types.ObjectId
+                    ? this.context.user._id
+                    : new Types.ObjectId(this.context.user._id))
+                : undefined;
+            await this.activateCalendarForUsers(new Types.ObjectId(calendarId), calendar.year, employeeObjectIds, session, assignedBy);
 
             await session.commitTransaction();
 
