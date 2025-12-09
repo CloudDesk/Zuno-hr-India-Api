@@ -4,11 +4,12 @@ import { IUser, Leave, User, LOV } from '../models';
 import { FilterQuery, Types } from 'mongoose';
 import { ILeave } from '../models/leave.model';
 import { LeaveSummaryService } from './leave-summary.service';
-import { ILeaveSummary } from '../models/leave-summary.model';
 import { AttendanceRecord } from '../models/attendance-record.model';
 import { generateEmailTemplate } from '../emails/templates';
 import { emailService } from './email.service';
 import { validateLeaveTypeForCountry } from '../utilis/leave-type-constants';
+import { ShiftAssignment, IShiftAssignment } from '../models/shift.model';
+import { HolidayCalendar } from '../models/holiday-calendar.model';
 
 export interface ILeaveCreate {
   userId: string | Types.ObjectId;
@@ -26,6 +27,14 @@ export interface ILeaveCreate {
   // India-specific: Half-day leave support
   leaveDuration?: 'full-day' | 'half-day';
   halfDayType?: 'first-half' | 'second-half';
+  // Weekend and holiday exclusion information for UI display
+  weekendExclusion?: {
+    weekendDays: number[];
+    excludedDates: Date[];
+    excludedHolidays?: Date[];
+    totalCalendarDays: number;
+    actualDays: number;
+  };
 }
 
 export interface ILeaveQuery {
@@ -62,6 +71,211 @@ export class LeaveService extends BaseService {
   constructor(context: RequestContext) {
     super(context);
     this.leaveSummaryService = new LeaveSummaryService(context);
+  }
+
+  /**
+   * Get active shift assignment for a user within a date range
+   * Returns the shift assignment that is active during the requested date range
+   */
+  private async getShiftAssignmentForDateRange(
+    userId: Types.ObjectId,
+    startDate: Date,
+    endDate: Date
+  ): Promise<IShiftAssignment | null> {
+    const startDateOnly = new Date(startDate);
+    startDateOnly.setUTCHours(0, 0, 0, 0);
+    
+    const endDateOnly = new Date(endDate);
+    endDateOnly.setUTCHours(23, 59, 59, 999);
+
+    // Find active shift assignment that overlaps with the leave date range
+    const shiftAssignment = await ShiftAssignment.findOne({
+      userId,
+      isActive: true,
+      startDate: { $lte: endDateOnly },
+      $or: [
+        { endDate: { $gte: startDateOnly } },
+        { endDate: null },
+      ],
+    }).sort({ startDate: -1 }); // Get the most recent assignment
+
+    return shiftAssignment;
+  }
+
+  /**
+   * Calculate total calendar days in a date range
+   * @param startDate - Start date
+   * @param endDate - End date
+   * @returns Total calendar days (inclusive)
+   */
+  private calculateTotalCalendarDays(startDate: Date, endDate: Date): number {
+    const start = new Date(startDate);
+    start.setUTCHours(0, 0, 0, 0);
+    
+    const end = new Date(endDate);
+    end.setUTCHours(23, 59, 59, 999);
+
+    const diffTime = end.getTime() - start.getTime();
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1; // +1 to include both start and end dates
+    
+    return diffDays;
+  }
+
+  /**
+   * Get mandatory holidays for a date range from user's holiday calendar
+   * @param userId - User ID
+   * @param startDate - Start date of leave
+   * @param endDate - End date of leave
+   * @returns Array of mandatory holiday dates
+   */
+  private async getMandatoryHolidays(
+    userId: Types.ObjectId,
+    startDate: Date,
+    endDate: Date
+  ): Promise<Date[]> {
+    // Get user with holidayCalendarId
+    const user = await User.findById(userId).select('holidayCalendarId');
+    if (!user || !user.holidayCalendarId) {
+      // If no holiday calendar assigned, return empty array (skip all holidays)
+      return [];
+    }
+
+    const start = new Date(startDate);
+    start.setUTCHours(0, 0, 0, 0);
+    
+    const end = new Date(endDate);
+    end.setUTCHours(23, 59, 59, 999);
+
+    // Get holiday calendar
+    const holidayCalendar = await HolidayCalendar.findById(user.holidayCalendarId);
+    if (!holidayCalendar) {
+      console.warn(`Holiday calendar ${user.holidayCalendarId} not found for user ${userId}`);
+      return [];
+    }
+
+    // Filter mandatory holidays within the date range
+    const mandatoryHolidays: Date[] = [];
+    const startTime = start.getTime();
+    const endTime = end.getTime();
+
+    for (const holiday of holidayCalendar.holidays) {
+      if (holiday.type === 'mandatory') {
+        const holidayDate = new Date(holiday.date);
+        holidayDate.setUTCHours(0, 0, 0, 0);
+        const holidayTime = holidayDate.getTime();
+
+        // Check if holiday falls within the date range
+        if (holidayTime >= startTime && holidayTime <= endTime) {
+          mandatoryHolidays.push(holidayDate);
+        }
+      }
+    }
+
+    return mandatoryHolidays;
+  }
+
+  /**
+   * Calculate working days excluding weekends and mandatory holidays
+   * @param startDate - Start date of leave
+   * @param endDate - End date of leave
+   * @param weekendDays - Array of weekend day numbers (0=Sunday, 6=Saturday)
+   * @param mandatoryHolidays - Array of mandatory holiday dates
+   * @returns Number of working days (excluding weekends and holidays)
+   */
+  private calculateWorkingDaysExcludingWeekendsAndHolidays(
+    startDate: Date,
+    endDate: Date,
+    weekendDays: number[],
+    mandatoryHolidays: Date[]
+  ): number {
+    const start = new Date(startDate);
+    start.setUTCHours(0, 0, 0, 0);
+    
+    const end = new Date(endDate);
+    end.setUTCHours(23, 59, 59, 999);
+
+    // Create a Set of holiday dates for quick lookup (normalize to date string for comparison)
+    const holidayDatesSet = new Set(
+      mandatoryHolidays.map(holiday => {
+        const d = new Date(holiday);
+        d.setUTCHours(0, 0, 0, 0);
+        return d.getTime();
+      })
+    );
+
+    let workingDays = 0;
+    const currentDate = new Date(start);
+
+    while (currentDate <= end) {
+      const dayOfWeek = currentDate.getDay(); // 0 = Sunday, 6 = Saturday
+      const currentTime = currentDate.getTime();
+      
+      // Check if the day is not a weekend and not a mandatory holiday
+      if (!weekendDays.includes(dayOfWeek) && !holidayDatesSet.has(currentTime)) {
+        workingDays++;
+      }
+      
+      // Move to next day
+      currentDate.setDate(currentDate.getDate() + 1);
+    }
+
+    return workingDays;
+  }
+
+  /**
+   * Get excluded dates (weekend dates and mandatory holidays) within a date range
+   * @param startDate - Start date of leave
+   * @param endDate - End date of leave
+   * @param weekendDays - Array of weekend day numbers (0=Sunday, 6=Saturday)
+   * @param mandatoryHolidays - Array of mandatory holiday dates
+   * @returns Object with excludedDates (weekends + holidays) and excludedHolidays
+   */
+  private getExcludedDatesWithHolidays(
+    startDate: Date,
+    endDate: Date,
+    weekendDays: number[],
+    mandatoryHolidays: Date[]
+  ): { excludedDates: Date[]; excludedHolidays: Date[] } {
+    const start = new Date(startDate);
+    start.setUTCHours(0, 0, 0, 0);
+    
+    const end = new Date(endDate);
+    end.setUTCHours(23, 59, 59, 999);
+
+    const excludedDates: Date[] = [];
+    const excludedHolidays: Date[] = [];
+    const currentDate = new Date(start);
+
+    // Create a Set of holiday dates for quick lookup
+    const holidayDatesSet = new Set(
+      mandatoryHolidays.map(holiday => {
+        const d = new Date(holiday);
+        d.setUTCHours(0, 0, 0, 0);
+        return d.getTime();
+      })
+    );
+
+    while (currentDate <= end) {
+      const dayOfWeek = currentDate.getDay();
+      const currentTime = currentDate.getTime();
+      const currentDateCopy = new Date(currentDate);
+
+      // Check if it's a weekend
+      if (weekendDays.includes(dayOfWeek)) {
+        excludedDates.push(currentDateCopy);
+      }
+      
+      // Check if it's a mandatory holiday
+      if (holidayDatesSet.has(currentTime)) {
+        excludedDates.push(currentDateCopy);
+        excludedHolidays.push(currentDateCopy);
+      }
+      
+      // Move to next day
+      currentDate.setDate(currentDate.getDate() + 1);
+    }
+
+    return { excludedDates, excludedHolidays };
   }
 
   async findById(id: string | Types.ObjectId): Promise<ILeave> {
@@ -348,8 +562,17 @@ export class LeaveService extends BaseService {
   }
 
   async create(leaveData: ILeaveCreate): Promise<ILeave> {
+    // Ensure weekendExclusion is not passed from frontend - it will be calculated by backend
+    // Remove any weekendExclusion that might have been passed
+    delete leaveData.weekendExclusion;
+    
+    // noOfDays will be calculated by backend - ignore any value passed from frontend
+    // It will be set based on:
+    // - Half-day leaves: 0.5
+    // - Full-day leaves: working days excluding weekends and mandatory holidays
+
     // VALIDATION 1: Check if leave type is valid for employee's country
-    const user = await User.findById(leaveData.userId).select('country name email');
+    const user = await User.findById(leaveData.userId).select('country name email holidayCalendarId');
     if (!user) {
       throw new Error('User not found');
     }
@@ -381,6 +604,19 @@ export class LeaveService extends BaseService {
     // Ensure leaveType is set before proceeding
     if (!leaveData.leaveType) {
       throw new Error('Leave type is required. Please provide leaveType or ensure leaveTypeId points to a valid Lov with values.');
+    }
+
+    // VALIDATION: Check that startDate and endDate are in the same year
+    // Leave cannot span across multiple years - user must apply for separate leaves for each year
+    const startYear = new Date(leaveData.startDate).getFullYear();
+    const endYear = new Date(leaveData.endDate).getFullYear();
+    
+    if (startYear !== endYear) {
+      throw new Error(
+        `Leave cannot span across multiple years. ` +
+        `Start date (${startYear}) and end date (${endYear}) must be in the same year. ` +
+        `Please apply for separate leaves for each year.`
+      );
     }
 
     // India-specific: Validate half-day leave restrictions
@@ -425,6 +661,7 @@ export class LeaveService extends BaseService {
 
     // Check for overlapping leaves (handle half-day leaves)
     // Exclude 'Rejected' and 'Cancelled' statuses - cancelled leaves can be re-applied
+    // Note: Overlap check is based on calendar dates, not working days
     const baseQuery: any = {
       userId: leaveData.userId,
       status: { $nin: ['Rejected', 'Cancelled'] },
@@ -484,12 +721,12 @@ export class LeaveService extends BaseService {
       }
     } else {
       // For full-day leaves:
-      // 1. Check if any full-day leave overlaps with date range
-      // 2. Check if any half-day leave exists on any date in the range
+      // 1. Check if any full-day leave overlaps with date range (calendar dates)
+      // 2. Check if any half-day leave exists on any date in the range (calendar dates)
       const startDate = new Date(leaveData.startDate);
       const endDate = new Date(leaveData.endDate);
 
-      // Check 1: Full-day leave overlap
+      // Check 1: Full-day leave overlap (based on calendar dates)
       // Check if any full-day leave (or leave without leaveDuration field) overlaps with the date range
       const fullDayOverlapQuery = {
         ...baseQuery,
@@ -501,7 +738,7 @@ export class LeaveService extends BaseService {
         ]
       };
 
-      // Check 2: Any half-day leave in the date range
+      // Check 2: Any half-day leave in the date range (based on calendar dates)
       // For each day in the range, check if any half-day exists
       const halfDayOverlapQuery = {
         ...baseQuery,
@@ -527,6 +764,81 @@ export class LeaveService extends BaseService {
         throw new Error('A half-day leave already exists in the selected date range. Cannot apply full-day leave.');
       }
     }
+
+    // Calculate noOfDays excluding weekends and mandatory holidays for full-day leaves
+    if (leaveData.leaveDuration !== 'half-day') {
+      const userIdObj = typeof leaveData.userId === 'string' 
+        ? new Types.ObjectId(leaveData.userId) 
+        : leaveData.userId;
+
+      // Get active shift assignment for the date range
+      const shiftAssignment = await this.getShiftAssignmentForDateRange(
+        userIdObj,
+        leaveData.startDate,
+        leaveData.endDate
+      );
+
+      // Get weekendDays from shift assignment, or default to [0, 6] (Sunday and Saturday)
+      const weekendDays = shiftAssignment?.weekendDays && shiftAssignment.weekendDays.length > 0
+        ? shiftAssignment.weekendDays
+        : [0, 6]; // Default: Sunday (0) and Saturday (6)
+
+      // Get mandatory holidays for the date range (if user has holidayCalendarId)
+      const mandatoryHolidays = await this.getMandatoryHolidays(
+        userIdObj,
+        leaveData.startDate,
+        leaveData.endDate
+      );
+
+      // Calculate working days excluding weekends and mandatory holidays
+      const workingDays = this.calculateWorkingDaysExcludingWeekendsAndHolidays(
+        leaveData.startDate,
+        leaveData.endDate,
+        weekendDays,
+        mandatoryHolidays
+      );
+
+      // Validate that there's at least one working day
+      if (workingDays <= 0) {
+        const weekendNames = weekendDays.map(day => {
+          const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+          return days[day];
+        }).join(', ');
+        const holidayCount = mandatoryHolidays.length;
+        const holidayText = holidayCount > 0 ? ` and ${holidayCount} mandatory holiday(s)` : '';
+        throw new Error(`All days in the requested date range fall on weekends (${weekendNames})${holidayText}. Please select dates that include at least one working day.`);
+      }
+
+      // Get excluded dates (weekend dates and mandatory holidays)
+      const { excludedDates, excludedHolidays } = this.getExcludedDatesWithHolidays(
+        leaveData.startDate,
+        leaveData.endDate,
+        weekendDays,
+        mandatoryHolidays
+      );
+
+      // Calculate total calendar days
+      const totalCalendarDays = this.calculateTotalCalendarDays(
+        leaveData.startDate,
+        leaveData.endDate
+      );
+
+      // Update noOfDays to exclude weekends and mandatory holidays
+      leaveData.noOfDays = workingDays;
+
+      // Store weekend and holiday exclusion information for UI display
+      leaveData.weekendExclusion = {
+        weekendDays: weekendDays,
+        excludedDates: excludedDates,
+        excludedHolidays: excludedHolidays,
+        totalCalendarDays: totalCalendarDays,
+        actualDays: workingDays
+      };
+      
+      console.log(`✅ [Weekend & Holiday Exclusion] Calculated ${workingDays} working days (excluding weekends: ${weekendDays.join(', ')} and ${mandatoryHolidays.length} mandatory holiday(s)) for leave from ${leaveData.startDate.toISOString().split('T')[0]} to ${leaveData.endDate.toISOString().split('T')[0]}`);
+      console.log(`📅 [Exclusion] Excluded ${excludedDates.length} date(s) total (${excludedDates.length - excludedHolidays.length} weekend(s) + ${excludedHolidays.length} holiday(s))`);
+    }
+
     console.log(leaveData, 'leaveData 2 data');
     const leave: ILeave = await Leave.create(leaveData);
     // Update leave summary when leave is created
@@ -589,6 +901,7 @@ export class LeaveService extends BaseService {
     if (leave.status !== 'Pending') {
       throw new Error('Leave request has already been processed');
     }
+    
     console.log(updateData, 'updateData in update Status');
     leave.status = updateData.status;
     leave.approvedById = updateData.approvedById;
@@ -682,6 +995,73 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
       // Don't fail the request if email fails - log the error but continue
     }
 
+    // Send email notification to all admins
+    try {
+      const admins = await User.find({
+        $or: [
+          { role: 'admin' },
+          { isSuperAdmin: true }
+        ],
+        active: true
+      }).select('name email').lean();
+
+      if (admins && admins.length > 0) {
+        const employee: IUser = await User.findById(new Types.ObjectId(leave.userId)).select('name email');
+        const approver: IUser = await User.findById((leave.approvedBy?._id)).select('name email');
+
+        const fromDateFormatted = leave.startDate.toLocaleDateString('en-US', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        });
+        const toDateFormatted = leave.endDate.toLocaleDateString('en-US', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        });
+
+        const adminEmails = admins.map(admin => admin.email).filter(Boolean);
+        
+        if (adminEmails.length > 0) {
+          const adminEmailText = `Dear Admin,
+
+A leave request has been ${leave.status.toLowerCase()} by ${approver?.name || 'Manager'}.
+
+Request Details:
+- Employee: ${employee?.name || 'N/A'} (${employee?.email || 'N/A'})
+- Leave Type: ${leave.leaveType}
+- From Date: ${fromDateFormatted}
+- To Date: ${toDateFormatted}
+- Total Days: ${leave.noOfDays}
+- Reason: ${leave.reason || 'N/A'}
+- Status: ${leave.status}
+${leave.remarks ? `- Remarks: ${leave.remarks}` : ''}
+- Approved/Rejected By: ${approver?.name || 'Manager'}
+
+This is an automated notification for your records.
+
+Regards,
+${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
+
+          await emailService.sendEmail({
+            body: {
+              to: adminEmails,
+              subject: `Leave Request ${leave.status} - ${employee?.name || 'Employee'}`,
+              text: adminEmailText,
+              html: adminEmailText.replace(/\n/g, '<br>'),
+            }
+          });
+
+          console.log(`Email notification sent to ${adminEmails.length} admin(s) for leave request ${leave._id} - Status: ${leave.status}`);
+        }
+      }
+    } catch (adminEmailError) {
+      console.error('Failed to send email to admins for leave request:', adminEmailError);
+      // Don't fail the request if admin email fails
+    }
+
 
     // If leave is approved, mark attendance records as onLeave
     if (updateData.status === 'Approved') {
@@ -739,7 +1119,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
               // status: 'present',
               attendanceStatus: "Absent",
               updatedAt: new Date(),
-              updatedBy: updateData.rejectedById,
+              updatedBy: updateData.rejectedById || updateData.approvedById,
             },
             $unset: {
               leaveRequestId: '',
@@ -752,18 +1132,32 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
         currentDate.setDate(currentDate.getDate() + 1);
       }
 
-      let result = await this.leaveSummaryService.createOrUpdateLeaveSummary(
-        leave.userId as Types.ObjectId,
-        startDate.getFullYear(),
-        leave.leaveType as keyof ILeaveSummary,
-        updateData.status as string,
-        { availed: (leave.noOfDays as number) }
-      );
-      console.log(result, 'result');
+      // Decrease leave balance and remove leaveRequestId from leave summary
+      // This reverses the effect of creating the leave request
+      // The balance was increased when the leave was created (even if Pending),
+      // so we need to decrease it when rejected/cancelled
+      // NOTE: This is ONLY called for Rejected/Cancelled, NOT for Approved
+      try {
+        await this.leaveSummaryService.decreaseLeaveBalance(
+          leave.userId as Types.ObjectId,
+          startDate.getFullYear(),
+          leave.leaveType || '',
+          leave.noOfDays as number,
+          leave._id as Types.ObjectId
+        );
+        console.log(`✅ [Leave ${updateData.status}] Decreased leave balance by ${leave.noOfDays} days for leave ${leave._id}`);
+      } catch (error: any) {
+        console.error(`❌ [Leave ${updateData.status}] Failed to update leave summary: ${error.message}`);
+        // Continue even if summary update fails
+      }
 
-      // Optionally log the rejection event or notify the user
-      console.log(`Leave request ${leave._id} rejected by user ${updateData.rejectedById}`);
+      // Optionally log the rejection/cancellation event
+      console.log(`Leave request ${leave._id} ${updateData.status.toLowerCase()} by user ${updateData.rejectedById || updateData.approvedById}`);
     }
+    
+    // NOTE: When status is 'Approved', we do NOT call decreaseLeaveBalance
+    // because the balance was already increased when the leave was created,
+    // and we want to keep it that way for approved leaves
 
 
     return this.findById(id);
@@ -781,6 +1175,22 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
 
     if (leave.status !== 'Pending') {
       throw new Error('Cannot cancel processed leave request');
+    }
+
+    // Decrease leave balance and remove leaveRequestId from leave summary
+    // This reverses the effect of creating the leave request
+    try {
+      await this.leaveSummaryService.decreaseLeaveBalance(
+        leave.userId as Types.ObjectId,
+        new Date(leave.startDate).getFullYear(),
+        leave.leaveType || '',
+        leave.noOfDays as number,
+        leave._id as Types.ObjectId
+      );
+      console.log(`✅ [Leave Cancel] Decreased leave balance by ${leave.noOfDays} days for leave ${leave._id}`);
+    } catch (error: any) {
+      console.error(`❌ [Leave Cancel] Failed to update leave summary: ${error.message}`);
+      // Continue with deletion even if summary update fails
     }
 
     await leave.deleteOne();

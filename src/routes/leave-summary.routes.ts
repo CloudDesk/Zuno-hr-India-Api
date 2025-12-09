@@ -33,10 +33,6 @@ const getLeaveSummarySchema = {
                 availed: { type: 'number' },
                 remaining: { type: 'number' },
                 leaveRequests: { type: 'array', items: { type: 'string' } },
-                allocationDate: { type: 'string', format: 'date-time' },
-                expiryDate: { type: 'string', format: 'date-time' },
-                originalExpiryDate: { type: 'string', format: 'date-time' },
-                manuallyAdjusted: { type: 'boolean' },
               },
             },
             sick: {
@@ -46,10 +42,6 @@ const getLeaveSummarySchema = {
                 availed: { type: 'number' },
                 remaining: { type: 'number' },
                 leaveRequests: { type: 'array', items: { type: 'string' } },
-                allocationDate: { type: 'string', format: 'date-time' },
-                expiryDate: { type: 'string', format: 'date-time' },
-                originalExpiryDate: { type: 'string', format: 'date-time' },
-                manuallyAdjusted: { type: 'boolean' },
               },
             },
             compOff: {
@@ -59,10 +51,6 @@ const getLeaveSummarySchema = {
                 availed: { type: 'number' },
                 remaining: { type: 'number' },
                 leaveRequests: { type: 'array', items: { type: 'string' } },
-                allocationDate: { type: 'string', format: 'date-time' },
-                expiryDate: { type: 'string', format: 'date-time' },
-                originalExpiryDate: { type: 'string', format: 'date-time' },
-                manuallyAdjusted: { type: 'boolean' },
               },
             },
             lossOfPay: {
@@ -99,10 +87,6 @@ const getLeaveSummarySchema = {
                 availed: { type: 'number' },
                 remaining: { type: 'number' },
                 leaveRequests: { type: 'array', items: { type: 'string' } },
-                allocationDate: { type: 'string', format: 'date-time' },
-                expiryDate: { type: 'string', format: 'date-time' },
-                originalExpiryDate: { type: 'string', format: 'date-time' },
-                manuallyAdjusted: { type: 'boolean' },
               },
             },
             workFromHome: {
@@ -112,10 +96,6 @@ const getLeaveSummarySchema = {
                 availed: { type: 'number' },
                 remaining: { type: 'number' },
                 leaveRequests: { type: 'array', items: { type: 'string' } },
-                allocationDate: { type: 'string', format: 'date-time' },
-                expiryDate: { type: 'string', format: 'date-time' },
-                originalExpiryDate: { type: 'string', format: 'date-time' },
-                manuallyAdjusted: { type: 'boolean' },
               },
             },
           },
@@ -236,84 +216,12 @@ const updateLeaveAllotmentSchema = {
       maternity: {
         type: 'number',
         minimum: 0,
-        description: 'Maternity leave days (UAE-specific)',
+        description: 'Maternity leave days',
       },
       workFromHome: {
         type: 'number',
         minimum: 0,
         description: 'Work From Home days',
-      },
-      // UAE-specific: Optional allocation dates
-      annualAllocationDate: {
-        type: 'string',
-        format: 'date-time',
-        description: 'Allocation date for annual leave (UAE - auto sets expiry to +1 year)',
-      },
-      sickAllocationDate: {
-        type: 'string',
-        format: 'date-time',
-        description: 'Allocation date for sick leave (UAE)',
-      },
-      otherPaidAllocationDate: {
-        type: 'string',
-        format: 'date-time',
-        description: 'Allocation date for other paid leave (UAE)',
-      },
-      otherUnpaidAllocationDate: {
-        type: 'string',
-        format: 'date-time',
-        description: 'Allocation date for other unpaid leave (UAE)',
-      },
-      compOffAllocationDate: {
-        type: 'string',
-        format: 'date-time',
-        description: 'Allocation date for comp-off (UAE)',
-      },
-      maternityAllocationDate: {
-        type: 'string',
-        format: 'date-time',
-        description: 'Allocation date for maternity leave (UAE)',
-      },
-      workFromHomeAllocationDate: {
-        type: 'string',
-        format: 'date-time',
-        description: 'Allocation date for work from home (UAE)',
-      },
-      // UAE-specific: Optional manual expiry dates
-      annualExpiryDate: {
-        type: 'string',
-        format: 'date-time',
-        description: 'Manual expiry date for annual leave (UAE)',
-      },
-      sickExpiryDate: {
-        type: 'string',
-        format: 'date-time',
-        description: 'Manual expiry date for sick leave (UAE)',
-      },
-      otherPaidExpiryDate: {
-        type: 'string',
-        format: 'date-time',
-        description: 'Manual expiry date for other paid leave (UAE)',
-      },
-      otherUnpaidExpiryDate: {
-        type: 'string',
-        format: 'date-time',
-        description: 'Manual expiry date for other unpaid leave (UAE)',
-      },
-      compOffExpiryDate: {
-        type: 'string',
-        format: 'date-time',
-        description: 'Manual expiry date for comp-off (UAE)',
-      },
-      maternityExpiryDate: {
-        type: 'string',
-        format: 'date-time',
-        description: 'Manual expiry date for maternity leave (UAE)',
-      },
-      workFromHomeExpiryDate: {
-        type: 'string',
-        format: 'date-time',
-        description: 'Manual expiry date for work from home (UAE)',
       }
     },
   },
@@ -459,20 +367,6 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
           compOff,
           maternity,
           workFromHome,
-          annualAllocationDate,
-          sickAllocationDate,
-          otherPaidAllocationDate,
-          otherUnpaidAllocationDate,
-          compOffAllocationDate,
-          maternityAllocationDate,
-          workFromHomeAllocationDate,
-          annualExpiryDate,
-          sickExpiryDate,
-          otherPaidExpiryDate,
-          otherUnpaidExpiryDate,
-          compOffExpiryDate,
-          maternityExpiryDate,
-          workFromHomeExpiryDate,
         } = request.body as {
           userId: string;
           year: number;
@@ -483,22 +377,6 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
           compOff?: number;
           maternity?: number;
           workFromHome?: number;
-          // UAE-specific allocation dates
-          annualAllocationDate?: string;
-          sickAllocationDate?: string;
-          otherPaidAllocationDate?: string;
-          otherUnpaidAllocationDate?: string;
-          compOffAllocationDate?: string;
-          maternityAllocationDate?: string;
-          workFromHomeAllocationDate?: string;
-          // UAE-specific manual expiry dates
-          annualExpiryDate?: string;
-          sickExpiryDate?: string;
-          otherPaidExpiryDate?: string;
-          otherUnpaidExpiryDate?: string;
-          compOffExpiryDate?: string;
-          maternityExpiryDate?: string;
-          workFromHomeExpiryDate?: string;
         };
 
         const updatedSummary = await request.container!.leaveSummaryService.updateLeaveAllotments(
@@ -512,22 +390,6 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
             compOff,
             maternity,
             workFromHome,
-            // Convert allocation date strings to Date objects if provided
-            annualAllocationDate: annualAllocationDate ? new Date(annualAllocationDate) : undefined,
-            sickAllocationDate: sickAllocationDate ? new Date(sickAllocationDate) : undefined,
-            otherPaidAllocationDate: otherPaidAllocationDate ? new Date(otherPaidAllocationDate) : undefined,
-            otherUnpaidAllocationDate: otherUnpaidAllocationDate ? new Date(otherUnpaidAllocationDate) : undefined,
-            compOffAllocationDate: compOffAllocationDate ? new Date(compOffAllocationDate) : undefined,
-            maternityAllocationDate: maternityAllocationDate ? new Date(maternityAllocationDate) : undefined,
-            workFromHomeAllocationDate: workFromHomeAllocationDate ? new Date(workFromHomeAllocationDate) : undefined,
-            // Convert expiry date strings to Date objects if provided (manual override)
-            annualExpiryDate: annualExpiryDate ? new Date(annualExpiryDate) : undefined,
-            sickExpiryDate: sickExpiryDate ? new Date(sickExpiryDate) : undefined,
-            otherPaidExpiryDate: otherPaidExpiryDate ? new Date(otherPaidExpiryDate) : undefined,
-            otherUnpaidExpiryDate: otherUnpaidExpiryDate ? new Date(otherUnpaidExpiryDate) : undefined,
-            compOffExpiryDate: compOffExpiryDate ? new Date(compOffExpiryDate) : undefined,
-            maternityExpiryDate: maternityExpiryDate ? new Date(maternityExpiryDate) : undefined,
-            workFromHomeExpiryDate: workFromHomeExpiryDate ? new Date(workFromHomeExpiryDate) : undefined,
           }
         );
 
@@ -668,7 +530,8 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
         querystring: {
           type: 'object',
           properties: {
-            year: { type: 'number' }
+            year: { type: 'number' },
+            yearLessThan: { type: 'number', description: 'Filter by years less than or equal to this value (e.g., 2020 for all records from 2020 and earlier)' }
           }
         }
       },
@@ -677,12 +540,12 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
     async (request, reply) => {
       try {
         const { userId } = request.params as { userId: string };
-        const { year } = request.query as { year?: number };
+        const { year, yearLessThan } = request.query as { year?: number; yearLessThan?: number };
         
         const { LeaveReleaseService } = await import('../services/leave-release.service');
         const leaveReleaseService = new LeaveReleaseService(request.container!.requestContext);
         
-        const history = await leaveReleaseService.getReleaseHistory(userId, year);
+        const history = await leaveReleaseService.getReleaseHistory(userId, year, yearLessThan);
         
         return reply.send({
           success: true,
@@ -901,7 +764,8 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
           properties: {
             employeeId: { type: 'string', description: 'Filter by employee ID' },
             search: { type: 'string', description: 'Search by employee name, email, employee code, leave type, release type, or notes' },
-            year: { type: 'number', description: 'Filter by year' },
+            year: { type: 'number', description: 'Filter by exact year. Takes precedence over yearLessThan if both are provided.' },
+            yearLessThan: { type: 'number', description: 'Filter by years less than or equal to this value (e.g., 2021 returns all records from 2021 and earlier). Useful for viewing older year data.' },
             leaveType: { 
               type: 'string', 
               enum: ['annual', 'sick', 'compOff', 'lossOfPay', 'otherPaid', 'otherUnpaid'],
@@ -909,7 +773,7 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
             },
             releaseType: {
               type: 'string',
-              enum: ['monthly', 'quarterly'],
+              enum: ['monthly', 'quarterly', 'carryforward'],
               description: 'Filter by release type'
             },
             page: { type: 'number', minimum: 1, default: 1, description: 'Page number' },
@@ -963,6 +827,7 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
         const queryParams = request.query as any;
         const employeeId = queryParams.employeeId || undefined;
         const year = queryParams.year ? parseInt(queryParams.year, 10) : undefined;
+        const yearLessThan = queryParams.yearLessThan ? parseInt(queryParams.yearLessThan, 10) : undefined;
         const leaveType = queryParams.leaveType || undefined;
         const releaseType = queryParams.releaseType || undefined;
         const search = queryParams.search || undefined;
@@ -975,6 +840,7 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
         const result = await leaveReleaseService.getAllReleases({
           employeeId,
           year,
+          yearLessThan,
           leaveType,
           releaseType,
           search,
@@ -1009,8 +875,9 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
           properties: {
             employeeId: { type: 'string', description: 'Filter by employee ID' },
             search: { type: 'string', description: 'Search by employee name, email, employee code, leave type, notes, or year' },
-            fromYear: { type: 'number', description: 'Filter by from year' },
+            fromYear: { type: 'number', description: 'Filter by exact from year. Takes precedence over yearLessThan if both are provided.' },
             toYear: { type: 'number', description: 'Filter by to year' },
+            yearLessThan: { type: 'number', description: 'Filter by from years less than or equal to this value (e.g., 2021 returns all carry-forwards where fromYear <= 2021 - includes 2021, 2020, 2019, and all earlier years). Useful for viewing older year data.' },
             leaveType: { 
               type: 'string', 
               enum: ['annual', 'sick', 'compOff', 'lossOfPay', 'otherPaid', 'otherUnpaid'],
@@ -1068,6 +935,7 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
         const employeeId = queryParams.employeeId || undefined;
         const fromYear = queryParams.fromYear ? parseInt(queryParams.fromYear, 10) : undefined;
         const toYear = queryParams.toYear ? parseInt(queryParams.toYear, 10) : undefined;
+        const yearLessThan = queryParams.yearLessThan ? parseInt(queryParams.yearLessThan, 10) : undefined;
         const leaveType = queryParams.leaveType || undefined;
         const search = queryParams.search || undefined;
         const page = queryParams.page ? parseInt(queryParams.page, 10) : 1;
@@ -1080,6 +948,7 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
           employeeId,
           fromYear,
           toYear,
+          yearLessThan,
           leaveType,
           search,
           page,

@@ -571,6 +571,66 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
       // Don't fail the request if email fails - log the error but continue
     }
 
+    // Send email notification to all admins
+    try {
+      const admins = await User.find({
+        $or: [
+          { role: 'admin' },
+          { isSuperAdmin: true }
+        ],
+        active: true
+      }).select('name email').lean();
+
+      if (admins && admins.length > 0) {
+        const employee = await User.findById(request.userId).select('name email').lean();
+        const approver = await User.findById(updateData.approvedById).select('name email').lean();
+
+        const holidayDateFormatted = request.holidayDate.toLocaleDateString('en-US', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        });
+
+        const adminEmails = admins.map(admin => admin.email).filter(Boolean);
+        
+        if (adminEmails.length > 0) {
+          const adminEmailText = `Dear Admin,
+
+An optional holiday request has been ${updateData.status.toLowerCase()} by ${approver?.name || 'Manager'}.
+
+Request Details:
+- Employee: ${employee?.name || 'N/A'} (${employee?.email || 'N/A'})
+- Holiday Name: ${request.holidayName}
+- Date: ${holidayDateFormatted}
+- Year: ${request.year}
+${request.reason ? `- Reason: ${request.reason}` : ''}
+- Status: ${updateData.status}
+${updateData.remarks ? `- Remarks: ${updateData.remarks}` : ''}
+- Approved/Rejected By: ${approver?.name || 'Manager'}
+
+This is an automated notification for your records.
+
+Regards,
+${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
+
+          await emailService.sendEmail({
+            body: {
+              to: adminEmails,
+              subject: `Optional Holiday Request ${updateData.status} - ${employee?.name || 'Employee'}`,
+              text: adminEmailText,
+              html: adminEmailText.replace(/\n/g, '<br>'),
+            }
+          });
+
+          console.log(`Email notification sent to ${adminEmails.length} admin(s) for optional holiday request ${request._id} - Status: ${updateData.status}`);
+        }
+      }
+    } catch (adminEmailError) {
+      console.error('Failed to send email to admins for optional holiday request:', adminEmailError);
+      // Don't fail the request if admin email fails
+    }
+
     return this.findById(request._id);
   }
 

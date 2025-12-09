@@ -101,7 +101,7 @@ export const leaveRoutes: RouteHandler = async (
           endDate: string;
           remarks?: string;
           leaveType?: string;
-          noOfDays: number;
+          noOfDays?: number; // Optional - will be calculated by backend (excludes weekends and mandatory holidays)
           reason: string;
           appliedTo: {
             _id: string;
@@ -118,7 +118,8 @@ export const leaveRoutes: RouteHandler = async (
           startDate: new Date(body.startDate),
           endDate: new Date(body.endDate),
           remarks: body.remarks,
-          noOfDays: body.noOfDays,
+          // noOfDays is calculated by backend - ignore frontend value if provided
+          noOfDays: body.noOfDays, // Will be overridden by backend calculation
           reason: body.reason,
           appliedTo: body.appliedTo,
           leaveDuration: body.leaveDuration || 'full-day',

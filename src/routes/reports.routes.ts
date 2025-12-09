@@ -39,6 +39,8 @@ interface GetReportsRequest {
         name?: string;
         apiName?: string;
         object?: string;
+        description?: string;
+        search?: string; // General search across multiple fields
         page?: number;
         limit?: number;
     };
@@ -103,13 +105,25 @@ export const reportRoutes = async (
         '/',
         async (request, reply) => {
             try {
-                const { name, apiName, object, page = 1, limit = 10 } = request.query;
+                const { name, apiName, object, description, search, page = 1, limit = 10 } = request.query;
                 const filter: Record<string, any> = {};
 
-                // Apply filters if provided
+                // Apply specific field filters if provided
                 if (name) filter.name = { $regex: name, $options: 'i' };
                 if (apiName) filter.apiName = { $regex: apiName, $options: 'i' };
                 if (object) filter.object = object;
+                if (description) filter.description = { $regex: description, $options: 'i' };
+
+                // Apply general search across multiple fields if provided
+                if (search) {
+                    const searchRegex = { $regex: search, $options: 'i' };
+                    filter.$or = [
+                        { name: searchRegex },
+                        { apiName: searchRegex },
+                        { description: searchRegex },
+                        { object: searchRegex }
+                    ];
+                }
 
                 const skip = (page - 1) * limit;
 

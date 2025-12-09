@@ -1173,6 +1173,73 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
       // Don't fail the request if email fails - log the error but continue
     }
 
+    // Send email notification to all admins
+    try {
+      const admins = await User.find({
+        $or: [
+          { role: 'admin' },
+          { isSuperAdmin: true }
+        ],
+        active: true
+      }).select('name email').lean();
+
+      if (admins && admins.length > 0) {
+        const employee = await User.findById(request.userId).select('name email');
+        const approver = await User.findById(updateData.approvedById).select('name email');
+
+        const effectiveDateFormatted = new Date(request.effectiveDate).toLocaleDateString('en-US', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        });
+
+        const currentShiftAssignment = await ShiftAssignment.findById(request.currentShiftId).populate('shiftId', 'name code startTime endTime');
+        const requestedShift = await Shift.findById(request.requestedShiftId).select('name code startTime endTime');
+        
+        const currentShift = currentShiftAssignment?.shiftId as any;
+        const currentShiftCode = currentShiftAssignment?.shiftCode || currentShift?.code || 'N/A';
+        const requestedShiftCode = requestedShift?.code || 'N/A';
+
+        const adminEmails = admins.map(admin => admin.email).filter(Boolean);
+        
+        if (adminEmails.length > 0) {
+          const adminEmailText = `Dear Admin,
+
+A shift change request has been ${updateData.status.toLowerCase()} by ${approver?.name || 'Manager'}.
+
+Request Details:
+- Employee: ${employee?.name || 'N/A'} (${employee?.email || 'N/A'})
+- Current Shift: ${currentShiftCode}
+- Requested Shift: ${requestedShiftCode}
+- Effective Date: ${effectiveDateFormatted}
+- Reason: ${request.reason}
+- Status: ${updateData.status}
+${updateData.remarks ? `- Remarks: ${updateData.remarks}` : ''}
+- Approved/Rejected By: ${approver?.name || 'Manager'}
+
+This is an automated notification for your records.
+
+Regards,
+${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
+
+          await emailService.sendEmail({
+            body: {
+              to: adminEmails,
+              subject: `Shift Change Request ${updateData.status} - ${employee?.name || 'Employee'}`,
+              text: adminEmailText,
+              html: adminEmailText.replace(/\n/g, '<br>'),
+            }
+          });
+
+          console.log(`Email notification sent to ${adminEmails.length} admin(s) for shift change request ${request._id} - Status: ${updateData.status}`);
+        }
+      }
+    } catch (adminEmailError) {
+      console.error('Failed to send email to admins for shift change request:', adminEmailError);
+      // Don't fail the request if admin email fails
+    }
+
     return this.findById(request._id as string);
   }
 
@@ -1227,10 +1294,11 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
 
     // If effective date is in the future
     if (effectiveDate > currentDate) {
-      // End current assignment on the effective date (end of day)
-      // This ensures past shift's effective end date = new shift's effective start date
-      // No overlap: past shift ends at 23:59:59, new shift starts at 00:00:00 of same date
+      // End current assignment the day BEFORE the effective date (end of day)
+      // This ensures clean transition: past shift ends Day 7, new shift starts Day 8
+      // No overlap or same-day boundary issues
       const endDate = new Date(effectiveDate);
+      endDate.setUTCDate(endDate.getUTCDate() - 1); // Day before effective date
       endDate.setUTCHours(23, 59, 59, 999);
 
       currentAssignment.endDate = endDate;

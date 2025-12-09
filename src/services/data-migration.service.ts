@@ -212,20 +212,20 @@ export class DataMigrationService extends BaseService {
       'Role (Required)',
       'Specific Role (Optional)',
       'Department ID (Required)',
-      'Manager ID (Optional)',
+      'Manager ID (Required)',
       'Employee No (Optional)',
       'Check-in ID (Optional)',
       'Biometric ID (Optional - Non-IN/AE only)',
       'Active (Optional - Default: Yes. Can be set to No for historical data migration)',
-      'Joining Date (Optional - Default: Today)',
-      'Confirmation Date (Required)',
-      'Probation Date (Required)',
+      'Joining Date (Required)',
+      'Confirmation Date (Optional)',
+      'Probation Date (Optional)',
       'Location (Optional)',
       'Phone (Optional)',
       'Emergency Contact (Optional)',
       'Address (Optional)',
       'Blood Group (Optional)',
-      'Date of Birth (Optional)',
+      'Date of Birth (Required)',
       'Father\'s Name (Optional)',
       'Marital Status (Optional)',
       'Spouse Name (Optional)',
@@ -254,20 +254,20 @@ export class DataMigrationService extends BaseService {
       3: { required: true, note: 'Must be one of: admin, manager, staff, external' },
       4: { required: false, note: 'Specific role designation' },
       5: { required: true, note: 'Must exist in Department LOV' },
-      6: { required: false, note: 'Valid User ID of manager' },
+      6: { required: true, note: 'Valid User ID of manager (Required)' },
       7: { required: false, note: 'Employee number, must be unique if provided' },
       8: { required: false, note: 'Check-in ID, must be unique if provided' },
       9: { required: false, note: 'Only for non-IN/AE countries, must be unique if provided' },
       10: { required: false, note: 'Yes/No, defaults to Yes. Can be set to No for historical data migration' },
-      11: { required: false, note: 'Format: YYYY-MM-DD or DD/MM/YYYY' },
-      12: { required: true, note: 'Format: YYYY-MM-DD or DD/MM/YYYY. Employee confirmation date (Required)' },
-      13: { required: true, note: 'Format: YYYY-MM-DD or DD/MM/YYYY. Employee probation date (Required)' },
+      11: { required: true, note: 'Format: YYYY-MM-DD or DD/MM/YYYY (Required)' },
+      12: { required: false, note: 'Format: YYYY-MM-DD or DD/MM/YYYY. Employee confirmation date (Optional)' },
+      13: { required: false, note: 'Format: YYYY-MM-DD or DD/MM/YYYY. Employee probation date (Optional)' },
       14: { required: false, note: 'User location' },
       15: { required: false, note: 'Phone number' },
       16: { required: false, note: 'Emergency contact information' },
       17: { required: false, note: 'User address' },
       18: { required: false, note: 'Blood group' },
-      19: { required: false, note: 'Format: YYYY-MM-DD or DD/MM/YYYY' },
+      19: { required: true, note: 'Format: YYYY-MM-DD or DD/MM/YYYY (Required)' },
       20: { required: false, note: 'Father\'s name' },
       21: { required: false, note: 'Single, Married, Divorced, or Widowed' },
       22: { required: false, note: 'Spouse name (if married)' },
@@ -1277,6 +1277,7 @@ export class DataMigrationService extends BaseService {
     const employeeNoMap = new Map<string, number[]>();
     const checkinIdMap = new Map<string, number[]>();
     const biometricIdMap = new Map<string, number[]>();
+    const userShiftMap = new Map<string, number[]>(); // Track user+shift combinations
 
     // First pass: Detect duplicates within file
     for (const row of rows) {
@@ -1299,6 +1300,14 @@ export class DataMigrationService extends BaseService {
         const bio = row.biometricId.trim();
         if (!biometricIdMap.has(bio)) biometricIdMap.set(bio, []);
         biometricIdMap.get(bio)!.push(row.rowNumber);
+      }
+      // Track user+shift combinations for duplicate detection
+      if (row.email && row.shiftId) {
+        const email = row.email.toLowerCase().trim();
+        const shiftId = row.shiftId.trim();
+        const key = `${email}_${shiftId}`;
+        if (!userShiftMap.has(key)) userShiftMap.set(key, []);
+        userShiftMap.get(key)!.push(row.rowNumber);
       }
     }
 
@@ -1477,8 +1486,15 @@ export class DataMigrationService extends BaseService {
         });
       }
 
-      // Manager validation
-      if (row.managerId) {
+      // Manager validation (required)
+      if (!row.managerId?.trim()) {
+        rowErrors.push({
+          rowNumber: row.rowNumber,
+          field: 'managerId',
+          message: 'Manager ID is required',
+          severity: 'error'
+        });
+      } else {
         if (!this.isValidObjectId(row.managerId.trim())) {
           rowErrors.push({
             rowNumber: row.rowNumber,
@@ -1571,15 +1587,8 @@ export class DataMigrationService extends BaseService {
         }
       }
 
-      // Required fields: Confirmation Date and Probation Date
-      if (!row.confirmationDate) {
-        rowErrors.push({
-          rowNumber: row.rowNumber,
-          field: 'confirmationDate',
-          message: 'Confirmation Date is required',
-          severity: 'error'
-        });
-      } else {
+      // Confirmation Date validation (optional)
+      if (row.confirmationDate) {
         const confirmationDate = this.parseDate(row.confirmationDate);
         if (!confirmationDate) {
           rowErrors.push({
@@ -1591,14 +1600,8 @@ export class DataMigrationService extends BaseService {
         }
       }
 
-      if (!row.probationDate) {
-        rowErrors.push({
-          rowNumber: row.rowNumber,
-          field: 'probationDate',
-          message: 'Probation Date is required',
-          severity: 'error'
-        });
-      } else {
+      // Probation Date validation (optional)
+      if (row.probationDate) {
         const probationDate = this.parseDate(row.probationDate);
         if (!probationDate) {
           rowErrors.push({
@@ -1610,14 +1613,41 @@ export class DataMigrationService extends BaseService {
         }
       }
 
-      // Date validation
-      if (row.joiningDate) {
+      // Date of Birth validation (required)
+      if (!row.dateOfBirth) {
+        rowErrors.push({
+          rowNumber: row.rowNumber,
+          field: 'dateOfBirth',
+          message: 'Date of birth is required',
+          severity: 'error'
+        });
+      } else {
+        const dob = this.parseDate(row.dateOfBirth);
+        if (!dob) {
+          rowErrors.push({
+            rowNumber: row.rowNumber,
+            field: 'dateOfBirth',
+            message: 'Invalid date of birth format. Expected: YYYY-MM-DD or DD/MM/YYYY',
+            severity: 'error'
+          });
+        }
+      }
+
+      // Joining Date validation (required)
+      if (!row.joiningDate) {
+        rowErrors.push({
+          rowNumber: row.rowNumber,
+          field: 'joiningDate',
+          message: 'Joining date is required',
+          severity: 'error'
+        });
+      } else {
         const date = this.parseDate(row.joiningDate);
         if (!date) {
           rowErrors.push({
             rowNumber: row.rowNumber,
             field: 'joiningDate',
-            message: 'Invalid joining date format (expected YYYY-MM-DD)',
+            message: 'Invalid joining date format. Expected: YYYY-MM-DD or DD/MM/YYYY',
             severity: 'error'
           });
         }
@@ -1689,6 +1719,25 @@ export class DataMigrationService extends BaseService {
             severity: 'error'
           });
         } else {
+          // Check for duplicate user+shift combination within file
+          if (row.email) {
+            const email = row.email.toLowerCase().trim();
+            const shiftId = row.shiftId.trim();
+            const key = `${email}_${shiftId}`;
+            const duplicateRows = userShiftMap.get(key);
+            if (duplicateRows && duplicateRows.length > 1) {
+              const isFirst = duplicateRows[0] === row.rowNumber;
+              if (!isFirst) {
+                rowErrors.push({
+                  rowNumber: row.rowNumber,
+                  field: 'shiftId',
+                  message: `Duplicate user+shift combination found in row ${duplicateRows[0]}. Same user cannot be assigned the same shift multiple times.`,
+                  severity: 'error'
+                });
+              }
+            }
+          }
+
           // Store shift code for later use in shift assignment creation
           const shiftInfo = validShiftIds.get(row.shiftId.trim());
           if (shiftInfo) {
@@ -2981,15 +3030,15 @@ export class DataMigrationService extends BaseService {
           employeeCode: row.employeeNo?.trim() || undefined,
           checkinId: row.checkinId?.trim() || undefined,
           active: isActive, // Can be false for historical data migration
-          joiningDate: row.joiningDate ? this.parseDate(row.joiningDate) : new Date(),
-          confirmationDate: this.parseDate(row.confirmationDate!), // Required - validated earlier
-          probationDate: this.parseDate(row.probationDate!), // Required - validated earlier
+          joiningDate: row.joiningDate ? this.parseDate(row.joiningDate)! : new Date(),
+          confirmationDate: row.confirmationDate ? this.parseDate(row.confirmationDate) : undefined, // Optional
+          probationDate: row.probationDate ? this.parseDate(row.probationDate) : undefined, // Optional
           location: row.location?.trim() || undefined,
           phone: row.phone?.trim() || undefined,
           emergencyContact: row.emergencyContact?.trim() || undefined,
           address: row.address?.trim() || undefined,
           bloodGroup: row.bloodGroup?.trim() || undefined,
-          dateOfBirth: row.dateOfBirth ? this.parseDate(row.dateOfBirth) : undefined,
+          dateOfBirth: row.dateOfBirth ? this.parseDate(row.dateOfBirth)! : undefined, // Required - validated earlier
           fatherName: row.fatherName?.trim() || undefined,
           maritalStatus: row.maritalStatus?.trim() || undefined,
           spouseName: row.spouseName?.trim() || undefined,
@@ -3011,17 +3060,15 @@ export class DataMigrationService extends BaseService {
         // Get country once for use in multiple validations
         const country = row.country?.trim() || '';
 
-        // Handle manager
-        if (row.managerId) {
-          if (this.isValidObjectId(row.managerId)) {
-            const manager = await User.findById(row.managerId);
-            if (manager) {
-              userData.managerId = row.managerId;
-            }
-          } else {
-            throw new Error('Invalid manager ID format');
-          }
+        // Handle manager (required - validated earlier)
+        if (!row.managerId || !this.isValidObjectId(row.managerId)) {
+          throw new Error('Manager ID is required and must be valid');
         }
+        const manager = await User.findById(row.managerId);
+        if (!manager) {
+          throw new Error('Manager not found');
+        }
+        userData.managerId = row.managerId;
 
         // Handle biometricId - UserService.create will handle IN/AE countries
         // Only set biometricId for non-IN/AE countries, UserService will remove it for IN/AE
@@ -3076,31 +3123,55 @@ export class DataMigrationService extends BaseService {
               throw new Error('Invalid joining date for shift assignment');
             }
 
-            // Calculate status based on start date
-            const currentDate = new Date();
-            const startDateTime = new Date(joiningDate);
-            startDateTime.setHours(0, 0, 0, 0);
+            // Normalize joining date to start of day for comparison
+            const normalizedJoiningDate = new Date(joiningDate);
+            normalizedJoiningDate.setUTCHours(0, 0, 0, 0);
+            const nextDay = new Date(normalizedJoiningDate);
+            nextDay.setUTCDate(nextDay.getUTCDate() + 1);
 
-            let status: 'current' | 'upcoming' | 'past' = 'upcoming';
-            if (startDateTime <= currentDate) {
-              status = 'current';
-            }
-
-            // Create shift assignment with standard weekend [0, 6] (Sunday and Saturday)
-            const shiftAssignment = new ShiftAssignment({
+            // Check if shift assignment already exists for this user, shift, and start date
+            // Check for exact match on userId, shiftId, and startDate (within same day)
+            const existingAssignment = await ShiftAssignment.findOne({
               userId: savedUser._id,
               shiftId: new Types.ObjectId(shiftId),
-              shiftCode: shift.code,
-              startDate: joiningDate,
-              endDate: undefined, // No end date
-              isActive: true,
-              status: status,
-              weekendDays: [0, 6], // Standard weekend: Sunday (0) and Saturday (6)
-              assignedBy: this.context.user?._id || savedUser._id, // Use current admin user or the created user
-              assignedAt: new Date()
+              startDate: {
+                $gte: normalizedJoiningDate,
+                $lt: nextDay
+              }
             });
 
-            await shiftAssignment.save();
+            if (existingAssignment) {
+              console.log(`Shift assignment already exists for user ${savedUser._id.toString()} with shift ${shiftId} starting ${normalizedJoiningDate.toISOString()}, skipping creation`);
+              // Skip creation but don't treat as error - assignment already exists
+              // Continue to next iteration of the loop
+            } else {
+
+              // Calculate status based on start date
+              const currentDate = new Date();
+              const startDateTime = new Date(joiningDate);
+              startDateTime.setHours(0, 0, 0, 0);
+
+              let status: 'current' | 'upcoming' | 'past' = 'upcoming';
+              if (startDateTime <= currentDate) {
+                status = 'current';
+              }
+
+              // Create shift assignment with standard weekend [0, 6] (Sunday and Saturday)
+              const shiftAssignment = new ShiftAssignment({
+                userId: savedUser._id,
+                shiftId: new Types.ObjectId(shiftId),
+                shiftCode: shift.code,
+                startDate: joiningDate,
+                endDate: undefined, // No end date
+                isActive: true,
+                status: status,
+                weekendDays: [0, 6], // Standard weekend: Sunday (0) and Saturday (6)
+                assignedBy: this.context.user?._id || savedUser._id, // Use current admin user or the created user
+                assignedAt: new Date()
+              });
+
+              await shiftAssignment.save();
+            }
           } catch (shiftAssignmentError: any) {
             // Log error but don't fail user creation
             console.error(`Error creating shift assignment for user at row ${row.rowNumber}:`, shiftAssignmentError);

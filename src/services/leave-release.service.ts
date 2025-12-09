@@ -86,13 +86,14 @@ export class LeaveReleaseService extends BaseService {
         // Add daysReleased to existing balance
         const newAlloted = currentAlloted + daysReleased;
 
-        // Update leave summary - ADD to existing balance
-        await this.leaveSummaryService.updateLeaveAllotments(
+        // Update leave summary - ADD to existing balance (skip email, we'll send release-specific email)
+        const updatedSummary = await this.leaveSummaryService.updateLeaveAllotments(
           new Types.ObjectId(employeeId),
           period.year,
           {
             [leaveType]: newAlloted
-          }
+          },
+          { skipEmail: true }  // Skip allotment email, send release-specific email instead
         );
 
         // Create leave release record
@@ -120,6 +121,14 @@ export class LeaveReleaseService extends BaseService {
             year: period.year,
             releaseInfo: `${daysReleased} days released for ${periodDescription}`,
             leaveType,
+            // Include all leave type values for the email template
+            annual: updatedSummary.annual?.alloted || 0,
+            sick: updatedSummary.sick?.alloted || 0,
+            compOff: updatedSummary.compOff?.alloted || 0,
+            otherPaid: updatedSummary.otherPaid?.alloted || 0,
+            otherUnpaid: updatedSummary.otherUnpaid?.alloted || 0,
+            maternity: updatedSummary.maternity?.alloted || 0,
+            workFromHome: updatedSummary.workFromHome?.alloted || 0,
             companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS'
           });
 
@@ -151,17 +160,25 @@ export class LeaveReleaseService extends BaseService {
 
   /**
    * Get leave release history for an employee
+   * @param employeeId - Employee ID
+   * @param year - Filter by exact year (optional)
+   * @param yearLessThan - Filter by years less than or equal to this value (optional)
    */
   async getReleaseHistory(
     employeeId: string,
-    year?: number
+    year?: number,
+    yearLessThan?: number
   ): Promise<ILeaveRelease[]> {
     const query: any = {
       employeeId: new Types.ObjectId(employeeId)
     };
 
+    // If exact year is provided, use it (takes precedence)
     if (year) {
       query['period.year'] = year;
+    } else if (yearLessThan) {
+      // If yearLessThan is provided, filter by period.year <= yearLessThan
+      query['period.year'] = { $lte: yearLessThan };
     }
 
     return await LeaveRelease.find(query)
@@ -177,8 +194,9 @@ export class LeaveReleaseService extends BaseService {
     employeeId?: string;
     search?: string;
     year?: number;
+    yearLessThan?: number;
     leaveType?: string;
-    releaseType?: 'monthly' | 'quarterly';
+    releaseType?: 'monthly' | 'quarterly' | 'carryforward';
     page?: number;
     limit?: number;
   }): Promise<{
@@ -241,11 +259,21 @@ export class LeaveReleaseService extends BaseService {
       ];
     }
 
+    // Handle year filtering - exact year takes precedence over yearLessThan
     if (filters?.year) {
       if (query.$and) {
         query.$and.push({ 'period.year': filters.year });
       } else {
         query['period.year'] = filters.year;
+      }
+    } else if (filters?.yearLessThan) {
+      // If yearLessThan is provided, filter by period.year <= yearLessThan
+      // $lte means "less than or equal to"
+      // Example: yearLessThan=2021 returns 2021, 2020, 2019, and all earlier years
+      if (query.$and) {
+        query.$and.push({ 'period.year': { $lte: filters.yearLessThan } });
+      } else {
+        query['period.year'] = { $lte: filters.yearLessThan };
       }
     }
 
