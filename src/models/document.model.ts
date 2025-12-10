@@ -2,7 +2,7 @@ import { Document as DocumentM, Schema, Types, model } from 'mongoose';
 
 export interface IDocument extends DocumentM {
     employeeId: Types.ObjectId; // Links to the employee
-    type: 'Payslip' | 'TimesheetFile' | 'Form16' | 'Form12B' | 'Form12BB' | 'OfferLetter' | 'HikeLetter' | 'Certificate' | 'AdminUpload'; // Document types
+    type: 'Payslip' | 'TimesheetFile' | 'Form16' | 'Form12B' | 'Form12BB' | 'OfferLetter' | 'HikeLetter' | 'Certificate' | 'AdminUpload' | 'GovernmentId' | 'Academic' | 'Experience'; // Document types
     category: 'Payroll' | 'Timesheet' | 'Tax' | 'EmployeeLifecycle' | 'Certification'; // Document categories
     tags?: string[]; // e.g., ['2025', 'Confidential', 'Exported', 'Degree', 'Aadhaar']
     fileName: string; // e.g., 'ABCDE1234F_2025-06.xlsx'
@@ -133,6 +133,41 @@ export interface IDocument extends DocumentM {
             description?: string; // Optional description
             uploadedAt: Date; // When admin uploaded
         };
+        governmentId?: {
+            idType: string;
+            label: string;
+            uploadedAt: Date;
+            verificationStatus?: 'Pending' | 'Verified' | 'Rejected';
+            verificationDetails?: {
+                verifiedBy: Types.ObjectId;
+                verifiedAt: Date;
+                comments?: string;
+            };
+        };
+        academic?: {
+            instituteName: string;
+            yearOfPassing?: string;
+            grade?: string;
+            uploadedAt: Date;
+            verificationStatus?: 'Pending' | 'Verified' | 'Rejected';
+            verificationDetails?: {
+                verifiedBy: Types.ObjectId;
+                verifiedAt: Date;
+                comments?: string;
+            };
+        };
+        experience?: {
+            companyName: string;
+            period?: string;
+            designation?: string;
+            uploadedAt: Date;
+            verificationStatus?: 'Pending' | 'Verified' | 'Rejected';
+            verificationDetails?: {
+                verifiedBy: Types.ObjectId;
+                verifiedAt: Date;
+                comments?: string;
+            };
+        };
     };
     auditLog?: Array<{
         action: 'Upload' | 'View' | 'Download' | 'Send' | 'Generate' | 'Acknowledge' | 'Verify' | 'Update' | 'Re-upload' | 'Re-Generate'; // Added Re-Generate for Form12BB
@@ -147,7 +182,7 @@ const documentSchema = new Schema<IDocument>(
         employeeId: { type: Schema.Types.ObjectId, required: true, ref: 'User' },
         type: {
             type: String,
-            enum: ['Payslip', 'TimesheetFile', 'Form16', 'OfferLetter', 'HikeLetter', 'Certificate', 'Form12B', 'Form12BB', 'AdminUpload'],
+            enum: ['Payslip', 'TimesheetFile', 'Form16', 'OfferLetter', 'HikeLetter', 'Certificate', 'Form12B', 'Form12BB', 'AdminUpload', 'GovernmentId', 'Academic', 'Experience'],
             required: true,
         },
         category: {
@@ -255,6 +290,15 @@ const documentSchema = new Schema<IDocument>(
                             value.adminUpload.documentDate &&
                             value.adminUpload.uploadedAt
                         );
+                    }
+                    if (docType === 'GovernmentId') {
+                        return value.governmentId && value.governmentId.idType && value.governmentId.label && value.governmentId.uploadedAt;
+                    }
+                    if (docType === 'Academic') {
+                        return value.academic && value.academic.instituteName && value.academic.uploadedAt;
+                    }
+                    if (docType === 'Experience') {
+                        return value.experience && value.experience.companyName && value.experience.uploadedAt;
                     }
 
                     return true;

@@ -1737,7 +1737,16 @@ export const userRoutes: RouteHandler = async (
     async (request, reply) => {
       try {
         const { id } = request.params as { id: string };
-        const user = await request.container!.userService.updateGovernmentIdFiles(id, request);
+        const rawGovStatus = (request.body as any)?.verificationStatus;
+        const verificationStatus: 'Pending' | 'Verified' | 'Rejected' | undefined =
+          rawGovStatus === 'Pending' || rawGovStatus === 'Verified' || rawGovStatus === 'Rejected'
+            ? rawGovStatus
+            : undefined;
+        const user = await request.container!.userService.updateGovernmentIdFiles(
+          id,
+          request,
+          verificationStatus
+        );
 
         return reply.status(200).send({
           success: true,
@@ -1800,10 +1809,17 @@ export const userRoutes: RouteHandler = async (
           });
         }
 
+        const rawAcademicStatus = (request.body as any)?.verificationStatus;
+        const verificationStatus: 'Pending' | 'Verified' | 'Rejected' | undefined =
+          rawAcademicStatus === 'Pending' || rawAcademicStatus === 'Verified' || rawAcademicStatus === 'Rejected'
+            ? rawAcademicStatus
+            : undefined;
         const result = await request.container!.userService.uploadAcademicDetailDocument(
           id,
           academicDetailIndex,
-          files[0]
+          files[0],
+          undefined,
+          verificationStatus
         );
 
         return reply.status(200).send({
@@ -1867,10 +1883,17 @@ export const userRoutes: RouteHandler = async (
           });
         }
 
+        const rawExperienceStatus = (request.body as any)?.verificationStatus;
+        const verificationStatus: 'Pending' | 'Verified' | 'Rejected' | undefined =
+          rawExperienceStatus === 'Pending' || rawExperienceStatus === 'Verified' || rawExperienceStatus === 'Rejected'
+            ? rawExperienceStatus
+            : undefined;
         const result = await request.container!.userService.uploadExperienceDetailDocument(
           id,
           experienceDetailIndex,
-          files[0]
+          files[0],
+          undefined,
+          verificationStatus
         );
 
         return reply.status(200).send({

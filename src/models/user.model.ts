@@ -456,6 +456,7 @@ const userSchema = new Schema<IUser>(
         lastDrawnSalary: { type: Number, min: 0 },
         reasonForLeaving: { type: String, trim: true, maxlength: 300 },
         designation: { type: String, trim: true, maxlength: 150 },
+        verificationStatus: { type: String, enum: ['Pending', 'Verified', 'Rejected'], default: 'Pending' }
       }],
       default: [],
     },
@@ -486,7 +487,8 @@ const userSchema = new Schema<IUser>(
           type: {
             number: { type: String, trim: true },
             documentUrl: { type: String, trim: true },
-            documentId: { type: String, trim: true }
+            documentId: { type: String, trim: true },
+            verificationStatus: { type: String, enum: ['Pending', 'Verified', 'Rejected'], default: 'Pending' }
           },
           required: false
         },
@@ -494,7 +496,8 @@ const userSchema = new Schema<IUser>(
           type: {
             number: { type: String, trim: true },
             documentUrl: { type: String, trim: true },
-            documentId: { type: String, trim: true }
+            documentId: { type: String, trim: true },
+            verificationStatus: { type: String, enum: ['Pending', 'Verified', 'Rejected'], default: 'Pending' }
           },
           required: false
         },
@@ -502,7 +505,8 @@ const userSchema = new Schema<IUser>(
           type: {
             number: { type: String, trim: true },
             documentUrl: { type: String, trim: true },
-            documentId: { type: String, trim: true }
+            documentId: { type: String, trim: true },
+            verificationStatus: { type: String, enum: ['Pending', 'Verified', 'Rejected'], default: 'Pending' }
           },
           required: false
         },
@@ -510,7 +514,8 @@ const userSchema = new Schema<IUser>(
           type: {
             number: { type: String, trim: true },
             documentUrl: { type: String, trim: true },
-            documentId: { type: String, trim: true }
+            documentId: { type: String, trim: true },
+            verificationStatus: { type: String, enum: ['Pending', 'Verified', 'Rejected'], default: 'Pending' }
           },
           required: false
         },
@@ -518,7 +523,8 @@ const userSchema = new Schema<IUser>(
           type: {
             number: { type: String, trim: true },
             documentUrl: { type: String, trim: true },
-            documentId: { type: String, trim: true }
+            documentId: { type: String, trim: true },
+            verificationStatus: { type: String, enum: ['Pending', 'Verified', 'Rejected'], default: 'Pending' }
           },
           required: false
         },
@@ -538,7 +544,8 @@ const userSchema = new Schema<IUser>(
         grade: { type: String, trim: true, maxlength: 50 },
         yearOfPassing: { type: String, trim: true, maxlength: 10 },
         documentUrl: { type: String, trim: true, maxlength: 500 },
-        documentId: { type: String, trim: true }
+        documentId: { type: String, trim: true },
+        verificationStatus: { type: String, enum: ['Pending', 'Verified', 'Rejected'], default: 'Pending' }
       }],
       default: []
     },

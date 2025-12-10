@@ -23,11 +23,11 @@ interface IBankDetails {
 }
 
 interface IGovernmentIds {
-  pan: { number?: string; documentUrl?: string; file?: any };
-  aadhaar: { number?: string; documentUrl?: string; file?: any };
-  passport: { number?: string; documentUrl?: string; file?: any };
-  voterId: { number?: string; documentUrl?: string; file?: any };
-  drivingLicense: { number?: string; documentUrl?: string; file?: any };
+  pan: { number?: string; documentUrl?: string; file?: any; verificationStatus?: 'Pending' | 'Verified' | 'Rejected' };
+  aadhaar: { number?: string; documentUrl?: string; file?: any; verificationStatus?: 'Pending' | 'Verified' | 'Rejected' };
+  passport: { number?: string; documentUrl?: string; file?: any; verificationStatus?: 'Pending' | 'Verified' | 'Rejected' };
+  voterId: { number?: string; documentUrl?: string; file?: any; verificationStatus?: 'Pending' | 'Verified' | 'Rejected' };
+  drivingLicense: { number?: string; documentUrl?: string; file?: any; verificationStatus?: 'Pending' | 'Verified' | 'Rejected' };
   pf: { number?: string; uan?: string };
 }
 
@@ -40,6 +40,7 @@ interface IExperienceDetails {
   lastDrawnSalary?: number;
   reasonForLeaving?: string;
   designation?: string;
+  verificationStatus?: 'Pending' | 'Verified' | 'Rejected';
 }
 
 interface IAcademicDetails {
@@ -48,6 +49,7 @@ interface IAcademicDetails {
   yearOfPassing?: string;
   documentUrl?: string;
   documentId?: string;
+  verificationStatus?: 'Pending' | 'Verified' | 'Rejected';
 }
 
 interface IUserCreate {
@@ -1540,7 +1542,11 @@ export class UserService extends BaseService {
     }
   }
 
-  async updateGovernmentIdFiles(userId: string, request: any): Promise<any> {
+  async updateGovernmentIdFiles(
+    userId: string,
+    request: any,
+    verificationStatus?: 'Pending' | 'Verified' | 'Rejected'
+  ): Promise<any> {
     const user = await User.findById(userId);
     if (!user) {
       throw new Error('User not found');
@@ -1580,6 +1586,10 @@ export class UserService extends BaseService {
     };
 
     type GovernmentIdFieldWithDoc = 'pan' | 'aadhaar' | 'passport' | 'voterId' | 'drivingLicense';
+
+    const isAdminUpload = (this.context.user?.role || '').toLowerCase() === 'admin';
+    const resolvedStatus: 'Pending' | 'Verified' | 'Rejected' =
+      verificationStatus || (isAdminUpload ? 'Verified' : 'Pending');
 
     // Process each uploaded file
     for (const file of files) {
@@ -1642,7 +1652,8 @@ export class UserService extends BaseService {
             governmentId: {
               idType: targetField,
               label: documentLabel,
-              uploadedAt: new Date()
+              uploadedAt: new Date(),
+              verificationStatus: resolvedStatus
             }
           },
           auditLog: [
@@ -1664,6 +1675,7 @@ export class UserService extends BaseService {
         }
         (govIds[targetField] as any).documentUrl = fileUrl;
         (govIds[targetField] as any).documentId = newDocument._id.toString();
+        (govIds[targetField] as any).verificationStatus = resolvedStatus;
 
         console.log(`Successfully uploaded and stored ${documentLabel} document for user ${user.name}`);
       } catch (error: any) {
@@ -1694,6 +1706,11 @@ export class UserService extends BaseService {
       drivingLicense_number?: string;
       pf_number?: string;
       pf_uan?: string;
+      pan_verificationStatus?: 'Pending' | 'Verified' | 'Rejected';
+      passport_verificationStatus?: 'Pending' | 'Verified' | 'Rejected';
+      aadhaar_verificationStatus?: 'Pending' | 'Verified' | 'Rejected';
+      voterId_verificationStatus?: 'Pending' | 'Verified' | 'Rejected';
+      drivingLicense_verificationStatus?: 'Pending' | 'Verified' | 'Rejected';
     }
   ): Promise<any> {
     const user = await User.findById(userId);
@@ -1713,7 +1730,7 @@ export class UserService extends BaseService {
         pf: {},
       };
     }
-    const govIds = user.governmentIds;
+    const govIds = user.governmentIds as any;
 
     // Update fields only if the corresponding payload key is provided (not undefined)
     if (fields.pan_number !== undefined) {
@@ -1721,6 +1738,9 @@ export class UserService extends BaseService {
         govIds.pan = {};
       }
       govIds.pan.number = fields.pan_number;
+      if (fields.pan_verificationStatus) {
+        (govIds.pan as any).verificationStatus = fields.pan_verificationStatus;
+      }
     }
 
     if (fields.passport_number !== undefined) {
@@ -1728,6 +1748,9 @@ export class UserService extends BaseService {
         govIds.passport = {};
       }
       govIds.passport.number = fields.passport_number;
+      if (fields.passport_verificationStatus) {
+        (govIds.passport as any).verificationStatus = fields.passport_verificationStatus;
+      }
     }
 
     if (fields.aadhaar_number !== undefined) {
@@ -1735,6 +1758,9 @@ export class UserService extends BaseService {
         govIds.aadhaar = {};
       }
       govIds.aadhaar.number = fields.aadhaar_number;
+      if (fields.aadhaar_verificationStatus) {
+        (govIds.aadhaar as any).verificationStatus = fields.aadhaar_verificationStatus;
+      }
     }
 
     if (fields.voterId_number !== undefined) {
@@ -1742,6 +1768,9 @@ export class UserService extends BaseService {
         govIds.voterId = {};
       }
       govIds.voterId.number = fields.voterId_number;
+      if (fields.voterId_verificationStatus) {
+        (govIds.voterId as any).verificationStatus = fields.voterId_verificationStatus;
+      }
     }
 
     if (fields.drivingLicense_number !== undefined) {
@@ -1749,6 +1778,9 @@ export class UserService extends BaseService {
         govIds.drivingLicense = {};
       }
       govIds.drivingLicense.number = fields.drivingLicense_number;
+      if (fields.drivingLicense_verificationStatus) {
+        (govIds.drivingLicense as any).verificationStatus = fields.drivingLicense_verificationStatus;
+      }
     }
 
     if (fields.pf_number !== undefined) {
@@ -1790,13 +1822,20 @@ export class UserService extends BaseService {
     }
 
     // Overwrite the academicDetails array with the new data
-    user.academicDetails = academicDetails.map(detail => ({
-      instituteName: detail.instituteName,
-      grade: detail.grade || undefined,
-      yearOfPassing: detail.yearOfPassing || undefined,
-      documentUrl: detail.documentUrl || undefined,
-      documentId: detail.documentId || undefined,
-    }));
+    user.academicDetails = academicDetails.map((detail, index) => {
+      const existing = (user.academicDetails || [])[index] as any;
+      return {
+        instituteName: detail.instituteName,
+        grade: detail.grade || undefined,
+        yearOfPassing: detail.yearOfPassing || undefined,
+        documentUrl: detail.documentUrl || existing?.documentUrl || undefined,
+        documentId: detail.documentId || existing?.documentId || undefined,
+        verificationStatus:
+          detail.verificationStatus ||
+          existing?.verificationStatus ||
+          'Pending',
+      };
+    });
 
     await user.save();
     return user;
@@ -1821,16 +1860,23 @@ export class UserService extends BaseService {
     }
 
     // Overwrite the experienceDetails array with the new data
-    user.experienceDetails = experienceDetails.map(detail => ({
-      companyName: detail.companyName,
-      period: detail.period || undefined,
-      documentUrl: detail.documentUrl || undefined,
-      documentId: detail.documentId || undefined,
-      companyAddress: detail.companyAddress || undefined,
-      lastDrawnSalary: detail.lastDrawnSalary || undefined,
-      reasonForLeaving: detail.reasonForLeaving || undefined,
-      designation: detail.designation || undefined,
-    }));
+    user.experienceDetails = experienceDetails.map((detail, index) => {
+      const existing = (user.experienceDetails || [])[index] as any;
+      return {
+        companyName: detail.companyName,
+        period: detail.period || undefined,
+        documentUrl: detail.documentUrl || existing?.documentUrl || undefined,
+        documentId: detail.documentId || existing?.documentId || undefined,
+        companyAddress: detail.companyAddress || undefined,
+        lastDrawnSalary: detail.lastDrawnSalary || undefined,
+        reasonForLeaving: detail.reasonForLeaving || undefined,
+        designation: detail.designation || undefined,
+        verificationStatus:
+          detail.verificationStatus ||
+          existing?.verificationStatus ||
+          'Pending',
+      };
+    });
 
     await user.save();
     return user;
@@ -1840,7 +1886,8 @@ export class UserService extends BaseService {
     userId: string,
     academicDetailIndex: number,
     file: any,
-    metadata?: { instituteName?: string; yearOfPassing?: string }
+    metadata?: { instituteName?: string; yearOfPassing?: string },
+    verificationStatus?: 'Pending' | 'Verified' | 'Rejected'
   ): Promise<any> {
     const user = await User.findById(userId);
     if (!user) {
@@ -1851,7 +1898,10 @@ export class UserService extends BaseService {
       throw new Error('Academic detail not found at the specified index');
     }
 
-    const academicDetail = user.academicDetails[academicDetailIndex];
+    const academicDetail = user.academicDetails[academicDetailIndex] as any;
+    const isAdminUpload = (this.context.user?.role || '').toLowerCase() === 'admin';
+    const resolvedStatus: 'Pending' | 'Verified' | 'Rejected' =
+      verificationStatus || (isAdminUpload ? 'Verified' : 'Pending');
 
     try {
       // Read file from disk (multer saves it)
@@ -1904,7 +1954,8 @@ export class UserService extends BaseService {
             instituteName: instituteName,
             yearOfPassing: academicDetail.yearOfPassing,
             grade: academicDetail.grade,
-            uploadedAt: new Date()
+            uploadedAt: new Date(),
+            verificationStatus: resolvedStatus
           }
         },
         auditLog: [
@@ -1926,6 +1977,7 @@ export class UserService extends BaseService {
       if (user.academicDetails[academicDetailIndex]) {
         user.academicDetails[academicDetailIndex].documentUrl = fileUrl;
         user.academicDetails[academicDetailIndex].documentId = newDocument._id.toString();
+        (user.academicDetails as any)[academicDetailIndex].verificationStatus = resolvedStatus;
       }
 
       await user.save();
@@ -1948,7 +2000,8 @@ export class UserService extends BaseService {
     userId: string,
     experienceDetailIndex: number,
     file: any,
-    metadata?: { companyName?: string; period?: string }
+    metadata?: { companyName?: string; period?: string },
+    verificationStatus?: 'Pending' | 'Verified' | 'Rejected'
   ): Promise<any> {
     const user = await User.findById(userId);
     if (!user) {
@@ -1959,7 +2012,10 @@ export class UserService extends BaseService {
       throw new Error('Experience detail not found at the specified index');
     }
 
-    const experienceDetail = user.experienceDetails[experienceDetailIndex];
+    const experienceDetail = user.experienceDetails[experienceDetailIndex] as any;
+    const isAdminUpload = (this.context.user?.role || '').toLowerCase() === 'admin';
+    const resolvedStatus: 'Pending' | 'Verified' | 'Rejected' =
+      verificationStatus || (isAdminUpload ? 'Verified' : 'Pending');
 
     try {
       // Read file from disk (multer saves it)
@@ -2012,7 +2068,8 @@ export class UserService extends BaseService {
             companyName: companyName,
             period: experienceDetail.period,
             designation: experienceDetail.designation,
-            uploadedAt: new Date()
+            uploadedAt: new Date(),
+            verificationStatus: resolvedStatus
           }
         },
         auditLog: [
@@ -2034,6 +2091,7 @@ export class UserService extends BaseService {
       if (user.experienceDetails[experienceDetailIndex]) {
         user.experienceDetails[experienceDetailIndex].documentUrl = fileUrl;
         user.experienceDetails[experienceDetailIndex].documentId = newDocument._id.toString();
+        (user.experienceDetails as any)[experienceDetailIndex].verificationStatus = resolvedStatus;
       }
 
       await user.save();
