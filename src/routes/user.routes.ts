@@ -1809,16 +1809,26 @@ export const userRoutes: RouteHandler = async (
           });
         }
 
-        const rawAcademicStatus = (request.body as any)?.verificationStatus;
+        const body = request.body as any;
+        const rawAcademicStatus = body?.verificationStatus;
         const verificationStatus: 'Pending' | 'Verified' | 'Rejected' | undefined =
           rawAcademicStatus === 'Pending' || rawAcademicStatus === 'Verified' || rawAcademicStatus === 'Rejected'
             ? rawAcademicStatus
             : undefined;
+        
+        // Extract metadata if available
+        const metadata = body?.instituteName || body?.yearOfPassing
+          ? {
+              instituteName: body?.instituteName,
+              yearOfPassing: body?.yearOfPassing
+            }
+          : undefined;
+
         const result = await request.container!.userService.uploadAcademicDetailDocument(
           id,
           academicDetailIndex,
           files[0],
-          undefined,
+          metadata,
           verificationStatus
         );
 
@@ -1883,16 +1893,26 @@ export const userRoutes: RouteHandler = async (
           });
         }
 
-        const rawExperienceStatus = (request.body as any)?.verificationStatus;
+        const body = request.body as any;
+        const rawExperienceStatus = body?.verificationStatus;
         const verificationStatus: 'Pending' | 'Verified' | 'Rejected' | undefined =
           rawExperienceStatus === 'Pending' || rawExperienceStatus === 'Verified' || rawExperienceStatus === 'Rejected'
             ? rawExperienceStatus
             : undefined;
+        
+        // Extract metadata if available
+        const metadata = body?.companyName || body?.period
+          ? {
+              companyName: body?.companyName,
+              period: body?.period
+            }
+          : undefined;
+
         const result = await request.container!.userService.uploadExperienceDetailDocument(
           id,
           experienceDetailIndex,
           files[0],
-          undefined,
+          metadata,
           verificationStatus
         );
 

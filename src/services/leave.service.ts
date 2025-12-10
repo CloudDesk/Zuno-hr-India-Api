@@ -875,6 +875,68 @@ export class LeaveService extends BaseService {
       }
     });
 
+    // Send Email Notification to All Admins
+    try {
+      const admins = await User.find({
+        $or: [
+          { role: 'admin' },
+          { isSuperAdmin: true }
+        ],
+        active: true
+      }).select('name email').lean();
+
+      if (admins && admins.length > 0) {
+        const adminEmails = admins.map(admin => admin.email).filter(Boolean);
+        
+        if (adminEmails.length > 0 && applier) {
+          const fromDateFormatted = leave.startDate.toLocaleDateString('en-US', {
+            weekday: 'long',
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric'
+          });
+          const toDateFormatted = leave.endDate.toLocaleDateString('en-US', {
+            weekday: 'long',
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric'
+          });
+
+          const adminEmailText = `Dear Admin,
+
+A leave request has been submitted by ${applier.name}.
+
+Request Details:
+- Employee: ${applier.name} (${applier.email || 'N/A'})
+- Leave Type: ${leave.leaveType}
+- From Date: ${fromDateFormatted}
+- To Date: ${toDateFormatted}
+- Total Days: ${leave.noOfDays}
+- Reason: ${leave.reason || 'N/A'}
+- Status: Pending
+- Manager: ${manager?.name || 'N/A'}
+
+This is an automated notification for your records.
+
+Regards,
+${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
+
+          await emailService.sendEmail({
+            body: {
+              to: adminEmails,
+              subject: `Leave Request Submitted - ${applier.name}`,
+              text: adminEmailText,
+              html: adminEmailText.replace(/\n/g, '<br>'),
+            }
+          });
+
+          console.log(`Email notification sent to ${adminEmails.length} admin(s) for leave request ${leave._id}`);
+        }
+      }
+    } catch (adminEmailError) {
+      console.error('Failed to send email to admins for leave request:', adminEmailError);
+      // Don't fail the request if admin email fails
+    }
 
     console.log("first")
     // Pass leaveType as-is to updateLeaveBalance - it will handle the mapping to camelCase

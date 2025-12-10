@@ -1894,8 +1894,30 @@ export class UserService extends BaseService {
       throw new Error('User not found');
     }
 
-    if (!user.academicDetails || !user.academicDetails[academicDetailIndex]) {
-      throw new Error('Academic detail not found at the specified index');
+    // Initialize academicDetails array if it doesn't exist
+    if (!user.academicDetails) {
+      user.academicDetails = [];
+    }
+
+    // If academic detail doesn't exist at the specified index, create it
+    if (!user.academicDetails[academicDetailIndex]) {
+      // Create a new academic detail entry with metadata if provided
+      const newAcademicDetail: any = {
+        instituteName: metadata?.instituteName || 'Unknown',
+        yearOfPassing: metadata?.yearOfPassing || undefined,
+        grade: undefined,
+        documentUrl: undefined,
+        documentId: undefined,
+        verificationStatus: verificationStatus || 'Pending',
+      };
+
+      // Ensure the array is large enough to include the new index
+      while (user.academicDetails.length <= academicDetailIndex) {
+        user.academicDetails.push({} as any);
+      }
+
+      user.academicDetails[academicDetailIndex] = newAcademicDetail;
+      await user.save();
     }
 
     const academicDetail = user.academicDetails[academicDetailIndex] as any;
@@ -2008,8 +2030,30 @@ export class UserService extends BaseService {
       throw new Error('User not found');
     }
 
-    if (!user.experienceDetails || !user.experienceDetails[experienceDetailIndex]) {
-      throw new Error('Experience detail not found at the specified index');
+    // Initialize experienceDetails array if it doesn't exist
+    if (!user.experienceDetails) {
+      user.experienceDetails = [];
+    }
+
+    // If experience detail doesn't exist at the specified index, create it
+    if (!user.experienceDetails[experienceDetailIndex]) {
+      // Create a new experience detail entry with metadata if provided
+      const newExperienceDetail: any = {
+        companyName: metadata?.companyName || 'Unknown',
+        period: metadata?.period || undefined,
+        designation: undefined,
+        documentUrl: undefined,
+        documentId: undefined,
+        verificationStatus: verificationStatus || 'Pending',
+      };
+
+      // Ensure the array is large enough to include the new index
+      while (user.experienceDetails.length <= experienceDetailIndex) {
+        user.experienceDetails.push({} as any);
+      }
+
+      user.experienceDetails[experienceDetailIndex] = newExperienceDetail;
+      await user.save();
     }
 
     const experienceDetail = user.experienceDetails[experienceDetailIndex] as any;

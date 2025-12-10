@@ -445,8 +445,9 @@ export class OptionalHolidayService extends BaseService {
     await request.save();
 
     // Send email notification to manager/admin
+    let manager: any = null;
     if (data.appliedTo && data.appliedTo._id && Types.ObjectId.isValid(data.appliedTo._id)) {
-      const manager = await User.findById(data.appliedTo._id).select('name email').lean();
+      manager = await User.findById(data.appliedTo._id).select('name email').lean();
       if (manager) {
         const htmlContent = generateEmailTemplate('optionalHolidayRequest', {
           employeeName: user.name,
@@ -465,6 +466,62 @@ export class OptionalHolidayService extends BaseService {
           },
         });
       }
+    }
+
+    // Send Email Notification to All Admins
+    try {
+      const admins = await User.find({
+        $or: [
+          { role: 'admin' },
+          { isSuperAdmin: true }
+        ],
+        active: true
+      }).select('name email').lean();
+
+      if (admins && admins.length > 0) {
+        const adminEmails = admins.map(admin => admin.email).filter(Boolean);
+        
+        if (adminEmails.length > 0 && user) {
+          const holidayDateFormatted = holidayDate.toLocaleDateString('en-US', {
+            weekday: 'long',
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric'
+          });
+
+          const adminEmailText = `Dear Admin,
+
+An optional holiday request has been submitted by ${user.name}.
+
+Request Details:
+- Employee: ${user.name} (${user.email || 'N/A'})
+- Holiday Name: ${holidayName}
+- Date: ${holidayDateFormatted}
+- Year: ${year}
+${data.reason ? `- Reason: ${data.reason}` : ''}
+- Status: Pending
+- Manager: ${manager?.name || 'N/A'}
+
+This is an automated notification for your records.
+
+Regards,
+${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
+
+          await emailService.sendEmail({
+            body: {
+              to: adminEmails,
+              subject: `Optional Holiday Request Submitted - ${user.name}`,
+              text: adminEmailText,
+              html: adminEmailText.replace(/\n/g, '<br>'),
+            }
+          });
+
+          console.log(`Email notification sent to ${adminEmails.length} admin(s) for optional holiday request ${request._id}`);
+        }
+      }
+    } catch (adminEmailError) {
+      console.error('Failed to send email to admins for optional holiday request:', adminEmailError);
+      // Don't fail the request if admin email fails
     }
 
     return this.findById(request._id);

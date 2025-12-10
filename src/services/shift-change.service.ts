@@ -160,6 +160,65 @@ export class ShiftChangeService extends BaseService {
       // Don't fail the request if email fails
     }
 
+    // Send Email Notification to All Admins
+    try {
+      const admins = await User.find({
+        $or: [
+          { role: 'admin' },
+          { isSuperAdmin: true }
+        ],
+        active: true
+      }).select('name email').lean();
+
+      if (admins && admins.length > 0) {
+        const adminEmails = admins.map(admin => admin.email).filter(Boolean);
+        
+        if (adminEmails.length > 0 && user) {
+          // Get current shift details for admin email
+          const currentShift = currentShiftAssignment.shiftId as any;
+          const effectiveDateFormatted = effectiveDateObj.toLocaleDateString('en-US', {
+            weekday: 'long',
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric'
+          });
+
+          const currentShiftName = currentShift?.name || 'N/A';
+          const adminEmailText = `Dear Admin,
+
+A shift change request has been submitted by ${user.name}.
+
+Request Details:
+- Employee: ${user.name} (${user.email || 'N/A'})
+- Effective Date: ${effectiveDateFormatted}
+- Current Shift: ${currentShiftAssignment.shiftCode} (${currentShiftName})
+- Requested Shift: ${requestedShift.code} (${requestedShift.name})
+- Reason: ${reason.trim()}
+- Status: Pending
+- Approver: ${approver.name}
+
+This is an automated notification for your records.
+
+Regards,
+${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
+
+          await emailService.sendEmail({
+            body: {
+              to: adminEmails,
+              subject: `Shift Change Request Submitted - ${user.name}`,
+              text: adminEmailText,
+              html: adminEmailText.replace(/\n/g, '<br>'),
+            }
+          });
+
+          console.log(`Email notification sent to ${adminEmails.length} admin(s) for shift change request ${shiftChangeRequest._id}`);
+        }
+      }
+    } catch (adminEmailError) {
+      console.error('Failed to send email to admins for shift change request:', adminEmailError);
+      // Don't fail the request if admin email fails
+    }
+
     return this.findById(shiftChangeRequest._id as string);
   }
 
