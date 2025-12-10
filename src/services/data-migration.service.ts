@@ -647,7 +647,11 @@ export class DataMigrationService extends BaseService {
         user.probationDate ? new Date(user.probationDate).toISOString().split('T')[0] : '',
         user.location || '',
         user.phone || '',
-        user.emergencyContact || '',
+        user.emergencyContact 
+          ? (typeof user.emergencyContact === 'string' 
+              ? user.emergencyContact 
+              : user.emergencyContact.mobileNo || '')
+          : '',
         user.address || '',
         user.bloodGroup || '',
         user.dateOfBirth ? new Date(user.dateOfBirth).toISOString().split('T')[0] : '',

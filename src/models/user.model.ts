@@ -33,6 +33,35 @@ interface IVisaDetails {
   isActive?: boolean; // Only relevant when visa details are provided
 }
 
+interface IEmergencyContact {
+  name?: string;
+  relationship?: string;
+  address?: string;
+  city?: string;
+  district?: string;
+  state?: string;
+  country?: string;
+  pincode?: number;
+  mobileNo?: string;
+}
+
+interface IExperienceDetail {
+  companyName?: string;
+  period?: string;
+  documentUrl?: string;
+  documentId?: string;
+  companyAddress?: string;
+  lastDrawnSalary?: number;
+  reasonForLeaving?: string;
+  designation?: string;
+}
+
+interface ICurrentCompanyExperience {
+  years: number;
+  months: number;
+  totalMonths: number;
+}
+
 interface IResignation {
   status: 'Pending' | 'Approved' | 'Rejected' | 'Withdrawn';
   summary: string;
@@ -59,6 +88,7 @@ export interface IUser extends Document {
   departmentId: string;
   managerId?: string;
   managerName?: string;
+  costCenter: string; // Mandatory
   employeeCode: string; // Employee code (mandatory and unique)
   checkinId?: string;
   biometricId?: string; // Optional - not used for UAE users
@@ -67,10 +97,10 @@ export interface IUser extends Document {
   resetTokenExpiry?: Date;
   joiningDate: Date;
   confirmationDate?: Date; // Optional - defaults to joiningDate if not provided
-  probationDate?: Date; // Optional - defaults to joiningDate if not provided
+  probationDate: string; // Mandatory - changed to string
   location: string;
   phone?: string;
-  emergencyContact?: string;
+  emergencyContact?: IEmergencyContact;
   address?: string;
   bloodGroup?: string;
   dateOfBirth?: Date;
@@ -78,8 +108,16 @@ export interface IUser extends Document {
   maritalStatus?: string;
   spouseName?: string;
   separationDate?: Date;
-  noticePeriod?: number; // Notice period in days
+  noticePeriod: number; // Mandatory - Notice period in days
   personalMailId?: string;
+  nationality?: string;
+  employmentStatus: string; // Mandatory
+  gender?: string;
+  uan?: string;
+  pfNumber?: string;
+  pfJoinDate?: Date;
+  familyPfNumber?: string;
+  currentCompanyExperience?: ICurrentCompanyExperience | null;
   createdAt: Date;
   updatedAt: Date;
   currentShiftAssignmentData: IShiftAssignmentData | null;
@@ -88,11 +126,29 @@ export interface IUser extends Document {
   holidayCalendarId?: string;
   holidayCalendarHistory?: IHolidayCalendarHistoryEntry[];
   resignations?: IResignation[];
+  experienceDetails?: IExperienceDetail[];
 
   bankDetails: IBankDetails[]; // Array for multiple bank accounts
   certificateIds?: Types.ObjectId[];
 
   fcmToken?: string; // Optional field for FCM token
+
+  // Government IDs and academic details
+  governmentIds?: {
+    pan?: { number?: string; documentUrl?: string; documentId?: string };
+    aadhaar?: { number?: string; documentUrl?: string; documentId?: string };
+    passport?: { number?: string; documentUrl?: string; documentId?: string };
+    voterId?: { number?: string; documentUrl?: string; documentId?: string };
+    drivingLicense?: { number?: string; documentUrl?: string; documentId?: string };
+    pf?: { number?: string; uan?: string };
+  };
+  academicDetails?: Array<{
+    instituteName?: string;
+    grade?: string;
+    yearOfPassing?: string;
+    documentUrl?: string;
+    documentId?: string;
+  }>;
 
   // New fields for UAE + external user support
   country: string; // 'IN' | 'AE'
@@ -169,6 +225,12 @@ const userSchema = new Schema<IUser>(
       validate: {
         validator: async function (value: string) {
           try {
+            // Allow "external_contract" for external users even if not in LOV
+            // Access role from the document context
+            const userDoc = this as unknown as IUser;
+            if (value === 'external_contract' && userDoc.role === 'external') {
+              return true;
+            }
             let locDept = await model('Lov').findOne({
               type: 'department',
               'values.value': value,
@@ -189,6 +251,12 @@ const userSchema = new Schema<IUser>(
     managerName: {
       type: String,
       maxlength: 100,
+    },
+    costCenter: {
+      type: String,
+      required: true,
+      trim: true,
+      maxlength: 150,
     },
     employeeCode: {
       type: String,
@@ -235,8 +303,10 @@ const userSchema = new Schema<IUser>(
       required: false, // Optional - defaults to joiningDate if not provided
     },
     probationDate: {
-      type: Date,
-      required: false, // Optional - defaults to joiningDate if not provided
+      type: String,
+      required: true,
+      trim: true,
+      maxlength: 100,
     },
     location: {
       type: String,
@@ -250,14 +320,59 @@ const userSchema = new Schema<IUser>(
       maxlength: 20,
     },
     emergencyContact: {
-      type: String,
-      trim: true,
-      maxlength: 20,
+      type: {
+        name: { type: String, required: false, trim: true, maxlength: 100 },
+        relationship: { type: String, required: false, trim: true, maxlength: 50 },
+        address: { type: String, required: false, trim: true, maxlength: 200 },
+        city: { type: String, required: false, trim: true, maxlength: 100 },
+        district: { type: String, required: false, trim: true, maxlength: 100 },
+        state: { type: String, required: false, trim: true, maxlength: 100 },
+        country: { type: String, required: false, trim: true, maxlength: 100 },
+        pincode: { type: Number, required: false },
+        mobileNo: { type: String, required: false, trim: true, maxlength: 20 },
+      },
+      required: false,
     },
     address: {
       type: String,
       trim: true,
       maxlength: 200,
+    },
+    gender: {
+      type: String,
+      required: false,
+      trim: true,
+      maxlength: 50,
+    },
+    nationality: {
+      type: String,
+      required: false,
+      trim: true,
+      maxlength: 100,
+    },
+    employmentStatus: {
+      type: String,
+      required: true,
+      trim: true,
+      maxlength: 100,
+    },
+    uan: {
+      type: String,
+      trim: true,
+      maxlength: 50,
+    },
+    pfNumber: {
+      type: String,
+      trim: true,
+      maxlength: 50,
+    },
+    pfJoinDate: {
+      type: Date,
+    },
+    familyPfNumber: {
+      type: String,
+      trim: true,
+      maxlength: 50,
     },
     bloodGroup: {
       type: String,
@@ -287,6 +402,7 @@ const userSchema = new Schema<IUser>(
     },
     noticePeriod: {
       type: Number,
+      required: true,
       min: 0,
     },
     personalMailId: {
@@ -330,6 +446,19 @@ const userSchema = new Schema<IUser>(
       ],
       default: [],
     },
+    experienceDetails: {
+      type: [{
+        companyName: { type: String, trim: true, maxlength: 200 },
+        period: { type: String, trim: true, maxlength: 100 },
+        documentUrl: { type: String, trim: true, maxlength: 500 },
+        documentId: { type: String, trim: true },
+        companyAddress: { type: String, trim: true, maxlength: 300 },
+        lastDrawnSalary: { type: Number, min: 0 },
+        reasonForLeaving: { type: String, trim: true, maxlength: 300 },
+        designation: { type: String, trim: true, maxlength: 150 },
+      }],
+      default: [],
+    },
     resignations: [{
       status: {
         type: String, enum: ['Pending', 'Approved', 'Rejected', 'Withdrawn']
@@ -351,6 +480,68 @@ const userSchema = new Schema<IUser>(
       type: String,
       required: false,
     },
+    governmentIds: {
+      type: {
+        pan: {
+          type: {
+            number: { type: String, trim: true },
+            documentUrl: { type: String, trim: true },
+            documentId: { type: String, trim: true }
+          },
+          required: false
+        },
+        aadhaar: {
+          type: {
+            number: { type: String, trim: true },
+            documentUrl: { type: String, trim: true },
+            documentId: { type: String, trim: true }
+          },
+          required: false
+        },
+        passport: {
+          type: {
+            number: { type: String, trim: true },
+            documentUrl: { type: String, trim: true },
+            documentId: { type: String, trim: true }
+          },
+          required: false
+        },
+        voterId: {
+          type: {
+            number: { type: String, trim: true },
+            documentUrl: { type: String, trim: true },
+            documentId: { type: String, trim: true }
+          },
+          required: false
+        },
+        drivingLicense: {
+          type: {
+            number: { type: String, trim: true },
+            documentUrl: { type: String, trim: true },
+            documentId: { type: String, trim: true }
+          },
+          required: false
+        },
+        pf: {
+          type: {
+            number: { type: String, trim: true },
+            uan: { type: String, trim: true }
+          },
+          required: false
+        }
+      },
+      required: false
+    },
+    academicDetails: {
+      type: [{
+        instituteName: { type: String, trim: true, maxlength: 200 },
+        grade: { type: String, trim: true, maxlength: 50 },
+        yearOfPassing: { type: String, trim: true, maxlength: 10 },
+        documentUrl: { type: String, trim: true, maxlength: 500 },
+        documentId: { type: String, trim: true }
+      }],
+      default: []
+    },
     // New fields for UAE + external user support
     country: {
       type: String,
@@ -359,6 +550,7 @@ const userSchema = new Schema<IUser>(
     },
     currency: {
       type: String,
+      required: true,
       enum: ['INR', 'AED'],
       default: 'INR'
     },
@@ -548,6 +740,21 @@ userSchema.pre('save', async function (next) {
   }
 });
 
+// Pre-save hook to automatically set employment status to "confirmed" after 180 days from joining date
+userSchema.pre('save', function (next) {
+  if (this.joiningDate && this.employmentStatus) {
+    const joiningDate = new Date(this.joiningDate);
+    const today = new Date();
+    const daysSinceJoining = Math.floor((today.getTime() - joiningDate.getTime()) / (1000 * 60 * 60 * 24));
+
+    // If 180 days or more have passed since joining date, automatically set status to "confirmed"
+    if (daysSinceJoining >= 180 && this.employmentStatus.toLowerCase() !== 'confirmed') {
+      this.employmentStatus = 'Confirmed';
+    }
+  }
+  next();
+});
+
 // Pre-save hook to handle UAE-specific visa validation
 userSchema.pre('save', function (next) {
   if (this.country === 'AE' && this.visaDetails) {
@@ -562,6 +769,29 @@ userSchema.pre('save', function (next) {
     }
   }
   next();
+});
+
+// Include virtuals in JSON/Object outputs
+userSchema.set('toJSON', { virtuals: true });
+userSchema.set('toObject', { virtuals: true });
+
+// Virtual: current company experience (years, months, totalMonths)
+userSchema.virtual('currentCompanyExperience').get(function () {
+  if (!this.joiningDate) return null;
+  const start = new Date(this.joiningDate);
+  if (isNaN(start.getTime())) return null;
+
+  const now = new Date();
+  const diffMs = now.getTime() - start.getTime();
+  if (diffMs <= 0) {
+    return { years: 0, months: 0, totalMonths: 0 };
+  }
+
+  const totalMonths = Math.floor(diffMs / (1000 * 60 * 60 * 24 * 30));
+  const years = parseFloat((totalMonths / 12).toFixed(1));
+  const months = parseFloat(((totalMonths % 12) / 12).toFixed(2));
+
+  return { years, months, totalMonths };
 });
 
 export const User = model<IUser>('User', userSchema);

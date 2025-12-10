@@ -3,6 +3,7 @@ import { RouteHandler } from '../types/routes';
 import { authenticate } from '../middleware/auth';
 import * as ExcelJS from 'exceljs';
 import { messaging } from '../config/firebase/firebaseConfig';
+import { filesUpload } from '../config/multer';
 // import { IAcademicDetails, IExperienceDetails } from '../models';
 
 const shiftAssignmentDataSchema = {
@@ -50,6 +51,23 @@ const visaDetailsSchema = {
   }
   // Removed required array to make all fields optional
 };
+
+const emergencyContactSchema = {
+  type: 'object',
+  properties: {
+    name: { type: 'string', maxLength: 100, description: 'Emergency contact name (optional)' },
+    relationship: { type: 'string', maxLength: 50, description: 'Relationship to employee (optional)' },
+    address: { type: 'string', maxLength: 200, description: 'Emergency contact address (optional)' },
+    city: { type: 'string', maxLength: 100, description: 'City (optional)' },
+    district: { type: 'string', maxLength: 100, description: 'District (optional)' },
+    state: { type: 'string', maxLength: 100, description: 'State (optional)' },
+    country: { type: 'string', maxLength: 100, description: 'Country (optional)' },
+    pincode: { type: 'number', description: 'Pincode/Postal code (optional)' },
+    mobileNo: { type: 'string', maxLength: 20, description: 'Mobile number (optional)' },
+  },
+  // All fields are optional
+};
+
 const governmentIdsSchema = {
   type: 'object',
   properties: {
@@ -105,6 +123,7 @@ const academicDetailsSchema = {
       instituteName: { type: 'string' },
       grade: { type: 'string' },
       documentUrl: { type: 'string' },
+      documentId: { type: 'string' },
       yearOfPassing: { type: 'string' },
     }
   },
@@ -117,6 +136,11 @@ const experienceDetailsSchema = {
       companyName: { type: 'string' },
       period: { type: 'string' },
       documentUrl: { type: 'string' },
+      documentId: { type: 'string' },
+      companyAddress: { type: 'string' },
+      lastDrawnSalary: { type: 'number' },
+      reasonForLeaving: { type: 'string' },
+      designation: { type: 'string' },
     }
   },
 }
@@ -133,6 +157,20 @@ const userResponseSchema = {
     departmentId: { type: 'string' },
     managerId: { type: 'string' },
     managerName: { type: 'string' },
+    costCenter: { type: 'string' },
+    gender: { type: 'string' },
+    uan: { type: 'string' },
+    pfNumber: { type: 'string' },
+    pfJoinDate: { type: 'string', format: 'date-time' },
+    familyPfNumber: { type: 'string' },
+    currentCompanyExperience: {
+      type: 'object',
+      properties: {
+        years: { type: 'number' },
+        months: { type: 'number' },
+        totalMonths: { type: 'number' },
+      }
+    },
     employeeCode: { type: 'string' },
     checkinId: { type: 'string' },
     biometricId: { type: 'string' },
@@ -140,7 +178,7 @@ const userResponseSchema = {
     joiningDate: { type: 'string', format: 'date-time' },
     location: { type: 'string' },
     phone: { type: 'string' },
-    emergencyContact: { type: 'string' },
+    emergencyContact: emergencyContactSchema,
     address: { type: 'string' },
     bloodGroup: { type: 'string' },
     upcomingShiftAssignmentData: shiftAssignmentDataSchema,
@@ -148,6 +186,8 @@ const userResponseSchema = {
     upcomingShiftAssignment: { type: 'string' },
     currentShiftAssignment: { type: 'string' },
     dateOfBirth: { type: 'string', format: 'date-time' },
+    nationality: { type: 'string' },
+    employmentStatus: { type: 'string' },
     holidayCalendarId: { type: 'string' },
     weekendId: { type: 'string' },
     createdAt: { type: 'string', format: 'date-time' },
@@ -536,7 +576,7 @@ export const userRoutes: RouteHandler = async (
         description: 'Create a new user with specified details',
         body: {
           type: 'object',
-          required: ['name', 'email', 'password', 'role', 'departmentId'],
+          required: ['name', 'email', 'password', 'role', 'departmentId', 'costCenter', 'currency', 'employmentStatus', 'probationDate', 'noticePeriod'],
           properties: {
             name: {
               type: 'string',
@@ -581,6 +621,25 @@ export const userRoutes: RouteHandler = async (
               type: 'string',
               description: 'Manager ID'
             },
+            costCenter: {
+              type: 'string',
+              maxLength: 150,
+              description: 'Cost center (e.g., Chennai Office, Takeda)'
+            },
+            gender: { type: 'string' },
+            uan: { type: 'string', maxLength: 50 },
+            pfNumber: { type: 'string', maxLength: 50 },
+            pfJoinDate: { type: 'string', format: 'date-time' },
+            familyPfNumber: { type: 'string', maxLength: 50 },
+            // Virtual field returned in responses
+            currentCompanyExperience: {
+              type: 'object',
+              properties: {
+                years: { type: 'number' },
+                months: { type: 'number' },
+                totalMonths: { type: 'number' },
+              }
+            },
             employeeCode: {
               type: 'string',
               description: 'Employee code (mandatory and unique)',
@@ -602,11 +661,7 @@ export const userRoutes: RouteHandler = async (
               maxLength: 20,
               description: 'Contact number'
             },
-            emergencyContact: {
-              type: 'string',
-              maxLength: 20,
-              description: 'Emergency contact number'
-            },
+            emergencyContact: emergencyContactSchema,
             address: {
               type: 'string',
               maxLength: 200,
@@ -622,6 +677,16 @@ export const userRoutes: RouteHandler = async (
               format: 'date-time',
               description: 'Date of birth',
               nullable: true
+            },
+            nationality: {
+              type: 'string',
+              maxLength: 100,
+              description: 'Employee nationality'
+            },
+            employmentStatus: {
+              type: 'string',
+              maxLength: 100,
+              description: 'Employment status (e.g., Full-time, Contract, Probation)'
             },
             // New fields for UAE + external user support
             country: {
@@ -672,7 +737,11 @@ export const userRoutes: RouteHandler = async (
               type: 'string',
               maxLength: 100,
               description: 'Client name or identifier for employee assignment'
-            }
+            },
+            bankDetails: bankDetailsSchema,
+            governmentIds: governmentIdsSchema,
+            academicDetails: academicDetailsSchema,
+            experienceDetails: experienceDetailsSchema
           },
         },
       },
@@ -768,26 +837,38 @@ export const userRoutes: RouteHandler = async (
               description: 'User active status (can be updated to true or false)'
             },
             joiningDate: { type: 'string', format: 'date-time' },
+            costCenter: { type: 'string', maxLength: 150 },
+            gender: { type: 'string' },
+            uan: { type: 'string', maxLength: 50 },
+            pfNumber: { type: 'string', maxLength: 50 },
+            pfJoinDate: { type: 'string', format: 'date-time' },
+            familyPfNumber: { type: 'string', maxLength: 50 },
+            // Virtual field (read-only)
+            currentCompanyExperience: {
+              type: 'object',
+              properties: {
+                years: { type: 'number' },
+                months: { type: 'number' },
+                totalMonths: { type: 'number' },
+              }
+            },
             location: { type: 'string', maxLength: 100 },
             phone: { type: 'string', maxLength: 20 },
-            emergencyContact: { type: 'string', maxLength: 20 },
+            emergencyContact: emergencyContactSchema,
             address: { type: 'string', maxLength: 200 },
             bloodGroup: { type: 'string', maxLength: 5 },
             dateOfBirth: { type: 'string', format: 'date-time' },
-            bankDetails: {
-              type: 'array',
-              items: {
-                type: 'object',
-                properties: {
-                  accountHolderName: { type: 'string' },
-                  accountNumber: { type: 'string' },
-                  bankName: { type: 'string' },
-                  ifscCode: { type: 'string' },
-                  isActive: { type: 'boolean' }
-                },
-                required: ['accountHolderName', 'accountNumber', 'bankName', 'ifscCode']
-              }
+            nationality: {
+              type: 'string',
+              maxLength: 100,
+              description: 'Employee nationality'
             },
+            employmentStatus: {
+              type: 'string',
+              maxLength: 100,
+              description: 'Employment status (e.g., Full-time, Contract)'
+            },
+            bankDetails: bankDetailsSchema,
             // New fields for UAE + external user support
             country: {
               type: 'string',
@@ -841,8 +922,8 @@ export const userRoutes: RouteHandler = async (
             },
             probationDate: {
               type: 'string',
-              format: 'date-time',
-              description: 'Employee probation date'
+              maxLength: 100,
+              description: 'Probation date (as string)'
             },
             separationDate: {
               type: 'string',
@@ -866,13 +947,17 @@ export const userRoutes: RouteHandler = async (
             },
             noticePeriod: {
               type: 'number',
+              minimum: 0,
               description: 'Notice period in days'
             },
             personalMailId: {
               type: 'string',
               format: 'email',
               description: "Employee's personal email address"
-            }
+            },
+            governmentIds: governmentIdsSchema,
+            academicDetails: academicDetailsSchema,
+            experienceDetails: experienceDetailsSchema
           },
         },
       },
@@ -881,16 +966,16 @@ export const userRoutes: RouteHandler = async (
       try {
         const { id } = request.params as { id: string };
         const body = request.body as any;
-        
+
         // Log the incoming request
         console.log('📨 [PUT /users/:id] Update request received');
         console.log('🔍 Active field in request body:', body.active, '(type:', typeof body.active, ')');
         console.log('📦 Full request body:', JSON.stringify(body, null, 2));
-        
+
         const user = await request.container!.userService.update(id, body);
-        
+
         console.log('✅ [PUT /users/:id] Update successful - user.active:', user.active);
-        
+
         return reply.send({
           success: true,
           data: user,
@@ -1623,6 +1708,178 @@ export const userRoutes: RouteHandler = async (
         return reply.send(buffer);
       } catch (error: any) {
         return reply.status(500).send({
+          success: false,
+          error: { message: error.message }
+        });
+      }
+    }
+  );
+
+  // Upload government ID files
+  fastify.post<{ Params: { id: string } }>(
+    '/:id/government-ids/files',
+    {
+      onRequest: [authenticate],
+      preHandler: [filesUpload],
+      schema: {
+        tags: ['User Management'],
+        summary: 'Upload government ID files',
+        description: 'Upload files for government IDs (PAN, Aadhaar, Passport, Voter ID, Driving License)',
+        params: {
+          type: 'object',
+          properties: {
+            id: { type: 'string', description: 'User ID' }
+          },
+          required: ['id']
+        }
+      }
+    },
+    async (request, reply) => {
+      try {
+        const { id } = request.params as { id: string };
+        const user = await request.container!.userService.updateGovernmentIdFiles(id, request);
+
+        return reply.status(200).send({
+          success: true,
+          data: user
+        });
+      } catch (error: any) {
+        console.error('Error uploading government ID files:', error);
+        return reply.status(400).send({
+          success: false,
+          error: { message: error.message }
+        });
+      }
+    }
+  );
+
+  // Upload academic detail document
+  fastify.post<{ Params: { id: string }; Querystring: { index: string } }>(
+    '/:id/academic-details/files',
+    {
+      onRequest: [authenticate],
+      preHandler: [filesUpload],
+      schema: {
+        tags: ['User Management'],
+        summary: 'Upload academic detail document',
+        description: 'Upload a document for a specific academic detail entry',
+        params: {
+          type: 'object',
+          properties: {
+            id: { type: 'string', description: 'User ID' }
+          },
+          required: ['id']
+        },
+        querystring: {
+          type: 'object',
+          properties: {
+            index: { type: 'string', description: 'Index of the academic detail entry (0-based)' }
+          },
+          required: ['index']
+        }
+      }
+    },
+    async (request, reply) => {
+      try {
+        const { id } = request.params as { id: string };
+        const { index } = request.query as { index: string };
+        const files = (request as any).files as any[];
+
+        if (!files || files.length === 0) {
+          return reply.status(400).send({
+            success: false,
+            error: { message: 'No file uploaded' }
+          });
+        }
+
+        const academicDetailIndex = parseInt(index, 10);
+        if (isNaN(academicDetailIndex) || academicDetailIndex < 0) {
+          return reply.status(400).send({
+            success: false,
+            error: { message: 'Invalid academic detail index' }
+          });
+        }
+
+        const result = await request.container!.userService.uploadAcademicDetailDocument(
+          id,
+          academicDetailIndex,
+          files[0]
+        );
+
+        return reply.status(200).send({
+          success: true,
+          data: result
+        });
+      } catch (error: any) {
+        console.error('Error uploading academic detail document:', error);
+        return reply.status(400).send({
+          success: false,
+          error: { message: error.message }
+        });
+      }
+    }
+  );
+
+  // Upload experience detail document
+  fastify.post<{ Params: { id: string }; Querystring: { index: string } }>(
+    '/:id/experience-details/files',
+    {
+      onRequest: [authenticate],
+      preHandler: [filesUpload],
+      schema: {
+        tags: ['User Management'],
+        summary: 'Upload experience detail document',
+        description: 'Upload a document for a specific experience detail entry',
+        params: {
+          type: 'object',
+          properties: {
+            id: { type: 'string', description: 'User ID' }
+          },
+          required: ['id']
+        },
+        querystring: {
+          type: 'object',
+          properties: {
+            index: { type: 'string', description: 'Index of the experience detail entry (0-based)' }
+          },
+          required: ['index']
+        }
+      }
+    },
+    async (request, reply) => {
+      try {
+        const { id } = request.params as { id: string };
+        const { index } = request.query as { index: string };
+        const files = (request as any).files as any[];
+
+        if (!files || files.length === 0) {
+          return reply.status(400).send({
+            success: false,
+            error: { message: 'No file uploaded' }
+          });
+        }
+
+        const experienceDetailIndex = parseInt(index, 10);
+        if (isNaN(experienceDetailIndex) || experienceDetailIndex < 0) {
+          return reply.status(400).send({
+            success: false,
+            error: { message: 'Invalid experience detail index' }
+          });
+        }
+
+        const result = await request.container!.userService.uploadExperienceDetailDocument(
+          id,
+          experienceDetailIndex,
+          files[0]
+        );
+
+        return reply.status(200).send({
+          success: true,
+          data: result
+        });
+      } catch (error: any) {
+        console.error('Error uploading experience detail document:', error);
+        return reply.status(400).send({
           success: false,
           error: { message: error.message }
         });
