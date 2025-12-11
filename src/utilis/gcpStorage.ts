@@ -43,7 +43,7 @@ export interface IGCPUploadResult {
 export async function uploadFileToGCP(params: IGCPUploadParams): Promise<IGCPUploadResult> {
   try {
     const { filePath, fileName, employeeId, category, type } = params;
-    
+
     // Determine folder name based on category and type
     const folderName = getFolderName(category, type);
     console.log(folderName, "folderName")
@@ -51,7 +51,7 @@ export async function uploadFileToGCP(params: IGCPUploadParams): Promise<IGCPUpl
     const gcpFilePath = `${employeeId}/${folderName}/${fileName}`;
 
     // Upload file to GCP
-    const bucket = storage.bucket(bucketName ||``);
+    const bucket = storage.bucket(bucketName || ``);
     console.log(bucket, "bucket---bucket")
     const file = bucket.file(gcpFilePath);
     console.log(file, "file---file")
@@ -61,17 +61,17 @@ export async function uploadFileToGCP(params: IGCPUploadParams): Promise<IGCPUpl
         contentType: getContentType(fileName),
       },
     });
-    
+
     // // Make the file publicly accessible
     // await file.makePublic();
-    
+
     // Construct the public URL
     const fileUrl = `https://storage.googleapis.com/${bucketName}/${gcpFilePath}`;
     return {
       success: true,
       fileUrl,
     };
-    
+
   } catch (error: any) {
     console.error('GCP Upload Error:', error);
     return {
@@ -88,10 +88,10 @@ export async function deleteFileFromGCP(fileUrl: string): Promise<IGCPUploadResu
   try {
     // Extract file path from URL
     const urlParts = fileUrl.replace(`https://storage.googleapis.com/${bucketName}/`, '');
-    
-    const bucket = storage.bucket(bucketName ||'');
+
+    const bucket = storage.bucket(bucketName || '');
     const file = bucket.file(urlParts);
-    
+
     // Check if file exists before deleting
     const [exists] = await file.exists();
     if (!exists) {
@@ -100,14 +100,14 @@ export async function deleteFileFromGCP(fileUrl: string): Promise<IGCPUploadResu
         fileUrl: '',
       };
     }
-    
+
     await file.delete();
-    
+
     return {
       success: true,
       fileUrl: '',
     };
-    
+
   } catch (error: any) {
     console.error('GCP Delete Error:', error);
     return {
@@ -145,7 +145,17 @@ function getFolderName(category: string, type: string): string {
           return 'EmployeeLifecycle';
       }
     case 'Certification':
-      return 'Certificate';
+      // Handle Academic, Experience, and GovernmentId document types
+      switch (type) {
+        case 'Academic':
+          return 'Academic';
+        case 'Experience':
+          return 'Experience';
+        case 'GovernmentId':
+          return 'GovernmentId';
+        default:
+          return 'Certificate';
+      }
     case 'Payroll':
       return 'Payroll';
     default:
@@ -158,7 +168,7 @@ function getFolderName(category: string, type: string): string {
  */
 function getContentType(fileName: string): string {
   const extension = path.extname(fileName).toLowerCase();
-  
+
   switch (extension) {
     case '.pdf':
       return 'application/pdf';

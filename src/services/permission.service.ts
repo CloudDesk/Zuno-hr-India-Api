@@ -411,6 +411,61 @@ export class PermissionService extends BaseService {
       });
     }
 
+    // Send Email Notification to All Admins
+    try {
+      const admins = await User.find({
+        $or: [
+          { role: 'admin' },
+          { isSuperAdmin: true }
+        ],
+        active: true
+      }).select('name email').lean();
+
+      if (admins && admins.length > 0) {
+        const adminEmails = admins.map(admin => admin.email).filter(Boolean);
+        
+        if (adminEmails.length > 0 && user) {
+          const permissionDateFormatted = permission.permissionDate.toLocaleDateString('en-US', {
+            weekday: 'long',
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric'
+          });
+
+          const adminEmailText = `Dear Admin,
+
+A permission request has been submitted by ${user.name}.
+
+Request Details:
+- Employee: ${user.name} (${user.email || 'N/A'})
+- Date: ${permissionDateFormatted}
+- Duration: ${permission.hours} hours
+- Reason: ${permission.reason || 'N/A'}
+- Status: Pending
+- Manager: ${manager?.name || 'N/A'}
+
+This is an automated notification for your records.
+
+Regards,
+${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
+
+          await emailService.sendEmail({
+            body: {
+              to: adminEmails,
+              subject: `Permission Request Submitted - ${user.name}`,
+              text: adminEmailText,
+              html: adminEmailText.replace(/\n/g, '<br>'),
+            }
+          });
+
+          console.log(`Email notification sent to ${adminEmails.length} admin(s) for permission request ${permission._id}`);
+        }
+      }
+    } catch (adminEmailError) {
+      console.error('Failed to send email to admins for permission request:', adminEmailError);
+      // Don't fail the request if admin email fails
+    }
+
     return this.findById(permission._id as string);
   }
 

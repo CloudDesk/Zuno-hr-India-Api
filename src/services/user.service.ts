@@ -1,12 +1,16 @@
 import { BaseService } from './base.service';
 import { User } from '../models/user.model';
 import { LOV } from '../models/lov.model';
+import { Document } from '../models/document.model';
 import { RequestContext } from '../types/context';
 import { Types } from 'mongoose';
 import { emailService } from './email.service';
 import { messaging } from '../config/firebase/firebaseConfig';
 import { generateEmailTemplate } from '../emails/templates';
 import { getSubordinateUserIds } from '../utilis/userHierarchy';
+import { uploadFileToGCP } from '../utilis/gcpStorage';
+import * as fs from 'fs';
+import * as path from 'path';
 
 // import { MultipartFile } from '@fastify/multipart';
 
@@ -19,12 +23,33 @@ interface IBankDetails {
 }
 
 interface IGovernmentIds {
-  pan: { number?: string; documentUrl?: string; file?: any };
-  aadhaar: { number?: string; documentUrl?: string; file?: any };
-  passport: { number?: string; documentUrl?: string; file?: any };
-  voterId: { number?: string; documentUrl?: string; file?: any };
-  drivingLicense: { number?: string; documentUrl?: string; file?: any };
+  pan: { number?: string; documentUrl?: string; file?: any; verificationStatus?: 'Pending' | 'Verified' | 'Rejected' };
+  aadhaar: { number?: string; documentUrl?: string; file?: any; verificationStatus?: 'Pending' | 'Verified' | 'Rejected' };
+  passport: { number?: string; documentUrl?: string; file?: any; verificationStatus?: 'Pending' | 'Verified' | 'Rejected' };
+  voterId: { number?: string; documentUrl?: string; file?: any; verificationStatus?: 'Pending' | 'Verified' | 'Rejected' };
+  drivingLicense: { number?: string; documentUrl?: string; file?: any; verificationStatus?: 'Pending' | 'Verified' | 'Rejected' };
   pf: { number?: string; uan?: string };
+}
+
+interface IExperienceDetails {
+  companyName?: string;
+  period?: string;
+  documentUrl?: string;
+  documentId?: string;
+  companyAddress?: string;
+  lastDrawnSalary?: number;
+  reasonForLeaving?: string;
+  designation?: string;
+  verificationStatus?: 'Pending' | 'Verified' | 'Rejected';
+}
+
+interface IAcademicDetails {
+  instituteName?: string;
+  grade?: string;
+  yearOfPassing?: string;
+  documentUrl?: string;
+  documentId?: string;
+  verificationStatus?: 'Pending' | 'Verified' | 'Rejected';
 }
 
 interface IUserCreate {
@@ -43,7 +68,17 @@ interface IUserCreate {
   probationDate?: Date; // Optional - defaults to joiningDate if not provided
   location?: string;
   phone?: string;
-  emergencyContact?: string;
+  emergencyContact?: {
+    name?: string;
+    relationship?: string;
+    address?: string;
+    city?: string;
+    district?: string;
+    state?: string;
+    country?: string;
+    pincode?: number;
+    mobileNo?: string;
+  };
   address?: string;
   bloodGroup?: string;
   dateOfBirth: Date; // Required
@@ -57,6 +92,9 @@ interface IUserCreate {
   currentShiftAssignment: string;
   upcomingShiftAssignmentData: object;
   currentShiftAssignmentData: object;
+  costCenter?: string;
+  nationality?: string;
+  employmentStatus?: string;
   country?: string;
   currency?: string;
   licenseType?: string;
@@ -67,6 +105,7 @@ interface IUserCreate {
     isActive?: boolean; // Only relevant when visa details are provided
   };
   client?: string;
+  experienceDetails?: IExperienceDetails[];
 }
 
 interface IUserUpdate {
@@ -85,7 +124,17 @@ interface IUserUpdate {
   probationDate?: Date;
   location?: string;
   phone?: string;
-  emergencyContact?: string;
+  emergencyContact?: {
+    name?: string;
+    relationship?: string;
+    address?: string;
+    city?: string;
+    district?: string;
+    state?: string;
+    country?: string;
+    pincode?: number;
+    mobileNo?: string;
+  };
   address?: string;
   bloodGroup?: string;
   dateOfBirth?: Date;
@@ -99,6 +148,9 @@ interface IUserUpdate {
   currentShiftAssignment?: string;
   upcomingShiftAssignmentData?: object;
   currentShiftAssignmentData?: object;
+  costCenter?: string;
+  nationality?: string;
+  employmentStatus?: string;
   bankDetails?: IBankDetails[]; // Array for multiple bank accounts
   governmentIds?: IGovernmentIds; // Separate section for identity documents
   country?: string;
@@ -111,6 +163,7 @@ interface IUserUpdate {
     isActive?: boolean; // Only relevant when visa details are provided
   };
   client?: string;
+  experienceDetails?: IExperienceDetails[];
 }
 
 interface IResignationState {
@@ -171,7 +224,9 @@ export class UserService extends BaseService {
   }, authenticatedUser: any) {
     const {
       page = 1,
-      limit = 10,
+      // Use limit 1000 when role filter is specified (for dropdowns)
+      // Otherwise use provided limit or default to 10
+      limit: providedLimit,
       my,
       subordinates,
       search,
@@ -187,6 +242,19 @@ export class UserService extends BaseService {
       select
     } = query;
 
+    // Set limit to 1000 if role is specified (for dropdowns)
+    // Override the default limit of 10 when role filter is used
+    // If role is specified and limit is 10 (default from route schema), change it to 1000
+    // If role is specified and limit is explicitly set to something else, use that
+    // Otherwise use provided limit or default to 10
+    let limit: number;
+    if (role) {
+      // For role-based queries, use 1000 unless explicitly set to a different value
+      limit = (providedLimit && providedLimit !== 10) ? providedLimit : 1000;
+    } else {
+      // For non-role queries, use provided limit or default to 10
+      limit = providedLimit || 10;
+    }
     const skip = (page - 1) * limit;
     const filter: any = {};
 
@@ -604,7 +672,7 @@ export class UserService extends BaseService {
 
     // Execute queries in parallel
     const users = await User.find(filter)
-      .select('name email role specificRole departmentId active joiningDate ')
+      .select('name email role specificRole departmentId active joiningDate nationality employmentStatus ')
       .sort({ name: 1 });
 
     return users;
@@ -645,7 +713,7 @@ export class UserService extends BaseService {
     // Query the database to find users
     const users = await User
       .find(filter)
-      .select('_id name email role specificRole departmentId active managerId managerName employeeCode')
+      .select('_id name email role specificRole departmentId active managerId managerName employeeCode nationality employmentStatus')
       .skip(skip)
       .limit(limit)
       .lean();
@@ -748,7 +816,7 @@ export class UserService extends BaseService {
     // Execute queries
     const [users, total] = await Promise.all([
       User.find(filter)
-        .select('name email role specificRole departmentId active joiningDate managerId managerName employeeCode checkinId biometricId location phone emergencyContact address bloodGroup upcomingShiftAssignmentData currentShiftAssignmentData upcomingShiftAssignment currentShiftAssignment dateOfBirth holidayCalendarId weekendId createdAt updatedAt country currency licenseType portalAccess')
+        .select('name email role specificRole departmentId active joiningDate managerId managerName employeeCode checkinId biometricId location phone emergencyContact address bloodGroup upcomingShiftAssignmentData currentShiftAssignmentData upcomingShiftAssignment currentShiftAssignment dateOfBirth holidayCalendarId weekendId createdAt updatedAt nationality employmentStatus country currency licenseType portalAccess')
         .sort(sortObj)
         .skip(skip)
         .limit(limit)
@@ -1474,22 +1542,26 @@ export class UserService extends BaseService {
     }
   }
 
-  //   import { FastifyRequest } from 'fastify';
+  async updateGovernmentIdFiles(
+    userId: string,
+    request: any,
+    verificationStatus?: 'Pending' | 'Verified' | 'Rejected'
+  ): Promise<any> {
+    const user = await User.findById(userId);
+    if (!user) {
+      throw new Error('User not found');
+    }
 
+    const files = (request as any).files as any[]; // fastify-multer adds files to request.files
+    console.log('Uploaded files:', files);
 
+    if (!files || files.length === 0) {
+      throw new Error('No files uploaded');
+    }
 
-  /*
-    async updateGovernmentIdFiles(userId: string, request: FastifyRequest): Promise<any> {
-      const user = await User.findById(userId);
-      if (!user) {
-        throw new Error('User not found');
-      }
-  
-      const files = request.files as any; // fastify-multer adds files to request.files
-      console.log('Uploaded files:', files);
-  
-      // Initialize governmentIds with the correct structure if it doesn't exist
-      user.governmentIds = user.governmentIds || {
+    // Initialize governmentIds with the correct structure if it doesn't exist
+    if (!user.governmentIds) {
+      user.governmentIds = {
         pan: {},
         aadhaar: {},
         passport: {},
@@ -1497,59 +1569,159 @@ export class UserService extends BaseService {
         drivingLicense: {},
         pf: {},
       };
-      // Process each uploaded file
-      for (const file of files) {
-        const fieldName = file.fieldname; // e.g., pan_file, passport_file
-        const filename = file.filename;
-  
-        // Generate fileUrl
-        const fileUrl = `http://${request.headers.host}/${filename}`;
-  
-        // Map fieldName to the corresponding GovernmentIds field 
-        let targetField: keyof IGovernmentIds | null = null;
-        if (fieldName === 'pan_file') {
-          targetField = 'pan';
-        } else if (fieldName === 'passport_file') {
-          targetField = 'passport';
-        } else if (fieldName === 'aadhaar_file') {
-          targetField = 'aadhaar';
-        } else if (fieldName === 'voterId_file') {
-          targetField = 'voterId';
-        } else if (fieldName === 'drivingLicense_file') {
-          targetField = 'drivingLicense';
-        }
-  
-        // Update documentUrl if the fieldName matches a GovernmentIds field
-        if (targetField && targetField !== 'pf' as keyof IGovernmentIds) { // pf doesn't have documentUrl
-          user.governmentIds[targetField] = user.governmentIds[targetField] || {};
-          user.governmentIds[targetField].documentUrl = fileUrl;
-        }
-      }
-  
-      await user.save();
-      return user;
     }
-  
-    async updateGovernmentIdFields(
-      userId: string,
-      fields: {
-        pan_number?: string;
-        passport_number?: string;
-        aadhaar_number?: string;
-        voterId_number?: string;
-        drivingLicense_number?: string;
-        pf_number?: string;
-        pf_uan?: string;
+
+    // Map field names to document types and labels
+    const fieldMapping: Record<string, { type: string; label: string }> = {
+      'pan_file': { type: 'pan', label: 'PAN Card' },
+      'pan': { type: 'pan', label: 'PAN Card' },
+      'passport_file': { type: 'passport', label: 'Passport' },
+      'passport': { type: 'passport', label: 'Passport' },
+      'aadhaar_file': { type: 'aadhaar', label: 'Aadhaar Card' },
+      'aadhaar': { type: 'aadhaar', label: 'Aadhaar Card' },
+      'voterId_file': { type: 'voterId', label: 'Voter ID' },
+      'voterId': { type: 'voterId', label: 'Voter ID' },
+      'drivingLicense_file': { type: 'drivingLicense', label: 'Driving License' },
+      'drivingLicense': { type: 'drivingLicense', label: 'Driving License' },
+    };
+
+    type GovernmentIdFieldWithDoc = 'pan' | 'aadhaar' | 'passport' | 'voterId' | 'drivingLicense';
+
+    const isAdminUpload = (this.context.user?.role || '').toLowerCase() === 'admin';
+    const resolvedStatus: 'Pending' | 'Verified' | 'Rejected' =
+      verificationStatus || (isAdminUpload ? 'Verified' : 'Pending');
+
+    // Process each uploaded file
+    for (const file of files) {
+      const fieldName = file.fieldname; // e.g., pan_file, passport_file
+      const mapping = fieldMapping[fieldName];
+
+      if (!mapping) {
+        console.warn(`Unknown field name: ${fieldName}, skipping...`);
+        continue;
       }
-    ): Promise<any> {
-      const user = await User.findById(userId);
-      if (!user) {
-        throw new Error('User not found');
+
+      const targetField = mapping.type as GovernmentIdFieldWithDoc;
+      const documentLabel = mapping.label;
+
+      try {
+        // Read file from disk (multer saves it)
+        if (!fs.existsSync(file.path)) {
+          throw new Error(`File not found at path: ${file.path}`);
+        }
+
+        const fileExt = path.extname(file.originalname);
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const sanitizedEmployeeName = user.name.replace(/[^a-zA-Z0-9]/g, '_');
+        const newFileName = `GovernmentId_${targetField}_${sanitizedEmployeeName}_${timestamp}${fileExt}`;
+
+        // Upload file to GCP Cloud Storage
+        const gcpResult = await uploadFileToGCP({
+          filePath: file.path,
+          fileName: newFileName,
+          employeeId: userId,
+          category: 'Certification',
+          type: 'GovernmentId'
+        });
+
+        if (!gcpResult.success) {
+          throw new Error(`Failed to upload file to GCP: ${gcpResult.error}`);
+        }
+
+        const fileUrl = gcpResult.fileUrl!;
+
+        // Clean up local file
+        try {
+          fs.unlinkSync(file.path);
+        } catch (err) {
+          console.error('Error deleting local file:', err);
+        }
+
+        // Create Document record in database
+        const newDocument = new Document({
+          employeeId: new Types.ObjectId(userId),
+          type: 'GovernmentId',
+          category: 'Certification',
+          tags: [targetField, documentLabel, 'Government ID'],
+          fileName: newFileName,
+          filePath: fileUrl,
+          accessLevel: 'Private',
+          status: 'Uploaded',
+          uploadedBy: new Types.ObjectId(this.context.user?._id),
+          metadata: {
+            governmentId: {
+              idType: targetField,
+              label: documentLabel,
+              uploadedAt: new Date(),
+              verificationStatus: resolvedStatus
+            }
+          },
+          auditLog: [
+            {
+              action: 'Upload',
+              performedBy: new Types.ObjectId(this.context.user?._id),
+              timestamp: new Date(),
+              details: `Uploaded ${documentLabel} for ${user.name}`
+            }
+          ]
+        });
+
+        await newDocument.save();
+
+        // Update user's governmentIds with document ID and URL
+        const govIds = user.governmentIds!;
+        if (!govIds[targetField]) {
+          govIds[targetField] = {} as any;
+        }
+        (govIds[targetField] as any).documentUrl = fileUrl;
+        (govIds[targetField] as any).documentId = newDocument._id.toString();
+        (govIds[targetField] as any).verificationStatus = resolvedStatus;
+
+        console.log(`Successfully uploaded and stored ${documentLabel} document for user ${user.name}`);
+      } catch (error: any) {
+        console.error(`Error processing file ${fieldName}:`, error);
+        // Clean up local file on error
+        try {
+          if (fs.existsSync(file.path)) {
+            fs.unlinkSync(file.path);
+          }
+        } catch (unlinkError) {
+          console.error('Error cleaning up file after error:', unlinkError);
+        }
+        throw new Error(`Failed to process ${documentLabel} file: ${error.message}`);
       }
-  
-      console.log('Form fields:', fields);
-      // Initialize governmentIds with the correct structure if it doesn't exist
-      user.governmentIds = user.governmentIds || {
+    }
+
+    await user.save();
+    return user;
+  }
+
+  async updateGovernmentIdFields(
+    userId: string,
+    fields: {
+      pan_number?: string;
+      passport_number?: string;
+      aadhaar_number?: string;
+      voterId_number?: string;
+      drivingLicense_number?: string;
+      pf_number?: string;
+      pf_uan?: string;
+      pan_verificationStatus?: 'Pending' | 'Verified' | 'Rejected';
+      passport_verificationStatus?: 'Pending' | 'Verified' | 'Rejected';
+      aadhaar_verificationStatus?: 'Pending' | 'Verified' | 'Rejected';
+      voterId_verificationStatus?: 'Pending' | 'Verified' | 'Rejected';
+      drivingLicense_verificationStatus?: 'Pending' | 'Verified' | 'Rejected';
+    }
+  ): Promise<any> {
+    const user = await User.findById(userId);
+    if (!user) {
+      throw new Error('User not found');
+    }
+
+    console.log('Form fields:', fields);
+    // Initialize governmentIds with the correct structure if it doesn't exist
+    if (!user.governmentIds) {
+      user.governmentIds = {
         pan: {},
         aadhaar: {},
         passport: {},
@@ -1557,98 +1729,430 @@ export class UserService extends BaseService {
         drivingLicense: {},
         pf: {},
       };
-      // Update fields only if the corresponding payload key is provided (not undefined)
-      if (fields.pan_number !== undefined) {
-        user.governmentIds.pan.number = fields.pan_number;
-      }
-  
-      if (fields.passport_number !== undefined) {
-        user.governmentIds.passport.number = fields.passport_number;
-      }
-  
-      if (fields.aadhaar_number !== undefined) {
-        user.governmentIds.aadhaar.number = fields.aadhaar_number;
-      }
-  
-      if (fields.voterId_number !== undefined) {
-        user.governmentIds.voterId.number = fields.voterId_number;
-      }
-  
-      if (fields.drivingLicense_number !== undefined) {
-        user.governmentIds.drivingLicense.number = fields.drivingLicense_number;
-      }
-  
-      if (fields.pf_number !== undefined) {
-        user.governmentIds.pf.number = fields.pf_number;
-      }
-  
-      if (fields.pf_uan !== undefined) {
-        user.governmentIds.pf.uan = fields.pf_uan;
-      }
-  
-      console.log(user, "after update uservalue ")
-  
-      await user.save();
-      return user;
     }
-  
-    async updateAcademicDetails(userId: string, academicDetails: IAcademicDetails[]): Promise<any> {
-      const user = await User.findById(userId);
-      if (!user) {
-        throw new Error('User not found');
+    const govIds = user.governmentIds as any;
+
+    // Update fields only if the corresponding payload key is provided (not undefined)
+    if (fields.pan_number !== undefined) {
+      if (!govIds.pan) {
+        govIds.pan = {};
       }
-  
-      console.log('Received academic details:', academicDetails);
-  
-      // Validate the incoming data (optional, depending on requirements)
-      for (const detail of academicDetails) {
-        if (!detail.instituteName?.trim()) {
-          throw new Error('Institute name is required for all academic details');
-        }
-        if (detail.yearOfPassing && !/^\d{4}$/.test(detail.yearOfPassing)) {
-          throw new Error('Year of passing must be a valid 4-digit year');
-        }
+      govIds.pan.number = fields.pan_number;
+      if (fields.pan_verificationStatus) {
+        (govIds.pan as any).verificationStatus = fields.pan_verificationStatus;
       }
-  
-      // Overwrite the academicDetails array with the new data
-      user.academicDetails = academicDetails.map(detail => ({
+    }
+
+    if (fields.passport_number !== undefined) {
+      if (!govIds.passport) {
+        govIds.passport = {};
+      }
+      govIds.passport.number = fields.passport_number;
+      if (fields.passport_verificationStatus) {
+        (govIds.passport as any).verificationStatus = fields.passport_verificationStatus;
+      }
+    }
+
+    if (fields.aadhaar_number !== undefined) {
+      if (!govIds.aadhaar) {
+        govIds.aadhaar = {};
+      }
+      govIds.aadhaar.number = fields.aadhaar_number;
+      if (fields.aadhaar_verificationStatus) {
+        (govIds.aadhaar as any).verificationStatus = fields.aadhaar_verificationStatus;
+      }
+    }
+
+    if (fields.voterId_number !== undefined) {
+      if (!govIds.voterId) {
+        govIds.voterId = {};
+      }
+      govIds.voterId.number = fields.voterId_number;
+      if (fields.voterId_verificationStatus) {
+        (govIds.voterId as any).verificationStatus = fields.voterId_verificationStatus;
+      }
+    }
+
+    if (fields.drivingLicense_number !== undefined) {
+      if (!govIds.drivingLicense) {
+        govIds.drivingLicense = {};
+      }
+      govIds.drivingLicense.number = fields.drivingLicense_number;
+      if (fields.drivingLicense_verificationStatus) {
+        (govIds.drivingLicense as any).verificationStatus = fields.drivingLicense_verificationStatus;
+      }
+    }
+
+    if (fields.pf_number !== undefined) {
+      if (!govIds.pf) {
+        govIds.pf = {};
+      }
+      govIds.pf.number = fields.pf_number;
+    }
+
+    if (fields.pf_uan !== undefined) {
+      if (!govIds.pf) {
+        govIds.pf = {};
+      }
+      govIds.pf.uan = fields.pf_uan;
+    }
+
+    console.log(user, "after update uservalue ")
+
+    await user.save();
+    return user;
+  }
+
+  async updateAcademicDetails(userId: string, academicDetails: IAcademicDetails[]): Promise<any> {
+    const user = await User.findById(userId);
+    if (!user) {
+      throw new Error('User not found');
+    }
+
+    console.log('Received academic details:', academicDetails);
+
+    // Validate the incoming data (optional, depending on requirements)
+    for (const detail of academicDetails) {
+      if (!detail.instituteName?.trim()) {
+        throw new Error('Institute name is required for all academic details');
+      }
+      if (detail.yearOfPassing && !/^\d{4}$/.test(detail.yearOfPassing)) {
+        throw new Error('Year of passing must be a valid 4-digit year');
+      }
+    }
+
+    // Overwrite the academicDetails array with the new data
+    user.academicDetails = academicDetails.map((detail, index) => {
+      const existing = (user.academicDetails || [])[index] as any;
+      return {
         instituteName: detail.instituteName,
         grade: detail.grade || undefined,
         yearOfPassing: detail.yearOfPassing || undefined,
-        documentUrl: detail.documentUrl || undefined, // Will be undefined since frontend doesn't send this
-      }));
-  
-      await user.save();
-      return user;
+        documentUrl: detail.documentUrl || existing?.documentUrl || undefined,
+        documentId: detail.documentId || existing?.documentId || undefined,
+        verificationStatus:
+          detail.verificationStatus ||
+          existing?.verificationStatus ||
+          'Pending',
+      };
+    });
+
+    await user.save();
+    return user;
+  }
+
+  async updateExperienceDetails(userId: string, experienceDetails: IExperienceDetails[]): Promise<any> {
+    const user = await User.findById(userId);
+    if (!user) {
+      throw new Error('User not found');
     }
-  
-    async updateExperienceDetails(userId: string, experienceDetails: IExperienceDetails[]): Promise<any> {
-      const user = await User.findById(userId);
-      if (!user) {
-        throw new Error('User not found');
+
+    console.log('Received experience details:', experienceDetails);
+
+    // Validate the incoming data
+    for (const detail of experienceDetails) {
+      if (!detail.companyName?.trim()) {
+        throw new Error('Company name is required for all experience details');
       }
-  
-      console.log('Received experience details:', experienceDetails);
-  
-      // Validate the incoming data
-      for (const detail of experienceDetails) {
-        if (!detail.companyName?.trim()) {
-          throw new Error('Company name is required for all experience details');
-        }
-        if (detail.period && !/^\w+\s\d{4}(\s?-\s?\w+\s\d{4})?$/.test(detail.period)) {
-          throw new Error('Period must be in format like "Jan 2020 - Dec 2023"');
-        }
+      if (detail.period && !/^\w+\s\d{4}(\s?-\s?\w+\s\d{4})?$/.test(detail.period)) {
+        throw new Error('Period must be in format like "Jan 2020 - Dec 2023"');
       }
-  
-      // Overwrite the experienceDetails array with the new data
-      user.experienceDetails = experienceDetails.map(detail => ({
+    }
+
+    // Overwrite the experienceDetails array with the new data
+    user.experienceDetails = experienceDetails.map((detail, index) => {
+      const existing = (user.experienceDetails || [])[index] as any;
+      return {
         companyName: detail.companyName,
         period: detail.period || undefined,
-      }));
-  
+        documentUrl: detail.documentUrl || existing?.documentUrl || undefined,
+        documentId: detail.documentId || existing?.documentId || undefined,
+        companyAddress: detail.companyAddress || undefined,
+        lastDrawnSalary: detail.lastDrawnSalary || undefined,
+        reasonForLeaving: detail.reasonForLeaving || undefined,
+        designation: detail.designation || undefined,
+        verificationStatus:
+          detail.verificationStatus ||
+          existing?.verificationStatus ||
+          'Pending',
+      };
+    });
+
+    await user.save();
+    return user;
+  }
+
+  async uploadAcademicDetailDocument(
+    userId: string,
+    academicDetailIndex: number,
+    file: any,
+    metadata?: { instituteName?: string; yearOfPassing?: string },
+    verificationStatus?: 'Pending' | 'Verified' | 'Rejected'
+  ): Promise<any> {
+    const user = await User.findById(userId);
+    if (!user) {
+      throw new Error('User not found');
+    }
+
+    // Initialize academicDetails array if it doesn't exist
+    if (!user.academicDetails) {
+      user.academicDetails = [];
+    }
+
+    // If academic detail doesn't exist at the specified index, create it
+    if (!user.academicDetails[academicDetailIndex]) {
+      // Create a new academic detail entry with metadata if provided
+      const newAcademicDetail: any = {
+        instituteName: metadata?.instituteName || 'Unknown',
+        yearOfPassing: metadata?.yearOfPassing || undefined,
+        grade: undefined,
+        documentUrl: undefined,
+        documentId: undefined,
+        verificationStatus: verificationStatus || 'Pending',
+      };
+
+      // Ensure the array is large enough to include the new index
+      while (user.academicDetails.length <= academicDetailIndex) {
+        user.academicDetails.push({} as any);
+      }
+
+      user.academicDetails[academicDetailIndex] = newAcademicDetail;
       await user.save();
-      return user;
-    }*/
+    }
+
+    const academicDetail = user.academicDetails[academicDetailIndex] as any;
+    const isAdminUpload = (this.context.user?.role || '').toLowerCase() === 'admin';
+    const resolvedStatus: 'Pending' | 'Verified' | 'Rejected' =
+      verificationStatus || (isAdminUpload ? 'Verified' : 'Pending');
+
+    try {
+      // Read file from disk (multer saves it)
+      if (!fs.existsSync(file.path)) {
+        throw new Error(`File not found at path: ${file.path}`);
+      }
+
+      const fileExt = path.extname(file.originalname);
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const sanitizedEmployeeName = user.name.replace(/[^a-zA-Z0-9]/g, '_');
+      const instituteName = metadata?.instituteName || academicDetail.instituteName || 'Unknown';
+      const sanitizedInstitute = instituteName.replace(/[^a-zA-Z0-9]/g, '_');
+      const newFileName = `Academic_${sanitizedInstitute}_${sanitizedEmployeeName}_${timestamp}${fileExt}`;
+
+      // Upload file to GCP Cloud Storage
+      const gcpResult = await uploadFileToGCP({
+        filePath: file.path,
+        fileName: newFileName,
+        employeeId: userId,
+        category: 'Certification',
+        type: 'Academic'
+      });
+
+      if (!gcpResult.success) {
+        throw new Error(`Failed to upload file to GCP: ${gcpResult.error}`);
+      }
+
+      const fileUrl = gcpResult.fileUrl!;
+
+      // Clean up local file
+      try {
+        fs.unlinkSync(file.path);
+      } catch (err) {
+        console.error('Error deleting local file:', err);
+      }
+
+      // Create Document record in database
+      const newDocument = new Document({
+        employeeId: new Types.ObjectId(userId),
+        type: 'Academic',
+        category: 'Certification',
+        tags: ['Academic', instituteName, academicDetail.yearOfPassing || 'Unknown'],
+        fileName: newFileName,
+        filePath: fileUrl,
+        accessLevel: 'Private',
+        status: 'Uploaded',
+        uploadedBy: new Types.ObjectId(this.context.user?._id),
+        metadata: {
+          academic: {
+            instituteName: instituteName,
+            yearOfPassing: academicDetail.yearOfPassing,
+            grade: academicDetail.grade,
+            uploadedAt: new Date(),
+            verificationStatus: resolvedStatus
+          }
+        },
+        auditLog: [
+          {
+            action: 'Upload',
+            performedBy: new Types.ObjectId(this.context.user?._id),
+            timestamp: new Date(),
+            details: `Uploaded academic document for ${instituteName} - ${user.name}`
+          }
+        ]
+      });
+
+      await newDocument.save();
+
+      // Update user's academicDetails with document ID and URL
+      if (!user.academicDetails) {
+        user.academicDetails = [];
+      }
+      if (user.academicDetails[academicDetailIndex]) {
+        user.academicDetails[academicDetailIndex].documentUrl = fileUrl;
+        user.academicDetails[academicDetailIndex].documentId = newDocument._id.toString();
+        (user.academicDetails as any)[academicDetailIndex].verificationStatus = resolvedStatus;
+      }
+
+      await user.save();
+      return { user, document: newDocument };
+    } catch (error: any) {
+      console.error(`Error processing academic document:`, error);
+      // Clean up local file on error
+      try {
+        if (fs.existsSync(file.path)) {
+          fs.unlinkSync(file.path);
+        }
+      } catch (unlinkError) {
+        console.error('Error cleaning up file after error:', unlinkError);
+      }
+      throw new Error(`Failed to process academic document: ${error.message}`);
+    }
+  }
+
+  async uploadExperienceDetailDocument(
+    userId: string,
+    experienceDetailIndex: number,
+    file: any,
+    metadata?: { companyName?: string; period?: string },
+    verificationStatus?: 'Pending' | 'Verified' | 'Rejected'
+  ): Promise<any> {
+    const user = await User.findById(userId);
+    if (!user) {
+      throw new Error('User not found');
+    }
+
+    // Initialize experienceDetails array if it doesn't exist
+    if (!user.experienceDetails) {
+      user.experienceDetails = [];
+    }
+
+    // If experience detail doesn't exist at the specified index, create it
+    if (!user.experienceDetails[experienceDetailIndex]) {
+      // Create a new experience detail entry with metadata if provided
+      const newExperienceDetail: any = {
+        companyName: metadata?.companyName || 'Unknown',
+        period: metadata?.period || undefined,
+        designation: undefined,
+        documentUrl: undefined,
+        documentId: undefined,
+        verificationStatus: verificationStatus || 'Pending',
+      };
+
+      // Ensure the array is large enough to include the new index
+      while (user.experienceDetails.length <= experienceDetailIndex) {
+        user.experienceDetails.push({} as any);
+      }
+
+      user.experienceDetails[experienceDetailIndex] = newExperienceDetail;
+      await user.save();
+    }
+
+    const experienceDetail = user.experienceDetails[experienceDetailIndex] as any;
+    const isAdminUpload = (this.context.user?.role || '').toLowerCase() === 'admin';
+    const resolvedStatus: 'Pending' | 'Verified' | 'Rejected' =
+      verificationStatus || (isAdminUpload ? 'Verified' : 'Pending');
+
+    try {
+      // Read file from disk (multer saves it)
+      if (!fs.existsSync(file.path)) {
+        throw new Error(`File not found at path: ${file.path}`);
+      }
+
+      const fileExt = path.extname(file.originalname);
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const sanitizedEmployeeName = user.name.replace(/[^a-zA-Z0-9]/g, '_');
+      const companyName = metadata?.companyName || experienceDetail.companyName || 'Unknown';
+      const sanitizedCompany = companyName.replace(/[^a-zA-Z0-9]/g, '_');
+      const newFileName = `Experience_${sanitizedCompany}_${sanitizedEmployeeName}_${timestamp}${fileExt}`;
+
+      // Upload file to GCP Cloud Storage
+      const gcpResult = await uploadFileToGCP({
+        filePath: file.path,
+        fileName: newFileName,
+        employeeId: userId,
+        category: 'Certification',
+        type: 'Experience'
+      });
+
+      if (!gcpResult.success) {
+        throw new Error(`Failed to upload file to GCP: ${gcpResult.error}`);
+      }
+
+      const fileUrl = gcpResult.fileUrl!;
+
+      // Clean up local file
+      try {
+        fs.unlinkSync(file.path);
+      } catch (err) {
+        console.error('Error deleting local file:', err);
+      }
+
+      // Create Document record in database
+      const newDocument = new Document({
+        employeeId: new Types.ObjectId(userId),
+        type: 'Experience',
+        category: 'Certification',
+        tags: ['Experience', companyName, experienceDetail.period || 'Unknown'],
+        fileName: newFileName,
+        filePath: fileUrl,
+        accessLevel: 'Private',
+        status: 'Uploaded',
+        uploadedBy: new Types.ObjectId(this.context.user?._id),
+        metadata: {
+          experience: {
+            companyName: companyName,
+            period: experienceDetail.period,
+            designation: experienceDetail.designation,
+            uploadedAt: new Date(),
+            verificationStatus: resolvedStatus
+          }
+        },
+        auditLog: [
+          {
+            action: 'Upload',
+            performedBy: new Types.ObjectId(this.context.user?._id),
+            timestamp: new Date(),
+            details: `Uploaded experience document for ${companyName} - ${user.name}`
+          }
+        ]
+      });
+
+      await newDocument.save();
+
+      // Update user's experienceDetails with document ID and URL
+      if (!user.experienceDetails) {
+        user.experienceDetails = [];
+      }
+      if (user.experienceDetails[experienceDetailIndex]) {
+        user.experienceDetails[experienceDetailIndex].documentUrl = fileUrl;
+        user.experienceDetails[experienceDetailIndex].documentId = newDocument._id.toString();
+        (user.experienceDetails as any)[experienceDetailIndex].verificationStatus = resolvedStatus;
+      }
+
+      await user.save();
+      return { user, document: newDocument };
+    } catch (error: any) {
+      console.error(`Error processing experience document:`, error);
+      // Clean up local file on error
+      try {
+        if (fs.existsSync(file.path)) {
+          fs.unlinkSync(file.path);
+        }
+      } catch (unlinkError) {
+        console.error('Error cleaning up file after error:', unlinkError);
+      }
+      throw new Error(`Failed to process experience document: ${error.message}`);
+    }
+  }
 
   async getUsersWithFcmTokens(userIds?: string[]) {
     const query = userIds ? { _id: { $in: userIds } } : {};

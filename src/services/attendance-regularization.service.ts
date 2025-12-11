@@ -322,6 +322,106 @@ export class AttendanceRegularizationService extends BaseService {
             console.log("3 create Att-Regularization", attendance);
         }
 
+        // Send Email Notification to Approver
+        try {
+            const approverUser: IUser = await User.findById(new Types.ObjectId(data.approver?.id)).select('name email');
+            const employeeUser: IUser = await User.findById(new Types.ObjectId(data.userId)).select('name email country');
+
+            if (approverUser?.email && employeeUser) {
+                const appUrl = process.env.APP_URL || 'http://localhost:5173';
+                const userCountry = employeeUser.country || 'IN';
+                const fromTime = this.formatTimeLocal(regularization.from, userCountry);
+                const toTime = this.formatTimeLocal(regularization.to, userCountry);
+
+                const htmlContent = generateEmailTemplate('attendanceRegularizeApply', {
+                    approverName: approverUser.name,
+                    employeeName: employeeUser.name,
+                    shiftDay: regularization.shiftDay.toDateString(),
+                    fromTime: fromTime,
+                    toTime: toTime,
+                    reason: regularization.reason,
+                    reviewLink: `${appUrl}/manager/attendance-approvals/${regularization._id}`,
+                    companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS'
+                });
+
+                await emailService.sendEmail({
+                    body: {
+                        to: approverUser.email,
+                        subject: `Attendance Regularization Request from ${employeeUser.name}`,
+                        text: `${employeeUser.name} has requested regularization on ${regularization.shiftDay.toDateString()} from ${fromTime} to ${toTime}.`,
+                        html: htmlContent
+                    }
+                });
+            }
+        } catch (emailError) {
+            console.error('Failed to send email to approver for attendance regularization:', emailError);
+            // Don't fail the request if email fails
+        }
+
+        // Send Email Notification to All Admins
+        try {
+            const admins = await User.find({
+                $or: [
+                    { role: 'admin' },
+                    { isSuperAdmin: true }
+                ],
+                active: true
+            }).select('name email').lean();
+
+            if (admins && admins.length > 0) {
+                const employeeUser: IUser = await User.findById(new Types.ObjectId(data.userId)).select('name email country');
+                const userCountry = employeeUser?.country || 'IN';
+
+                if (employeeUser) {
+                    const adminEmails = admins.map(admin => admin.email).filter(Boolean);
+                    
+                    if (adminEmails.length > 0) {
+                        const shiftDayFormatted = regularization.shiftDay.toLocaleDateString('en-US', {
+                            weekday: 'long',
+                            year: 'numeric',
+                            month: 'long',
+                            day: 'numeric'
+                        });
+
+                        const fromTime = this.formatTimeLocal(regularization.from, userCountry);
+                        const toTime = this.formatTimeLocal(regularization.to, userCountry);
+
+                        const adminEmailText = `Dear Admin,
+
+An attendance regularization request has been submitted by ${employeeUser.name}.
+
+Request Details:
+- Employee: ${employeeUser.name} (${employeeUser.email || 'N/A'})
+- Date: ${shiftDayFormatted}
+- Requested In Time: ${fromTime}
+- Requested Out Time: ${toTime}
+- Reason: ${regularization.reason}
+- Status: Pending
+- Approver: ${data.approver?.name || 'N/A'}
+
+This is an automated notification for your records.
+
+Regards,
+${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
+
+                        await emailService.sendEmail({
+                            body: {
+                                to: adminEmails,
+                                subject: `Attendance Regularization Request Submitted - ${employeeUser.name}`,
+                                text: adminEmailText,
+                                html: adminEmailText.replace(/\n/g, '<br>'),
+                            }
+                        });
+
+                        console.log(`Email notification sent to ${adminEmails.length} admin(s) for attendance regularization request ${regularization._id}`);
+                    }
+                }
+            }
+        } catch (adminEmailError) {
+            console.error('Failed to send email to admins for attendance regularization request:', adminEmailError);
+            // Don't fail the request if admin email fails
+        }
+
         return regularization;
     }
 
@@ -505,6 +605,62 @@ export class AttendanceRegularizationService extends BaseService {
                             html: htmlContent
                         }
                     });
+                }
+
+                // 8. Send Email Notification to All Admins
+                try {
+                    const admins = await User.find({
+                        $or: [
+                            { role: 'admin' },
+                            { isSuperAdmin: true }
+                        ],
+                        active: true
+                    }).select('name email').lean();
+
+                    if (admins && admins.length > 0) {
+                        const adminEmails = admins.map(admin => admin.email).filter(Boolean);
+                        
+                        if (adminEmails.length > 0 && employeeUser) {
+                            const shiftDayFormatted = shiftDay.toLocaleDateString('en-US', {
+                                weekday: 'long',
+                                year: 'numeric',
+                                month: 'long',
+                                day: 'numeric'
+                            });
+
+                            const adminEmailText = `Dear Admin,
+
+An attendance regularization request has been submitted by ${employeeUser.name}.
+
+Request Details:
+- Employee: ${employeeUser.name} (${employeeUser.email || 'N/A'})
+- Date: ${shiftDayFormatted}
+- Requested In Time: ${fromTime}
+- Requested Out Time: ${toTime}
+- Reason: ${reason}
+- Status: Pending
+- Approver: ${approver.name}
+
+This is an automated notification for your records.
+
+Regards,
+${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
+
+                            await emailService.sendEmail({
+                                body: {
+                                    to: adminEmails,
+                                    subject: `Attendance Regularization Request Submitted - ${employeeUser.name}`,
+                                    text: adminEmailText,
+                                    html: adminEmailText.replace(/\n/g, '<br>'),
+                                }
+                            });
+
+                            console.log(`Email notification sent to ${adminEmails.length} admin(s) for attendance regularization request ${regularization._id}`);
+                        }
+                    }
+                } catch (adminEmailError) {
+                    console.error('Failed to send email to admins for attendance regularization request:', adminEmailError);
+                    // Don't fail the request if admin email fails
                 }
 
                 results.push({
