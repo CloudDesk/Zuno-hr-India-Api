@@ -164,6 +164,11 @@ export interface IUser extends Document {
   // Client field for employee assignment
   client?: string;
 
+  // PF (Provident Fund) related fields - individual fields (not in governmentIds)
+  pfNumber?: string;
+  uanNumber?: string;
+  familyPfNumber?: string;
+
 }
 
 const userSchema = new Schema<IUser>(
@@ -601,6 +606,28 @@ const userSchema = new Schema<IUser>(
       trim: true,
       maxlength: 100,
       description: 'Client name or identifier for employee assignment'
+    },
+    // PF (Provident Fund) related fields - individual fields (not in governmentIds)
+    pfNumber: {
+      type: String,
+      required: false,
+      trim: true,
+      maxlength: 50,
+      description: 'Provident Fund (PF) Number'
+    },
+    uanNumber: {
+      type: String,
+      required: false,
+      trim: true,
+      maxlength: 50,
+      description: 'Universal Account Number (UAN) for PF'
+    },
+    familyPfNumber: {
+      type: String,
+      required: false,
+      trim: true,
+      maxlength: 50,
+      description: 'Family Provident Fund Number'
     }
   },
   {

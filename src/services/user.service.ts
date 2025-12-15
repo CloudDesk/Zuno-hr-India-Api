@@ -105,6 +105,10 @@ interface IUserCreate {
     isActive?: boolean; // Only relevant when visa details are provided
   };
   client?: string;
+  // PF (Provident Fund) related fields - individual fields (not in governmentIds)
+  pfNumber?: string;
+  uanNumber?: string;
+  familyPfNumber?: string;
   experienceDetails?: IExperienceDetails[];
 }
 
@@ -163,6 +167,10 @@ interface IUserUpdate {
     isActive?: boolean; // Only relevant when visa details are provided
   };
   client?: string;
+  // PF (Provident Fund) related fields - individual fields (not in governmentIds)
+  pfNumber?: string;
+  uanNumber?: string;
+  familyPfNumber?: string;
   experienceDetails?: IExperienceDetails[];
 }
 

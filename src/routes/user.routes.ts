@@ -192,6 +192,10 @@ const userResponseSchema = {
     governmentIds: governmentIdsSchema,
     academicDetails: academicDetailsSchema,
     experienceDetails: experienceDetailsSchema,
+    // PF (Provident Fund) related fields - individual fields
+    pfNumber: { type: 'string' },
+    uanNumber: { type: 'string' },
+    familyPfNumber: { type: 'string' },
     // New fields for UAE + external user support
     country: { type: 'string' },
     currency: { type: 'string' },
@@ -730,6 +734,22 @@ export const userRoutes: RouteHandler = async (
               maxLength: 100,
               description: 'Client name or identifier for employee assignment'
             },
+            // PF (Provident Fund) related fields - individual fields
+            pfNumber: {
+              type: 'string',
+              maxLength: 50,
+              description: 'Provident Fund (PF) Number'
+            },
+            uanNumber: {
+              type: 'string',
+              maxLength: 50,
+              description: 'Universal Account Number (UAN) for PF'
+            },
+            familyPfNumber: {
+              type: 'string',
+              maxLength: 50,
+              description: 'Family Provident Fund Number'
+            },
             bankDetails: bankDetailsSchema,
             governmentIds: governmentIdsSchema,
             academicDetails: academicDetailsSchema,
@@ -901,6 +921,22 @@ export const userRoutes: RouteHandler = async (
               type: 'string',
               maxLength: 100,
               description: 'Client name or identifier for employee assignment'
+            },
+            // PF (Provident Fund) related fields - individual fields
+            pfNumber: {
+              type: 'string',
+              maxLength: 50,
+              description: 'Provident Fund (PF) Number'
+            },
+            uanNumber: {
+              type: 'string',
+              maxLength: 50,
+              description: 'Universal Account Number (UAN) for PF'
+            },
+            familyPfNumber: {
+              type: 'string',
+              maxLength: 50,
+              description: 'Family Provident Fund Number'
             },
             // Employee detail fields (63-70)
             confirmationDate: {
