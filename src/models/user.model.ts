@@ -47,13 +47,16 @@ interface IEmergencyContact {
 
 interface IExperienceDetail {
   companyName?: string;
-  period?: string;
+  role?: string;
+  startDate?: string | Date;
+  endDate?: string | Date;
+  duration?: string;
   documentUrl?: string;
   documentId?: string;
   companyAddress?: string;
   lastDrawnSalary?: number;
   reasonForLeaving?: string;
-  designation?: string;
+  verificationStatus?: 'Pending' | 'Verified' | 'Rejected';
 }
 
 interface ICurrentCompanyExperience {
@@ -113,10 +116,6 @@ export interface IUser extends Document {
   nationality?: string;
   employmentStatus: string; // Mandatory
   gender?: string;
-  uan?: string;
-  pfNumber?: string;
-  pfJoinDate?: Date;
-  familyPfNumber?: string;
   currentCompanyExperience?: ICurrentCompanyExperience | null;
   createdAt: Date;
   updatedAt: Date;
@@ -135,19 +134,22 @@ export interface IUser extends Document {
 
   // Government IDs and academic details
   governmentIds?: {
-    pan?: { number?: string; documentUrl?: string; documentId?: string };
-    aadhaar?: { number?: string; documentUrl?: string; documentId?: string };
-    passport?: { number?: string; documentUrl?: string; documentId?: string };
-    voterId?: { number?: string; documentUrl?: string; documentId?: string };
-    drivingLicense?: { number?: string; documentUrl?: string; documentId?: string };
-    pf?: { number?: string; uan?: string };
+    pan?: { number?: string; country?: string; documentUrl?: string; documentId?: string; verificationStatus?: 'Pending' | 'Verified' | 'Rejected' };
+    aadhaar?: { number?: string; country?: string; documentUrl?: string; documentId?: string; verificationStatus?: 'Pending' | 'Verified' | 'Rejected' };
+    passport?: { number?: string; country?: string; documentUrl?: string; documentId?: string; verificationStatus?: 'Pending' | 'Verified' | 'Rejected' };
+    voterId?: { number?: string; country?: string; documentUrl?: string; documentId?: string; verificationStatus?: 'Pending' | 'Verified' | 'Rejected' };
+    drivingLicense?: { number?: string; country?: string; documentUrl?: string; documentId?: string; verificationStatus?: 'Pending' | 'Verified' | 'Rejected' };
+    pf?: { number?: string; uan?: string; familyPfNumber?: string; country?: string; documentUrl?: string; documentId?: string; verificationStatus?: 'Pending' | 'Verified' | 'Rejected' };
   };
   academicDetails?: Array<{
-    instituteName?: string;
+    qualificationType?: 'Secondary' | 'HigherSecondary' | 'Diploma' | 'Bachelor' | 'Master' | 'Doctorate' | 'Other';
+    fieldOfStudy?: string;
+    institution?: string;
     grade?: string;
-    yearOfPassing?: string;
+    yearOfCompletion?: number | string;
     documentUrl?: string;
     documentId?: string;
+    verificationStatus?: 'Pending' | 'Verified' | 'Rejected';
   }>;
 
   // New fields for UAE + external user support
@@ -356,24 +358,6 @@ const userSchema = new Schema<IUser>(
       trim: true,
       maxlength: 100,
     },
-    uan: {
-      type: String,
-      trim: true,
-      maxlength: 50,
-    },
-    pfNumber: {
-      type: String,
-      trim: true,
-      maxlength: 50,
-    },
-    pfJoinDate: {
-      type: Date,
-    },
-    familyPfNumber: {
-      type: String,
-      trim: true,
-      maxlength: 50,
-    },
     bloodGroup: {
       type: String,
       trim: true,
@@ -449,13 +433,15 @@ const userSchema = new Schema<IUser>(
     experienceDetails: {
       type: [{
         companyName: { type: String, trim: true, maxlength: 200 },
-        period: { type: String, trim: true, maxlength: 100 },
+        role: { type: String, trim: true, maxlength: 150 },
+        startDate: { type: Schema.Types.Mixed }, // Supports both Date and string
+        endDate: { type: Schema.Types.Mixed }, // Supports both Date and string
+        duration: { type: String, trim: true, maxlength: 100 },
         documentUrl: { type: String, trim: true, maxlength: 500 },
         documentId: { type: String, trim: true },
         companyAddress: { type: String, trim: true, maxlength: 300 },
         lastDrawnSalary: { type: Number, min: 0 },
         reasonForLeaving: { type: String, trim: true, maxlength: 300 },
-        designation: { type: String, trim: true, maxlength: 150 },
         verificationStatus: { type: String, enum: ['Pending', 'Verified', 'Rejected'], default: 'Pending' }
       }],
       default: [],
@@ -486,6 +472,7 @@ const userSchema = new Schema<IUser>(
         pan: {
           type: {
             number: { type: String, trim: true },
+            country: { type: String, trim: true },
             documentUrl: { type: String, trim: true },
             documentId: { type: String, trim: true },
             verificationStatus: { type: String, enum: ['Pending', 'Verified', 'Rejected'], default: 'Pending' }
@@ -495,6 +482,7 @@ const userSchema = new Schema<IUser>(
         aadhaar: {
           type: {
             number: { type: String, trim: true },
+            country: { type: String, trim: true },
             documentUrl: { type: String, trim: true },
             documentId: { type: String, trim: true },
             verificationStatus: { type: String, enum: ['Pending', 'Verified', 'Rejected'], default: 'Pending' }
@@ -504,6 +492,7 @@ const userSchema = new Schema<IUser>(
         passport: {
           type: {
             number: { type: String, trim: true },
+            country: { type: String, trim: true },
             documentUrl: { type: String, trim: true },
             documentId: { type: String, trim: true },
             verificationStatus: { type: String, enum: ['Pending', 'Verified', 'Rejected'], default: 'Pending' }
@@ -513,6 +502,7 @@ const userSchema = new Schema<IUser>(
         voterId: {
           type: {
             number: { type: String, trim: true },
+            country: { type: String, trim: true },
             documentUrl: { type: String, trim: true },
             documentId: { type: String, trim: true },
             verificationStatus: { type: String, enum: ['Pending', 'Verified', 'Rejected'], default: 'Pending' }
@@ -522,6 +512,7 @@ const userSchema = new Schema<IUser>(
         drivingLicense: {
           type: {
             number: { type: String, trim: true },
+            country: { type: String, trim: true },
             documentUrl: { type: String, trim: true },
             documentId: { type: String, trim: true },
             verificationStatus: { type: String, enum: ['Pending', 'Verified', 'Rejected'], default: 'Pending' }
@@ -531,7 +522,12 @@ const userSchema = new Schema<IUser>(
         pf: {
           type: {
             number: { type: String, trim: true },
-            uan: { type: String, trim: true }
+            uan: { type: String, trim: true },
+            familyPfNumber: { type: String, trim: true },
+            country: { type: String, trim: true },
+            documentUrl: { type: String, trim: true },
+            documentId: { type: String, trim: true },
+            verificationStatus: { type: String, enum: ['Pending', 'Verified', 'Rejected'], default: 'Pending' }
           },
           required: false
         }
@@ -540,9 +536,11 @@ const userSchema = new Schema<IUser>(
     },
     academicDetails: {
       type: [{
-        instituteName: { type: String, trim: true, maxlength: 200 },
+        qualificationType: { type: String, enum: ['Secondary', 'HigherSecondary', 'Diploma', 'Bachelor', 'Master', 'Doctorate', 'Other'], trim: true },
+        fieldOfStudy: { type: String, trim: true, maxlength: 200 },
+        institution: { type: String, trim: true, maxlength: 200 },
         grade: { type: String, trim: true, maxlength: 50 },
-        yearOfPassing: { type: String, trim: true, maxlength: 10 },
+        yearOfCompletion: { type: Schema.Types.Mixed }, // Supports both number and string
         documentUrl: { type: String, trim: true, maxlength: 500 },
         documentId: { type: String, trim: true },
         verificationStatus: { type: String, enum: ['Pending', 'Verified', 'Rejected'], default: 'Pending' }

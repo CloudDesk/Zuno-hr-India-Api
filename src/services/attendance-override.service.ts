@@ -219,6 +219,9 @@ export class AttendanceOverrideService extends BaseService {
         isHoliday
       );
 
+      // IMPORTANT: Original swipes are preserved in overrideHistory.changes for audit trail
+      // The calculateChanges method will track swipe changes in the history
+      
       // Create/update swipes array from calculated firstIn/lastOut
       // Only create swipes if firstIn and lastOut exist (Present status)
       // For Absent/Holiday-Swipe, swipes array will be empty
@@ -293,6 +296,7 @@ export class AttendanceOverrideService extends BaseService {
       originalLastOut: isNewRecord ? null : originalLastOut,
       originalTotalWorkHours: isNewRecord ? '00:00:00' : originalTotalWorkHours,
       originalActualWorkHours: isNewRecord ? '00:00:00' : originalActualWorkHours,
+      // Note: Original swipes are tracked in overrideHistory.changes for audit trail
       overrideHistory: [
         ...(record.override?.overrideHistory || []),
         {

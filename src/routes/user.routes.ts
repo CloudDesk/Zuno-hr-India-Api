@@ -159,10 +159,6 @@ const userResponseSchema = {
     managerName: { type: 'string' },
     costCenter: { type: 'string' },
     gender: { type: 'string' },
-    uan: { type: 'string' },
-    pfNumber: { type: 'string' },
-    pfJoinDate: { type: 'string', format: 'date-time' },
-    familyPfNumber: { type: 'string' },
     currentCompanyExperience: {
       type: 'object',
       properties: {
@@ -627,10 +623,6 @@ export const userRoutes: RouteHandler = async (
               description: 'Cost center (e.g., Chennai Office, Takeda)'
             },
             gender: { type: 'string' },
-            uan: { type: 'string', maxLength: 50 },
-            pfNumber: { type: 'string', maxLength: 50 },
-            pfJoinDate: { type: 'string', format: 'date-time' },
-            familyPfNumber: { type: 'string', maxLength: 50 },
             // Virtual field returned in responses
             currentCompanyExperience: {
               type: 'object',
@@ -839,10 +831,6 @@ export const userRoutes: RouteHandler = async (
             joiningDate: { type: 'string', format: 'date-time' },
             costCenter: { type: 'string', maxLength: 150 },
             gender: { type: 'string' },
-            uan: { type: 'string', maxLength: 50 },
-            pfNumber: { type: 'string', maxLength: 50 },
-            pfJoinDate: { type: 'string', format: 'date-time' },
-            familyPfNumber: { type: 'string', maxLength: 50 },
             // Virtual field (read-only)
             currentCompanyExperience: {
               type: 'object',
@@ -1815,13 +1803,13 @@ export const userRoutes: RouteHandler = async (
           rawAcademicStatus === 'Pending' || rawAcademicStatus === 'Verified' || rawAcademicStatus === 'Rejected'
             ? rawAcademicStatus
             : undefined;
-        
+
         // Extract metadata if available
         const metadata = body?.instituteName || body?.yearOfPassing
           ? {
-              instituteName: body?.instituteName,
-              yearOfPassing: body?.yearOfPassing
-            }
+            instituteName: body?.instituteName,
+            yearOfPassing: body?.yearOfPassing
+          }
           : undefined;
 
         const result = await request.container!.userService.uploadAcademicDetailDocument(
@@ -1899,13 +1887,13 @@ export const userRoutes: RouteHandler = async (
           rawExperienceStatus === 'Pending' || rawExperienceStatus === 'Verified' || rawExperienceStatus === 'Rejected'
             ? rawExperienceStatus
             : undefined;
-        
+
         // Extract metadata if available
         const metadata = body?.companyName || body?.period
           ? {
-              companyName: body?.companyName,
-              period: body?.period
-            }
+            companyName: body?.companyName,
+            period: body?.period
+          }
           : undefined;
 
         const result = await request.container!.userService.uploadExperienceDetailDocument(

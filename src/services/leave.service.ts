@@ -1179,7 +1179,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
           {
             $set: {
               // status: 'present',
-              attendanceStatus: "Absent",
+              attendanceStatus: ["Absent"],
               updatedAt: new Date(),
               updatedBy: updateData.rejectedById || updateData.approvedById,
             },

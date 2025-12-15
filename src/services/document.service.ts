@@ -108,8 +108,29 @@ export class DocumentService extends BaseService {
             throw new Error('Certificate metadata must include certificateType and title.');
         }
 
+        // NOTE: No restrictions on certificate types - employees can upload:
+        // - Academic certificates
+        // - Experience certificates  
+        // - IdentityProof certificates (Government IDs: PAN, Aadhaar, Passport, etc.)
+        // All certificate types are allowed for all users
+
         // --- Best Practice: Set verification status on the backend ---
         if (metadata.certificate) {
+            // Convert string dates to Date objects if provided as strings
+            if (metadata.certificate.issueDate) {
+                if (typeof metadata.certificate.issueDate === 'string' && metadata.certificate.issueDate.trim() !== '') {
+                    metadata.certificate.issueDate = new Date(metadata.certificate.issueDate);
+                }
+            }
+            if (metadata.certificate.expiryDate) {
+                if (typeof metadata.certificate.expiryDate === 'string' && metadata.certificate.expiryDate.trim() !== '') {
+                    metadata.certificate.expiryDate = new Date(metadata.certificate.expiryDate);
+                } else if (metadata.certificate.expiryDate === '' || metadata.certificate.expiryDate === null) {
+                    // Remove empty or null expiryDate
+                    delete metadata.certificate.expiryDate;
+                }
+            }
+
             metadata.certificate.verificationStatus = 'Pending';
             // Ensure no verification details can be injected on upload
             delete metadata.certificate.verificationDetails;
@@ -202,6 +223,22 @@ export class DocumentService extends BaseService {
                 if (!certificateType || !title) {
                     throw new Error('Certificate metadata must include certificateType and title');
                 }
+
+                // Convert string dates to Date objects if provided as strings
+                if (metadata.certificate.issueDate) {
+                    if (typeof metadata.certificate.issueDate === 'string' && metadata.certificate.issueDate.trim() !== '') {
+                        metadata.certificate.issueDate = new Date(metadata.certificate.issueDate);
+                    }
+                }
+                if (metadata.certificate.expiryDate) {
+                    if (typeof metadata.certificate.expiryDate === 'string' && metadata.certificate.expiryDate.trim() !== '') {
+                        metadata.certificate.expiryDate = new Date(metadata.certificate.expiryDate);
+                    } else if (metadata.certificate.expiryDate === '' || metadata.certificate.expiryDate === null) {
+                        // Remove empty or null expiryDate
+                        delete metadata.certificate.expiryDate;
+                    }
+                }
+
                 // Ensure verification status is not modified by client
                 metadata.certificate.verificationStatus = existingDocument.metadata?.certificate?.verificationStatus || 'Pending';
                 delete metadata.certificate.verificationDetails;
@@ -586,6 +623,11 @@ export class DocumentService extends BaseService {
                     error: 'Invalid access level. Must be: own, team, or global'
                 });
             }
+            // Apply type filter if provided
+            if (type) {
+                query.type = type;
+            }
+
             if (category) {
                 query.category = category;
                 // Dynamic query enhancement for category 'Tax'

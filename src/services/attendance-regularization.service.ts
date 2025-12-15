@@ -997,45 +997,76 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
 }
         */
         // Update the attendance record with the regularization details
-        attendanceRecord.firstIn = regularization.from;
-        attendanceRecord.lastOut = regularization.to;
-        attendanceRecord.swipes = [
-            {
-                timestamp: regularization.from,
-                direction: 'IN',
-                deviceId: 'manual',
-                location: {
-                    latitude: 0,
-                    longitude: 0,
-                    accuracy: 0,
-                    altitude: 0,
-                    address: 'regularization'
-                },
-            },
-            {
-                timestamp: regularization.to,
-                direction: 'OUT',
-                deviceId: 'manual',
-                location: {
-                    latitude: 0,
-                    longitude: 0,
-                    accuracy: 0,
-                    altitude: 0,
-                    address: 'regularization'
-                },
-            },
-        ];
-
-        // Calculate metrics
+        // IMPORTANT: Preserve existing biometric swipes if they exist and fall within regularization window
+        // This maintains multiple swipe history while applying regularization
+        
         const shiftStart = attendanceRecord.shiftStart;
         const shiftEnd = attendanceRecord.shiftEnd;
-
-        const metrics = await this.calculateAttendanceMetrics(
-            regularization.from,
-            regularization.to,
-            shiftStart,
-            shiftEnd
-        );
+        
+        // Check if we have existing biometric swipes to preserve
+        const hasExistingBiometricSwipes = attendanceRecord.swipes && 
+            attendanceRecord.swipes.length > 0 && 
+            attendanceRecord.swipes.some(s => s.deviceId !== 'manual');
+        
+        let metrics;
+        
+        if (hasExistingBiometricSwipes && attendanceRecord.swipes.length > 2) {
+            // Multiple swipes exist - preserve them and recalculate metrics using multiple swipe logic
+            // Only update firstIn/lastOut if regularization times are different
+            if (regularization.from.getTime() !== attendanceRecord.firstIn?.getTime()) {
+                attendanceRecord.firstIn = regularization.from;
+            }
+            if (regularization.to.getTime() !== attendanceRecord.lastOut?.getTime()) {
+                attendanceRecord.lastOut = regularization.to;
+            }
+            
+            // Recalculate metrics using multiple swipe calculation
+            // Filter swipes to ensure they have valid direction
+            const validSwipes = attendanceRecord.swipes.filter(s => s.direction === 'IN' || s.direction === 'OUT') as Array<{ timestamp: Date; direction: 'IN' | 'OUT' }>;
+            metrics = await this.calculateMultipleSwipeMetrics(
+                validSwipes,
+                shiftStart,
+                shiftEnd
+            );
+        } else {
+            // No existing swipes or only 2 swipes - replace with regularization swipes
+            attendanceRecord.firstIn = regularization.from;
+            attendanceRecord.lastOut = regularization.to;
+            attendanceRecord.swipes = [
+                {
+                    timestamp: regularization.from,
+                    direction: 'IN',
+                    deviceId: 'manual',
+                    location: {
+                        latitude: 0,
+                        longitude: 0,
+                        accuracy: 0,
+                        altitude: 0,
+                        address: 'regularization'
+                    },
+                },
+                {
+                    timestamp: regularization.to,
+                    direction: 'OUT',
+                    deviceId: 'manual',
+                    location: {
+                        latitude: 0,
+                        longitude: 0,
+                        accuracy: 0,
+                        altitude: 0,
+                        address: 'regularization'
+                    },
+                },
+            ];
+            
+            // Calculate metrics using simple 2-swipe logic
+            metrics = await this.calculateAttendanceMetrics(
+                regularization.from,
+                regularization.to,
+                shiftStart,
+                shiftEnd
+            );
+        }
 
         // Update all time-related fields
         attendanceRecord.totalWorkHours = metrics.totalWorkHours;
@@ -1350,5 +1381,95 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
     // private formatTimeIST(date: Date): string {
     //     return this.formatTimeLocal(date, 'IN');
     // }
+
+    /**
+     * Calculate metrics for multiple swipes (similar to biometric attendance service)
+     * This preserves multiple swipe history when regularizing
+     */
+    private async calculateMultipleSwipeMetrics(
+        swipes: Array<{ timestamp: Date; direction: 'IN' | 'OUT' }>,
+        shiftStart: Date,
+        shiftEnd: Date
+    ): Promise<IAttendanceMetrics> {
+        const workSessions = this.calculateWorkSessions(swipes, shiftStart, shiftEnd);
+        const breakPeriods = this.calculateBreakPeriods(swipes);
+        const totalWorkMinutes = workSessions.reduce((sum, session) => sum + session.durationMinutes, 0);
+        const totalBreakMinutes = breakPeriods.reduce((sum, breakPeriod) => sum + breakPeriod.durationMinutes, 0);
+        const actualWorkMinutes = totalWorkMinutes;
+        const shiftMinutes = (shiftEnd.getTime() - shiftStart.getTime()) / (1000 * 60);
+        const difference = actualWorkMinutes - shiftMinutes;
+        
+        return {
+            totalWorkHours: await this.formatDuration(totalWorkMinutes),
+            breakHours: await this.formatDuration(totalBreakMinutes),
+            actualWorkHours: await this.formatDuration(actualWorkMinutes),
+            shiftHours: await this.formatDuration(shiftMinutes),
+            shortfallHours: difference < 0 ? await this.formatDuration(Math.abs(difference)) : '00:00:00',
+            excessHours: difference > 0 ? await this.formatDuration(difference) : '00:00:00',
+            hasShortfall: difference < 0,
+            hasExcessHours: difference > 0
+        };
+    }
+
+    private calculateWorkSessions(
+        swipes: Array<{ timestamp: Date; direction: 'IN' | 'OUT' }>,
+        _shiftStart: Date, // Kept for API consistency
+        shiftEnd: Date
+    ): Array<{ sessionNumber: number; inTime: Date; outTime: Date; durationMinutes: number; isOvertime: boolean }> {
+        const sessions: Array<{ sessionNumber: number; inTime: Date; outTime: Date; durationMinutes: number; isOvertime: boolean }> = [];
+        const sortedSwipes = [...swipes].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+        let i = 0;
+        while (i < sortedSwipes.length) {
+            const currentSwipe = sortedSwipes[i];
+            if (currentSwipe.direction === 'IN') {
+                const outSwipe = sortedSwipes[i + 1];
+                if (outSwipe && outSwipe.direction === 'OUT') {
+                    const durationMs = outSwipe.timestamp.getTime() - currentSwipe.timestamp.getTime();
+                    if (durationMs >= 0) {
+                        sessions.push({
+                            sessionNumber: sessions.length + 1,
+                            inTime: currentSwipe.timestamp,
+                            outTime: outSwipe.timestamp,
+                            durationMinutes: durationMs / (1000 * 60),
+                            isOvertime: outSwipe.timestamp > shiftEnd
+                        });
+                    }
+                    i += 2;
+                } else {
+                    i++;
+                }
+            } else {
+                i++;
+            }
+        }
+        return sessions;
+    }
+
+    private calculateBreakPeriods(
+        swipes: Array<{ timestamp: Date; direction: 'IN' | 'OUT' }>
+    ): Array<{ breakNumber: number; startTime: Date; endTime: Date; durationMinutes: number; isLunchBreak: boolean }> {
+        const breaks: Array<{ breakNumber: number; startTime: Date; endTime: Date; durationMinutes: number; isLunchBreak: boolean }> = [];
+        const sortedSwipes = [...swipes].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+        for (let i = 0; i < sortedSwipes.length - 1; i++) {
+            const current = sortedSwipes[i];
+            const next = sortedSwipes[i + 1];
+            if (current.direction === 'OUT' && next.direction === 'IN') {
+                const durationMs = next.timestamp.getTime() - current.timestamp.getTime();
+                if (durationMs >= 0) {
+                    const durationMinutes = durationMs / (1000 * 60);
+                    if (durationMinutes >= 15) {
+                        breaks.push({
+                            breakNumber: breaks.length + 1,
+                            startTime: current.timestamp,
+                            endTime: next.timestamp,
+                            durationMinutes,
+                            isLunchBreak: durationMinutes >= 30
+                        });
+                    }
+                }
+            }
+        }
+        return breaks;
+    }
 }
 
