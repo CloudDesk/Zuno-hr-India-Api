@@ -11,6 +11,7 @@ import { AttendanceRecord } from '../models/attendance-record.model';
 import { LOV } from '../models/lov.model';
 import { HolidayCalendar } from '../models/holiday-calendar.model';
 import { OptionalHolidayRequest } from '../models/optional-holiday-request.model';
+import { LeaveSummaryService } from './leave-summary.service';
 
 export type ExportableObject = 'user' | 'shift' | 'leave' | 'salary-assignment' | 'salary-structure' | 'attendance-record' | 'optional-holiday';
 
@@ -71,8 +72,11 @@ const CONSTANTS = {
 } as const;
 
 export class DataMigrationService extends BaseService {
+  private leaveSummaryService: LeaveSummaryService;
+
   constructor(context: RequestContext) {
     super(context);
+    this.leaveSummaryService = new LeaveSummaryService(context);
   }
 
   /**
@@ -3465,7 +3469,8 @@ export class DataMigrationService extends BaseService {
 
     // Track approved optional holidays per user per year during import
     // Key: userId_year, Value: count of approved holidays
-    const MAX_OPTIONAL_HOLIDAYS_PER_YEAR = 2;
+    const DEFAULT_MAX_OPTIONAL_HOLIDAYS_PER_YEAR = 0; // Default fallback value
+    const maxAllowedByYear = new Map<string, number>(); // Key: userId_year -> max allowed from leave summary
     const approvedCountByYear = new Map<string, number>(); // Key: userId_year
 
     // Pre-populate with existing approved counts from database
@@ -3576,9 +3581,30 @@ export class DataMigrationService extends BaseService {
           const userIdYearKey = `${row.userId}_${year}`;
           const currentApprovedCount = approvedCountByYear.get(userIdYearKey) || 0;
 
-          if (currentApprovedCount >= MAX_OPTIONAL_HOLIDAYS_PER_YEAR) {
+          // Get max allowed from leave summary (check cache first, then fetch if needed)
+          let maxAllowed = maxAllowedByYear.get(userIdYearKey);
+          if (maxAllowed === undefined) {
+            try {
+              const leaveSummary = await this.leaveSummaryService.getLeaveSummary(
+                new Types.ObjectId(row.userId),
+                year
+              );
+              maxAllowed = leaveSummary.restricted_holiday?.alloted;
+              // Use value from leave summary, default to 0 if not set
+              maxAllowed = maxAllowed !== undefined && maxAllowed !== null 
+                ? maxAllowed 
+                : DEFAULT_MAX_OPTIONAL_HOLIDAYS_PER_YEAR;
+              maxAllowedByYear.set(userIdYearKey, maxAllowed);
+            } catch (error) {
+              console.error(`Error getting max optional holidays for user ${row.userId}, year ${year}:`, error);
+              maxAllowed = DEFAULT_MAX_OPTIONAL_HOLIDAYS_PER_YEAR;
+              maxAllowedByYear.set(userIdYearKey, maxAllowed);
+            }
+          }
+
+          if (currentApprovedCount >= maxAllowed) {
             // Limit reached - change to Pending
-            errors.push(`Row ${row.rowNumber}: Cannot approve - user already has ${currentApprovedCount} approved optional holidays for ${year}. Maximum is ${MAX_OPTIONAL_HOLIDAYS_PER_YEAR} per year. Changing status to Pending.`);
+            errors.push(`Row ${row.rowNumber}: Cannot approve - user already has ${currentApprovedCount} approved optional holidays for ${year}. Maximum is ${maxAllowed} per year. Changing status to Pending.`);
             finalStatus = 'Pending';
           } else {
             // Increment count for this user/year

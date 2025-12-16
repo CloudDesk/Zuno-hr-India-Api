@@ -9,13 +9,13 @@ import { generateEmailTemplate } from '../emails/templates';
 
 export interface ILeaveReleaseCreate {
   employeeIds: string[]; // Array of employee IDs
-  releaseType: 'monthly' | 'quarterly';
+  releaseType: 'monthly' | 'quarterly' | 'annual';
   period: {
-    month?: number;    // 1-12 (required for monthly)
+    month?: number;    // 1-12 (required for monthly, except restricted_holiday)
     quarter?: number;  // 1-4 (required for quarterly: Q1=Jan-Mar, Q2=Apr-Jun, Q3=Jul-Sep, Q4=Oct-Dec)
-    year: number;
+    year: number;      // Required for all types
   };
-  leaveType: 'annual' | 'sick' | 'compOff' | 'lossOfPay' | 'otherPaid' | 'otherUnpaid';
+  leaveType: 'annual' | 'sick' | 'compOff' | 'lossOfPay' | 'otherPaid' | 'otherUnpaid' | 'restricted_holiday';
   daysReleased: number; // Can be decimal (e.g., 4.5)
   notes?: string;
 }
@@ -45,11 +45,20 @@ export class LeaveReleaseService extends BaseService {
     }
 
     // Validate period
-    if (releaseType === 'monthly' && !period.month) {
+    if (releaseType === 'monthly' && leaveType !== 'restricted_holiday' && !period.month) {
       throw new Error('Month is required for monthly release');
     }
     if (releaseType === 'quarterly' && !period.quarter) {
       throw new Error('Quarter is required for quarterly release');
+    }
+    if (releaseType === 'annual') {
+      // For annual release, only year is required, month and quarter should not be provided
+      if (period.month) {
+        throw new Error('Month should not be set for annual release');
+      }
+      if (period.quarter) {
+        throw new Error('Quarter should not be set for annual release');
+      }
     }
     if (daysReleased <= 0) {
       throw new Error('daysReleased must be greater than 0');
@@ -114,7 +123,21 @@ export class LeaveReleaseService extends BaseService {
         try {
           const periodDescription = releaseType === 'monthly'
             ? `${this.getMonthName(period.month!)} ${period.year}`
-            : `Q${period.quarter} ${period.year}`;
+            : releaseType === 'quarterly'
+              ? `Q${period.quarter} ${period.year}`
+              : `${period.year}`; // annual release
+
+          // Check if only restricted_holiday is non-zero (all other leave types are 0)
+          const restrictedHolidayCount = updatedSummary.restricted_holiday?.alloted || 0;
+          const hasOnlyRestrictedHoliday = leaveType === 'restricted_holiday' &&
+            restrictedHolidayCount > 0 &&
+            (updatedSummary.annual?.alloted || 0) === 0 &&
+            (updatedSummary.sick?.alloted || 0) === 0 &&
+            (updatedSummary.compOff?.alloted || 0) === 0 &&
+            (updatedSummary.otherPaid?.alloted || 0) === 0 &&
+            (updatedSummary.otherUnpaid?.alloted || 0) === 0 &&
+            ((updatedSummary.maternity?.alloted || 0) === 0) &&
+            ((updatedSummary.workFromHome?.alloted || 0) === 0);
 
           const html = generateEmailTemplate('leaveBalanceAllotmentEmail', {
             userName: employee.name,
@@ -129,14 +152,32 @@ export class LeaveReleaseService extends BaseService {
             otherUnpaid: updatedSummary.otherUnpaid?.alloted || 0,
             maternity: updatedSummary.maternity?.alloted || 0,
             workFromHome: updatedSummary.workFromHome?.alloted || 0,
+            restricted_holiday: restrictedHolidayCount,
+            hasOnlyRestrictedHoliday,
             companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS'
           });
+
+          // Generate email subject and text based on whether only restricted holiday is released
+          let emailSubject: string;
+          let emailText: string;
+
+          if (hasOnlyRestrictedHoliday) {
+            emailSubject = `Your Restricted Holiday Allocation for ${period.year} has been updated`;
+            emailText = `Hello ${employee.name},\n\nYour Restricted Holiday Allocation for the year ${period.year} has been updated in ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}.\n\nRestricted Holiday Allocation: ${restrictedHolidayCount} holidays\n\nIf you believe this is incorrect or have questions, please contact HR.\n\nThank you,\n${process.env.COMPANY_NAME || 'CloudDesk HRMS'} Team`;
+          } else {
+            emailSubject = releaseType === 'annual'
+              ? `Leave Released: ${daysReleased} days for ${period.year}`
+              : `Leave Released: ${daysReleased} days for ${periodDescription}`;
+            emailText = releaseType === 'annual'
+              ? `Dear ${employee.name},\n\n${daysReleased} days of ${leaveType} leave have been released for the year ${period.year}. Your new balance has been updated.\n\nRegards,\n${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`
+              : `Dear ${employee.name},\n\n${daysReleased} days of ${leaveType} leave have been released for ${periodDescription}. Your new balance has been updated.\n\nRegards,\n${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
+          }
 
           await emailService.sendEmail({
             body: {
               to: employee.email,
-              subject: `Leave Released: ${daysReleased} days for ${periodDescription}`,
-              text: `Dear ${employee.name},\n\n${daysReleased} days of ${leaveType} leave have been released for ${periodDescription}. Your new balance has been updated.\n\nRegards,\n${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`,
+              subject: emailSubject,
+              text: emailText,
               html
             }
           });
@@ -196,7 +237,7 @@ export class LeaveReleaseService extends BaseService {
     year?: number;
     yearLessThan?: number;
     leaveType?: string;
-    releaseType?: 'monthly' | 'quarterly' | 'carryforward';
+    releaseType?: 'monthly' | 'quarterly' | 'annual' | 'carryforward';
     page?: number;
     limit?: number;
   }): Promise<{
@@ -216,14 +257,14 @@ export class LeaveReleaseService extends BaseService {
     // Handle search - search in employee name, email, employeeCode, leaveType, releaseType, and notes
     if (filters?.search) {
       const searchRegex = new RegExp(filters.search, 'i');
-      
+
       // Search in leave release document fields (leaveType, releaseType, notes)
       const documentSearchFilter: any[] = [
         { 'leaveType': { $regex: filters.search, $options: 'i' } },
         { 'releaseType': { $regex: filters.search, $options: 'i' } },
         { 'notes': { $regex: filters.search, $options: 'i' } },
       ];
-      
+
       // Search in user collection to find matching employees
       const matchingEmployees = await User.find({
         $or: [
@@ -234,12 +275,12 @@ export class LeaveReleaseService extends BaseService {
       }).select('_id').lean();
 
       const employeeIds = matchingEmployees.map(emp => emp._id);
-      
+
       // Combine employee search with document field search
       if (employeeIds.length > 0) {
         documentSearchFilter.push({ employeeId: { $in: employeeIds } });
       }
-      
+
       // If no matches found in any field, return empty result
       if (employeeIds.length === 0 && documentSearchFilter.length === 3) {
         return {
@@ -250,7 +291,7 @@ export class LeaveReleaseService extends BaseService {
           totalPages: 0
         };
       }
-      
+
       // Combine search with existing filters using $and
       const existingFilters = { ...query };
       query.$and = [

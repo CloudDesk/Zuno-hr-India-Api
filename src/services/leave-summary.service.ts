@@ -35,7 +35,8 @@ export class LeaveSummaryService extends BaseService {
           otherPaid: { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] },
           otherUnpaid: { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] },
           maternity: { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] },
-          workFromHome: { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] }
+          workFromHome: { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] },
+          restricted_holiday: { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] } // Default to 0
         }
       },
       { upsert: true, new: true }
@@ -61,56 +62,56 @@ export class LeaveSummaryService extends BaseService {
         }
       } as any;
     }
-      console.log(updates.availed, 'updates.availed Data is ==>> availed');
-      console.log(status, 'status Data is ==>> Rejected');
-      if (updates.availed !== undefined) {
-        // Ensure category exists before accessing properties
-        let category = summary[categoryType];
-        if (!category) {
-          // Initialize category if it doesn't exist (for backward compatibility, especially for workFromHome)
-          (summary as any)[categoryType] = { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] };
-          summary.markModified(categoryType as string);
-          category = summary[categoryType];
-        }
-
-        const currentAlloted = category.alloted || 0;
-
-        // Note: updates.availed already contains the correct total from getTotalDaysUsedInYear
-        // For Approved: it includes the newly approved request
-        // For Rejected/Cancelled: it excludes the rejected/cancelled request
-        // So we just use updates.availed directly, no need to subtract
-
-        console.log(updates.availed, 'updates.availed Data is ==>> availed 2');
-
-        // Calculate remaining days
-        const newRemaining = Math.max(0, currentAlloted - updates.availed);
-        
-        // Get existing leaveRequests from the category
-        const existingLeaveRequests = (category as any).leaveRequests || 
-                                     ((category as any)._doc && (category as any)._doc.leaveRequests) || 
-                                     [];
-
-        updateObj[categoryType] = {
-          alloted: currentAlloted,
-          availed: updates.availed,
-          remaining: newRemaining,
-          leaveRequests: existingLeaveRequests,
-        };
+    console.log(updates.availed, 'updates.availed Data is ==>> availed');
+    console.log(status, 'status Data is ==>> Rejected');
+    if (updates.availed !== undefined) {
+      // Ensure category exists before accessing properties
+      let category = summary[categoryType];
+      if (!category) {
+        // Initialize category if it doesn't exist (for backward compatibility, especially for workFromHome)
+        (summary as any)[categoryType] = { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] };
+        summary.markModified(categoryType as string);
+        category = summary[categoryType];
       }
+
+      const currentAlloted = category.alloted || 0;
+
+      // Note: updates.availed already contains the correct total from getTotalDaysUsedInYear
+      // For Approved: it includes the newly approved request
+      // For Rejected/Cancelled: it excludes the rejected/cancelled request
+      // So we just use updates.availed directly, no need to subtract
+
+      console.log(updates.availed, 'updates.availed Data is ==>> availed 2');
+
+      // Calculate remaining days
+      const newRemaining = Math.max(0, currentAlloted - updates.availed);
+
+      // Get existing leaveRequests from the category
+      const existingLeaveRequests = (category as any).leaveRequests ||
+        ((category as any)._doc && (category as any)._doc.leaveRequests) ||
+        [];
+
+      updateObj[categoryType] = {
+        alloted: currentAlloted,
+        availed: updates.availed,
+        remaining: newRemaining,
+        leaveRequests: existingLeaveRequests,
+      };
+    }
 
     if (updates.leaveRequestId) {
       console.log(updates.leaveRequestId, 'updates.leaveRequestId Data is ==>>');
       const currentCategory = updateObj[categoryType] || summary[categoryType] || { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] };
-      const currentLeaveRequests = (currentCategory as any).leaveRequests || 
-                                   ((currentCategory as any)._doc && (currentCategory as any)._doc.leaveRequests) || 
-                                   [];
-      
+      const currentLeaveRequests = (currentCategory as any).leaveRequests ||
+        ((currentCategory as any)._doc && (currentCategory as any)._doc.leaveRequests) ||
+        [];
+
       // Check if leaveRequestId already exists to avoid duplicates
       const leaveRequestIdStr = updates.leaveRequestId.toString();
-      const alreadyExists = currentLeaveRequests.some((id: any) => 
+      const alreadyExists = currentLeaveRequests.some((id: any) =>
         (typeof id === 'string' ? id : id.toString()) === leaveRequestIdStr
       );
-      
+
       if (!alreadyExists) {
         updateObj[categoryType] = {
           ...(currentCategory as any),
@@ -156,7 +157,8 @@ export class LeaveSummaryService extends BaseService {
         otherPaid: { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] },
         otherUnpaid: { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] },
         maternity: { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] },
-        workFromHome: { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] }
+        workFromHome: { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] },
+        restricted_holiday: { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] } // Default to 0
       });
       console.log(`✅ [Leave Summary] Created new leave summary for user ${userId}, year ${year}`);
     } else {
@@ -165,9 +167,16 @@ export class LeaveSummaryService extends BaseService {
       if (summary.workFromHome === undefined || summary.workFromHome === null) {
         summary.workFromHome = { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] };
         summary.markModified('workFromHome'); // Mark as modified so Mongoose saves it
+      }
+      // Initialize restricted_holiday if it doesn't exist (for backward compatibility)
+      if (summary.restricted_holiday === undefined || summary.restricted_holiday === null) {
+        summary.restricted_holiday = { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] }; // Default to 0
+        summary.markModified('restricted_holiday'); // Mark as modified so Mongoose saves it
+      }
+      // Save if any fields were initialized
+      if (summary.isModified('workFromHome') || summary.isModified('restricted_holiday')) {
         await summary.save(); // Save to persist the new field
       }
-      // If workFromHome exists (even with alloted: 0), preserve it - don't overwrite
     }
     return summary;
   }
@@ -177,11 +186,16 @@ export class LeaveSummaryService extends BaseService {
    */
   async getFormattedLeaveSummary(userId: Types.ObjectId, year: number): Promise<any> {
     const summary = await this.getLeaveSummary(userId, year);
-    
+
     // Ensure workFromHome exists (double-check for safety, but don't overwrite existing values)
     if (summary.workFromHome === undefined || summary.workFromHome === null) {
       summary.workFromHome = { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] };
       summary.markModified('workFromHome');
+    }
+    // Ensure restricted_holiday exists (double-check for safety, but don't overwrite existing values)
+    if (summary.restricted_holiday === undefined || summary.restricted_holiday === null) {
+      summary.restricted_holiday = { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] }; // Default to 0
+      summary.markModified('restricted_holiday');
     }
 
     // Helper function to format leave category
@@ -205,7 +219,8 @@ export class LeaveSummaryService extends BaseService {
       otherPaid: formatCategory(summary.otherPaid),
       otherUnpaid: formatCategory(summary.otherUnpaid),
       maternity: formatCategory(summary.maternity),
-      workFromHome: formatCategory(summary.workFromHome)
+      workFromHome: formatCategory(summary.workFromHome),
+      restricted_holiday: formatCategory(summary.restricted_holiday)
     };
   }
 
@@ -239,24 +254,25 @@ export class LeaveSummaryService extends BaseService {
       compOff?: number;
       maternity?: number;
       workFromHome?: number;
+      restricted_holiday?: number;
     },
     options?: { skipEmail?: boolean }  // Option to skip email notification
   ): Promise<ILeaveSummary> {
     // getLeaveSummary ensures the record exists (creates if not found)
     // This guarantees one user has one leave summary record per year
     let summary = await this.getLeaveSummary(userId, year);
-    
+
     // Check if this is a newly created summary (no record existed for this year)
     // A record is considered "new" if ALL leave types have 0 alloted (freshly created record)
     // This is more accurate than checking just 3 categories
-    const isNew = summary.annual?.alloted === 0 && 
-                  summary.sick?.alloted === 0 && 
-                  summary.compOff?.alloted === 0 &&
-                  summary.lossOfPay?.alloted === 0 &&
-                  summary.otherPaid?.alloted === 0 &&
-                  summary.otherUnpaid?.alloted === 0 &&
-                  summary.maternity?.alloted === 0 &&
-                  summary.workFromHome?.alloted === 0;
+    const isNew = summary.annual?.alloted === 0 &&
+      summary.sick?.alloted === 0 &&
+      summary.compOff?.alloted === 0 &&
+      summary.lossOfPay?.alloted === 0 &&
+      summary.otherPaid?.alloted === 0 &&
+      summary.otherUnpaid?.alloted === 0 &&
+      summary.maternity?.alloted === 0 &&
+      summary.workFromHome?.alloted === 0;
 
     // Always update the existing summary (getLeaveSummary ensures it exists)
     {
@@ -287,6 +303,13 @@ export class LeaveSummaryService extends BaseService {
         }
         summary.workFromHome.alloted = allotments.workFromHome;
       }
+      if (allotments.restricted_holiday !== undefined) {
+        // Initialize restricted_holiday if it doesn't exist (for backward compatibility)
+        if (!summary.restricted_holiday) {
+          summary.restricted_holiday = { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] }; // Default to 0
+        }
+        summary.restricted_holiday.alloted = allotments.restricted_holiday;
+      }
 
       await summary.save();
       // return summary;
@@ -312,6 +335,17 @@ export class LeaveSummaryService extends BaseService {
         return summary;
       }
 
+      // Check if only restricted_holiday is non-zero (all other leave types are 0)
+      const restrictedHolidayCount = summary.restricted_holiday?.alloted || 0;
+      const hasOnlyRestrictedHoliday = restrictedHolidayCount > 0 &&
+        (summary.annual.alloted === 0) &&
+        (summary.sick.alloted === 0) &&
+        (summary.compOff.alloted === 0) &&
+        (summary.otherPaid.alloted === 0) &&
+        (summary.otherUnpaid.alloted === 0) &&
+        ((summary.maternity?.alloted || 0) === 0) &&
+        ((summary.workFromHome?.alloted || 0) === 0);
+
       const html = generateEmailTemplate("leaveBalanceAllotmentEmail", {
         userName: user.name,
         year,
@@ -322,15 +356,29 @@ export class LeaveSummaryService extends BaseService {
         otherUnpaid: summary.otherUnpaid.alloted,
         maternity: summary.maternity?.alloted || 0,
         workFromHome: summary.workFromHome?.alloted || 0,
+        restricted_holiday: restrictedHolidayCount,
         isNew,
-        companyName: process.env.COMPANY_NAME || "CloudDesk HRMS"
+        companyName: process.env.COMPANY_NAME || "CloudDesk HRMS",
+        hasOnlyRestrictedHoliday
       });
+
+      // Generate email subject and text based on whether only restricted holiday is updated
+      let subject: string;
+      let text: string;
+
+      if (hasOnlyRestrictedHoliday) {
+        subject = `Your Restricted Holiday Allocation for ${year} has been updated`;
+        text = `Hello ${user.name},\n\nYour Restricted Holiday Allocation for the year ${year} has been updated in ${process.env.COMPANY_NAME || "CloudDesk HRMS"}.\n\nRestricted Holiday Allocation: ${restrictedHolidayCount} holidays\n\nIf you believe this is incorrect or have questions, please contact HR.\n\nThank you,\n${process.env.COMPANY_NAME || "CloudDesk HRMS"} Team`;
+      } else {
+        subject = `Your Leave Allotment for ${year} ${isNew ? "has been created" : "was updated"}`;
+        text = `Dear ${user.name},\n\nYour leave allotment for ${year} ${isNew ? "has been created" : "was updated"}.\n\nAnnual: ${summary.annual.alloted}\nSick: ${summary.sick.alloted}\nComp Off: ${summary.compOff.alloted}\nOther Paid: ${summary.otherPaid.alloted}\nOther Unpaid: ${summary.otherUnpaid.alloted}\nMaternity: ${summary.maternity?.alloted || 0}\nWork From Home: ${summary.workFromHome?.alloted || 0}\n\nRestricted Holiday Allocation: ${restrictedHolidayCount}\n\nRegards,\n${process.env.COMPANY_NAME || "CloudDesk HRMS"}`;
+      }
 
       await emailService.sendEmail({
         body: {
           to: user.email,
-          subject: `Your Leave Allotment for ${year} ${isNew ? "has been created" : "was updated"}`,
-          text: `Dear ${user.name},\n\nYour leave allotment for ${year} ${isNew ? "has been created" : "was updated"}.\n\nAnnual: ${summary.annual.alloted}\nSick: ${summary.sick.alloted}\nComp Off: ${summary.compOff.alloted}\nOther Paid: ${summary.otherPaid.alloted}\nOther Unpaid: ${summary.otherUnpaid.alloted}\nMaternity: ${summary.maternity?.alloted || 0}\nWork From Home: ${summary.workFromHome?.alloted || 0}\n\nRegards,\n${process.env.COMPANY_NAME || "CloudDesk HRMS"}`,
+          subject,
+          text,
           html
         }
       });
@@ -345,7 +393,7 @@ export class LeaveSummaryService extends BaseService {
    */
   private mapLeaveTypeToCategoryKey(leaveType: string): keyof ILeaveSummary {
     const normalized = leaveType.toLowerCase().trim();
-    
+
     // Direct mappings for common variations
     const mapping: Record<string, keyof ILeaveSummary> = {
       'annual': 'annual',
@@ -364,12 +412,12 @@ export class LeaveSummaryService extends BaseService {
       'work_from_home': 'workFromHome',
       'wfh': 'workFromHome',
     };
-    
+
     // Check if exact match exists
     if (mapping[normalized]) {
       return mapping[normalized];
     }
-    
+
     // Try camelCase conversion for "lossOfPay" -> "lossofpay" case
     // Convert "lossofpay" back to "lossOfPay"
     if (normalized === 'lossofpay') {
@@ -387,14 +435,14 @@ export class LeaveSummaryService extends BaseService {
     if (normalized === 'workfromhome') {
       return 'workFromHome';
     }
-    
+
     // If it's already in camelCase, try to use it directly
     const camelCaseKeys: (keyof ILeaveSummary)[] = ['annual', 'sick', 'compOff', 'lossOfPay', 'otherPaid', 'otherUnpaid', 'maternity', 'workFromHome'];
     const lowerCamelCase = normalized.charAt(0).toLowerCase() + normalized.slice(1);
     if (camelCaseKeys.includes(lowerCamelCase as keyof ILeaveSummary)) {
       return lowerCamelCase as keyof ILeaveSummary;
     }
-    
+
     // Default: try to use as-is (might be already camelCase)
     return normalized as keyof ILeaveSummary;
   }
@@ -407,19 +455,19 @@ export class LeaveSummaryService extends BaseService {
     leaveRequestId: Types.ObjectId
   ): Promise<ILeaveSummary> {
     const summary: ILeaveSummary = await this.getLeaveSummary(userId, year);
-    
+
     // Map leave type to proper category key (camelCase)
     const categoryTypeKey = this.mapLeaveTypeToCategoryKey(categoryType);
-    
+
     // Ensure category exists and has availed property
     const category = summary[categoryTypeKey];
     if (!category) {
       throw new Error(`Leave category '${categoryType}' (mapped to: '${categoryTypeKey}') not found in leave summary. Available categories: annual, sick, compOff, lossOfPay, otherPaid, otherUnpaid, maternity, workFromHome`);
     }
-    
+
     // Get current availed days, default to 0 if undefined
     const currentAvailed = (category && category.availed) ? category.availed : 0;
-    
+
     return await this.createOrUpdateLeaveSummary(userId, year, categoryTypeKey, '', {
       availed: currentAvailed + daysToDeduct,
       leaveRequestId
@@ -438,33 +486,33 @@ export class LeaveSummaryService extends BaseService {
     leaveRequestId: Types.ObjectId
   ): Promise<ILeaveSummary> {
     const summary: ILeaveSummary = await this.getLeaveSummary(userId, year);
-    
+
     // Map leave type to proper category key (camelCase)
     const categoryTypeKey = this.mapLeaveTypeToCategoryKey(categoryType);
-    
+
     // Ensure category exists
     const category = summary[categoryTypeKey];
     if (!category) {
       throw new Error(`Leave category '${categoryType}' (mapped to: '${categoryTypeKey}') not found in leave summary. Available categories: annual, sick, compOff, lossOfPay, otherPaid, otherUnpaid, maternity, workFromHome`);
     }
-    
+
     // Get current values
     const currentAvailed = (category && category.availed) ? category.availed : 0;
     const currentAlloted = category.alloted || 0;
     const currentLeaveRequests = (category as any).leaveRequests || [];
-    
+
     // Remove leaveRequestId from the array
     const leaveRequestIdStr = leaveRequestId.toString();
-    const updatedLeaveRequests = currentLeaveRequests.filter((id: any) => 
+    const updatedLeaveRequests = currentLeaveRequests.filter((id: any) =>
       (typeof id === 'string' ? id : id.toString()) !== leaveRequestIdStr
     );
-    
+
     // Calculate new availed (decrease by daysToRestore, but don't go below 0)
     const newAvailed = Math.max(0, currentAvailed - daysToRestore);
-    
+
     // Calculate remaining
     const newRemaining = Math.max(0, currentAlloted - newAvailed);
-    
+
     // Update leave summary directly (since we need to update leaveRequests array which createOrUpdateLeaveSummary doesn't handle)
     const updatedSummary = await LeaveSummary.findOneAndUpdate(
       { userId, year },
@@ -477,11 +525,11 @@ export class LeaveSummaryService extends BaseService {
       },
       { new: true }
     );
-    
+
     if (!updatedSummary) {
       throw new Error('Leave summary not found');
     }
-    
+
     return updatedSummary;
   }
 }

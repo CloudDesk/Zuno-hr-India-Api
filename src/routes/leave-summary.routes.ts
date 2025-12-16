@@ -98,6 +98,15 @@ const getLeaveSummarySchema = {
                 leaveRequests: { type: 'array', items: { type: 'string' } },
               },
             },
+            restricted_holiday: {
+              type: 'object',
+              properties: {
+                alloted: { type: 'number' },
+                availed: { type: 'number' },
+                remaining: { type: 'number' },
+                leaveRequests: { type: 'array', items: { type: 'string' } },
+              },
+            },
           },
         },
       },
@@ -221,7 +230,12 @@ const updateLeaveAllotmentSchema = {
       workFromHome: {
         type: 'number',
         minimum: 0,
-        description: 'Work From Home days',
+        description: 'Work from home days',
+      },
+      restricted_holiday: {
+        type: 'number',
+        minimum: 0,
+        description: 'Restricted holiday (optional holiday) allocation count per year',
       }
     },
   },
@@ -268,6 +282,14 @@ const updateLeaveAllotmentSchema = {
               },
             },
             workFromHome: {
+              type: 'object',
+              properties: {
+                alloted: { type: 'number' },
+                availed: { type: 'number' },
+                remaining: { type: 'number' },
+              },
+            },
+            restricted_holiday: {
               type: 'object',
               properties: {
                 alloted: { type: 'number' },
@@ -367,6 +389,7 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
           compOff,
           maternity,
           workFromHome,
+          restricted_holiday,
         } = request.body as {
           userId: string;
           year: number;
@@ -377,6 +400,7 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
           compOff?: number;
           maternity?: number;
           workFromHome?: number;
+          restricted_holiday?: number;
         };
 
         const updatedSummary = await request.container!.leaveSummaryService.updateLeaveAllotments(
@@ -390,6 +414,7 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
             compOff,
             maternity,
             workFromHome,
+            restricted_holiday,
           }
         );
 
@@ -437,6 +462,11 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
             availed: updatedSummary.workFromHome?.availed || 0,
             remaining: updatedSummary.workFromHome?.remaining || 0,
           },
+          restricted_holiday: {
+            alloted: updatedSummary.restricted_holiday?.alloted || 0,
+            availed: updatedSummary.restricted_holiday?.availed || 0,
+            remaining: updatedSummary.restricted_holiday?.remaining || 0,
+          },
         };
 
         return reply.send({
@@ -472,8 +502,8 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
             },
             releaseType: {
               type: 'string',
-              enum: ['monthly', 'quarterly'],
-              description: 'Release type: monthly (1 month) or quarterly (3 months)'
+              enum: ['monthly', 'quarterly', 'annual'],
+              description: 'Release type: monthly (1 month), quarterly (3 months), or annual (yearly allocation)'
             },
             period: {
               type: 'object',
@@ -486,7 +516,7 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
             },
             leaveType: {
               type: 'string',
-              enum: ['annual', 'sick', 'compOff', 'lossOfPay', 'otherPaid', 'otherUnpaid']
+              enum: ['annual', 'sick', 'compOff', 'lossOfPay', 'otherPaid', 'otherUnpaid', 'restricted_holiday']
             },
             daysReleased: {
               type: 'number',
@@ -503,9 +533,9 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
       try {
         const { LeaveReleaseService } = await import('../services/leave-release.service');
         const leaveReleaseService = new LeaveReleaseService(request.container!.requestContext);
-        
+
         const result = await leaveReleaseService.releaseLeaves(request.body as any);
-        
+
         return reply.send({
           success: true,
           data: result
@@ -541,12 +571,12 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
       try {
         const { userId } = request.params as { userId: string };
         const { year, yearLessThan } = request.query as { year?: number; yearLessThan?: number };
-        
+
         const { LeaveReleaseService } = await import('../services/leave-release.service');
         const leaveReleaseService = new LeaveReleaseService(request.container!.requestContext);
-        
+
         const history = await leaveReleaseService.getReleaseHistory(userId, year, yearLessThan);
-        
+
         return reply.send({
           success: true,
           data: history
@@ -578,7 +608,7 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
             toYear: { type: 'number' },
             leaveType: {
               type: 'string',
-              enum: ['annual', 'sick', 'compOff', 'lossOfPay', 'otherPaid', 'otherUnpaid']
+              enum: ['annual', 'sick', 'compOff', 'lossOfPay', 'otherPaid', 'otherUnpaid', 'restricted_holiday']
             },
             daysCarriedForward: {
               type: 'number',
@@ -595,9 +625,9 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
       try {
         const { LeaveCarryForwardService } = await import('../services/leave-carry-forward.service');
         const carryForwardService = new LeaveCarryForwardService(request.container!.requestContext);
-        
+
         const result = await carryForwardService.processCarryForward(request.body as any);
-        
+
         return reply.send({
           success: true,
           data: result
@@ -633,7 +663,7 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
                   employeeId: { type: 'string' },
                   leaveType: {
                     type: 'string',
-                    enum: ['annual', 'sick', 'compOff', 'lossOfPay', 'otherPaid', 'otherUnpaid']
+                    enum: ['annual', 'sick', 'compOff', 'lossOfPay', 'otherPaid', 'otherUnpaid', 'restricted_holiday']
                   },
                   daysCarriedForward: { type: 'number', minimum: 0 }
                 }
@@ -651,9 +681,9 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
       try {
         const { LeaveCarryForwardService } = await import('../services/leave-carry-forward.service');
         const carryForwardService = new LeaveCarryForwardService(request.container!.requestContext);
-        
+
         const result = await carryForwardService.batchProcessCarryForward(request.body as any);
-        
+
         return reply.send({
           success: true,
           data: result
@@ -689,12 +719,12 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
       try {
         const { userId } = request.params as { userId: string };
         const { fromYear, toYear } = request.query as { fromYear?: number; toYear?: number };
-        
+
         const { LeaveCarryForwardService } = await import('../services/leave-carry-forward.service');
         const carryForwardService = new LeaveCarryForwardService(request.container!.requestContext);
-        
+
         const details = await carryForwardService.getCarryForwardDetails(userId, fromYear, toYear);
-        
+
         return reply.send({
           success: true,
           data: details
@@ -731,12 +761,12 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
       try {
         const { userId } = request.params as { userId: string };
         const { year } = request.query as { year: number };
-        
+
         const { LeaveCarryForwardService } = await import('../services/leave-carry-forward.service');
         const carryForwardService = new LeaveCarryForwardService(request.container!.requestContext);
-        
+
         const balance = await carryForwardService.getAvailableBalanceForCarryForward(userId, year);
-        
+
         return reply.send({
           success: true,
           data: balance
@@ -766,9 +796,9 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
             search: { type: 'string', description: 'Search by employee name, email, employee code, leave type, release type, or notes' },
             year: { type: 'number', description: 'Filter by exact year. Takes precedence over yearLessThan if both are provided.' },
             yearLessThan: { type: 'number', description: 'Filter by years less than or equal to this value (e.g., 2021 returns all records from 2021 and earlier). Useful for viewing older year data.' },
-            leaveType: { 
-              type: 'string', 
-              enum: ['annual', 'sick', 'compOff', 'lossOfPay', 'otherPaid', 'otherUnpaid'],
+            leaveType: {
+              type: 'string',
+              enum: ['annual', 'sick', 'compOff', 'lossOfPay', 'otherPaid', 'otherUnpaid', 'restricted_holiday'],
               description: 'Filter by leave type'
             },
             releaseType: {
@@ -836,7 +866,7 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
 
         const { LeaveReleaseService } = await import('../services/leave-release.service');
         const leaveReleaseService = new LeaveReleaseService(request.container!.requestContext);
-        
+
         const result = await leaveReleaseService.getAllReleases({
           employeeId,
           year,
@@ -847,7 +877,7 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
           page,
           limit
         });
-        
+
         return reply.send({
           success: true,
           data: result
@@ -878,9 +908,9 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
             fromYear: { type: 'number', description: 'Filter by exact from year. Takes precedence over yearLessThan if both are provided.' },
             toYear: { type: 'number', description: 'Filter by to year' },
             yearLessThan: { type: 'number', description: 'Filter by from years less than or equal to this value (e.g., 2021 returns all carry-forwards where fromYear <= 2021 - includes 2021, 2020, 2019, and all earlier years). Useful for viewing older year data.' },
-            leaveType: { 
-              type: 'string', 
-              enum: ['annual', 'sick', 'compOff', 'lossOfPay', 'otherPaid', 'otherUnpaid'],
+            leaveType: {
+              type: 'string',
+              enum: ['annual', 'sick', 'compOff', 'lossOfPay', 'otherPaid', 'otherUnpaid', 'restricted_holiday'],
               description: 'Filter by leave type'
             },
             page: { type: 'number', minimum: 1, default: 1, description: 'Page number' },
@@ -943,7 +973,7 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
 
         const { LeaveCarryForwardService } = await import('../services/leave-carry-forward.service');
         const carryForwardService = new LeaveCarryForwardService(request.container!.requestContext);
-        
+
         const result = await carryForwardService.getAllCarryForwards({
           employeeId,
           fromYear,
@@ -954,7 +984,7 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
           page,
           limit
         });
-        
+
         return reply.send({
           success: true,
           data: result

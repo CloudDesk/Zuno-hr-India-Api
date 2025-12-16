@@ -18,6 +18,7 @@ export interface ILeaveSummary extends Document {
   otherUnpaid: ILeaveCategoryDetail;
   maternity: ILeaveCategoryDetail;
   workFromHome: ILeaveCategoryDetail;
+  restricted_holiday: ILeaveCategoryDetail;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -40,7 +41,8 @@ const leaveSummarySchema = new Schema<ILeaveSummary>(
     otherPaid: leaveCategoryDetailSchema,
     otherUnpaid: leaveCategoryDetailSchema,
     maternity: leaveCategoryDetailSchema,
-    workFromHome: leaveCategoryDetailSchema
+    workFromHome: leaveCategoryDetailSchema,
+    restricted_holiday: leaveCategoryDetailSchema
   },
   {
     timestamps: true
@@ -53,7 +55,7 @@ leaveSummarySchema.index({ userId: 1, year: 1 }, { unique: true });
 // Pre-save hook to calculate remaining days
 leaveSummarySchema.pre('save', function (this: ILeaveSummary & Document, next) {
   // Calculate remaining days for each leave category
-  const categories = ['annual', 'sick', 'compOff', 'lossOfPay', 'otherPaid', 'otherUnpaid', 'maternity', 'workFromHome'] as const;
+  const categories = ['annual', 'sick', 'compOff', 'lossOfPay', 'otherPaid', 'otherUnpaid', 'maternity', 'workFromHome', 'restricted_holiday'] as const;
 
   categories.forEach(category => {
     const leaveCategory = this[category];
