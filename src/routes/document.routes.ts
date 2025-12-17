@@ -872,6 +872,8 @@ export const documentRoutes = async (
                                                         issuingAuthority: { type: 'string' },
                                                         issueDate: { type: 'string', format: 'date-time' },
                                                         expiryDate: { type: 'string', format: 'date-time' },
+                                                        description: { type: 'string' },
+                                                        comments: { type: 'string' },
                                                         certificateId: { type: 'string' },
                                                         idDetails: {
                                                             type: 'object',
@@ -1173,7 +1175,7 @@ export const documentRoutes = async (
 
     //upload Certifications
     fastify.post('/certifications', {
-        preHandler: [filesUpload]
+        preHandler: [authenticate, filesUpload]
     }, async (request, reply) => {
         try {
             console.log("*******")
@@ -1185,6 +1187,7 @@ export const documentRoutes = async (
             console.log("*******")
             const { documentData, employeeId } = request.body as { documentData: string, employeeId: string };
             const files = (request as any).files;
+            const user = request.user;
 
             if (!files || files.length === 0) {
                 return reply.status(400).send({ success: false, error: 'No file uploaded.' });
@@ -1194,10 +1197,22 @@ export const documentRoutes = async (
                 return reply.status(400).send({ success: false, error: 'Missing documentData or employeeId in the request body.' });
             }
 
+            // Validate employeeId: Employees can only upload for themselves, admins/managers can upload for anyone
+            if (user && user.role.toLowerCase() !== 'admin' && user.role.toLowerCase() !== 'manager') {
+                if (user._id.toString() !== employeeId) {
+                    return reply.status(403).send({
+                        success: false,
+                        error: 'Forbidden: You can only upload certificates for yourself.'
+                    });
+                }
+            }
+
             const parsedData = JSON.parse(documentData);
             const file = files[0];
             console.log(parsedData, "parsedData");
             console.log(file, "file")
+
+            // No restrictions on certificate types - employees can upload Academic, Experience, and IdentityProof
             const newDocument = await request.container!.documentService.createCertificate(employeeId, parsedData, file);
 
             return reply.status(201).send({
@@ -1219,7 +1234,7 @@ export const documentRoutes = async (
     fastify.put<{ Params: { id: string } }>(
         '/certifications/:id',
         {
-            // onRequest: [authendicate],
+            preHandler: [authenticate],
 
         },
         async (request, reply) => {
@@ -1231,6 +1246,7 @@ export const documentRoutes = async (
 
             const { id } = request.params;
             const { documentData, employeeId } = body as { documentData: string; employeeId: string };
+            const user = request.user;
 
             console.log(id, "id ")
             console.log(documentData, "documentData");
@@ -1242,6 +1258,16 @@ export const documentRoutes = async (
                     return reply.status(400).send({ success: false, error: 'Invalid employee ID' });
                 }
 
+                // Validate ownership: Employees can only update their own certificates, admins/managers can update any
+                if (user && user.role.toLowerCase() !== 'admin' && user.role.toLowerCase() !== 'manager') {
+                    if (user._id.toString() !== employeeId) {
+                        return reply.status(403).send({
+                            success: false,
+                            error: 'Forbidden: You can only update your own certificates.'
+                        });
+                    }
+                }
+
                 // Parse documentData
                 let parsedData;
                 try {
@@ -1251,6 +1277,7 @@ export const documentRoutes = async (
                 }
 
                 const file = files && files.length > 0 ? files[0] : null;
+                // No restrictions on certificate types - employees can update Academic, Experience, and IdentityProof
                 const updatedDocument = await request.container!.documentService.updateCertificate(id, parsedData, file, request);
 
                 return reply.status(200).send({ success: true, data: updatedDocument });

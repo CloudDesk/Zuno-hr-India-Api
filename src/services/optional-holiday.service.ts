@@ -5,6 +5,7 @@ import { Types } from 'mongoose';
 import { IOptionalHolidayRequest, OptionalHolidayRequest } from '../models/optional-holiday-request.model';
 import { generateEmailTemplate } from '../emails/templates';
 import { emailService } from './email.service';
+import { LeaveSummaryService } from './leave-summary.service';
 
 export interface IOptionalHolidayCreate {
   userId: string | Types.ObjectId;
@@ -43,29 +44,50 @@ export interface IOptionalHolidayStatusUpdate {
 }
 
 export class OptionalHolidayService extends BaseService {
-  private readonly MAX_OPTIONAL_HOLIDAYS_PER_YEAR = 2;
+  private leaveSummaryService: LeaveSummaryService;
 
   constructor(context: RequestContext) {
     super(context);
+    this.leaveSummaryService = new LeaveSummaryService(context);
+  }
+
+  /**
+   * Get the maximum allowed optional holidays for a user in a year
+   * Reads from leave-summary.restricted_holiday.alloted, defaults to 0 if not set
+   */
+  private async getMaxOptionalHolidays(userId: Types.ObjectId, year: number): Promise<number> {
+    try {
+      const leaveSummary = await this.leaveSummaryService.getLeaveSummary(userId, year);
+      // Return allocated count from leave summary, default to 0 if not set
+      const allocated = leaveSummary.restricted_holiday?.alloted;
+      return allocated !== undefined && allocated !== null ? allocated : 0;
+    } catch (error) {
+      console.error(`Error getting max optional holidays for user ${userId}, year ${year}:`, error);
+      // Fallback to 0 if there's an error
+      return 0;
+    }
   }
 
   /**
    * Check if employee has reached annual limit for optional holidays
    */
-  async checkAnnualLimit(userId: Types.ObjectId, year: number): Promise<{ canRequest: boolean; used: number; remaining: number }> {
+  async checkAnnualLimit(userId: Types.ObjectId, year: number): Promise<{ canRequest: boolean; used: number; remaining: number; total: number }> {
     const approvedCount = await OptionalHolidayRequest.countDocuments({
       userId: userId,
       year: year,
       status: 'Approved',
     });
 
-    const canRequest = approvedCount < this.MAX_OPTIONAL_HOLIDAYS_PER_YEAR;
-    const remaining = Math.max(0, this.MAX_OPTIONAL_HOLIDAYS_PER_YEAR - approvedCount);
+    // Get max allowed from leave summary (dynamic per user)
+    const maxAllowed = await this.getMaxOptionalHolidays(userId, year);
+    const canRequest = approvedCount < maxAllowed;
+    const remaining = Math.max(0, maxAllowed - approvedCount);
 
     return {
       canRequest,
       used: approvedCount,
       remaining,
+      total: maxAllowed,
     };
   }
 
@@ -425,7 +447,7 @@ export class OptionalHolidayService extends BaseService {
     // Check annual limit (only for new requests, not for pending)
     const limitCheck = await this.checkAnnualLimit(userId, year);
     if (!limitCheck.canRequest) {
-      throw new Error(`Annual limit reached. You have already used ${limitCheck.used} out of ${this.MAX_OPTIONAL_HOLIDAYS_PER_YEAR} optional holidays for ${year}`);
+      throw new Error(`Annual limit reached. You have already used ${limitCheck.used} out of ${limitCheck.total} optional holidays for ${year}`);
     }
 
     const request = new OptionalHolidayRequest({
@@ -541,7 +563,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
     if (updateData.status === 'Approved') {
       const limitCheck = await this.checkAnnualLimit(request.userId, request.year);
       if (!limitCheck.canRequest) {
-        throw new Error(`Cannot approve: Employee has already used ${limitCheck.used} out of ${this.MAX_OPTIONAL_HOLIDAYS_PER_YEAR} optional holidays for ${request.year}`);
+        throw new Error(`Cannot approve: Employee has already used ${limitCheck.used} out of ${limitCheck.total} optional holidays for ${request.year}`);
       }
     }
 
@@ -565,6 +587,24 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
 
     if (updateData.remarks) request.remarks = updateData.remarks;
     await request.save();
+
+    // Update restricted_holiday availed count in leave summary
+    // This tracks how many optional holidays have been approved for the user in this year
+    const year = request.year;
+    const totalApprovedThisYear = await this.getTotalApprovedOptionalHolidays(
+      request.userId,
+      year
+    );
+
+    await this.leaveSummaryService.createOrUpdateLeaveSummary(
+      request.userId,
+      year,
+      'restricted_holiday',
+      updateData.status,
+      {
+        availed: totalApprovedThisYear,
+      }
+    );
 
     // Send email notification to employee (the person who applied)
     try {
@@ -740,6 +780,22 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
   }
 
   /**
+   * Get total approved optional holidays count for a user in a year
+   * Used to update availed count in leave summary
+   */
+  private async getTotalApprovedOptionalHolidays(
+    userId: Types.ObjectId,
+    year: number
+  ): Promise<number> {
+    const approvedCount = await OptionalHolidayRequest.countDocuments({
+      userId: userId,
+      year: year,
+      status: 'Approved',
+    });
+    return approvedCount;
+  }
+
+  /**
    * Get optional holiday usage summary for a user
    */
   async getUsageSummary(userId: Types.ObjectId, year: number): Promise<{
@@ -757,10 +813,13 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
 
     const approvedCount = requests.filter((r) => r.status === 'Approved').length;
 
+    // Get max allowed from leave summary (dynamic per user)
+    const maxAllowed = await this.getMaxOptionalHolidays(userId, year);
+
     return {
-      total: this.MAX_OPTIONAL_HOLIDAYS_PER_YEAR,
+      total: maxAllowed,
       used: approvedCount,
-      remaining: Math.max(0, this.MAX_OPTIONAL_HOLIDAYS_PER_YEAR - approvedCount),
+      remaining: Math.max(0, maxAllowed - approvedCount),
       requests: requests as IOptionalHolidayRequest[],
     };
   }

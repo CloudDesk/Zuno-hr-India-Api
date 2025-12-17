@@ -1,5 +1,10 @@
 <p>Hello {{userName}},</p>
 
+{{#if hasOnlyRestrictedHoliday}}
+<p>Your Restricted Holiday Allocation for the year {{year}} has been updated in {{companyName}}.</p>
+
+<p style="margin-top: 20px;"><strong>Restricted Holiday Allocation:</strong> {{restricted_holiday}} holidays</p>
+{{else}}
 <p>Your leave {{#if isNew}}allotment for the year {{year}} has been created{{else}}balance has been updated for the year
   {{year}}{{/if}} in {{companyName}}.</p>
 
@@ -33,6 +38,11 @@
     <td>{{workFromHome}}</td>
   </tr>
 </table>
+
+{{#if restricted_holiday}}
+<p style="margin-top: 20px;"><strong>Restricted Holiday Allocation:</strong> {{restricted_holiday}} holidays</p>
+{{/if}}
+{{/if}}
 
 <p>If you believe this is incorrect or have questions, please contact HR.</p>
 

@@ -105,6 +105,10 @@ interface IUserCreate {
     isActive?: boolean; // Only relevant when visa details are provided
   };
   client?: string;
+  // PF (Provident Fund) related fields - individual fields (not in governmentIds)
+  pfNumber?: string;
+  uanNumber?: string;
+  familyPfNumber?: string;
   experienceDetails?: IExperienceDetails[];
 }
 
@@ -163,6 +167,10 @@ interface IUserUpdate {
     isActive?: boolean; // Only relevant when visa details are provided
   };
   client?: string;
+  // PF (Provident Fund) related fields - individual fields (not in governmentIds)
+  pfNumber?: string;
+  uanNumber?: string;
+  familyPfNumber?: string;
   experienceDetails?: IExperienceDetails[];
 }
 
@@ -947,25 +955,9 @@ export class UserService extends BaseService {
     }
     console.log('👤 Current user active status:', user.active);
 
-    // Check if user is trying to edit their own profile (restrict sensitive fields for employees)
-    const currentUser = this.context.user;
-    const isSelfEdit = currentUser && currentUser._id.toString() === id;
-    const isEmployee = currentUser && (currentUser.role === 'staff' || currentUser.role === 'external');
-
-    if (isSelfEdit && isEmployee) {
-      // Employees cannot edit these sensitive fields on their own profile
-      const restrictedFields = [
-        'role', 'specificRole', 'departmentId', 'managerId', 'employeeCode',
-        'active', 'joiningDate', 'confirmationDate', 'probationDate', 'dateOfBirth',
-        'country', 'currency', 'licenseType', 'portalAccess', 'visaDetails', 'client'
-      ];
-
-      for (const field of restrictedFields) {
-        if (data[field as keyof IUserUpdate] !== undefined) {
-          throw new Error(`You cannot edit ${field} on your own profile. Please contact an administrator.`);
-        }
-      }
-    }
+    // Allow employees to edit all fields on their own profile
+    // No restrictions for self-edits - employees can update any field on their own profile
+    // All field restrictions have been removed - employees can edit everything on their own profile
 
     // Validate required fields if being updated
     if (data.managerId !== undefined && !data.managerId) {

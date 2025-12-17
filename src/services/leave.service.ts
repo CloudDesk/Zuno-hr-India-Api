@@ -74,6 +74,87 @@ export class LeaveService extends BaseService {
   }
 
   /**
+   * Validate that the holiday date is an optional holiday in the calendar
+   * Used for restricted_holiday leave type
+   */
+  private async validateOptionalHoliday(
+    userId: Types.ObjectId,
+    holidayDate: Date
+  ): Promise<{ isValid: boolean; holidayName?: string; error?: string }> {
+    const user = await User.findById(userId).select('holidayCalendarId').lean();
+    if (!user) {
+      return { isValid: false, error: 'User not found' };
+    }
+    if (!user.holidayCalendarId) {
+      return { isValid: false, error: 'No holiday calendar assigned to your account. Please contact HR.' };
+    }
+
+    const calendar = await HolidayCalendar.findById(user.holidayCalendarId).lean();
+    if (!calendar) {
+      return { isValid: false, error: 'Holiday calendar not found. Please contact HR.' };
+    }
+
+    // Normalize dates to YYYY-MM-DD format for comparison (ignore time)
+    const holidayDateObj = new Date(holidayDate);
+    const holidayDateStr = holidayDateObj.toISOString().split('T')[0];
+    
+    const matchingHoliday = calendar.holidays.find((h) => {
+      const hDateObj = new Date(h.date);
+      const hDateStr = hDateObj.toISOString().split('T')[0];
+      return hDateStr === holidayDateStr && h.type === 'optional';
+    });
+
+    if (!matchingHoliday) {
+      // Check if the date exists in calendar but is not optional
+      const dateExists = calendar.holidays.find((h) => {
+        const hDateObj = new Date(h.date);
+        const hDateStr = hDateObj.toISOString().split('T')[0];
+        return hDateStr === holidayDateStr;
+      });
+      
+      if (dateExists) {
+        return { isValid: false, error: `The selected date (${holidayDateStr}) exists in your calendar but is not marked as an optional holiday. Only dates marked as "optional" in the holiday calendar can be requested.` };
+      } else {
+        return { isValid: false, error: `The selected date (${holidayDateStr}) is not found in your holiday calendar as an optional holiday. Please select a date that is marked as optional in your calendar.` };
+      }
+    }
+
+    return { isValid: true, holidayName: matchingHoliday.name };
+  }
+
+  /**
+   * Check if employee has reached annual limit for restricted holidays
+   * Used for restricted_holiday leave type
+   */
+  private async checkRestrictedHolidayAnnualLimit(
+    userId: Types.ObjectId,
+    year: number
+  ): Promise<{ canRequest: boolean; used: number; remaining: number; total: number }> {
+    // Count approved restricted_holiday leaves for this year
+    const approvedCount = await Leave.countDocuments({
+      userId: userId,
+      leaveType: 'restricted_holiday',
+      status: 'Approved',
+      $expr: {
+        $eq: [{ $year: '$startDate' }, year]
+      }
+    });
+
+    // Get max allowed from leave summary (dynamic per user)
+    const leaveSummary = await this.leaveSummaryService.getLeaveSummary(userId, year);
+    const maxAllowed = leaveSummary.restricted_holiday?.alloted || 0;
+    const canRequest = approvedCount < maxAllowed;
+    const remaining = Math.max(0, maxAllowed - approvedCount);
+
+    return {
+      canRequest,
+      used: approvedCount,
+      remaining,
+      total: maxAllowed,
+    };
+  }
+
+  /**
    * Get active shift assignment for a user within a date range
    * Returns the shift assignment that is active during the requested date range
    */
@@ -606,45 +687,101 @@ export class LeaveService extends BaseService {
       throw new Error('Leave type is required. Please provide leaveType or ensure leaveTypeId points to a valid Lov with values.');
     }
 
-    // VALIDATION: Check that startDate and endDate are in the same year
-    // Leave cannot span across multiple years - user must apply for separate leaves for each year
-    const startYear = new Date(leaveData.startDate).getFullYear();
-    const endYear = new Date(leaveData.endDate).getFullYear();
-    
-    if (startYear !== endYear) {
-      throw new Error(
-        `Leave cannot span across multiple years. ` +
-        `Start date (${startYear}) and end date (${endYear}) must be in the same year. ` +
-        `Please apply for separate leaves for each year.`
-      );
-    }
-
-    // India-specific: Validate half-day leave restrictions
-    if (leaveData.leaveDuration === 'half-day') {
-      if (user.country !== 'IN') {
-        throw new Error('Half-day leaves are only available for India employees');
-      }
-
-      // Validate half-day specific rules
+    // SPECIAL HANDLING FOR restricted_holiday (Optional Holiday)
+    if (leaveData.leaveType === 'restricted_holiday') {
+      // Validate that startDate and endDate are the same (single date only)
       const startDateStr = new Date(leaveData.startDate).toDateString();
       const endDateStr = new Date(leaveData.endDate).toDateString();
-
+      
       if (startDateStr !== endDateStr) {
-        throw new Error('Half-day leaves must be on the same day (startDate = endDate)');
+        throw new Error('Restricted holiday must be for a single date (startDate must equal endDate)');
       }
 
-      if (!leaveData.halfDayType) {
-        throw new Error('halfDayType is required for half-day leaves');
+      // Validate that the date is an optional holiday in the calendar
+      const userIdObj = typeof leaveData.userId === 'string' 
+        ? new Types.ObjectId(leaveData.userId) 
+        : leaveData.userId;
+      
+      const validation = await this.validateOptionalHoliday(userIdObj, leaveData.startDate);
+      if (!validation.isValid) {
+        throw new Error(validation.error || 'The selected date is not an optional holiday in your calendar');
       }
 
-      // Set noOfDays to 0.5 for half-day leaves
-      leaveData.noOfDays = 0.5;
+      // Check annual limit
+      const year = new Date(leaveData.startDate).getFullYear();
+      const limitCheck = await this.checkRestrictedHolidayAnnualLimit(userIdObj, year);
+      if (!limitCheck.canRequest) {
+        throw new Error(`Annual limit reached. You have already used ${limitCheck.used} out of ${limitCheck.total} restricted holidays for ${year}`);
+      }
+
+      // Check for duplicate request - same date, any status except Rejected/Cancelled
+      const startOfDay = new Date(leaveData.startDate);
+      startOfDay.setUTCHours(0, 0, 0, 0);
+      const endOfDay = new Date(leaveData.startDate);
+      endOfDay.setUTCHours(23, 59, 59, 999);
+
+      const existingRequest = await Leave.findOne({
+        userId: userIdObj,
+        leaveType: 'restricted_holiday',
+        startDate: { $gte: startOfDay, $lte: endOfDay },
+        endDate: { $gte: startOfDay, $lte: endOfDay },
+        status: { $nin: ['Rejected', 'Cancelled'] },
+      });
+
+      if (existingRequest) {
+        throw new Error('You have already applied for this restricted holiday');
+      }
+
+      // Set noOfDays to 1 for restricted holiday (single day)
+      leaveData.noOfDays = 1;
+      // Ensure it's full-day (not half-day)
+      leaveData.leaveDuration = 'full-day';
+      leaveData.halfDayType = undefined;
+      
+      // Skip weekend/holiday exclusion for restricted holidays
+      // They are treated as regular working days that can be taken off
+      console.log(`✅ [Restricted Holiday] Validated optional holiday: ${validation.holidayName} on ${leaveData.startDate.toISOString().split('T')[0]}`);
     } else {
-      // Default to full-day if not specified
-      leaveData.leaveDuration = leaveData.leaveDuration || 'full-day';
-      // Clear halfDayType for full-day leaves
-      if (leaveData.leaveDuration === 'full-day') {
-        leaveData.halfDayType = undefined;
+      // VALIDATION: Check that startDate and endDate are in the same year
+      // Leave cannot span across multiple years - user must apply for separate leaves for each year
+      const startYear = new Date(leaveData.startDate).getFullYear();
+      const endYear = new Date(leaveData.endDate).getFullYear();
+      
+      if (startYear !== endYear) {
+        throw new Error(
+          `Leave cannot span across multiple years. ` +
+          `Start date (${startYear}) and end date (${endYear}) must be in the same year. ` +
+          `Please apply for separate leaves for each year.`
+        );
+      }
+
+      // India-specific: Validate half-day leave restrictions
+      if (leaveData.leaveDuration === 'half-day') {
+        if (user.country !== 'IN') {
+          throw new Error('Half-day leaves are only available for India employees');
+        }
+
+        // Validate half-day specific rules
+        const startDateStr = new Date(leaveData.startDate).toDateString();
+        const endDateStr = new Date(leaveData.endDate).toDateString();
+
+        if (startDateStr !== endDateStr) {
+          throw new Error('Half-day leaves must be on the same day (startDate = endDate)');
+        }
+
+        if (!leaveData.halfDayType) {
+          throw new Error('halfDayType is required for half-day leaves');
+        }
+
+        // Set noOfDays to 0.5 for half-day leaves
+        leaveData.noOfDays = 0.5;
+      } else {
+        // Default to full-day if not specified
+        leaveData.leaveDuration = leaveData.leaveDuration || 'full-day';
+        // Clear halfDayType for full-day leaves
+        if (leaveData.leaveDuration === 'full-day') {
+          leaveData.halfDayType = undefined;
+        }
       }
     }
 
@@ -659,114 +796,118 @@ export class LeaveService extends BaseService {
       }
     }
 
-    // Check for overlapping leaves (handle half-day leaves)
+    // Check for overlapping leaves (handle half-day leaves and restricted_holiday)
     // Exclude 'Rejected' and 'Cancelled' statuses - cancelled leaves can be re-applied
     // Note: Overlap check is based on calendar dates, not working days
-    const baseQuery: any = {
-      userId: leaveData.userId,
-      status: { $nin: ['Rejected', 'Cancelled'] },
-    };
-
-    if (leaveData.leaveDuration === 'half-day') {
-      // For half-day leaves:
-      // 1. Check if same halfDayType exists on same date
-      // 2. Check if full-day leave exists on same date
-      const leaveDate = new Date(leaveData.startDate);
-      const dayStart = new Date(leaveDate);
-      dayStart.setHours(0, 0, 0, 0);
-      const dayEnd = new Date(leaveDate);
-      dayEnd.setHours(23, 59, 59, 999);
-
-      // Check 1: Same halfDayType on same date
-      const sameHalfDayQuery = {
-        ...baseQuery,
-        $and: [
-          {
-            startDate: { $gte: dayStart, $lte: dayEnd }
-          },
-          {
-            endDate: { $gte: dayStart, $lte: dayEnd }
-          },
-          {
-            halfDayType: leaveData.halfDayType
-          },
-          {
-            leaveDuration: 'half-day'
-          }
-        ]
+    // Skip overlap check for restricted_holiday as it's already validated above
+    if (leaveData.leaveType !== 'restricted_holiday') {
+      const baseQuery: any = {
+        userId: leaveData.userId,
+        status: { $nin: ['Rejected', 'Cancelled'] },
       };
 
-      // Check 2: Full-day leave on same date
-      // Check if any full-day leave (or leave without leaveDuration field) overlaps with the half-day date
-      const fullDayQuery = {
-        ...baseQuery,
-        startDate: { $lte: dayEnd },
-        endDate: { $gte: dayStart },
-        $or: [
-          { leaveDuration: { $ne: 'half-day' } },
-          { leaveDuration: { $exists: false } } // Old leaves without leaveDuration field are treated as full-day
-        ]
-      };
+      if (leaveData.leaveDuration === 'half-day') {
+        // For half-day leaves:
+        // 1. Check if same halfDayType exists on same date
+        // 2. Check if full-day leave exists on same date
+        const leaveDate = new Date(leaveData.startDate);
+        const dayStart = new Date(leaveDate);
+        dayStart.setHours(0, 0, 0, 0);
+        const dayEnd = new Date(leaveDate);
+        dayEnd.setHours(23, 59, 59, 999);
 
-      const sameHalfDayLeave = await Leave.findOne(sameHalfDayQuery);
-      const fullDayLeave = await Leave.findOne(fullDayQuery);
+        // Check 1: Same halfDayType on same date
+        const sameHalfDayQuery = {
+          ...baseQuery,
+          $and: [
+            {
+              startDate: { $gte: dayStart, $lte: dayEnd }
+            },
+            {
+              endDate: { $gte: dayStart, $lte: dayEnd }
+            },
+            {
+              halfDayType: leaveData.halfDayType
+            },
+            {
+              leaveDuration: 'half-day'
+            }
+          ]
+        };
 
-      if (sameHalfDayLeave) {
-        const sessionName = leaveData.halfDayType === 'first-half' ? 'morning' : 'afternoon';
-        throw new Error(`A ${sessionName} half-day leave already exists for this date`);
-      }
+        // Check 2: Full-day leave on same date
+        // Check if any full-day leave (or leave without leaveDuration field) overlaps with the half-day date
+        const fullDayQuery = {
+          ...baseQuery,
+          startDate: { $lte: dayEnd },
+          endDate: { $gte: dayStart },
+          $or: [
+            { leaveDuration: { $ne: 'half-day' } },
+            { leaveDuration: { $exists: false } } // Old leaves without leaveDuration field are treated as full-day
+          ]
+        };
 
-      if (fullDayLeave) {
-        throw new Error('A full-day leave already exists for this date. Cannot apply half-day leave.');
-      }
-    } else {
-      // For full-day leaves:
-      // 1. Check if any full-day leave overlaps with date range (calendar dates)
-      // 2. Check if any half-day leave exists on any date in the range (calendar dates)
-      const startDate = new Date(leaveData.startDate);
-      const endDate = new Date(leaveData.endDate);
+        const sameHalfDayLeave = await Leave.findOne(sameHalfDayQuery);
+        const fullDayLeave = await Leave.findOne(fullDayQuery);
 
-      // Check 1: Full-day leave overlap (based on calendar dates)
-      // Check if any full-day leave (or leave without leaveDuration field) overlaps with the date range
-      const fullDayOverlapQuery = {
-        ...baseQuery,
-        startDate: { $lte: endDate },
-        endDate: { $gte: startDate },
-        $or: [
-          { leaveDuration: { $ne: 'half-day' } },
-          { leaveDuration: { $exists: false } } // Old leaves without leaveDuration field are treated as full-day
-        ]
-      };
+        if (sameHalfDayLeave) {
+          const sessionName = leaveData.halfDayType === 'first-half' ? 'morning' : 'afternoon';
+          throw new Error(`A ${sessionName} half-day leave already exists for this date`);
+        }
 
-      // Check 2: Any half-day leave in the date range (based on calendar dates)
-      // For each day in the range, check if any half-day exists
-      const halfDayOverlapQuery = {
-        ...baseQuery,
-        leaveDuration: 'half-day',
-        $and: [
-          {
-            startDate: { $lte: endDate }
-          },
-          {
-            endDate: { $gte: startDate }
-          }
-        ]
-      };
+        if (fullDayLeave) {
+          throw new Error('A full-day leave already exists for this date. Cannot apply half-day leave.');
+        }
+      } else {
+        // For full-day leaves:
+        // 1. Check if any full-day leave overlaps with date range (calendar dates)
+        // 2. Check if any half-day leave exists on any date in the range (calendar dates)
+        const startDate = new Date(leaveData.startDate);
+        const endDate = new Date(leaveData.endDate);
 
-      const fullDayOverlap = await Leave.findOne(fullDayOverlapQuery);
-      const halfDayOverlap = await Leave.findOne(halfDayOverlapQuery);
+        // Check 1: Full-day leave overlap (based on calendar dates)
+        // Check if any full-day leave (or leave without leaveDuration field) overlaps with the date range
+        const fullDayOverlapQuery = {
+          ...baseQuery,
+          startDate: { $lte: endDate },
+          endDate: { $gte: startDate },
+          $or: [
+            { leaveDuration: { $ne: 'half-day' } },
+            { leaveDuration: { $exists: false } } // Old leaves without leaveDuration field are treated as full-day
+          ]
+        };
 
-      if (fullDayOverlap) {
-        throw new Error('Leave dates overlap with existing full-day leave request');
-      }
+        // Check 2: Any half-day leave in the date range (based on calendar dates)
+        // For each day in the range, check if any half-day exists
+        const halfDayOverlapQuery = {
+          ...baseQuery,
+          leaveDuration: 'half-day',
+          $and: [
+            {
+              startDate: { $lte: endDate }
+            },
+            {
+              endDate: { $gte: startDate }
+            }
+          ]
+        };
 
-      if (halfDayOverlap) {
-        throw new Error('A half-day leave already exists in the selected date range. Cannot apply full-day leave.');
+        const fullDayOverlap = await Leave.findOne(fullDayOverlapQuery);
+        const halfDayOverlap = await Leave.findOne(halfDayOverlapQuery);
+
+        if (fullDayOverlap) {
+          throw new Error('Leave dates overlap with existing full-day leave request');
+        }
+
+        if (halfDayOverlap) {
+          throw new Error('A half-day leave already exists in the selected date range. Cannot apply full-day leave.');
+        }
       }
     }
 
     // Calculate noOfDays excluding weekends and mandatory holidays for full-day leaves
-    if (leaveData.leaveDuration !== 'half-day') {
+    // Skip calculation for restricted_holiday (already set to 1) and half-day leaves (already set to 0.5)
+    if (leaveData.leaveType !== 'restricted_holiday' && leaveData.leaveDuration !== 'half-day') {
       const userIdObj = typeof leaveData.userId === 'string' 
         ? new Types.ObjectId(leaveData.userId) 
         : leaveData.userId;
@@ -854,6 +995,11 @@ export class LeaveService extends BaseService {
     const appUrl = process.env.APP_URL || 'http://localhost:5173';
     console.log(manager, "manager")
 
+    // For restricted_holiday, use "holiday" terminology instead of "leave"
+    const isRestrictedHoliday = leave.leaveType === 'restricted_holiday';
+    const requestType = isRestrictedHoliday ? 'holiday' : 'leave';
+    const requestTypeCapitalized = isRestrictedHoliday ? 'Holiday' : 'Leave';
+
     const htmlContent = generateEmailTemplate('leaveApplyEmail', {
       managerName: manager.name,
       employeeName: applier.name,
@@ -869,8 +1015,8 @@ export class LeaveService extends BaseService {
     await emailService.sendEmail({
       body: {
         to: manager.email,
-        subject: `Leave Request from ${applier.name}`,
-        text: `${applier.name} has requested leave from ${leave.startDate.toDateString()} to ${leave.endDate.toDateString()} for ${leave.leaveType}.`,
+        subject: `${requestTypeCapitalized} Request from ${applier.name}`,
+        text: `${applier.name} has requested ${requestType} from ${leave.startDate.toDateString()} to ${leave.endDate.toDateString()} for ${leave.leaveType}.`,
         html: htmlContent,
       }
     });
@@ -902,13 +1048,18 @@ export class LeaveService extends BaseService {
             day: 'numeric'
           });
 
+          // For restricted_holiday, use "holiday" terminology instead of "leave"
+          const isRestrictedHoliday = leave.leaveType === 'restricted_holiday';
+          const requestType = isRestrictedHoliday ? 'holiday' : 'leave';
+          const requestTypeCapitalized = isRestrictedHoliday ? 'Holiday' : 'Leave';
+
           const adminEmailText = `Dear Admin,
 
-A leave request has been submitted by ${applier.name}.
+A ${requestType} request has been submitted by ${applier.name}.
 
 Request Details:
 - Employee: ${applier.name} (${applier.email || 'N/A'})
-- Leave Type: ${leave.leaveType}
+- ${requestTypeCapitalized} Type: ${leave.leaveType}
 - From Date: ${fromDateFormatted}
 - To Date: ${toDateFormatted}
 - Total Days: ${leave.noOfDays}
@@ -924,7 +1075,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
           await emailService.sendEmail({
             body: {
               to: adminEmails,
-              subject: `Leave Request Submitted - ${applier.name}`,
+              subject: `${requestTypeCapitalized} Request Submitted - ${applier.name}`,
               text: adminEmailText,
               html: adminEmailText.replace(/\n/g, '<br>'),
             }
@@ -1005,6 +1156,11 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
           day: 'numeric'
         });
 
+        // For restricted_holiday, use "holiday" terminology instead of "leave"
+        const isRestrictedHoliday = leave.leaveType === 'restricted_holiday';
+        const requestType = isRestrictedHoliday ? 'holiday' : 'leave';
+        const requestTypeCapitalized = isRestrictedHoliday ? 'Holiday' : 'Leave';
+
         const htmlContent = generateEmailTemplate('leaveApprovalEmail', {
           employeeName: employee.name,
           approverName: approver?.name || 'Manager',
@@ -1019,10 +1175,10 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
 
         const emailText = `Dear ${employee.name},
 
-Your leave request has been ${leave.status.toLowerCase()} by ${approver?.name || 'Manager'}.
+Your ${requestType} request has been ${leave.status.toLowerCase()} by ${approver?.name || 'Manager'}.
 
-Leave Details:
-- Leave Type: ${leave.leaveType}
+${requestTypeCapitalized} Details:
+- ${requestTypeCapitalized} Type: ${leave.leaveType}
 - From Date: ${fromDateFormatted}
 - To Date: ${toDateFormatted}
 - Total Days: ${leave.noOfDays}
@@ -1030,8 +1186,8 @@ Leave Details:
 ${leave.remarks ? `- Remarks: ${leave.remarks}` : ''}
 
 ${leave.status === 'Approved' 
-  ? 'Your leave request has been approved. Please ensure you have completed all pending work before your leave period.'
-  : 'Unfortunately, your leave request has been rejected. If you have any questions, please contact your manager.'}
+  ? `Your ${requestType} request has been approved. ${isRestrictedHoliday ? 'Enjoy your holiday!' : 'Please ensure you have completed all pending work before your leave period.'}`
+  : `Unfortunately, your ${requestType} request has been rejected. If you have any questions, please contact your manager.`}
 
 Thank you for your understanding.
 
@@ -1042,7 +1198,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
         await emailService.sendEmail({
           body: {
             to: employee.email,
-            subject: `Your Leave Request has been ${leave.status}`,
+            subject: `Your ${requestTypeCapitalized} Request has been ${leave.status}`,
             text: emailText,
             html: htmlContent,
           }
@@ -1087,13 +1243,18 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
         const adminEmails = admins.map(admin => admin.email).filter(Boolean);
         
         if (adminEmails.length > 0) {
+          // For restricted_holiday, use "holiday" terminology instead of "leave"
+          const isRestrictedHoliday = leave.leaveType === 'restricted_holiday';
+          const requestType = isRestrictedHoliday ? 'holiday' : 'leave';
+          const requestTypeCapitalized = isRestrictedHoliday ? 'Holiday' : 'Leave';
+
           const adminEmailText = `Dear Admin,
 
-A leave request has been ${leave.status.toLowerCase()} by ${approver?.name || 'Manager'}.
+A ${requestType} request has been ${leave.status.toLowerCase()} by ${approver?.name || 'Manager'}.
 
 Request Details:
 - Employee: ${employee?.name || 'N/A'} (${employee?.email || 'N/A'})
-- Leave Type: ${leave.leaveType}
+- ${requestTypeCapitalized} Type: ${leave.leaveType}
 - From Date: ${fromDateFormatted}
 - To Date: ${toDateFormatted}
 - Total Days: ${leave.noOfDays}
@@ -1110,7 +1271,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
           await emailService.sendEmail({
             body: {
               to: adminEmails,
-              subject: `Leave Request ${leave.status} - ${employee?.name || 'Employee'}`,
+              subject: `${requestTypeCapitalized} Request ${leave.status} - ${employee?.name || 'Employee'}`,
               text: adminEmailText,
               html: adminEmailText.replace(/\n/g, '<br>'),
             }
@@ -1179,7 +1340,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
           {
             $set: {
               // status: 'present',
-              attendanceStatus: "Absent",
+              attendanceStatus: ["Absent"],
               updatedAt: new Date(),
               updatedBy: updateData.rejectedById || updateData.approvedById,
             },

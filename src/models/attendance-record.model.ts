@@ -355,22 +355,33 @@ attendanceRecordSchema.pre('save', function (next) {
   next();
 });
 
-// Pre-save hook to calculate excessHours and shortTime
+// Pre-save hook to sort swipes and set status based on swipe count
 attendanceRecordSchema.pre('save', function (next) {
+  // Only update status if swipes are modified and status is not a special status
   if (!this.isModified('swipes')) {
+    return next();
+  }
+
+  // Preserve special statuses (holiday_swipe, leave_swipe, overridden, regularized, pending_regularization)
+  const specialStatuses = ['holiday_swipe', 'leave_swipe', 'overridden', 'regularized', 'pending_regularization'];
+  if (this.status && specialStatuses.includes(this.status)) {
     return next();
   }
 
   // Sort swipes by timestamp
   this.swipes.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
 
-  // Update status
-  if (this.swipes.length === 2) {
-    this.status = 'complete';
-  } else if (this.swipes.length > 2) {
-    this.status = 'duplicate_swipes';
+  // Simple status logic based on swipe count
+  // Filter swipes with valid direction
+  const validSwipes = this.swipes.filter(s => s.direction === 'IN' || s.direction === 'OUT');
+
+  // Set status based on count
+  if (validSwipes.length < 2) {
+    this.status = 'incomplete';  // First swipe only
+  } else if (validSwipes.length === 2) {
+    this.status = 'complete';    // Exactly 2 swipes (IN and OUT)
   } else {
-    this.status = 'missing_checkout';
+    this.status = 'duplicate_swipes';  // 3 or more swipes
   }
 
   next();

@@ -153,10 +153,76 @@ export class BiometricAttendanceService extends BaseService {
     }
   }
 
-  private async getCurrentShiftAssignment(userId: Types.ObjectId, timestamp: Date) {
+  /**
+   * Get timezone offset in hours and minutes based on user's country
+   * @param country - User's country code ('IN' | 'AE')
+   * @returns Object with hours and minutes offset
+   */
+  private getTimezoneOffset(country?: string): { hours: number; minutes: number } {
+    // Normalize country code to uppercase
+    const normalizedCountry = country?.toUpperCase() || 'IN';
+
+    switch (normalizedCountry) {
+      case 'IN': return { hours: 5, minutes: 30 }; // IST (UTC+5:30)
+      case 'AE': return { hours: 4, minutes: 0 };  // UAE (UTC+4:00)
+      default:
+        console.warn(`⚠️ Unknown country code "${country}", defaulting to IST (UTC+5:30)`);
+        return { hours: 5, minutes: 30 };   // Default to IST for backward compatibility
+    }
+  }
+
+  /**
+   * Convert a date string (YYYY-MM-DD) to shiftDay format (OLD BEHAVIOR - UTC date)
+   * When frontend sends a date like "2025-12-15", treat it as UTC date
+   * 
+   * @param date - Date object or date string (e.g., "2025-12-15")
+   * @param country - User's country code (not used in old behavior, kept for compatibility)
+   * @returns Date object in shiftDay format (UTC midnight)
+   * 
+   * Example:
+   * - Input: "2025-12-15"
+   * - Returns: 2025-12-15T00:00:00.000Z (UTC midnight)
+   */
+  private convertDateStringToShiftDay(date: Date | string, _country?: string): Date {
+    const dateObj = typeof date === 'string' ? new Date(date) : date;
+
+    // OLD BEHAVIOR: Treat date as UTC date, normalize to UTC midnight
+    const shiftDay = new Date(dateObj);
+    shiftDay.setUTCHours(0, 0, 0, 0);
+
+    console.log(`📅 convertDateStringToShiftDay (OLD BEHAVIOR - UTC date):`);
+    console.log(`  Input date: ${dateObj.toISOString()}`);
+    console.log(`  Shift day (UTC date): ${shiftDay.toISOString()}`);
+
+    return shiftDay;
+  }
+
+  /**
+   * Get shift day from UTC timestamp (OLD BEHAVIOR - stores UTC date)
+   * @param timestamp - UTC timestamp
+   * @param country - User's country code (not used in old behavior, kept for compatibility)
+   * @returns Date object set to start of UTC day
+   * 
+   * Example:
+   * - UTC timestamp: 2025-12-14T22:37:26.910Z (10:37 PM UTC on Dec 14)
+   * - Returns: 2025-12-14T00:00:00.000Z (midnight UTC of Dec 14 - UTC date)
+   */
+  private getLocalShiftDay(timestamp: Date, _country?: string): Date {
+    // OLD BEHAVIOR: Store UTC date, not local date
     const shiftDay = new Date(timestamp);
     shiftDay.setUTCHours(0, 0, 0, 0);
-    console.log("userId", userId, shiftDay, "shiftDay")
+
+    console.log(`🕐 getLocalShiftDay (OLD BEHAVIOR - UTC date):`);
+    console.log(`  UTC timestamp: ${timestamp.toISOString()}`);
+    console.log(`  Shift day (UTC date stored): ${shiftDay.toISOString()}`);
+
+    return shiftDay;
+  }
+
+  private async getCurrentShiftAssignment(userId: Types.ObjectId, timestamp: Date, userCountry?: string) {
+    // Get shiftDay (OLD BEHAVIOR - UTC date)
+    const shiftDay = this.getLocalShiftDay(timestamp, userCountry);
+    console.log("userId", userId, shiftDay, "shiftDay (UTC date)")
     // Find active shift assignment for the user
     const shiftAssignment = await ShiftAssignment.findOne({
       userId,
@@ -174,7 +240,14 @@ export class BiometricAttendanceService extends BaseService {
     return shiftAssignment;
   }
 
-  private getShiftTimings(shift: IShift & Document, shiftDay: Date): IShiftWindow {
+  private getShiftTimings(shift: IShift & Document, shiftDay: Date, country?: string): IShiftWindow {
+    // IMPORTANT: Create a copy of shiftDay to avoid mutating the original
+    // The original shiftDay must remain unchanged (it's stored as UTC date)
+    const baseShiftDay = new Date(shiftDay);
+
+    // Get timezone offset for the user's country
+    const timezoneOffset = this.getTimezoneOffset(country);
+
     const parseTime = (timeStr: string): { hours: number; minutes: number } => {
       const [hours, minutes] = timeStr.split(':').map(Number);
       if (isNaN(hours) || isNaN(minutes)) {
@@ -183,9 +256,13 @@ export class BiometricAttendanceService extends BaseService {
       return { hours, minutes };
     };
 
-    const convertISTtoUTC = (istHours: number, istMinutes: number): { hours: number; minutes: number } => {
-      let utcHours = istHours - 5;
-      let utcMinutes = istMinutes - 30;
+    // Convert local time to UTC based on user's timezone
+    // Shift times in database are stored as local time (e.g., "09:00" means 9 AM in user's timezone)
+    const convertLocalToUTC = (localHours: number, localMinutes: number): { hours: number; minutes: number; dateAdjustment: number } => {
+      // Subtract timezone offset to convert local time to UTC
+      let utcHours = localHours - timezoneOffset.hours;
+      let utcMinutes = localMinutes - timezoneOffset.minutes;
+      let dateAdjustment = 0;
 
       if (utcMinutes < 0) {
         utcMinutes += 60;
@@ -194,32 +271,47 @@ export class BiometricAttendanceService extends BaseService {
 
       if (utcHours < 0) {
         utcHours += 24;
-        shiftDay.setUTCDate(shiftDay.getUTCDate() - 1);
+        dateAdjustment = -1; // Indicates the date needs to be adjusted by -1 day
       }
 
-      return { hours: utcHours, minutes: utcMinutes };
+      return { hours: utcHours, minutes: utcMinutes, dateAdjustment };
     };
 
-    const startIST = parseTime(shift.startTime);
-    const endIST = parseTime(shift.endTime);
-    const windowStartIST = parseTime(shift.shiftWindowStart);
-    const windowEndIST = parseTime(shift.shiftWindowEnd);
+    // Parse shift times (stored as local time strings like "09:00", "18:00")
+    const startLocal = parseTime(shift.startTime);
+    const endLocal = parseTime(shift.endTime);
+    const windowStartLocal = parseTime(shift.shiftWindowStart);
+    const windowEndLocal = parseTime(shift.shiftWindowEnd);
 
-    const startUTC = convertISTtoUTC(startIST.hours, startIST.minutes);
-    const endUTC = convertISTtoUTC(endIST.hours, endIST.minutes);
-    const windowStartUTC = convertISTtoUTC(windowStartIST.hours, windowStartIST.minutes);
-    const windowEndUTC = convertISTtoUTC(windowEndIST.hours, windowEndIST.minutes);
+    // Convert local times to UTC based on user's timezone
+    const startUTC = convertLocalToUTC(startLocal.hours, startLocal.minutes);
+    const endUTC = convertLocalToUTC(endLocal.hours, endLocal.minutes);
+    const windowStartUTC = convertLocalToUTC(windowStartLocal.hours, windowStartLocal.minutes);
+    const windowEndUTC = convertLocalToUTC(windowEndLocal.hours, windowEndLocal.minutes);
 
-    const shiftStart = new Date(shiftDay);
+    // Create dates with proper date adjustments - use baseShiftDay (copy) not shiftDay (original)
+    const shiftStart = new Date(baseShiftDay);
+    if (startUTC.dateAdjustment !== 0) {
+      shiftStart.setUTCDate(shiftStart.getUTCDate() + startUTC.dateAdjustment);
+    }
     shiftStart.setUTCHours(startUTC.hours, startUTC.minutes, 0, 0);
 
-    const shiftEnd = new Date(shiftDay);
+    const shiftEnd = new Date(baseShiftDay);
+    if (endUTC.dateAdjustment !== 0) {
+      shiftEnd.setUTCDate(shiftEnd.getUTCDate() + endUTC.dateAdjustment);
+    }
     shiftEnd.setUTCHours(endUTC.hours, endUTC.minutes, 0, 0);
 
-    const windowStart = new Date(shiftDay);
+    const windowStart = new Date(baseShiftDay);
+    if (windowStartUTC.dateAdjustment !== 0) {
+      windowStart.setUTCDate(windowStart.getUTCDate() + windowStartUTC.dateAdjustment);
+    }
     windowStart.setUTCHours(windowStartUTC.hours, windowStartUTC.minutes, 0, 0);
 
-    const windowEnd = new Date(shiftDay);
+    const windowEnd = new Date(baseShiftDay);
+    if (windowEndUTC.dateAdjustment !== 0) {
+      windowEnd.setUTCDate(windowEnd.getUTCDate() + windowEndUTC.dateAdjustment);
+    }
     windowEnd.setUTCHours(windowEndUTC.hours, windowEndUTC.minutes, 0, 0);
 
     if (endUTC.hours < startUTC.hours ||
@@ -497,6 +589,102 @@ export class BiometricAttendanceService extends BaseService {
       record.attendanceStatus.push('Early-Exit');
     }
 
+    // Always mark as Present if not already present (user has swiped in and out)
+    if (!record.attendanceStatus.includes('Present')) {
+      record.attendanceStatus.push('Present');
+    }
+
+    // Update regularization flag
+    record.needsRegularization =
+      record.isLateEntry ||
+      record.isEarlyExit ||
+      metrics.hasShortfall ||
+      !record.isWithinWindow;
+    console.log(record, "2nd swipe record")
+    await record.save();
+  }
+
+  private async processMultipleSwipes(
+    record: IAttendanceRecord & Document,
+    timestamp: Date,
+    direction: 'IN' | 'OUT',
+    shiftWindow: IShiftWindow,
+    locationData?: {
+      latitude: number;
+      longitude: number;
+      accuracy: number;
+      altitude: number;
+      address: string;
+    }
+  ): Promise<void> {
+    console.log('🔄 PROCESS MULTIPLE SWIPES CALLED');
+    console.log('📍 Current swipes count:', record.swipes.length);
+    console.log('📍 New swipe direction:', direction);
+
+    // Create the new swipe
+    const newSwipe = {
+      timestamp,
+      direction,
+      deviceId: 'biometric',
+      location: locationData || {
+        latitude: 0,
+        longitude: 0,
+        accuracy: 0,
+        altitude: 0,
+        address: 'unknown'
+      }
+    };
+
+    // Add swipe to record
+    record.swipes.push(newSwipe);
+
+    // Update firstIn and lastOut based on all swipes
+    const validSwipes = record.swipes.filter(s => s.direction === 'IN' || s.direction === 'OUT');
+    if (validSwipes.length > 0) {
+      const sortedSwipes = [...validSwipes].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+      const firstInSwipe = sortedSwipes.find(s => s.direction === 'IN');
+      const lastOutSwipe = [...sortedSwipes].reverse().find(s => s.direction === 'OUT');
+
+      if (firstInSwipe) {
+        record.firstIn = firstInSwipe.timestamp;
+        record.isLateEntry = firstInSwipe.timestamp > shiftWindow.shiftStart;
+      }
+
+      if (lastOutSwipe) {
+        record.lastOut = lastOutSwipe.timestamp;
+        record.isEarlyExit = lastOutSwipe.timestamp < shiftWindow.shiftEnd;
+      }
+    }
+
+    // Calculate metrics using multiple swipe logic
+    const metrics = await this.calculateMultipleSwipeMetrics(
+      record.swipes,
+      shiftWindow.shiftStart,
+      shiftWindow.shiftEnd
+    );
+
+    // Update all time-related fields
+    record.totalWorkHours = metrics.totalWorkHours;
+    record.breakHours = metrics.breakHours;
+    record.actualWorkHours = metrics.actualWorkHours;
+    record.shortfallHours = metrics.shortfallHours;
+    record.excessHours = metrics.excessHours;
+
+    // Update attendance status
+    if (record.isLateEntry && !record.attendanceStatus.includes('Late')) {
+      // Remove 'On-Time' if present and add 'Late'
+      record.attendanceStatus = record.attendanceStatus.filter(s => s !== 'On-Time');
+      if (!record.attendanceStatus.includes('Late')) {
+        record.attendanceStatus.push('Late');
+      }
+    }
+    if (record.isEarlyExit && !record.attendanceStatus.includes('Early-Exit')) {
+      record.attendanceStatus.push('Early-Exit');
+    }
+    if (!record.attendanceStatus.includes('Present')) {
+      record.attendanceStatus.push('Present');
+    }
+
     // Update regularization flag
     record.needsRegularization =
       record.isLateEntry ||
@@ -504,14 +692,7 @@ export class BiometricAttendanceService extends BaseService {
       metrics.hasShortfall ||
       !record.isWithinWindow;
 
-    const isPresent = record.isLateEntry ||
-      record.isEarlyExit ||
-      !record.isWithinWindow;
-    console.log(isPresent, "isPresent")
-    if (isPresent) {
-      record.attendanceStatus.push('Present');
-    }
-    console.log(record, "2nd swipe record")
+    console.log(record, "multiple swipes record")
     await record.save();
   }
 
@@ -601,16 +782,176 @@ export class BiometricAttendanceService extends BaseService {
     await record.save();
   }
 
+  /**
+   * Determines the direction (IN/OUT) for a new swipe based on existing swipes
+   */
+  private determineSwipeDirection(
+    existingSwipes: Array<{ timestamp: Date; direction?: 'IN' | 'OUT' }>
+  ): 'IN' | 'OUT' {
+    // Filter valid swipes with direction
+    const validSwipes = existingSwipes.filter(s => s.direction === 'IN' || s.direction === 'OUT');
+
+    if (validSwipes.length === 0) {
+      // First swipe must be IN
+      return 'IN';
+    }
+
+    // Get the last swipe
+    const lastSwipe = validSwipes[validSwipes.length - 1];
+
+    // Alternate: if last was IN, next should be OUT, and vice versa
+    return lastSwipe.direction === 'IN' ? 'OUT' : 'IN';
+  }
+
+  /**
+   * Validates a new swipe before adding it to the record
+   */
+  private validateSwipe(
+    currentSwipes: Array<{ timestamp: Date; direction?: 'IN' | 'OUT' }>,
+    newSwipe: { timestamp: Date; direction: 'IN' | 'OUT' }
+  ): { valid: boolean; reason?: string } {
+    // Filter valid swipes
+    const validSwipes = currentSwipes.filter(s => s.direction === 'IN' || s.direction === 'OUT');
+
+    // First swipe must be IN
+    if (validSwipes.length === 0 && newSwipe.direction !== 'IN') {
+      return { valid: false, reason: 'First swipe must be IN' };
+    }
+
+    // Check minimum time gap (1 minute) between swipes
+    if (validSwipes.length > 0) {
+      const lastSwipe = validSwipes[validSwipes.length - 1];
+      const timeDiff = Math.abs(newSwipe.timestamp.getTime() - lastSwipe.timestamp.getTime());
+      const minGapMinutes = 1;
+      if (timeDiff < minGapMinutes * 60 * 1000) {
+        return { valid: false, reason: `Minimum ${minGapMinutes} minute gap required between swipes` };
+      }
+    }
+
+    // Check if direction alternates correctly
+    if (validSwipes.length > 0) {
+      const lastSwipe = validSwipes[validSwipes.length - 1];
+      if (lastSwipe.direction === newSwipe.direction) {
+        return { valid: false, reason: 'Swipe direction must alternate (IN/OUT/IN/OUT)' };
+      }
+    }
+
+    // Check if swipe is within reasonable time (24 hours from now)
+    const now = new Date();
+    const timeDiff = Math.abs(newSwipe.timestamp.getTime() - now.getTime());
+    const maxHours = 24;
+    if (timeDiff > maxHours * 60 * 60 * 1000) {
+      return { valid: false, reason: `Swipe time must be within ${maxHours} hours of current time` };
+    }
+
+    return { valid: true };
+  }
+
+  /**
+   * Calculates work sessions from multiple swipes
+   */
+  private calculateWorkSessions(
+    swipes: Array<{ timestamp: Date; direction?: 'IN' | 'OUT' }>,
+    _shiftStart: Date, // Kept for API consistency
+    shiftEnd: Date
+  ): Array<{ sessionNumber: number; inTime: Date; outTime: Date; durationMinutes: number; isOvertime: boolean }> {
+    const sessions: Array<{ sessionNumber: number; inTime: Date; outTime: Date; durationMinutes: number; isOvertime: boolean }> = [];
+
+    // Filter and sort swipes
+    const validSwipes = swipes
+      .filter(s => s.direction === 'IN' || s.direction === 'OUT')
+      .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+
+    let i = 0;
+    while (i < validSwipes.length) {
+      const currentSwipe = validSwipes[i];
+      if (currentSwipe.direction === 'IN') {
+        const outSwipe = validSwipes[i + 1];
+        if (outSwipe && outSwipe.direction === 'OUT') {
+          const durationMs = outSwipe.timestamp.getTime() - currentSwipe.timestamp.getTime();
+          if (durationMs >= 0) {
+            sessions.push({
+              sessionNumber: sessions.length + 1,
+              inTime: currentSwipe.timestamp,
+              outTime: outSwipe.timestamp,
+              durationMinutes: durationMs / (1000 * 60),
+              isOvertime: outSwipe.timestamp > shiftEnd
+            });
+          }
+          i += 2;
+        } else {
+          i++;
+        }
+      } else {
+        i++;
+      }
+    }
+    return sessions;
+  }
+
+
+  /**
+   * Calculates attendance metrics for multiple swipes
+   */
+  private async calculateMultipleSwipeMetrics(
+    swipes: Array<{ timestamp: Date; direction?: 'IN' | 'OUT' }>,
+    shiftStart: Date,
+    shiftEnd: Date
+  ): Promise<IAttendanceMetrics> {
+    // 1. Calculate work sessions
+    const workSessions = this.calculateWorkSessions(swipes, shiftStart, shiftEnd);
+
+    // 2. Calculate total work minutes (sum of all sessions)
+    const totalWorkMinutes = workSessions.reduce(
+      (sum, session) => sum + session.durationMinutes,
+      0
+    );
+
+    // 3. Calculate break minutes based on total work hours (not from swipe gaps)
+    // Simple rule: 30 minutes break if total work > 6 hours, otherwise 0
+    const breakMinutes = totalWorkMinutes > 360 ? 30 : 0;
+
+    // 4. Actual work = total work minus break
+    const actualWorkMinutes = totalWorkMinutes - breakMinutes;
+
+    // 5. Calculate shift duration
+    const shiftMinutes = (shiftEnd.getTime() - shiftStart.getTime()) / (1000 * 60);
+
+    // 6. Calculate shortfall/excess
+    const difference = actualWorkMinutes - shiftMinutes;
+
+    return {
+      totalWorkHours: await this.formatDuration(totalWorkMinutes),
+      breakHours: await this.formatDuration(breakMinutes),
+      actualWorkHours: await this.formatDuration(actualWorkMinutes),
+      shiftHours: await this.formatDuration(shiftMinutes),
+      shortfallHours: difference < 0 ? await this.formatDuration(Math.abs(difference)) : '00:00:00',
+      excessHours: difference > 0 ? await this.formatDuration(difference) : '00:00:00',
+      hasShortfall: difference < 0,
+      hasExcessHours: difference > 0
+    };
+  }
 
   async processSwipe(swipeData: ISwipeData): Promise<ISwipeResponse> {
-    console.log('🔄 PROCESS SWIPE CALLED - Method 1');
-    console.log('📍 Full swipeData received:', JSON.stringify(swipeData, null, 2));
+    console.log('🔄 ========== PROCESS SWIPE CALLED ==========');
+    console.log('📍 Full swipeData received:');
+    console.log('  - biometricId:', swipeData.biometricId);
+    console.log('  - timestamp (Date object):', swipeData.timestamp);
+    console.log('  - timestamp (ISO string):', swipeData.timestamp.toISOString());
+    console.log('  - timestamp (UTC milliseconds):', swipeData.timestamp.getTime());
+    console.log('  - timestamp (local string):', swipeData.timestamp.toString());
+    console.log('  - location:', swipeData.location);
+    console.log('  - hasLocation:', swipeData.hasLocation);
+    console.log('  - locationValid:', swipeData.locationValid);
+    console.log('  - locationAddress:', swipeData.locationAddress);
 
     const { biometricId, timestamp, location, hasLocation, locationValid, locationAddress } = swipeData;
 
-    console.log('📍 Extracted values:');
+    console.log('📍 Extracted values from swipeData:');
     console.log('  - biometricId:', biometricId);
     console.log('  - timestamp:', timestamp);
+    console.log('  - timestamp type:', typeof timestamp);
+    console.log('  - timestamp instanceof Date:', timestamp instanceof Date);
     console.log('  - location:', location);
     console.log('  - hasLocation:', hasLocation);
     console.log('  - locationValid:', locationValid);
@@ -643,13 +984,20 @@ export class BiometricAttendanceService extends BaseService {
       // 1. Validate user and get shift assignment
       const user = await this.getUserByBiometricId(biometricId);
 
-      const shiftAssignment = await this.getCurrentShiftAssignment(user._id, timestamp);
+      // Ensure country is set (default to 'IN' if not present)
+      const userCountry = user.country || 'IN';
+      console.log(`📍 Swipe timestamp (UTC): ${timestamp.toISOString()}`);
+      console.log(`📍 User country: ${userCountry} (from user.country: ${user.country || 'undefined'})`);
+
+      // 2. Get shift day (OLD BEHAVIOR - UTC date)
+      const shiftDay = this.getLocalShiftDay(timestamp, userCountry);
+      console.log(`📍 Shift day (UTC date): ${shiftDay.toISOString()}`);
+
+      const shiftAssignment = await this.getCurrentShiftAssignment(user._id, timestamp, user.country);
       const shift = shiftAssignment.shiftId;
 
-      // 2. Get shift window timings
-      const shiftDay = new Date(timestamp);
-      shiftDay.setUTCHours(0, 0, 0, 0);
-      const shiftWindow = this.getShiftTimings(shift, shiftDay);
+      // 3. Get shift window timings (using user's timezone)
+      const shiftWindow = this.getShiftTimings(shift, shiftDay, userCountry);
       console.log(user.name, "username", shiftAssignment, "shiftAssignment")
       // 3. Get or create attendance record
       const record = await this.findOrCreateAttendanceRecord(
@@ -663,9 +1011,11 @@ export class BiometricAttendanceService extends BaseService {
       console.log(record, "record")
       // If it's a holiday, handle it differently
       if (record.status === 'holiday_swipe') {
+        // Use determineSwipeDirection for consistency
+        const direction = this.determineSwipeDirection(record.swipes);
         const swipe = {
           timestamp,
-          direction: record.swipes.length === 0 ? 'IN' : 'OUT',
+          direction,
           deviceId: 'biometric',
           location: locationData || {
             latitude: 0,
@@ -681,10 +1031,18 @@ export class BiometricAttendanceService extends BaseService {
           deviceId: swipe.deviceId || 'biometric',
           location: swipe.location
         });
-        if (record.swipes.length === 1) {
-          record.firstIn = timestamp;
-        } else {
-          record.lastOut = timestamp;
+        // Update firstIn and lastOut based on all swipes
+        const validSwipes = record.swipes.filter(s => s.direction === 'IN' || s.direction === 'OUT');
+        if (validSwipes.length > 0) {
+          const sortedSwipes = [...validSwipes].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+          const firstInSwipe = sortedSwipes.find(s => s.direction === 'IN');
+          const lastOutSwipe = [...sortedSwipes].reverse().find(s => s.direction === 'OUT');
+          if (firstInSwipe) {
+            record.firstIn = firstInSwipe.timestamp;
+          }
+          if (lastOutSwipe) {
+            record.lastOut = lastOutSwipe.timestamp;
+          }
         }
         await record.save();
         return {
@@ -706,15 +1064,20 @@ export class BiometricAttendanceService extends BaseService {
       // 4. Validate shift window
       const windowValidation = await this.validateAndUpdateWindowStatus(record, timestamp, shiftWindow);
       console.log(windowValidation, "windowValidation")
-      // 5. Record swipe (IN or OUT) regardless of window validation
-      const direction = record.swipes.length === 0 ? 'IN' : 'OUT';
-      if (record.swipes.length >= 2) {
+
+      // 5. Determine swipe direction based on existing swipes
+      const direction = this.determineSwipeDirection(record.swipes);
+
+      // 6. Validate the new swipe
+      const swipeValidation = this.validateSwipe(record.swipes, { timestamp, direction });
+      if (!swipeValidation.valid) {
         return {
           success: false,
-          message: 'Maximum swipes limit (2) reached for today'
+          message: swipeValidation.reason || 'Invalid swipe'
         };
       }
 
+      // 7. Handle out-of-window swipes
       if (!windowValidation.isValid) {
         await this.processOutOfWindowSwipe(
           record,
@@ -725,10 +1088,16 @@ export class BiometricAttendanceService extends BaseService {
         );
       }
 
+      // 8. Process swipe based on count
       if (record.swipes.length === 0) {
+        // First swipe
         await this.processFirstSwipe(record, timestamp, shiftWindow, locationData);
-      } else {
+      } else if (record.swipes.length === 1) {
+        // Second swipe - use existing method
         await this.processSecondSwipe(record, timestamp, shiftWindow, locationData);
+      } else {
+        // Third or more swipes - use multiple swipe handler
+        await this.processMultipleSwipes(record, timestamp, direction, shiftWindow, locationData);
       }
 
       // 6. Return success response with out-of-window indication if applicable
@@ -776,8 +1145,15 @@ export class BiometricAttendanceService extends BaseService {
 
 
   async getAttendanceStatus(userId: string | Types.ObjectId, date: Date) {
-    const shiftDay = new Date(date);
-    shiftDay.setUTCHours(0, 0, 0, 0); // Normalize to start of UTC day
+    // Get user to determine timezone
+    const user = await User.findById(typeof userId === 'string' ? userId : userId.toString()).lean();
+    if (!user) {
+      throw new Error('User not found');
+    }
+    const userCountry = (user as any).country || 'IN';
+
+    // Convert the date parameter to shiftDay (OLD BEHAVIOR - UTC date)
+    const shiftDay = this.convertDateStringToShiftDay(date, userCountry);
 
     // Call the shiftServiceAssignment to get shift assignment details
 
@@ -810,17 +1186,21 @@ export class BiometricAttendanceService extends BaseService {
     const { startDate, endDate, userIds, page = 1, limit = 10 } = query;
     const skip = (page - 1) * limit;
 
-    // Normalize dates to UTC day boundaries
+    // Normalize dates to UTC day boundaries (OLD BEHAVIOR - UTC date)
+    // When frontend sends date strings like "2025-12-13", treat them as UTC dates
     const utcStartDate = new Date(startDate);
     utcStartDate.setUTCHours(0, 0, 0, 0);
 
+    // For end date, we want to include the entire day, so we set it to the start of the next day
+    // This ensures we match shiftDay values like 2025-12-15T00:00:00.000Z
     const utcEndDate = new Date(endDate);
-    utcEndDate.setUTCHours(23, 59, 59, 999);
+    utcEndDate.setUTCHours(0, 0, 0, 0);
+    utcEndDate.setUTCDate(utcEndDate.getUTCDate() + 1); // Next day at midnight (exclusive)
 
     const baseQuery: any = {
       shiftDay: {
         $gte: utcStartDate,
-        $lte: utcEndDate
+        $lt: utcEndDate  // Use $lt (less than) since utcEndDate is next day at midnight
       }
     };
 
@@ -940,11 +1320,17 @@ export class BiometricAttendanceService extends BaseService {
   async getAttendanceAndShiftRecords(userId: string, dates: string[]): Promise<any> {
     try {
       console.log(userId, dates, "1 getAttendanceAndShiftRecords")
-      // Convert dates to UTC start of the day
+
+      // Get user to determine timezone
+      const user = await User.findById(userId).lean();
+      if (!user) {
+        throw new Error('User not found');
+      }
+      const userCountry = (user as any).country || 'IN';
+
+      // Convert dates to shiftDay format (OLD BEHAVIOR - UTC date)
       const shiftDays = dates.map(date => {
-        const shiftDay = new Date(date);
-        shiftDay.setUTCHours(0, 0, 0, 0);
-        return shiftDay;
+        return this.convertDateStringToShiftDay(date, userCountry);
       });
       console.log(shiftDays, "2 getAttendanceAndShiftRecords shiftDays")
       // Fetch attendance records for the given user and dates
@@ -1050,6 +1436,10 @@ export class BiometricAttendanceService extends BaseService {
           const shiftType = i % 2 === 0 ? 'GEN' : 'GEN';
           const shift = shifts[shiftType];
 
+          // Normalize shiftDay to UTC midnight (OLD BEHAVIOR - UTC date)
+          const shiftDay = new Date(currentDate);
+          shiftDay.setUTCHours(0, 0, 0, 0);
+
           // Shift start & end
           const shiftStart = new Date(currentDate);
           shiftStart.setHours(shift.startHour, 0, 0, 0);
@@ -1080,7 +1470,7 @@ export class BiometricAttendanceService extends BaseService {
             userId: userObjectId,
             shiftId: shift.shiftId,
             shiftCode: shift.shiftCode,
-            shiftDay: currentDate,
+            shiftDay: shiftDay, // UTC date normalized
             shiftStart,
             shiftEnd,
             swipes: [
@@ -1201,18 +1591,18 @@ export class BiometricAttendanceService extends BaseService {
 
       // Calculate all weeks that fall within this month (including overlapping weeks)
       const weeks: Array<{ weekNumber: number; startDate: Date; endDate: Date }> = [];
-      
+
       // Start from the first Monday before or on the first day of month
       const firstDay = new Date(firstDayOfMonth);
       const firstDayOfWeek = firstDay.getUTCDay(); // 0 = Sunday, 1 = Monday, etc.
-      
+
       // Calculate the start of the week (Monday = 1, so we need to go back)
       // ISO week starts on Monday (1), but JavaScript Sunday is 0
       let daysToSubtract = firstDayOfWeek === 0 ? 6 : firstDayOfWeek - 1; // Convert to Monday-based
       const weekStart = new Date(firstDay);
       weekStart.setUTCDate(firstDay.getUTCDate() - daysToSubtract);
       weekStart.setUTCHours(0, 0, 0, 0);
-      
+
       // Calculate week number for the first week
       const getWeekNumber = (date: Date): number => {
         const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
@@ -1224,12 +1614,12 @@ export class BiometricAttendanceService extends BaseService {
       // Generate all weeks that overlap with the month
       let currentWeekStart = new Date(weekStart);
       let weekNumber = getWeekNumber(currentWeekStart);
-      
+
       while (currentWeekStart <= lastDayOfMonth) {
         const currentWeekEnd = new Date(currentWeekStart);
         currentWeekEnd.setUTCDate(currentWeekEnd.getUTCDate() + 6);
         currentWeekEnd.setUTCHours(23, 59, 59, 999);
-        
+
         // Only include weeks that have at least one day in the target month
         if (currentWeekEnd >= firstDayOfMonth && currentWeekStart <= lastDayOfMonth) {
           weeks.push({
@@ -1238,7 +1628,7 @@ export class BiometricAttendanceService extends BaseService {
             endDate: new Date(currentWeekEnd)
           });
         }
-        
+
         // Move to next week
         currentWeekStart.setUTCDate(currentWeekStart.getUTCDate() + 7);
         weekNumber = getWeekNumber(currentWeekStart);
@@ -1319,29 +1709,29 @@ export class BiometricAttendanceService extends BaseService {
         const assignments = shiftAssignmentMap.get(userId) || [];
         const weekendDaysSet = new Set<number>();
         let hasAssignment = false;
-        
+
         // Check each day of the week
         for (let i = 0; i < 7; i++) {
           const checkDate = new Date(weekStart);
           checkDate.setUTCDate(checkDate.getUTCDate() + i);
-          
+
           const activeAssignment = assignments.find(assignment => {
             const start = new Date(assignment.startDate);
             const end = assignment.endDate ? new Date(assignment.endDate) : new Date('2099-12-31');
             return checkDate >= start && checkDate <= end;
           });
-          
+
           if (activeAssignment?.weekendDays) {
             hasAssignment = true;
             activeAssignment.weekendDays.forEach((day: number) => weekendDaysSet.add(day));
           }
         }
-        
+
         // If no shift assignment found, default to [0,6] (Saturday and Sunday)
         if (!hasAssignment) {
           return [0, 6];
         }
-        
+
         return Array.from(weekendDaysSet);
       };
 
@@ -1349,7 +1739,7 @@ export class BiometricAttendanceService extends BaseService {
       const weekHasHoliday = (userId: string, weekStart: Date, weekEnd: Date): boolean => {
         const userHolidays = holidayMap.get(userId);
         if (!userHolidays) return false;
-        
+
         for (let d = new Date(weekStart); d <= weekEnd; d.setUTCDate(d.getUTCDate() + 1)) {
           const dateStr = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
           if (userHolidays.has(dateStr)) {
@@ -1384,31 +1774,31 @@ export class BiometricAttendanceService extends BaseService {
 
       // Group attendance records by user and week
       const userWeekData = new Map<string, Map<number, { records: any[]; totalHours: number }>>();
-      
+
       attendanceRecords.forEach(record => {
-        const userId = (record.userId as any)?._id 
-          ? (record.userId as any)._id.toString() 
+        const userId = (record.userId as any)?._id
+          ? (record.userId as any)._id.toString()
           : (record.userId as any).toString();
-        
+
         // Find which week this record belongs to
         const recordDate = new Date(record.shiftDay);
-        const week = weeks.find(w => 
+        const week = weeks.find(w =>
           recordDate >= w.startDate && recordDate <= w.endDate
         );
-        
+
         if (week) {
           if (!userWeekData.has(userId)) {
             userWeekData.set(userId, new Map());
           }
-          
+
           const userWeeks = userWeekData.get(userId)!;
           if (!userWeeks.has(week.weekNumber)) {
             userWeeks.set(week.weekNumber, { records: [], totalHours: 0 });
           }
-          
+
           const weekData = userWeeks.get(week.weekNumber)!;
           weekData.records.push(record);
-          
+
           // Add hours to total - use totalWorkHours (not actualWorkHours) for cumulative calculation
           const hours = timeStringToHours(record.totalWorkHours || '0:00:00');
           weekData.totalHours += hours;
@@ -1440,14 +1830,14 @@ export class BiometricAttendanceService extends BaseService {
           const userWeekDataForWeek = userWeekData.get(userId)?.get(week.weekNumber);
           const totalHours = userWeekDataForWeek?.totalHours || 0;
           const hoursString = hoursToTimeString(totalHours);
-          
+
           // Get weekend days for this week
           const weekendDays = getWeekendDaysForWeek(userId, week.startDate);
           const hasHoliday = weekHasHoliday(userId, week.startDate, week.endDate);
-          
+
           // Determine color based on required hours
           let shouldBeRed = false;
-          
+
           if (hasHoliday) {
             shouldBeRed = totalHours < 36;
           } else if (weekendDays.length === 2 && weekendDays.includes(0) && weekendDays.includes(6)) {
@@ -1460,7 +1850,7 @@ export class BiometricAttendanceService extends BaseService {
             // Default: 5 working days = 45 hours (9 hours per day)
             shouldBeRed = totalHours < 45;
           }
-          
+
           const employeeData = employeeDataMap.get(userId)!;
           employeeData.weeks.set(week.weekNumber, {
             hours: hoursString,
@@ -1481,36 +1871,36 @@ export class BiometricAttendanceService extends BaseService {
       const firstWeek = weeks[0];
       const lastWeek = weeks[weeks.length - 1];
       const totalCols = 2 + weeks.length; // Employee No, Name, and one column per week
-      
+
       worksheet.mergeCells(`A1:${String.fromCharCode(64 + totalCols)}1`);
       const companyCell = worksheet.getCell('A1');
       companyCell.value = 'Cloud Desk Technology Private Limited';
       companyCell.font = { bold: true, size: 14 };
       companyCell.alignment = { horizontal: 'center', vertical: 'middle' };
-      
+
       worksheet.mergeCells(`A2:${String.fromCharCode(64 + totalCols)}2`);
       const addressCell = worksheet.getCell('A2');
       addressCell.value = 'No: 51, TEK Meadows, Old Mahabalipuram Rd, Solinganallur, chennai, Tamilnadu-600119';
       addressCell.alignment = { horizontal: 'center', vertical: 'middle' };
-      
+
       worksheet.mergeCells(`A3:${String.fromCharCode(64 + totalCols)}3`);
       const reportTitleCell = worksheet.getCell('A3');
       reportTitleCell.value = `Attendance Weekly Summary Report from ${formatDate(firstWeek.startDate)} to ${formatDate(lastWeek.endDate)}`;
       reportTitleCell.font = { bold: true };
       reportTitleCell.alignment = { horizontal: 'center', vertical: 'middle' };
-      
+
       // Table headers row
       const headerRow = worksheet.getRow(5);
       headerRow.getCell(1).value = 'Employee No';
       headerRow.getCell(2).value = 'Name';
-      
+
       // Add week headers
       weeks.forEach((week, index) => {
         const colIndex = 3 + index;
         const weekHeader = `Week ${week.weekNumber}\n${formatDate(week.startDate)} - ${formatDate(week.endDate)}`;
         headerRow.getCell(colIndex).value = weekHeader;
       });
-      
+
       headerRow.font = { bold: true };
       headerRow.fill = {
         type: 'pattern',
@@ -1519,19 +1909,19 @@ export class BiometricAttendanceService extends BaseService {
       };
       headerRow.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
       headerRow.height = 40;
-      
+
       // Data rows - one row per employee
       excelData.forEach((employee, rowIndex) => {
         const dataRow = worksheet.getRow(6 + rowIndex);
         dataRow.getCell(1).value = employee.employeeCode;
         dataRow.getCell(2).value = employee.employeeName;
-        
+
         // Add hours for each week
         weeks.forEach((week, weekIndex) => {
           const colIndex = 3 + weekIndex;
           const weekData = employee.weeks.get(week.weekNumber);
           const hoursCell = dataRow.getCell(colIndex);
-          
+
           if (weekData) {
             hoursCell.value = weekData.hours;
             // Apply color coding
@@ -1547,7 +1937,7 @@ export class BiometricAttendanceService extends BaseService {
           hoursCell.alignment = { horizontal: 'center', vertical: 'middle' };
         });
       });
-      
+
       // Set column widths
       worksheet.getColumn(1).width = 18; // Employee No
       worksheet.getColumn(2).width = 30; // Name
@@ -1620,7 +2010,7 @@ export class BiometricAttendanceService extends BaseService {
         // shiftDay is a Date object, normalize to YYYY-MM-DD
         const shiftDayDate = record.shiftDay instanceof Date ? record.shiftDay : new Date(record.shiftDay);
         const dateKey = shiftDayDate.toISOString().split('T')[0];
-        
+
         if (!attendanceByUserAndDate.has(userId)) {
           attendanceByUserAndDate.set(userId, new Map());
         }
@@ -1673,7 +2063,7 @@ export class BiometricAttendanceService extends BaseService {
       allUsers.forEach(user => {
         const userId = user._id.toString();
         const userHolidays: any[] = [];
-        
+
         // Method 1: Check if user has holidayCalendarId
         if (user.holidayCalendarId) {
           const userCalendarId = user.holidayCalendarId.toString();
@@ -1684,7 +2074,7 @@ export class BiometricAttendanceService extends BaseService {
             userHolidays.push(...calendar.holidays);
           }
         }
-        
+
         // Method 2: Check if user is in any calendar's assignedTo array
         calendarsById.forEach(calendar => {
           if (calendar.assignedTo && calendar.assignedTo.length > 0) {
@@ -1696,7 +2086,7 @@ export class BiometricAttendanceService extends BaseService {
             }
           }
         });
-        
+
         // Remove duplicates (same date + name)
         const uniqueHolidays = Array.from(
           new Map(
@@ -1706,7 +2096,7 @@ export class BiometricAttendanceService extends BaseService {
             })
           ).values()
         );
-        
+
         holidaysByUser.set(userId, uniqueHolidays);
       });
 
@@ -1714,23 +2104,23 @@ export class BiometricAttendanceService extends BaseService {
       const findShiftAssignmentForDate = (date: Date, shiftAssignments: any[]): any | null => {
         const dateStart = new Date(date);
         dateStart.setUTCHours(0, 0, 0, 0);
-        
+
         const applicable = shiftAssignments.filter(sa => {
           const saStart = new Date(sa.startDate);
           saStart.setUTCHours(0, 0, 0, 0);
           const saEnd = sa.endDate ? new Date(sa.endDate) : null;
           if (saEnd) saEnd.setUTCHours(23, 59, 59, 999);
-          
+
           return saStart <= dateStart && (saEnd === null || saEnd >= dateStart);
         });
-        
+
         if (applicable.length === 0) return null;
-        
+
         // Use most recent assignment (by startDate descending)
-        applicable.sort((a, b) => 
+        applicable.sort((a, b) =>
           new Date(b.startDate).getTime() - new Date(a.startDate).getTime()
         );
-        
+
         return applicable[0];
       };
 
@@ -1740,27 +2130,27 @@ export class BiometricAttendanceService extends BaseService {
         const userAttendance = attendanceByUserAndDate.get(userId) || new Map();
         const userShiftAssignments = shiftAssignmentsByUser.get(userId) || [];
         const userHolidays = holidaysByUser.get(userId) || [];
-        
+
         // Create map of holidays by date
         const holidaysByDate = new Map<string, any>();
         userHolidays.forEach(holiday => {
           const dateKey = new Date(holiday.date).toISOString().split('T')[0];
           holidaysByDate.set(dateKey, holiday);
         });
-        
+
         // Process each date in range
         const attendance: any[] = [];
-        
+
         dateRange.forEach(dateStr => {
           const record = userAttendance.get(dateStr);
           const holiday = holidaysByDate.get(dateStr);
-          
+
           // Find shift assignment for this date (to get weekend days)
           const applicableAssignment = findShiftAssignmentForDate(
             new Date(dateStr),
             userShiftAssignments
           );
-          
+
           // Check if this date is a weekend
           let isWeekend = false;
           if (applicableAssignment) {
@@ -1770,7 +2160,7 @@ export class BiometricAttendanceService extends BaseService {
               isWeekend = true;
             }
           }
-          
+
           // Build attendance entry
           const attendanceEntry: any = {
             attendanceId: record ? record._id.toString() : null,
@@ -1778,20 +2168,20 @@ export class BiometricAttendanceService extends BaseService {
             status: record ? record.status : 'unknown',  // 'unknown' if no record
             attendanceStatus: record ? record.attendanceStatus || [] : [],
           };
-          
+
           // Add weekend flag only if it's a weekend
           if (isWeekend) {
             attendanceEntry.isWeekend = true;
           }
-          
+
           // Add holiday flag if applicable
           if (holiday) {
             attendanceEntry.isHoliday = true;
           }
-          
+
           attendance.push(attendanceEntry);
         });
-        
+
         return {
           userId: user._id.toString(),
           userName: user.name,

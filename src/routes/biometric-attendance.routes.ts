@@ -90,8 +90,10 @@ export const biometricAttendanceRoutes: RouteHandler = async (
     // biometricId BIO123456
     async (request, reply) => {
       try {
-        console.log('🚀 SWIPE ROUTE HANDLER CALLED');
+        console.log('🚀 ========== SWIPE ROUTE HANDLER CALLED ==========');
         console.log('📦 Raw request body:', JSON.stringify(request.body, null, 2));
+        console.log('📦 Request body type:', typeof request.body);
+        console.log('📦 Request body keys:', Object.keys(request.body || {}));
 
         // Extract all the data from request body
         const {
@@ -104,23 +106,37 @@ export const biometricAttendanceRoutes: RouteHandler = async (
         } = request.body as any;
 
         console.log('📍 Extracted values in route handler:');
-        console.log('  - biometricId:', biometricId);
-        console.log('  - timestamp:', timestamp);
+        console.log('  - biometricId:', biometricId, '(type:', typeof biometricId, ')');
+        console.log('  - timestamp (raw from frontend):', timestamp, '(type:', typeof timestamp, ')');
         console.log('  - location:', location);
         console.log('  - hasLocation:', hasLocation);
         console.log('  - locationValid:', locationValid);
         console.log('  - locationAddress:', locationAddress);
 
+        // Convert timestamp string to Date object
+        const timestampDate = new Date(timestamp);
+        console.log('  - timestamp (converted to Date):', timestampDate.toISOString());
+        console.log('  - timestamp (Date object):', timestampDate);
+        console.log('  - timestamp (UTC milliseconds):', timestampDate.getTime());
+        console.log('  - timestamp (local string):', timestampDate.toString());
+        console.log('  - timestamp (UTC string):', timestampDate.toUTCString());
+
         const swipeData = {
           biometricId,
-          timestamp: new Date(timestamp),
+          timestamp: timestampDate,
           location,
           hasLocation,
           locationValid,
           locationAddress
         };
 
-        console.log('🎯 Calling processSwipe with:', JSON.stringify(swipeData, null, 2));
+        console.log('🎯 Calling processSwipe with swipeData:');
+        console.log('  - biometricId:', swipeData.biometricId);
+        console.log('  - timestamp:', swipeData.timestamp.toISOString());
+        console.log('  - location:', swipeData.location);
+        console.log('  - hasLocation:', swipeData.hasLocation);
+        console.log('  - locationValid:', swipeData.locationValid);
+        console.log('  - locationAddress:', swipeData.locationAddress);
 
         const result = await request.container!.biometricAttendanceService.processSwipe(swipeData);
 
