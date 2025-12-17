@@ -25,7 +25,7 @@ export const dataMigrationRoutes: RouteHandler = async (
               type: 'array',
               items: {
                 type: 'string',
-                enum: ['user', 'shift', 'leave', 'salary-assignment', 'salary-structure', 'attendance-record', 'optional-holiday']
+                enum: ['user', 'shift', 'leave', 'salary-assignment', 'salary-structure', 'attendance-record']
               },
               description: 'Array of object types to include in template'
             }
@@ -55,7 +55,7 @@ export const dataMigrationRoutes: RouteHandler = async (
         }
 
         // Validate and cast to ExportableObject[]
-        const validObjectTypes: ExportableObject[] = ['user', 'shift', 'leave', 'salary-assignment', 'salary-structure', 'attendance-record', 'optional-holiday'];
+        const validObjectTypes: ExportableObject[] = ['user', 'shift', 'leave', 'salary-assignment', 'salary-structure', 'attendance-record'];
         const validatedObjects = objects.filter((obj: string): obj is ExportableObject =>
           validObjectTypes.includes(obj as ExportableObject)
         ) as ExportableObject[];
@@ -63,7 +63,7 @@ export const dataMigrationRoutes: RouteHandler = async (
         if (validatedObjects.length === 0) {
           return reply.status(400).send({
             success: false,
-            error: { message: 'No valid object types specified. Valid types: user, shift, leave, salary-assignment, salary-structure, attendance-record, optional-holiday' }
+            error: { message: 'No valid object types specified. Valid types: user, shift, leave, salary-assignment, salary-structure, attendance-record' }
           });
         }
 
@@ -102,7 +102,7 @@ export const dataMigrationRoutes: RouteHandler = async (
               type: 'array',
               items: {
                 type: 'string',
-                enum: ['user', 'shift', 'leave', 'salary-assignment', 'salary-structure', 'attendance-record', 'optional-holiday']
+                enum: ['user', 'shift', 'leave', 'salary-assignment', 'salary-structure', 'attendance-record']
               },
               description: 'Array of object types to export'
             },
@@ -173,7 +173,7 @@ export const dataMigrationRoutes: RouteHandler = async (
         }
 
         // Validate and cast to ExportableObject[]
-        const validObjectTypes: ExportableObject[] = ['user', 'shift', 'leave', 'salary-assignment', 'salary-structure', 'attendance-record', 'optional-holiday'];
+        const validObjectTypes: ExportableObject[] = ['user', 'shift', 'leave', 'salary-assignment', 'salary-structure', 'attendance-record'];
         const validatedObjects = objects.filter((obj: string): obj is ExportableObject =>
           validObjectTypes.includes(obj as ExportableObject)
         ) as ExportableObject[];
@@ -181,7 +181,7 @@ export const dataMigrationRoutes: RouteHandler = async (
         if (validatedObjects.length === 0) {
           return reply.status(400).send({
             success: false,
-            error: { message: 'No valid object types specified. Valid types: user, shift, leave, salary-assignment, salary-structure, attendance-record, optional-holiday' }
+            error: { message: 'No valid object types specified. Valid types: user, shift, leave, salary-assignment, salary-structure, attendance-record' }
           });
         }
 
@@ -310,7 +310,7 @@ export const dataMigrationRoutes: RouteHandler = async (
         }
 
         // Validate and cast to ExportableObject[]
-        const validObjectTypes: ExportableObject[] = ['user', 'shift', 'leave', 'salary-assignment', 'salary-structure', 'attendance-record', 'optional-holiday'];
+        const validObjectTypes: ExportableObject[] = ['user', 'shift', 'leave', 'salary-assignment', 'salary-structure', 'attendance-record'];
         const validatedObjects = objects.filter((obj: string): obj is ExportableObject =>
           validObjectTypes.includes(obj as ExportableObject)
         ) as ExportableObject[];
@@ -321,7 +321,7 @@ export const dataMigrationRoutes: RouteHandler = async (
           console.error('❌ [Data Migration Preview] No valid object types. Received:', objects);
           return reply.status(400).send({
             success: false,
-            error: { message: 'No valid object types specified. Valid types: user, shift, leave, salary-assignment, salary-structure, attendance-record, optional-holiday' }
+            error: { message: 'No valid object types specified. Valid types: user, shift, leave, salary-assignment, salary-structure, attendance-record' }
           });
         }
 
@@ -524,7 +524,7 @@ export const dataMigrationRoutes: RouteHandler = async (
               type: 'array',
               items: {
                 type: 'string',
-                enum: ['user', 'shift', 'leave', 'salary-assignment', 'salary-structure', 'attendance-record', 'optional-holiday']
+                enum: ['user', 'shift', 'leave', 'salary-assignment', 'salary-structure', 'attendance-record']
               },
               description: 'Array of object types to import'
             },
@@ -573,7 +573,7 @@ export const dataMigrationRoutes: RouteHandler = async (
         }
 
         // Validate and cast to ExportableObject[]
-        const validObjectTypes: ExportableObject[] = ['user', 'shift', 'leave', 'salary-assignment', 'salary-structure', 'attendance-record', 'optional-holiday'];
+        const validObjectTypes: ExportableObject[] = ['user', 'shift', 'leave', 'salary-assignment', 'salary-structure', 'attendance-record'];
         const validatedObjects = objects.filter((obj: string): obj is ExportableObject =>
           validObjectTypes.includes(obj as ExportableObject)
         ) as ExportableObject[];
@@ -581,7 +581,7 @@ export const dataMigrationRoutes: RouteHandler = async (
         if (validatedObjects.length === 0) {
           return reply.status(400).send({
             success: false,
-            error: { message: 'No valid object types specified. Valid types: user, shift, leave, salary-assignment, salary-structure, attendance-record, optional-holiday' }
+            error: { message: 'No valid object types specified. Valid types: user, shift, leave, salary-assignment, salary-structure, attendance-record' }
           });
         }
 

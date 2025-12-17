@@ -411,6 +411,10 @@ export class LeaveSummaryService extends BaseService {
       'workfromhome': 'workFromHome',
       'work_from_home': 'workFromHome',
       'wfh': 'workFromHome',
+      'restricted_holiday': 'restricted_holiday',
+      'restrictedholiday': 'restricted_holiday',
+      'optional_holiday': 'restricted_holiday',
+      'optionalholiday': 'restricted_holiday',
     };
 
     // Check if exact match exists
@@ -462,7 +466,7 @@ export class LeaveSummaryService extends BaseService {
     // Ensure category exists and has availed property
     const category = summary[categoryTypeKey];
     if (!category) {
-      throw new Error(`Leave category '${categoryType}' (mapped to: '${categoryTypeKey}') not found in leave summary. Available categories: annual, sick, compOff, lossOfPay, otherPaid, otherUnpaid, maternity, workFromHome`);
+      throw new Error(`Leave category '${categoryType}' (mapped to: '${categoryTypeKey}') not found in leave summary. Available categories: annual, sick, compOff, lossOfPay, otherPaid, otherUnpaid, maternity, workFromHome, restricted_holiday`);
     }
 
     // Get current availed days, default to 0 if undefined
@@ -493,7 +497,7 @@ export class LeaveSummaryService extends BaseService {
     // Ensure category exists
     const category = summary[categoryTypeKey];
     if (!category) {
-      throw new Error(`Leave category '${categoryType}' (mapped to: '${categoryTypeKey}') not found in leave summary. Available categories: annual, sick, compOff, lossOfPay, otherPaid, otherUnpaid, maternity, workFromHome`);
+      throw new Error(`Leave category '${categoryType}' (mapped to: '${categoryTypeKey}') not found in leave summary. Available categories: annual, sick, compOff, lossOfPay, otherPaid, otherUnpaid, maternity, workFromHome, restricted_holiday`);
     }
 
     // Get current values

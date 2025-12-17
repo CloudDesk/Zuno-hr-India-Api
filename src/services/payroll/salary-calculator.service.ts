@@ -65,6 +65,7 @@ export class SalaryCalculatorService {
       Leave.find({
         userId,
         status: 'Approved',
+        leaveType: { $ne: 'restricted_holiday' }, // Exclude restricted holidays (counted in holidayDays)
         startDate: { $lte: endDate },
         endDate: { $gte: startDate },
       }),

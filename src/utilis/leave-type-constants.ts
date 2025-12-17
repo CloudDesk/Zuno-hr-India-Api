@@ -18,7 +18,8 @@ export const ALL_LEAVE_TYPES = [
     'otherPaid',
     'otherUnpaid',
     'maternity',  // NEW: UAE-specific
-    'work_from_home'  // NEW: Work From Home (merged from WFH)
+    'work_from_home',  // NEW: Work From Home (merged from WFH)
+    'restricted_holiday'  // NEW: Restricted/Optional Holiday (merged from optional holiday)
 ] as const;
 
 export type LeaveType = typeof ALL_LEAVE_TYPES[number];
@@ -40,7 +41,8 @@ export const INDIA_LEAVE_TYPES: readonly LeaveType[] = [
     'lossOfPay',
     'otherPaid',
     'otherUnpaid',
-    'work_from_home'
+    'work_from_home',
+    'restricted_holiday'  // Restricted/Optional Holiday
 ] as const;
 
 // Leave type labels for display
@@ -52,7 +54,8 @@ export const LEAVE_TYPE_LABELS: Record<LeaveType, string> = {
     otherPaid: 'Other Paid',
     otherUnpaid: 'Other Unpaid',
     maternity: 'Maternity Leave',
-    work_from_home: 'Work From Home'
+    work_from_home: 'Work From Home',
+    restricted_holiday: 'Restricted Holiday'
 };
 
 // Maternity leave configuration for UAE
