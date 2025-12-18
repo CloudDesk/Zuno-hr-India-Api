@@ -818,19 +818,42 @@ export class BiometricAttendanceService extends BaseService {
       return { valid: false, reason: 'First swipe must be IN' };
     }
 
-    // Check minimum time gap (1 minute) between swipes
+    // Check for duplicate swipes (same timestamp within 1 second) - optimized for faster processing
+    if (validSwipes.length > 0) {
+      const duplicateSwipe = validSwipes.find(s => {
+        const timeDiff = Math.abs(newSwipe.timestamp.getTime() - s.timestamp.getTime());
+        return timeDiff < 1000; // 1 second tolerance for duplicate detection (optimized from 2 seconds)
+      });
+      if (duplicateSwipe) {
+        return { valid: false, reason: 'Duplicate swipe detected. Please wait a moment before swiping again.' };
+      }
+    }
+
+    // Check minimum time gap between swipes
     if (validSwipes.length > 0) {
       const lastSwipe = validSwipes[validSwipes.length - 1];
-      const timeDiff = Math.abs(newSwipe.timestamp.getTime() - lastSwipe.timestamp.getTime());
-      const minGapMinutes = 1;
-      if (timeDiff < minGapMinutes * 60 * 1000) {
-        return { valid: false, reason: `Minimum ${minGapMinutes} minute gap required between swipes` };
+      const timeDiff = newSwipe.timestamp.getTime() - lastSwipe.timestamp.getTime();
+      
+      // Allow immediate check-out after check-in (within 3 seconds) - this handles rapid check-in/check-out
+      if (lastSwipe.direction === 'IN' && newSwipe.direction === 'OUT' && timeDiff >= 0 && timeDiff < 3000) {
+        // Allow immediate check-out after check-in (within 3 seconds)
+        // This handles the case where user checks in and immediately checks out
+      } else {
+        // For multiple swipes (3rd, 4th, etc.), require minimum 2 seconds gap for faster processing
+        const minGapSeconds = validSwipes.length >= 2 ? 2 : 3; // 2 seconds for multiple swipes, 3 seconds for first check-out
+        if (Math.abs(timeDiff) < minGapSeconds * 1000) {
+          return { valid: false, reason: `Please wait at least ${minGapSeconds} seconds between swipes` };
+        }
       }
     }
 
     // Check if direction alternates correctly
+    // Note: Direction alternation is already handled by the time gap check above
+    // which allows immediate OUT after IN. Here we just ensure same direction swipes
+    // are not allowed (except for the immediate OUT after IN case which is already handled)
     if (validSwipes.length > 0) {
       const lastSwipe = validSwipes[validSwipes.length - 1];
+      // If directions are the same, it's invalid (except immediate OUT after IN which is handled above)
       if (lastSwipe.direction === newSwipe.direction) {
         return { valid: false, reason: 'Swipe direction must alternate (IN/OUT/IN/OUT)' };
       }
