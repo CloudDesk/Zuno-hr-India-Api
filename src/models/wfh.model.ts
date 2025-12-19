@@ -25,6 +25,20 @@ export interface IWFH extends Document {
   approvedAt?: Date;
   rejectedAt?: Date;
   cancelledAt?: Date;
+  // Apply on behalf feature
+  appliedOnBehalf?: boolean; // true if applied by admin on behalf of employee
+  appliedBy?: {
+    _id: string | Types.ObjectId; // ID of person who applied (employee or admin)
+    name: string;
+    email: string;
+  };
+  // Dual approval for applied on behalf
+  managerApproved?: boolean; // Manager approval status
+  managerApprovedById?: Types.ObjectId; // Manager who approved
+  managerApprovedAt?: Date; // Manager approval timestamp
+  adminApproved?: boolean; // Admin approval status
+  adminApprovedById?: Types.ObjectId; // Admin who approved
+  adminApprovedAt?: Date; // Admin approval timestamp
 }
 
 const wfhSchema = new Schema<IWFH>(
@@ -59,6 +73,29 @@ const wfhSchema = new Schema<IWFH>(
     approvedAt: Date,
     rejectedAt: Date,
     cancelledAt: Date,
+    // Apply on behalf feature
+    appliedOnBehalf: {
+      type: Boolean,
+      default: false
+    },
+    appliedBy: {
+      _id: { type: Schema.Types.ObjectId, ref: 'User' },
+      name: String,
+      email: String,
+    },
+    // Dual approval for applied on behalf
+    managerApproved: {
+      type: Boolean,
+      default: false
+    },
+    managerApprovedById: { type: Schema.Types.ObjectId, ref: 'User' },
+    managerApprovedAt: Date,
+    adminApproved: {
+      type: Boolean,
+      default: false
+    },
+    adminApprovedById: { type: Schema.Types.ObjectId, ref: 'User' },
+    adminApprovedAt: Date,
   },
   {
     timestamps: true,

@@ -6,6 +6,8 @@ import { IWFH, WFH } from '../models/wfh.model';
 import { LeaveSummaryService } from './leave-summary.service';
 import { generateEmailTemplate } from '../emails/templates';
 import { emailService } from './email.service';
+import { calculateBusinessDays } from '../utilis/dates';
+import { ShiftAssignment } from '../models/shift.model';
 
 export interface IWFHCreate {
   userId: string | Types.ObjectId;
@@ -16,6 +18,13 @@ export interface IWFHCreate {
   appliedTo?: {
     _id: string;
     name: string;
+  };
+  // Apply on behalf feature
+  appliedOnBehalf?: boolean;
+  appliedBy?: {
+    _id: string | Types.ObjectId;
+    name: string;
+    email: string;
   };
 }
 
@@ -109,7 +118,7 @@ export class WFHService extends BaseService {
     if (search) {
       // Escape special regex characters in search string
       const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      
+
       // Search in reason, remarks, status, and appliedTo name (stored in document)
       const searchFilter: any[] = [
         { 'reason': { $regex: escapedSearch, $options: 'i' } },
@@ -321,6 +330,73 @@ export class WFHService extends BaseService {
       throw new Error('User not found');
     }
 
+    // VALIDATION: 3-day rule for employee self-application (excluding weekends)
+    // If employee is applying themselves (not admin on behalf), check if > 3 business days have passed
+    const currentUser = this.context?.user;
+    const isAdmin = currentUser && (currentUser.role === 'admin' || (currentUser as any).isSuperAdmin);
+    const isApplyingForSelf = currentUser && currentUser._id.toString() === (typeof wfhData.userId === 'string' ? wfhData.userId : wfhData.userId.toString());
+
+    // Only validate 3-day rule if employee is applying for themselves (not admin applying on behalf)
+    if (!wfhData.appliedOnBehalf && !isAdmin && isApplyingForSelf) {
+      const wfhStartDate = new Date(wfhData.startDate);
+      wfhStartDate.setUTCHours(0, 0, 0, 0);
+
+      const today = new Date();
+      today.setUTCHours(23, 59, 59, 999);
+
+      // Get shift assignment to determine weekend days
+      const userIdObj = typeof wfhData.userId === 'string'
+        ? new Types.ObjectId(wfhData.userId)
+        : wfhData.userId;
+
+      // Find active shift assignment for the date range
+      const shiftAssignment = await ShiftAssignment.findOne({
+        userId: userIdObj,
+        isActive: true,
+        startDate: { $lte: today },
+        $or: [
+          { endDate: { $gte: wfhStartDate } },
+          { endDate: null },
+        ],
+      }).sort({ startDate: -1 });
+
+      const weekendDays = shiftAssignment?.weekendDays && shiftAssignment.weekendDays.length > 0
+        ? shiftAssignment.weekendDays
+        : [0, 6]; // Default: Sunday and Saturday
+
+      // Calculate business days from WFH start date to today (excluding weekends)
+      const businessDaysPassed = calculateBusinessDays(wfhStartDate, today, weekendDays);
+
+      if (businessDaysPassed > 3) {
+        throw new Error(
+          `You cannot apply for WFH after 3 business days have passed. ` +
+          `${businessDaysPassed} business days have passed since the WFH date. ` +
+          `Please contact your admin to apply on your behalf.`
+        );
+      }
+    }
+
+    // Security check: Only admins can set appliedOnBehalf = true
+    if (wfhData.appliedOnBehalf && !isAdmin) {
+      throw new Error('Only admins can apply for WFH on behalf of employees. Please use the regular WFH application endpoint.');
+    }
+
+    // If applied on behalf, set the appliedBy information
+    if (wfhData.appliedOnBehalf && isAdmin && currentUser) {
+      wfhData.appliedBy = {
+        _id: currentUser._id,
+        name: currentUser.name,
+        email: currentUser.email || ''
+      };
+    } else if (!wfhData.appliedOnBehalf && currentUser) {
+      // If not applied on behalf, set appliedBy to the employee themselves
+      wfhData.appliedBy = {
+        _id: currentUser._id,
+        name: currentUser.name,
+        email: currentUser.email || ''
+      };
+    }
+
     // Calculate number of days
     const startDate = new Date(wfhData.startDate);
     const endDate = new Date(wfhData.endDate);
@@ -425,6 +501,8 @@ export class WFHService extends BaseService {
         reason: wfh.reason,
         approvalLink: `${appUrl}/manager/actions/wfh/${wfh._id}`,
         companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS',
+        appliedOnBehalf: wfh.appliedOnBehalf || false,
+        appliedByName: wfh.appliedBy?.name || '',
       });
 
       await emailService.sendEmail({
@@ -449,7 +527,7 @@ export class WFHService extends BaseService {
 
       if (admins && admins.length > 0) {
         const adminEmails = admins.map(admin => admin.email).filter(Boolean);
-        
+
         if (adminEmails.length > 0 && user) {
           const fromDateFormatted = wfh.startDate.toLocaleDateString('en-US', {
             weekday: 'long',
@@ -464,9 +542,13 @@ export class WFHService extends BaseService {
             day: 'numeric'
           });
 
+          const appliedOnBehalfText = wfh.appliedOnBehalf
+            ? `\n- Applied On Behalf: Yes (Applied by: ${wfh.appliedBy?.name || 'Admin'})`
+            : '';
+
           const adminEmailText = `Dear Admin,
 
-A Work From Home (WFH) request has been submitted by ${user.name}.
+A Work From Home (WFH) request has been submitted${wfh.appliedOnBehalf ? ' on behalf of' : ' by'} ${user.name}.
 
 Request Details:
 - Employee: ${user.name} (${user.email || 'N/A'})
@@ -474,7 +556,7 @@ Request Details:
 - To Date: ${toDateFormatted}
 - Total Days: ${wfh.noOfDays}
 - Reason: ${wfh.reason || 'N/A'}
-- Status: Pending
+- Status: Pending${wfh.appliedOnBehalf ? ' (Can be approved by Manager or Admin)' : ''}${appliedOnBehalfText}
 - Manager: ${manager?.name || 'N/A'}
 
 This is an automated notification for your records.
@@ -512,24 +594,99 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
       throw new Error('WFH request has already been processed');
     }
 
-    wfh.status = updateData.status;
-    wfh.approvedById = updateData.approvedById;
-    wfh.approvedBy = updateData.approvedBy
-      ? {
-        _id: typeof updateData.approvedBy._id === 'string'
-          ? updateData.approvedBy._id
-          : updateData.approvedBy._id.toString(),
-        name: updateData.approvedBy.name,
-        email: updateData.approvedBy.email,
-      }
-      : undefined;
+    const currentUser = this.context?.user;
+    const isAdmin = currentUser && (currentUser.role === 'admin' || (currentUser as any).isSuperAdmin);
+    const isManager = currentUser && wfh.appliedTo?._id === currentUser._id.toString();
 
-    if (updateData.status === 'Approved') {
-      wfh.approvedAt = new Date();
-    } else if (updateData.status === 'Rejected') {
-      wfh.rejectedAt = new Date();
-    } else if (updateData.status === 'Cancelled') {
-      wfh.cancelledAt = new Date();
+    // Handle dual approval for applied on behalf
+    if (wfh.appliedOnBehalf) {
+      // If rejected, reject immediately
+      if (updateData.status === 'Rejected') {
+        wfh.status = 'Rejected';
+        wfh.approvedById = updateData.approvedById;
+        wfh.approvedBy = updateData.approvedBy
+          ? {
+            _id: typeof updateData.approvedBy._id === 'string'
+              ? updateData.approvedBy._id
+              : updateData.approvedBy._id.toString(),
+            name: updateData.approvedBy.name,
+            email: updateData.approvedBy.email,
+          }
+          : undefined;
+        wfh.rejectedAt = new Date();
+        if (updateData.remarks) wfh.remarks = updateData.remarks;
+
+        // Set who rejected (manager or admin)
+        if (isManager) {
+          wfh.managerApproved = false;
+          wfh.managerApprovedById = updateData.approvedById;
+          wfh.managerApprovedAt = new Date();
+        } else if (isAdmin) {
+          wfh.adminApproved = false;
+          wfh.adminApprovedById = updateData.approvedById;
+          wfh.adminApprovedAt = new Date();
+        }
+      } else if (updateData.status === 'Approved') {
+        // For approval, either manager OR admin can approve (single approval needed)
+        if (isManager && !wfh.managerApproved) {
+          // Manager approves - immediately approve
+          wfh.managerApproved = true;
+          wfh.managerApprovedById = updateData.approvedById;
+          wfh.managerApprovedAt = new Date();
+          wfh.status = 'Approved';
+          wfh.approvedById = updateData.approvedById;
+          wfh.approvedBy = updateData.approvedBy
+            ? {
+              _id: typeof updateData.approvedBy._id === 'string'
+                ? updateData.approvedBy._id
+                : updateData.approvedBy._id.toString(),
+              name: updateData.approvedBy.name,
+              email: updateData.approvedBy.email,
+            }
+            : undefined;
+          wfh.approvedAt = new Date();
+        } else if (isAdmin && !wfh.adminApproved) {
+          // Admin approves - immediately approve
+          wfh.adminApproved = true;
+          wfh.adminApprovedById = updateData.approvedById;
+          wfh.adminApprovedAt = new Date();
+          wfh.status = 'Approved';
+          wfh.approvedById = updateData.approvedById;
+          wfh.approvedBy = updateData.approvedBy
+            ? {
+              _id: typeof updateData.approvedBy._id === 'string'
+                ? updateData.approvedBy._id
+                : updateData.approvedBy._id.toString(),
+              name: updateData.approvedBy.name,
+              email: updateData.approvedBy.email,
+            }
+            : undefined;
+          wfh.approvedAt = new Date();
+        } else {
+          throw new Error('You have already approved this WFH request');
+        }
+      }
+    } else {
+      // Normal approval flow (not applied on behalf)
+      wfh.status = updateData.status;
+      wfh.approvedById = updateData.approvedById;
+      wfh.approvedBy = updateData.approvedBy
+        ? {
+          _id: typeof updateData.approvedBy._id === 'string'
+            ? updateData.approvedBy._id
+            : updateData.approvedBy._id.toString(),
+          name: updateData.approvedBy.name,
+          email: updateData.approvedBy.email,
+        }
+        : undefined;
+
+      if (updateData.status === 'Approved') {
+        wfh.approvedAt = new Date();
+      } else if (updateData.status === 'Rejected') {
+        wfh.rejectedAt = new Date();
+      } else if (updateData.status === 'Cancelled') {
+        wfh.cancelledAt = new Date();
+      }
     }
 
     if (updateData.remarks) wfh.remarks = updateData.remarks;
@@ -542,62 +699,95 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
       year
     );
 
-    await this.leaveSummaryService.createOrUpdateLeaveSummary(
-      new Types.ObjectId(wfh.userId.toString()),
-      year,
-      'workFromHome',
-      updateData.status,
-      {
-        availed: totalUsedThisYear,
-        leaveRequestId: wfh._id as Types.ObjectId,
-      }
-    );
+    // Update summary only if status actually changed (not when manager approves first for applied on behalf)
+    if (wfh.status === 'Approved' || wfh.status === 'Rejected' || wfh.status === 'Cancelled') {
+      await this.leaveSummaryService.createOrUpdateLeaveSummary(
+        new Types.ObjectId(wfh.userId.toString()),
+        year,
+        'workFromHome',
+        wfh.status,
+        {
+          availed: totalUsedThisYear,
+          leaveRequestId: wfh._id as Types.ObjectId,
+        }
+      );
+    }
 
     // Send email notification to employee (the person who applied)
-    try {
-      const employee: IUser = await User.findById(new Types.ObjectId(wfh.userId)).select('name email');
-      const approver: IUser = await User.findById(wfh.approvedById).select('name email');
+    // Only send email if status is 'Approved' or 'Rejected'
+    // For applied on behalf: Either manager or admin can approve, and email is sent immediately
+    const shouldSendEmail = wfh.status === 'Approved' || wfh.status === 'Rejected';
 
-      if (employee && employee.email) {
-        const fromDateFormatted = wfh.startDate.toLocaleDateString('en-US', {
-          weekday: 'long',
-          year: 'numeric',
-          month: 'long',
-          day: 'numeric'
-        });
-        const toDateFormatted = wfh.endDate.toLocaleDateString('en-US', {
-          weekday: 'long',
-          year: 'numeric',
-          month: 'long',
-          day: 'numeric'
-        });
+    if (shouldSendEmail) {
+      try {
+        const employee: IUser = await User.findById(new Types.ObjectId(wfh.userId)).select('name email');
+        // For applied on behalf, get the approver (manager or admin who approved)
+        // For rejected, get who rejected
+        // For normal approval, get the approver
+        let approver: IUser | null = null;
+        if (wfh.appliedOnBehalf && wfh.status === 'Approved') {
+          // Get who approved (manager or admin - either can approve)
+          approver = wfh.adminApprovedById
+            ? (await User.findById(wfh.adminApprovedById).select('name email')) as IUser | null
+            : wfh.managerApprovedById
+              ? (await User.findById(wfh.managerApprovedById).select('name email')) as IUser | null
+              : null;
+        } else if (wfh.appliedOnBehalf && wfh.status === 'Rejected') {
+          // Get who rejected (manager or admin)
+          approver = wfh.approvedById ? (await User.findById(wfh.approvedById).select('name email')) as IUser | null : null;
+        } else {
+          // Normal approval/rejection
+          approver = wfh.approvedById ? (await User.findById(wfh.approvedById).select('name email')) as IUser | null : null;
+        }
 
-        const htmlContent = generateEmailTemplate('leaveApprovalEmail', {
-          employeeName: employee.name,
-          approverName: approver?.name || 'Manager',
-          leaveType: 'Work From Home',
-          fromDate: fromDateFormatted,
-          toDate: toDateFormatted,
-          totalDays: wfh.noOfDays,
-          remarks: wfh.remarks || '',
-          status: wfh.status,
-          companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS',
-        });
+        if (employee && employee.email) {
+          const fromDateFormatted = wfh.startDate.toLocaleDateString('en-US', {
+            weekday: 'long',
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric'
+          });
+          const toDateFormatted = wfh.endDate.toLocaleDateString('en-US', {
+            weekday: 'long',
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric'
+          });
 
-        const emailText = `Dear ${employee.name},
+          const htmlContent = generateEmailTemplate('leaveApprovalEmail', {
+            employeeName: employee.name,
+            approverName: approver?.name || 'Manager',
+            leaveType: 'Work From Home',
+            fromDate: fromDateFormatted,
+            toDate: toDateFormatted,
+            totalDays: wfh.noOfDays,
+            remarks: wfh.remarks || '',
+            status: wfh.status,
+            companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS',
+            appliedOnBehalf: wfh.appliedOnBehalf || false,
+            appliedByName: wfh.appliedBy?.name || '',
+          });
+
+          const appliedByText = wfh.appliedOnBehalf && wfh.appliedBy?.name
+            ? `\n- Applied By: ${wfh.appliedBy.name} (on behalf)`
+            : '';
+
+          const emailText = `Dear ${employee.name},
 
 Your Work From Home (WFH) request has been ${wfh.status.toLowerCase()} by ${approver?.name || 'Manager'}.
+${wfh.appliedOnBehalf && wfh.appliedBy?.name ? `\nNote: This request was applied on your behalf by ${wfh.appliedBy.name}.` : ''}
 
 WFH Details:
 - From Date: ${fromDateFormatted}
 - To Date: ${toDateFormatted}
 - Total Days: ${wfh.noOfDays}
-- Reason: ${wfh.reason || 'N/A'}
+- Reason: ${wfh.reason || 'N/A'}${appliedByText}
+- Approved By: ${approver?.name || 'Manager'}
 ${wfh.remarks ? `- Remarks: ${wfh.remarks}` : ''}
 
-${wfh.status === 'Approved' 
-  ? 'Your WFH request has been approved. Please ensure you have a proper workspace setup and maintain regular communication with your team during the WFH period.'
-  : 'Unfortunately, your WFH request has been rejected. If you have any questions, please contact your manager.'}
+${wfh.status === 'Approved'
+              ? 'Your WFH request has been approved. Please ensure you have a proper workspace setup and maintain regular communication with your team during the WFH period.'
+              : 'Unfortunately, your WFH request has been rejected. If you have any questions, please contact your manager.'}
 
 Thank you for your understanding.
 
@@ -605,22 +795,26 @@ Regards,
 ${approver?.name || 'Manager'}
 ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
 
-        await emailService.sendEmail({
-          body: {
-            to: employee.email,
-            subject: `Your WFH Request has been ${wfh.status}`,
-            text: emailText,
-            html: htmlContent,
-          },
-        });
+          await emailService.sendEmail({
+            body: {
+              to: employee.email,
+              subject: `Your WFH Request has been ${wfh.status}`,
+              text: emailText,
+              html: htmlContent,
+            },
+          });
 
-        console.log(`Email notification sent to ${employee.email} for WFH request ${wfh._id} - Status: ${wfh.status}`);
-      } else {
-        console.warn(`Cannot send email: Employee not found or email missing for userId: ${wfh.userId}`);
+          console.log(`Email notification sent to ${employee.email} for WFH request ${wfh._id} - Status: ${wfh.status}`);
+        } else {
+          console.warn(`Cannot send email: Employee not found or email missing for userId: ${wfh.userId}`);
+        }
+      } catch (emailError) {
+        console.error('Failed to send email to employee for WFH request:', emailError);
+        // Don't fail the request if email fails - log the error but continue
       }
-    } catch (emailError) {
-      console.error('Failed to send email to employee for WFH request:', emailError);
-      // Don't fail the request if email fails - log the error but continue
+    } else {
+      // Manager approved first (for applied on behalf) - don't send email yet, wait for admin approval
+      console.log(`Manager approved WFH ${wfh._id} (applied on behalf). Waiting for admin approval before sending email.`);
     }
 
     // Send email notification to all admins
@@ -651,7 +845,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
         });
 
         const adminEmails = admins.map(admin => admin.email).filter(Boolean);
-        
+
         if (adminEmails.length > 0) {
           const adminEmailText = `Dear Admin,
 
@@ -798,7 +992,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
       filter.userId = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
     }
     if (status) filter.status = status;
-    
+
     if (startDate || endDate) {
       const dateFilter: any = {
         $or: [
@@ -833,7 +1027,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
     // Handle search filter
     if (search) {
       const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      
+
       const searchConditions: any[] = [
         { reason: { $regex: escapedSearch, $options: 'i' } },
         { remarks: { $regex: escapedSearch, $options: 'i' } },

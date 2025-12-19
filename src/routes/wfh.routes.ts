@@ -9,6 +9,136 @@ export const wfhRoutes: RouteHandler = async (
   fastify: FastifyInstance,
   _opts: FastifyPluginOptions,
 ): Promise<void> => {
+  // Apply for WFH on behalf (Admin only)
+  fastify.post(
+    '/apply-on-behalf',
+    {
+      onRequest: [authenticate],
+      schema: {
+        tags: ['WFH Management'],
+        summary: 'Apply for WFH on behalf of employee (Admin only)',
+        description: 'Admin can apply for WFH on behalf of an employee after 3 business days',
+        body: {
+          type: 'object',
+          required: ['userId', 'startDate', 'endDate', 'reason'],
+          properties: {
+            userId: {
+              type: 'string',
+              description: 'ID of the employee for whom WFH is being applied'
+            },
+            startDate: {
+              type: 'string',
+              format: 'date',
+              description: 'WFH start date (YYYY-MM-DD)'
+            },
+            endDate: {
+              type: 'string',
+              format: 'date',
+              description: 'WFH end date (YYYY-MM-DD)'
+            },
+            remarks: {
+              type: 'string',
+              description: 'Additional remarks'
+            },
+            reason: {
+              type: 'string',
+              description: 'Reason for WFH'
+            },
+            appliedTo: {
+              type: 'object',
+              description: 'Manager to approve the WFH'
+            },
+          },
+        },
+        response: {
+          201: {
+            type: 'object',
+            properties: {
+              success: { type: 'boolean' },
+              data: {
+                type: 'object',
+                properties: {
+                  _id: { type: 'string' },
+                  userId: { type: 'string' },
+                  startDate: { type: 'string', format: 'date' },
+                  endDate: { type: 'string', format: 'date' },
+                  appliedOnBehalf: { type: 'boolean' },
+                  appliedBy: { type: 'object' },
+                }
+              }
+            }
+          }
+        }
+      },
+    },
+    async (request, reply) => {
+      try {
+        const currentUser = request.user as any;
+        const userRole = currentUser?.role?.toLowerCase() || '';
+        const isSuperAdmin = currentUser?.isSuperAdmin || false;
+
+        // Check if user is admin
+        if (userRole !== 'admin' && !isSuperAdmin) {
+          return reply.status(403).send({
+            success: false,
+            error: { message: 'Only admins can apply for WFH on behalf of employees' },
+          });
+        }
+
+        const body = request.body as {
+          userId: string;
+          startDate: string;
+          endDate: string;
+          remarks?: string;
+          reason: string;
+          appliedTo?: {
+            _id: string;
+            name: string;
+          };
+        };
+
+        // Get user to find manager if appliedTo is not provided
+        let appliedTo = body.appliedTo;
+        if (!appliedTo || !appliedTo._id || appliedTo._id.trim() === '') {
+          const user = await User.findById(body.userId).select('managerId managerName');
+          if (user && (user as any).managerId) {
+            const manager = await User.findById((user as any).managerId).select('name');
+            appliedTo = {
+              _id: (user as any).managerId.toString(),
+              name: manager?.name || (user as any).managerName || 'Manager',
+            };
+          }
+        }
+
+        const wfhData: IWFHCreate = {
+          userId: body.userId,
+          startDate: new Date(body.startDate),
+          endDate: new Date(body.endDate),
+          reason: body.reason,
+          remarks: body.remarks,
+          appliedTo,
+          appliedOnBehalf: true, // Mark as applied on behalf
+          appliedBy: {
+            _id: currentUser._id,
+            name: currentUser.name,
+            email: currentUser.email || '',
+          },
+        };
+
+        const wfh = await request.container!.wfhService.create(wfhData);
+        return reply.status(201).send({
+          success: true,
+          data: wfh,
+        });
+      } catch (error: any) {
+        return reply.status(400).send({
+          success: false,
+          error: { message: error.message },
+        });
+      }
+    },
+  );
+
   // Apply for WFH
   fastify.post(
     '/',

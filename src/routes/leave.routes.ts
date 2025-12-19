@@ -140,6 +140,151 @@ export const leaveRoutes: RouteHandler = async (
     },
   );
 
+  // Apply for leave on behalf (Admin only)
+  fastify.post(
+    '/apply-on-behalf',
+    {
+      onRequest: [authenticate],
+      schema: {
+        tags: ['Leave Management'],
+        summary: 'Apply for leave on behalf of employee (Admin only)',
+        description: 'Admin can apply for leave on behalf of an employee after 3 business days',
+        body: {
+          type: 'object',
+          required: ['userId', 'leaveTypeId', 'startDate', 'endDate'],
+          properties: {
+            userId: {
+              type: 'string',
+              description: 'ID of the employee for whom leave is being applied'
+            },
+            leaveTypeId: {
+              type: 'string',
+              description: 'Type of leave being requested'
+            },
+            startDate: {
+              type: 'string',
+              format: 'date',
+              description: 'Leave start date (YYYY-MM-DD)'
+            },
+            endDate: {
+              type: 'string',
+              format: 'date',
+              description: 'Leave end date (YYYY-MM-DD)'
+            },
+            remarks: {
+              type: 'string',
+              description: 'Additional remarks for the leave request'
+            },
+            leaveType: {
+              type: 'string',
+              description: 'Leave type (optional, will be fetched from leaveTypeId if not provided)'
+            },
+            reason: {
+              type: 'string',
+              description: 'Reason for leave'
+            },
+            appliedTo: {
+              type: 'object',
+              description: 'Manager to whom leave is applied'
+            },
+            leaveDuration: {
+              type: 'string',
+              enum: ['full-day', 'half-day'],
+              description: 'Leave duration type (India only). Default: full-day'
+            },
+            halfDayType: {
+              type: 'string',
+              enum: ['first-half', 'second-half'],
+              description: 'Half-day type - required when leaveDuration is half-day (India only)'
+            },
+          },
+        },
+        response: {
+          201: {
+            type: 'object',
+            properties: {
+              success: { type: 'boolean' },
+              data: {
+                type: 'object',
+                properties: {
+                  _id: { type: 'string' },
+                  userId: { type: 'string' },
+                  leaveTypeId: { type: 'string' },
+                  startDate: { type: 'string', format: 'date' },
+                  endDate: { type: 'string', format: 'date' },
+                  status: { type: 'string', enum: ['Pending', 'Approved', 'Rejected'] },
+                  appliedOnBehalf: { type: 'boolean' },
+                  appliedBy: { type: 'object' },
+                }
+              }
+            }
+          }
+        }
+      },
+    },
+    async (request, reply) => {
+      try {
+        const currentUser = request.user as any;
+        const userRole = currentUser?.role?.toLowerCase() || '';
+        const isSuperAdmin = currentUser?.isSuperAdmin || false;
+
+        // Check if user is admin
+        if (userRole !== 'admin' && !isSuperAdmin) {
+          return reply.status(403).send({
+            success: false,
+            error: { message: 'Only admins can apply for leave on behalf of employees' },
+          });
+        }
+
+        const body = request.body as {
+          userId: string;
+          leaveTypeId: string;
+          startDate: string;
+          endDate: string;
+          remarks?: string;
+          leaveType?: string;
+          reason: string;
+          appliedTo: {
+            _id: string;
+            name: string;
+          };
+          leaveDuration?: 'full-day' | 'half-day';
+          halfDayType?: 'first-half' | 'second-half';
+        };
+
+        const leaveData: ILeaveCreate = {
+          userId: body.userId,
+          leaveTypeId: body.leaveTypeId,
+          leaveType: body.leaveType,
+          startDate: new Date(body.startDate),
+          endDate: new Date(body.endDate),
+          remarks: body.remarks,
+          reason: body.reason,
+          appliedTo: body.appliedTo,
+          leaveDuration: body.leaveDuration || 'full-day',
+          halfDayType: body.halfDayType,
+          appliedOnBehalf: true, // Mark as applied on behalf
+          appliedBy: {
+            _id: currentUser._id,
+            name: currentUser.name,
+            email: currentUser.email || '',
+          },
+        };
+
+        const leave = await request.container!.leaveService.create(leaveData);
+        return reply.status(201).send({
+          success: true,
+          data: leave,
+        });
+      } catch (error: any) {
+        return reply.status(400).send({
+          success: false,
+          error: { message: error.message },
+        });
+      }
+    },
+  );
+
   //delete collection all data
   fastify.post(
     '/delete-collection-data',
@@ -288,10 +433,39 @@ export const leaveRoutes: RouteHandler = async (
                     leaveType: { type: 'string' },
                     startDate: { type: 'string', format: 'date' },
                     endDate: { type: 'string', format: 'date' },
-                    status: { type: 'string', enum: ['Pending', 'Approved', 'Rejected'] },
+                    status: { type: 'string', enum: ['Pending', 'Approved', 'Rejected', 'Cancelled'] },
                     remarks: { type: 'string' },
                     reason: { type: 'string' },
-                    appliedTo: { type: 'string' },
+                    noOfDays: { type: 'number' },
+                    appliedTo: {
+                      type: 'object',
+                      properties: {
+                        _id: { type: 'string' },
+                        name: { type: 'string' }
+                      }
+                    },
+                    user: {
+                      type: 'object',
+                      properties: {
+                        name: { type: 'string' },
+                        email: { type: 'string' }
+                      }
+                    },
+                    appliedOnBehalf: { type: 'boolean' },
+                    appliedBy: {
+                      type: 'object',
+                      properties: {
+                        _id: { type: 'string' },
+                        name: { type: 'string' },
+                        email: { type: 'string' }
+                      }
+                    },
+                    managerApproved: { type: 'boolean' },
+                    adminApproved: { type: 'boolean' },
+                    managerApprovedById: { type: 'string' },
+                    managerApprovedAt: { type: 'string', format: 'date-time' },
+                    adminApprovedById: { type: 'string' },
+                    adminApprovedAt: { type: 'string', format: 'date-time' },
                     createdAt: { type: 'string', format: 'date-time' },
                     updatedAt: { type: 'string', format: 'date-time' },
                   }
@@ -316,7 +490,7 @@ export const leaveRoutes: RouteHandler = async (
         const { userId, status, leaveType, startDate, endDate, page, limit, search, appliedTo } = request.query as any;
         const currentUser = request.user!;
         const userRole = (currentUser as any).role?.toLowerCase() || '';
-        
+
         const query: ILeaveQuery = {
           userId: userId,
           status: status ? status : undefined,
@@ -340,12 +514,12 @@ export const leaveRoutes: RouteHandler = async (
         }
         if (startDate) query.startDate = new Date(startDate);
         if (endDate) query.endDate = new Date(endDate);
-        
+
         // Allow admins to filter by manager (appliedTo)
         if (appliedTo && (userRole === 'admin' || userRole === 'superadmin')) {
           query.appliedTo = appliedTo;
         }
-        
+
         console.log(query, "1 query");
         const result = await request.container!.leaveService.findAll(query);
         return reply.send({
@@ -483,6 +657,38 @@ export const leaveRoutes: RouteHandler = async (
                     properties: {
                       name: { type: 'string' },
                       email: { type: 'string' },
+                    },
+                  },
+                  // Apply on behalf fields
+                  appliedOnBehalf: { type: 'boolean' },
+                  appliedBy: {
+                    type: 'object',
+                    nullable: true,
+                    properties: {
+                      _id: { type: 'string' },
+                      name: { type: 'string' },
+                      email: { type: 'string' },
+                    },
+                  },
+                  managerApproved: { type: 'boolean' },
+                  adminApproved: { type: 'boolean' },
+                  managerApprovedById: { type: 'string', nullable: true },
+                  managerApprovedAt: { type: 'string', format: 'date-time', nullable: true },
+                  adminApprovedById: { type: 'string', nullable: true },
+                  adminApprovedAt: { type: 'string', format: 'date-time', nullable: true },
+                  // Half-day support
+                  leaveDuration: { type: 'string', enum: ['full-day', 'half-day'] },
+                  halfDayType: { type: 'string', enum: ['first-half', 'second-half'], nullable: true },
+                  // Weekend exclusion info
+                  weekendExclusion: {
+                    type: 'object',
+                    nullable: true,
+                    properties: {
+                      weekendDays: { type: 'array', items: { type: 'number' } },
+                      excludedDates: { type: 'array', items: { type: 'string', format: 'date-time' } },
+                      excludedHolidays: { type: 'array', items: { type: 'string', format: 'date-time' } },
+                      totalCalendarDays: { type: 'number' },
+                      actualDays: { type: 'number' },
                     },
                   },
                 }
@@ -791,7 +997,7 @@ export const leaveRoutes: RouteHandler = async (
         const { userId, status, startDate, endDate, page, limit, search } = request.query as any;
         // Normalize search parameter (handle case where it might be an array from duplicate query params)
         const normalizedSearch = search ? (Array.isArray(search) ? search[0] : search) : undefined;
-        
+
         const query: ILeaveQuery = {
           appliedTo,
           userId: userId,

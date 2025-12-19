@@ -116,10 +116,18 @@ export class DocumentService extends BaseService {
 
         // --- Best Practice: Set verification status on the backend ---
         if (metadata.certificate) {
+            // Handle optional issuingAuthority - remove if empty
+            if (metadata.certificate.issuingAuthority === '' || metadata.certificate.issuingAuthority === null || metadata.certificate.issuingAuthority === undefined) {
+                delete metadata.certificate.issuingAuthority;
+            }
+            
             // Convert string dates to Date objects if provided as strings
             if (metadata.certificate.issueDate) {
                 if (typeof metadata.certificate.issueDate === 'string' && metadata.certificate.issueDate.trim() !== '') {
                     metadata.certificate.issueDate = new Date(metadata.certificate.issueDate);
+                } else if (metadata.certificate.issueDate === '' || metadata.certificate.issueDate === null) {
+                    // Remove empty or null issueDate
+                    delete metadata.certificate.issueDate;
                 }
             }
             if (metadata.certificate.expiryDate) {
@@ -224,10 +232,18 @@ export class DocumentService extends BaseService {
                     throw new Error('Certificate metadata must include certificateType and title');
                 }
 
+                // Handle optional issuingAuthority - remove if empty
+                if (metadata.certificate.issuingAuthority === '' || metadata.certificate.issuingAuthority === null || metadata.certificate.issuingAuthority === undefined) {
+                    delete metadata.certificate.issuingAuthority;
+                }
+
                 // Convert string dates to Date objects if provided as strings
                 if (metadata.certificate.issueDate) {
                     if (typeof metadata.certificate.issueDate === 'string' && metadata.certificate.issueDate.trim() !== '') {
                         metadata.certificate.issueDate = new Date(metadata.certificate.issueDate);
+                    } else if (metadata.certificate.issueDate === '' || metadata.certificate.issueDate === null) {
+                        // Remove empty or null issueDate
+                        delete metadata.certificate.issueDate;
                     }
                 }
                 if (metadata.certificate.expiryDate) {

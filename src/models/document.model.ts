@@ -88,8 +88,8 @@ export interface IDocument extends DocumentM {
         certificate?: {
             certificateType: 'Academic' | 'Experience' | 'Skill' | 'IdentityProof'; // Added IdentityProof
             title: string; // e.g., 'B.Tech Computer Science', 'Aadhaar Card'
-            issuingAuthority: string; // e.g., 'University of XYZ', 'UIDAI'
-            issueDate: Date; // Date certificate or ID was issued
+            issuingAuthority?: string; // e.g., 'University of XYZ', 'UIDAI' (Optional)
+            issueDate?: Date; // Date certificate or ID was issued (Optional)
             expiryDate?: Date; // Optional, for IDs like Passport
             certificateId?: string; // Unique ID from issuer (e.g., Aadhaar number, Passport number)
             idDetails?: { // For IdentityProof-specific metadata
@@ -273,8 +273,6 @@ const documentSchema = new Schema<IDocument>(
                             value.certificate &&
                             value.certificate.certificateType &&
                             value.certificate.title &&
-                            value.certificate.issuingAuthority &&
-                            value.certificate.issueDate &&
                             (value.certificate.certificateType === 'Academic' ? value.certificate.academicDetails && value.certificate.academicDetails.qualificationType && value.certificate.academicDetails.institution : true) &&
                             (value.certificate.certificateType === 'Experience' ? value.certificate.experienceDetails && value.certificate.experienceDetails.companyName && value.certificate.experienceDetails.startDate : true) &&
                             (value.certificate.certificateType === 'Skill' ? value.certificate.skillDetails && value.certificate.skillDetails.skillName : true) &&

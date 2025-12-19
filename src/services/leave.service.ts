@@ -10,6 +10,7 @@ import { emailService } from './email.service';
 import { validateLeaveTypeForCountry } from '../utilis/leave-type-constants';
 import { ShiftAssignment, IShiftAssignment } from '../models/shift.model';
 import { HolidayCalendar } from '../models/holiday-calendar.model';
+import { calculateBusinessDays } from '../utilis/dates';
 
 export interface ILeaveCreate {
   userId: string | Types.ObjectId;
@@ -34,6 +35,13 @@ export interface ILeaveCreate {
     excludedHolidays?: Date[];
     totalCalendarDays: number;
     actualDays: number;
+  };
+  // Apply on behalf feature
+  appliedOnBehalf?: boolean;
+  appliedBy?: {
+    _id: string | Types.ObjectId;
+    name: string;
+    email: string;
   };
 }
 
@@ -97,7 +105,7 @@ export class LeaveService extends BaseService {
     // Normalize dates to YYYY-MM-DD format for comparison (ignore time)
     const holidayDateObj = new Date(holidayDate);
     const holidayDateStr = holidayDateObj.toISOString().split('T')[0];
-    
+
     const matchingHoliday = calendar.holidays.find((h) => {
       const hDateObj = new Date(h.date);
       const hDateStr = hDateObj.toISOString().split('T')[0];
@@ -111,7 +119,7 @@ export class LeaveService extends BaseService {
         const hDateStr = hDateObj.toISOString().split('T')[0];
         return hDateStr === holidayDateStr;
       });
-      
+
       if (dateExists) {
         return { isValid: false, error: `The selected date (${holidayDateStr}) exists in your calendar but is not marked as an optional holiday. Only dates marked as "optional" in the holiday calendar can be requested.` };
       } else {
@@ -165,7 +173,7 @@ export class LeaveService extends BaseService {
   ): Promise<IShiftAssignment | null> {
     const startDateOnly = new Date(startDate);
     startDateOnly.setUTCHours(0, 0, 0, 0);
-    
+
     const endDateOnly = new Date(endDate);
     endDateOnly.setUTCHours(23, 59, 59, 999);
 
@@ -192,13 +200,13 @@ export class LeaveService extends BaseService {
   private calculateTotalCalendarDays(startDate: Date, endDate: Date): number {
     const start = new Date(startDate);
     start.setUTCHours(0, 0, 0, 0);
-    
+
     const end = new Date(endDate);
     end.setUTCHours(23, 59, 59, 999);
 
     const diffTime = end.getTime() - start.getTime();
     const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1; // +1 to include both start and end dates
-    
+
     return diffDays;
   }
 
@@ -223,7 +231,7 @@ export class LeaveService extends BaseService {
 
     const start = new Date(startDate);
     start.setUTCHours(0, 0, 0, 0);
-    
+
     const end = new Date(endDate);
     end.setUTCHours(23, 59, 59, 999);
 
@@ -271,7 +279,7 @@ export class LeaveService extends BaseService {
   ): number {
     const start = new Date(startDate);
     start.setUTCHours(0, 0, 0, 0);
-    
+
     const end = new Date(endDate);
     end.setUTCHours(23, 59, 59, 999);
 
@@ -290,12 +298,12 @@ export class LeaveService extends BaseService {
     while (currentDate <= end) {
       const dayOfWeek = currentDate.getDay(); // 0 = Sunday, 6 = Saturday
       const currentTime = currentDate.getTime();
-      
+
       // Check if the day is not a weekend and not a mandatory holiday
       if (!weekendDays.includes(dayOfWeek) && !holidayDatesSet.has(currentTime)) {
         workingDays++;
       }
-      
+
       // Move to next day
       currentDate.setDate(currentDate.getDate() + 1);
     }
@@ -319,7 +327,7 @@ export class LeaveService extends BaseService {
   ): { excludedDates: Date[]; excludedHolidays: Date[] } {
     const start = new Date(startDate);
     start.setUTCHours(0, 0, 0, 0);
-    
+
     const end = new Date(endDate);
     end.setUTCHours(23, 59, 59, 999);
 
@@ -345,13 +353,13 @@ export class LeaveService extends BaseService {
       if (weekendDays.includes(dayOfWeek)) {
         excludedDates.push(currentDateCopy);
       }
-      
+
       // Check if it's a mandatory holiday
       if (holidayDatesSet.has(currentTime)) {
         excludedDates.push(currentDateCopy);
         excludedHolidays.push(currentDateCopy);
       }
-      
+
       // Move to next day
       currentDate.setDate(currentDate.getDate() + 1);
     }
@@ -386,6 +394,19 @@ export class LeaveService extends BaseService {
         name: approver.name,
         email: approver.email,
       };
+    }
+
+    // Ensure appliedOnBehalf and related fields are explicitly set (for consistency with WFH)
+    // This ensures these fields are always included in the JSON response
+    // Mongoose/JSON.stringify omits undefined values, so we set them to false explicitly if undefined
+    if (leave.appliedOnBehalf === undefined) {
+      leave.appliedOnBehalf = false;
+    }
+    if (leave.managerApproved === undefined) {
+      leave.managerApproved = false;
+    }
+    if (leave.adminApproved === undefined) {
+      leave.adminApproved = false;
     }
 
     return leave;
@@ -438,7 +459,7 @@ export class LeaveService extends BaseService {
     if (search) {
       // Escape special regex characters in search string
       const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      
+
       // Search in document fields (leaveType, reason, status)
       const searchConditions: any[] = [
         { leaveType: { $regex: escapedSearch, $options: 'i' } },
@@ -470,7 +491,7 @@ export class LeaveService extends BaseService {
       // This ensures search works correctly with date filters and other filters
       const existingFilters = { ...query };
       delete existingFilters.$or;
-      
+
       query.$and = [
         existingFilters,
         { $or: searchConditions }
@@ -514,6 +535,17 @@ export class LeaveService extends BaseService {
           };
         }
 
+        // Ensure appliedOnBehalf fields are always present (for consistency with WFH)
+        if (leave.appliedOnBehalf === undefined) {
+          leave.appliedOnBehalf = false;
+        }
+        if (leave.managerApproved === undefined) {
+          leave.managerApproved = false;
+        }
+        if (leave.adminApproved === undefined) {
+          leave.adminApproved = false;
+        }
+
         return leave;
       })
     );
@@ -530,7 +562,7 @@ export class LeaveService extends BaseService {
     if (userId) filter.userId = userId;
     if (status) filter.status = status;
     if (leaveType) filter.leaveType = { $regex: `^${leaveType}$`, $options: 'i' }; // Case-insensitive exact match
-    
+
     // Handle date filters
     if (startDate || endDate) {
       filter.$or = [
@@ -553,7 +585,7 @@ export class LeaveService extends BaseService {
     if (search) {
       // Escape special regex characters in search string
       const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      
+
       // Search in document fields (leaveType, reason, appliedTo.name, status)
       const searchConditions: any[] = [
         { leaveType: { $regex: escapedSearch, $options: 'i' } },
@@ -627,7 +659,59 @@ export class LeaveService extends BaseService {
           };
         }
 
-        return leave;
+        // Ensure appliedOnBehalf fields are always present (for consistency with WFH)
+        if (leave.appliedOnBehalf === undefined) {
+          leave.appliedOnBehalf = false;
+        }
+        if (leave.managerApproved === undefined) {
+          leave.managerApproved = false;
+        }
+        if (leave.adminApproved === undefined) {
+          leave.adminApproved = false;
+        }
+
+        // Convert to plain object to ensure proper JSON serialization
+        // This fixes issues with appliedTo showing as "[object Object]" and ensures all fields are included
+        const leaveObj: any = leave.toObject ? leave.toObject() : { ...leave };
+
+        // Ensure appliedTo is properly serialized (it's stored as an object in the model)
+        if (leaveObj.appliedTo && typeof leaveObj.appliedTo === 'object') {
+          leaveObj.appliedTo = {
+            _id: leaveObj.appliedTo._id?.toString() || leaveObj.appliedTo._id || '',
+            name: leaveObj.appliedTo.name || ''
+          };
+        }
+
+        // Ensure appliedBy is properly serialized if it exists
+        if (leaveObj.appliedBy && typeof leaveObj.appliedBy === 'object') {
+          leaveObj.appliedBy = {
+            _id: leaveObj.appliedBy._id?.toString() || leaveObj.appliedBy._id || '',
+            name: leaveObj.appliedBy.name || '',
+            email: leaveObj.appliedBy.email || ''
+          };
+        }
+
+        // Ensure user field is included
+        if (!leaveObj.user && user) {
+          leaveObj.user = {
+            name: user.name,
+            email: user.email
+          };
+        }
+
+        // Ensure all date fields are properly formatted (convert Date to string for JSON)
+        if (leaveObj.startDate) {
+          leaveObj.startDate = leaveObj.startDate instanceof Date
+            ? leaveObj.startDate.toISOString().split('T')[0]
+            : leaveObj.startDate;
+        }
+        if (leaveObj.endDate) {
+          leaveObj.endDate = leaveObj.endDate instanceof Date
+            ? leaveObj.endDate.toISOString().split('T')[0]
+            : leaveObj.endDate;
+        }
+
+        return leaveObj as ILeave;
       })
     );
     console.log(populatedLeaves);
@@ -646,7 +730,7 @@ export class LeaveService extends BaseService {
     // Ensure weekendExclusion is not passed from frontend - it will be calculated by backend
     // Remove any weekendExclusion that might have been passed
     delete leaveData.weekendExclusion;
-    
+
     // noOfDays will be calculated by backend - ignore any value passed from frontend
     // It will be set based on:
     // - Half-day leaves: 0.5
@@ -656,6 +740,68 @@ export class LeaveService extends BaseService {
     const user = await User.findById(leaveData.userId).select('country name email holidayCalendarId');
     if (!user) {
       throw new Error('User not found');
+    }
+
+    // VALIDATION: 3-day rule for employee self-application (excluding weekends)
+    // If employee is applying themselves (not admin on behalf), check if > 3 business days have passed
+    const currentUser = this.context?.user;
+    const isAdmin = currentUser && (currentUser.role === 'admin' || (currentUser as any).isSuperAdmin);
+    const isApplyingForSelf = currentUser && currentUser._id.toString() === (typeof leaveData.userId === 'string' ? leaveData.userId : leaveData.userId.toString());
+
+    // Only validate 3-day rule if employee is applying for themselves (not admin applying on behalf)
+    if (!leaveData.appliedOnBehalf && !isAdmin && isApplyingForSelf) {
+      const leaveStartDate = new Date(leaveData.startDate);
+      leaveStartDate.setUTCHours(0, 0, 0, 0);
+
+      const today = new Date();
+      today.setUTCHours(23, 59, 59, 999);
+
+      // Get shift assignment to determine weekend days
+      const userIdObj = typeof leaveData.userId === 'string'
+        ? new Types.ObjectId(leaveData.userId)
+        : leaveData.userId;
+
+      const shiftAssignment = await this.getShiftAssignmentForDateRange(
+        userIdObj,
+        leaveStartDate,
+        leaveStartDate
+      );
+
+      const weekendDays = shiftAssignment?.weekendDays && shiftAssignment.weekendDays.length > 0
+        ? shiftAssignment.weekendDays
+        : [0, 6]; // Default: Sunday and Saturday
+
+      // Calculate business days from leave start date to today (excluding weekends)
+      const businessDaysPassed = calculateBusinessDays(leaveStartDate, today, weekendDays);
+
+      if (businessDaysPassed > 3) {
+        throw new Error(
+          `You cannot apply for leave after 3 business days have passed. ` +
+          `${businessDaysPassed} business days have passed since the leave date. ` +
+          `Please contact your admin to apply on your behalf.`
+        );
+      }
+    }
+
+    // Security check: Only admins can set appliedOnBehalf = true
+    if (leaveData.appliedOnBehalf && !isAdmin) {
+      throw new Error('Only admins can apply for leave on behalf of employees. Please use the regular leave application endpoint.');
+    }
+
+    // If applied on behalf, set the appliedBy information
+    if (leaveData.appliedOnBehalf && isAdmin && currentUser) {
+      leaveData.appliedBy = {
+        _id: currentUser._id,
+        name: currentUser.name,
+        email: currentUser.email || ''
+      };
+    } else if (!leaveData.appliedOnBehalf && currentUser) {
+      // If not applied on behalf, set appliedBy to the employee themselves
+      leaveData.appliedBy = {
+        _id: currentUser._id,
+        name: currentUser.name,
+        email: currentUser.email || ''
+      };
     }
 
     // If leaveType is not provided, fetch it from Lov using leaveTypeId
@@ -692,16 +838,16 @@ export class LeaveService extends BaseService {
       // Validate that startDate and endDate are the same (single date only)
       const startDateStr = new Date(leaveData.startDate).toDateString();
       const endDateStr = new Date(leaveData.endDate).toDateString();
-      
+
       if (startDateStr !== endDateStr) {
         throw new Error('Restricted holiday must be for a single date (startDate must equal endDate)');
       }
 
       // Validate that the date is an optional holiday in the calendar
-      const userIdObj = typeof leaveData.userId === 'string' 
-        ? new Types.ObjectId(leaveData.userId) 
+      const userIdObj = typeof leaveData.userId === 'string'
+        ? new Types.ObjectId(leaveData.userId)
         : leaveData.userId;
-      
+
       const validation = await this.validateOptionalHoliday(userIdObj, leaveData.startDate);
       if (!validation.isValid) {
         throw new Error(validation.error || 'The selected date is not an optional holiday in your calendar');
@@ -737,7 +883,7 @@ export class LeaveService extends BaseService {
       // Ensure it's full-day (not half-day)
       leaveData.leaveDuration = 'full-day';
       leaveData.halfDayType = undefined;
-      
+
       // Skip weekend/holiday exclusion for restricted holidays
       // They are treated as regular working days that can be taken off
       console.log(`✅ [Restricted Holiday] Validated optional holiday: ${validation.holidayName} on ${leaveData.startDate.toISOString().split('T')[0]}`);
@@ -746,7 +892,7 @@ export class LeaveService extends BaseService {
       // Leave cannot span across multiple years - user must apply for separate leaves for each year
       const startYear = new Date(leaveData.startDate).getFullYear();
       const endYear = new Date(leaveData.endDate).getFullYear();
-      
+
       if (startYear !== endYear) {
         throw new Error(
           `Leave cannot span across multiple years. ` +
@@ -908,8 +1054,8 @@ export class LeaveService extends BaseService {
     // Calculate noOfDays excluding weekends and mandatory holidays for full-day leaves
     // Skip calculation for restricted_holiday (already set to 1) and half-day leaves (already set to 0.5)
     if (leaveData.leaveType !== 'restricted_holiday' && leaveData.leaveDuration !== 'half-day') {
-      const userIdObj = typeof leaveData.userId === 'string' 
-        ? new Types.ObjectId(leaveData.userId) 
+      const userIdObj = typeof leaveData.userId === 'string'
+        ? new Types.ObjectId(leaveData.userId)
         : leaveData.userId;
 
       // Get active shift assignment for the date range
@@ -975,9 +1121,54 @@ export class LeaveService extends BaseService {
         totalCalendarDays: totalCalendarDays,
         actualDays: workingDays
       };
-      
+
       console.log(`✅ [Weekend & Holiday Exclusion] Calculated ${workingDays} working days (excluding weekends: ${weekendDays.join(', ')} and ${mandatoryHolidays.length} mandatory holiday(s)) for leave from ${leaveData.startDate.toISOString().split('T')[0]} to ${leaveData.endDate.toISOString().split('T')[0]}`);
       console.log(`📅 [Exclusion] Excluded ${excludedDates.length} date(s) total (${excludedDates.length - excludedHolidays.length} weekend(s) + ${excludedHolidays.length} holiday(s))`);
+    }
+
+    // VALIDATION: Check leave balance BEFORE creating the leave (for leave types that require balance)
+    // This check happens AFTER noOfDays is calculated so we can validate against the actual days requested
+    // Skip balance check for leave types that don't require balance: lossOfPay, otherUnpaid
+    // Skip balance check for restricted_holiday (has its own annual limit check)
+    const leaveTypesRequiringBalance = ['annual', 'sick', 'compOff', 'otherPaid', 'maternity', 'work_from_home'];
+    if (leaveTypesRequiringBalance.includes(leaveData.leaveType)) {
+      const userIdObj = typeof leaveData.userId === 'string'
+        ? new Types.ObjectId(leaveData.userId)
+        : leaveData.userId;
+      const year = new Date(leaveData.startDate).getFullYear();
+
+      // Get leave summary to check balance
+      const leaveSummary = await this.leaveSummaryService.getLeaveSummary(userIdObj, year);
+
+      // Map leave type to category key (handle work_from_home -> workFromHome)
+      const categoryTypeKey = leaveData.leaveType === 'work_from_home'
+        ? 'workFromHome'
+        : leaveData.leaveType;
+
+      const category = leaveSummary[categoryTypeKey as keyof typeof leaveSummary] as any;
+
+      if (!category) {
+        throw new Error(`Leave category '${leaveData.leaveType}' not found in leave summary`);
+      }
+
+      const alloted = category.alloted || 0;
+      const availed = category.availed || 0;
+      const remaining = alloted - availed;
+      const requestedDays = leaveData.noOfDays || 0;
+
+      // Check if sufficient balance exists
+      if (remaining < requestedDays) {
+        const leaveTypeLabel = leaveData.leaveType === 'work_from_home'
+          ? 'Work From Home'
+          : leaveData.leaveType.charAt(0).toUpperCase() + leaveData.leaveType.slice(1);
+        throw new Error(
+          `Insufficient ${leaveTypeLabel} leave balance. ` +
+          `Available: ${remaining.toFixed(1)} days, Requested: ${requestedDays.toFixed(1)} days. ` +
+          `Please check your leave balance or contact your admin.`
+        );
+      }
+
+      console.log(`✅ [Balance Check] ${leaveData.leaveType}: Available ${remaining.toFixed(1)} days, Requested ${requestedDays.toFixed(1)} days - Sufficient balance`);
     }
 
     console.log(leaveData, 'leaveData 2 data');
@@ -1010,6 +1201,8 @@ export class LeaveService extends BaseService {
       reason: leave.reason,
       approvalLink: `${appUrl}/manager/actions/leaves/${leave._id}`,
       companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS',
+      appliedOnBehalf: leave.appliedOnBehalf || false,
+      appliedByName: leave.appliedBy?.name || '',
     });
 
     await emailService.sendEmail({
@@ -1033,7 +1226,7 @@ export class LeaveService extends BaseService {
 
       if (admins && admins.length > 0) {
         const adminEmails = admins.map(admin => admin.email).filter(Boolean);
-        
+
         if (adminEmails.length > 0 && applier) {
           const fromDateFormatted = leave.startDate.toLocaleDateString('en-US', {
             weekday: 'long',
@@ -1053,9 +1246,13 @@ export class LeaveService extends BaseService {
           const requestType = isRestrictedHoliday ? 'holiday' : 'leave';
           const requestTypeCapitalized = isRestrictedHoliday ? 'Holiday' : 'Leave';
 
+          const appliedOnBehalfText = leave.appliedOnBehalf
+            ? `\n- Applied On Behalf: Yes (Applied by: ${leave.appliedBy?.name || 'Admin'})`
+            : '';
+
           const adminEmailText = `Dear Admin,
 
-A ${requestType} request has been submitted by ${applier.name}.
+A ${requestType} request has been submitted${leave.appliedOnBehalf ? ' on behalf of' : ' by'} ${applier.name}.
 
 Request Details:
 - Employee: ${applier.name} (${applier.email || 'N/A'})
@@ -1064,7 +1261,7 @@ Request Details:
 - To Date: ${toDateFormatted}
 - Total Days: ${leave.noOfDays}
 - Reason: ${leave.reason || 'N/A'}
-- Status: Pending
+- Status: Pending${leave.appliedOnBehalf ? ' (Can be approved by Manager or Admin)' : ''}${appliedOnBehalfText}
 - Manager: ${manager?.name || 'N/A'}
 
 This is an automated notification for your records.
@@ -1114,80 +1311,186 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
     if (leave.status !== 'Pending') {
       throw new Error('Leave request has already been processed');
     }
-    
-    console.log(updateData, 'updateData in update Status');
-    leave.status = updateData.status;
-    leave.approvedById = updateData.approvedById;
-    console.log(updateData.approvedBy, 'updateData.approvedBy');
-    console.log(updateData.approvedBy?._id, 'updateData.approvedBy?.id');
-    console.log(updateData.approvedBy?.name, 'updateData.approvedBy?.name');
-    console.log(updateData.approvedBy?.email, 'updateData.approvedBy?.email');
-    leave.approvedBy = updateData.approvedBy
-      ? {
-        _id: typeof updateData.approvedBy._id === 'string'
-          ? updateData.approvedBy._id
-          : updateData.approvedBy._id.toString(),
-        name: updateData.approvedBy.name,
-        email: updateData.approvedBy.email,
-      }
-      : undefined;
 
-    leave.approvedAt = new Date();
+    const currentUser = this.context?.user;
+    const isAdmin = currentUser && (currentUser.role === 'admin' || (currentUser as any).isSuperAdmin);
+    const isManager = currentUser && leave.appliedTo?._id === currentUser._id.toString();
+
+    // Handle dual approval for applied on behalf
+    if (leave.appliedOnBehalf) {
+      // If rejected, reject immediately
+      if (updateData.status === 'Rejected') {
+        leave.status = 'Rejected';
+        leave.approvedById = updateData.approvedById;
+        leave.approvedBy = updateData.approvedBy
+          ? {
+            _id: typeof updateData.approvedBy._id === 'string'
+              ? updateData.approvedBy._id
+              : updateData.approvedBy._id.toString(),
+            name: updateData.approvedBy.name,
+            email: updateData.approvedBy.email,
+          }
+          : undefined;
+        leave.approvedAt = new Date();
+        if (updateData.remarks) leave.remarks = updateData.remarks;
+
+        // Set who rejected (manager or admin)
+        if (isManager) {
+          leave.managerApproved = false;
+          leave.managerApprovedById = updateData.approvedById;
+          leave.managerApprovedAt = new Date();
+        } else if (isAdmin) {
+          leave.adminApproved = false;
+          leave.adminApprovedById = updateData.approvedById;
+          leave.adminApprovedAt = new Date();
+        }
+      } else if (updateData.status === 'Approved') {
+        // For approval, either manager OR admin can approve (single approval needed)
+        if (isManager && !leave.managerApproved) {
+          // Manager approves - immediately approve
+          leave.managerApproved = true;
+          leave.managerApprovedById = updateData.approvedById;
+          leave.managerApprovedAt = new Date();
+          leave.status = 'Approved';
+          leave.approvedById = updateData.approvedById;
+          leave.approvedBy = updateData.approvedBy
+            ? {
+              _id: typeof updateData.approvedBy._id === 'string'
+                ? updateData.approvedBy._id
+                : updateData.approvedBy._id.toString(),
+              name: updateData.approvedBy.name,
+              email: updateData.approvedBy.email,
+            }
+            : undefined;
+          leave.approvedAt = new Date();
+        } else if (isAdmin && !leave.adminApproved) {
+          // Admin approves - immediately approve
+          leave.adminApproved = true;
+          leave.adminApprovedById = updateData.approvedById;
+          leave.adminApprovedAt = new Date();
+          leave.status = 'Approved';
+          leave.approvedById = updateData.approvedById;
+          leave.approvedBy = updateData.approvedBy
+            ? {
+              _id: typeof updateData.approvedBy._id === 'string'
+                ? updateData.approvedBy._id
+                : updateData.approvedBy._id.toString(),
+              name: updateData.approvedBy.name,
+              email: updateData.approvedBy.email,
+            }
+            : undefined;
+          leave.approvedAt = new Date();
+        } else {
+          throw new Error('You have already approved this leave request');
+        }
+      }
+    } else {
+      // Normal approval flow (not applied on behalf)
+      console.log(updateData, 'updateData in update Status');
+      leave.status = updateData.status;
+      leave.approvedById = updateData.approvedById;
+      console.log(updateData.approvedBy, 'updateData.approvedBy');
+      console.log(updateData.approvedBy?._id, 'updateData.approvedBy?.id');
+      console.log(updateData.approvedBy?.name, 'updateData.approvedBy?.name');
+      console.log(updateData.approvedBy?.email, 'updateData.approvedBy?.email');
+      leave.approvedBy = updateData.approvedBy
+        ? {
+          _id: typeof updateData.approvedBy._id === 'string'
+            ? updateData.approvedBy._id
+            : updateData.approvedBy._id.toString(),
+          name: updateData.approvedBy.name,
+          email: updateData.approvedBy.email,
+        }
+        : undefined;
+
+      leave.approvedAt = new Date();
+    }
+
     // leave.noOfDays = updateData.noOfDays;
     if (updateData.remarks) leave.remarks = updateData.remarks;
     await leave.save();
 
     // Send email notification to employee (the person who applied)
-    try {
-      const employee: IUser = await User.findById(new Types.ObjectId(leave.userId)).select('name email');
-      const approver: IUser = await User.findById((leave.approvedBy?._id)).select('name email');
+    // Only send email if status is 'Approved' or 'Rejected'
+    // For applied on behalf: Either manager or admin can approve, and email is sent immediately
+    const shouldSendEmail = leave.status === 'Approved' || leave.status === 'Rejected';
 
-      if (employee && employee.email) {
-        const fromDateFormatted = leave.startDate.toLocaleDateString('en-US', {
-          weekday: 'long',
-          year: 'numeric',
-          month: 'long',
-          day: 'numeric'
-        });
-        const toDateFormatted = leave.endDate.toLocaleDateString('en-US', {
-          weekday: 'long',
-          year: 'numeric',
-          month: 'long',
-          day: 'numeric'
-        });
+    if (shouldSendEmail) {
+      try {
+        const employee: IUser = await User.findById(new Types.ObjectId(leave.userId)).select('name email');
+        // For applied on behalf, get the approver (manager or admin who approved)
+        // For rejected, get who rejected
+        // For normal approval, get the approver
+        let approver: IUser | null = null;
+        if (leave.appliedOnBehalf && leave.status === 'Approved') {
+          // Get who approved (manager or admin - either can approve)
+          approver = leave.adminApprovedById
+            ? (await User.findById(leave.adminApprovedById).select('name email')) as IUser | null
+            : leave.managerApprovedById
+              ? (await User.findById(leave.managerApprovedById).select('name email')) as IUser | null
+              : null;
+        } else if (leave.appliedOnBehalf && leave.status === 'Rejected') {
+          // Get who rejected (manager or admin)
+          approver = leave.approvedById ? (await User.findById(leave.approvedById).select('name email')) as IUser | null : null;
+        } else {
+          // Normal approval/rejection
+          approver = leave.approvedById ? (await User.findById(leave.approvedById).select('name email')) as IUser | null : null;
+        }
 
-        // For restricted_holiday, use "holiday" terminology instead of "leave"
-        const isRestrictedHoliday = leave.leaveType === 'restricted_holiday';
-        const requestType = isRestrictedHoliday ? 'holiday' : 'leave';
-        const requestTypeCapitalized = isRestrictedHoliday ? 'Holiday' : 'Leave';
+        if (employee && employee.email) {
+          const fromDateFormatted = leave.startDate.toLocaleDateString('en-US', {
+            weekday: 'long',
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric'
+          });
+          const toDateFormatted = leave.endDate.toLocaleDateString('en-US', {
+            weekday: 'long',
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric'
+          });
 
-        const htmlContent = generateEmailTemplate('leaveApprovalEmail', {
-          employeeName: employee.name,
-          approverName: approver?.name || 'Manager',
-          leaveType: leave.leaveType,
-          fromDate: fromDateFormatted,
-          toDate: toDateFormatted,
-          totalDays: leave.noOfDays,
-          remarks: leave.remarks || '',
-          status: leave.status, // 'Approved' or 'Rejected'
-          companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS',
-        });
+          // For restricted_holiday, use "holiday" terminology instead of "leave"
+          const isRestrictedHoliday = leave.leaveType === 'restricted_holiday';
+          const requestType = isRestrictedHoliday ? 'holiday' : 'leave';
+          const requestTypeCapitalized = isRestrictedHoliday ? 'Holiday' : 'Leave';
 
-        const emailText = `Dear ${employee.name},
+          const htmlContent = generateEmailTemplate('leaveApprovalEmail', {
+            employeeName: employee.name,
+            approverName: approver?.name || 'Manager',
+            leaveType: leave.leaveType,
+            fromDate: fromDateFormatted,
+            toDate: toDateFormatted,
+            totalDays: leave.noOfDays,
+            remarks: leave.remarks || '',
+            status: leave.status, // 'Approved' or 'Rejected'
+            companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS',
+            appliedOnBehalf: leave.appliedOnBehalf || false,
+            appliedByName: leave.appliedBy?.name || '',
+          });
+
+          const appliedByText = leave.appliedOnBehalf && leave.appliedBy?.name
+            ? `\n- Applied By: ${leave.appliedBy.name} (on behalf)`
+            : '';
+
+          const emailText = `Dear ${employee.name},
 
 Your ${requestType} request has been ${leave.status.toLowerCase()} by ${approver?.name || 'Manager'}.
+${leave.appliedOnBehalf && leave.appliedBy?.name ? `\nNote: This request was applied on your behalf by ${leave.appliedBy.name}.` : ''}
 
 ${requestTypeCapitalized} Details:
 - ${requestTypeCapitalized} Type: ${leave.leaveType}
 - From Date: ${fromDateFormatted}
 - To Date: ${toDateFormatted}
 - Total Days: ${leave.noOfDays}
-- Reason: ${leave.reason || 'N/A'}
+- Reason: ${leave.reason || 'N/A'}${appliedByText}
+- Approved By: ${approver?.name || 'Manager'}
 ${leave.remarks ? `- Remarks: ${leave.remarks}` : ''}
 
-${leave.status === 'Approved' 
-  ? `Your ${requestType} request has been approved. ${isRestrictedHoliday ? 'Enjoy your holiday!' : 'Please ensure you have completed all pending work before your leave period.'}`
-  : `Unfortunately, your ${requestType} request has been rejected. If you have any questions, please contact your manager.`}
+${leave.status === 'Approved'
+              ? `Your ${requestType} request has been approved. ${isRestrictedHoliday ? 'Enjoy your holiday!' : 'Please ensure you have completed all pending work before your leave period.'}`
+              : `Unfortunately, your ${requestType} request has been rejected. If you have any questions, please contact your manager.`}
 
 Thank you for your understanding.
 
@@ -1195,22 +1498,26 @@ Regards,
 ${approver?.name || 'Manager'}
 ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
 
-        await emailService.sendEmail({
-          body: {
-            to: employee.email,
-            subject: `Your ${requestTypeCapitalized} Request has been ${leave.status}`,
-            text: emailText,
-            html: htmlContent,
-          }
-        });
+          await emailService.sendEmail({
+            body: {
+              to: employee.email,
+              subject: `Your ${requestTypeCapitalized} Request has been ${leave.status}`,
+              text: emailText,
+              html: htmlContent,
+            }
+          });
 
-        console.log(`Email notification sent to ${employee.email} for leave request ${leave._id} - Status: ${leave.status}`);
-      } else {
-        console.warn(`Cannot send email: Employee not found or email missing for userId: ${leave.userId}`);
+          console.log(`Email notification sent to ${employee.email} for leave request ${leave._id} - Status: ${leave.status}`);
+        } else {
+          console.warn(`Cannot send email: Employee not found or email missing for userId: ${leave.userId}`);
+        }
+      } catch (emailError) {
+        console.error('Failed to send email to employee for leave request:', emailError);
+        // Don't fail the request if email fails - log the error but continue
       }
-    } catch (emailError) {
-      console.error('Failed to send email to employee for leave request:', emailError);
-      // Don't fail the request if email fails - log the error but continue
+    } else {
+      // Manager approved first (for applied on behalf) - don't send email yet, wait for admin approval
+      console.log(`Manager approved leave ${leave._id} (applied on behalf). Waiting for admin approval before sending email.`);
     }
 
     // Send email notification to all admins
@@ -1241,7 +1548,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
         });
 
         const adminEmails = admins.map(admin => admin.email).filter(Boolean);
-        
+
         if (adminEmails.length > 0) {
           // For restricted_holiday, use "holiday" terminology instead of "leave"
           const isRestrictedHoliday = leave.leaveType === 'restricted_holiday';
@@ -1377,7 +1684,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
       // Optionally log the rejection/cancellation event
       console.log(`Leave request ${leave._id} ${updateData.status.toLowerCase()} by user ${updateData.rejectedById || updateData.approvedById}`);
     }
-    
+
     // NOTE: When status is 'Approved', we do NOT call decreaseLeaveBalance
     // because the balance was already increased when the leave was created,
     // and we want to keep it that way for approved leaves
@@ -1482,7 +1789,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
     if (search) {
       // Escape special regex characters in search string
       const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      
+
       // Search in document fields (leaveType, reason, appliedTo.name, status)
       const searchConditions: any[] = [
         { leaveType: { $regex: escapedSearch, $options: 'i' } },
@@ -1556,6 +1863,17 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
             name: approver.name,
             email: approver.email,
           };
+        }
+
+        // Ensure appliedOnBehalf fields are always present (for consistency with WFH)
+        if (leave.appliedOnBehalf === undefined) {
+          leave.appliedOnBehalf = false;
+        }
+        if (leave.managerApproved === undefined) {
+          leave.managerApproved = false;
+        }
+        if (leave.adminApproved === undefined) {
+          leave.adminApproved = false;
         }
 
         return leave;
