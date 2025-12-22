@@ -109,6 +109,7 @@ interface IUserCreate {
   pfNumber?: string;
   uanNumber?: string;
   familyPfNumber?: string;
+  pfJoinDate?: Date; // Optional - PF join date
   experienceDetails?: IExperienceDetails[];
 }
 
@@ -171,6 +172,7 @@ interface IUserUpdate {
   pfNumber?: string;
   uanNumber?: string;
   familyPfNumber?: string;
+  pfJoinDate?: Date; // Optional - PF join date
   experienceDetails?: IExperienceDetails[];
 }
 
@@ -898,6 +900,18 @@ export class UserService extends BaseService {
       }
     }
 
+    // ✅ FIX: Handle empty emergencyContact object - convert to undefined
+    if (data.emergencyContact && typeof data.emergencyContact === 'object') {
+      const hasAnyValue = Object.values(data.emergencyContact).some(
+        value => value !== null && value !== undefined && value !== ''
+      );
+      if (!hasAnyValue) {
+        // Empty object - remove it to avoid validation issues
+        delete (data as any).emergencyContact;
+        console.log('🔄 Service: Removed empty emergencyContact object');
+      }
+    }
+
     // Log required fields specifically
     console.log('🔍 Required fields check:');
     console.log('  - name:', data.name, '(required:', !!data.name, ')');
@@ -1020,6 +1034,18 @@ export class UserService extends BaseService {
       } else if (typeof data.biometricId === 'string' && data.biometricId.trim() === '') {
         (data as any).biometricId = null;
         console.log('🔄 Service Update: Converted whitespace-only biometricId to null for non-UAE/India user');
+      }
+    }
+
+    // ✅ FIX: Handle empty emergencyContact object - convert to undefined
+    if (data.emergencyContact && typeof data.emergencyContact === 'object') {
+      const hasAnyValue = Object.values(data.emergencyContact).some(
+        value => value !== null && value !== undefined && value !== ''
+      );
+      if (!hasAnyValue) {
+        // Empty object - remove it to avoid validation issues
+        delete (data as any).emergencyContact;
+        console.log('🔄 Service Update: Removed empty emergencyContact object');
       }
     }
 

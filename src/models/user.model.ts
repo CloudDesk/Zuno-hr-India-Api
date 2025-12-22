@@ -168,6 +168,7 @@ export interface IUser extends Document {
   pfNumber?: string;
   uanNumber?: string;
   familyPfNumber?: string;
+  pfJoinDate?: Date; // Optional - PF join date
 
 }
 
@@ -628,6 +629,11 @@ const userSchema = new Schema<IUser>(
       trim: true,
       maxlength: 50,
       description: 'Family Provident Fund Number'
+    },
+    pfJoinDate: {
+      type: Date,
+      required: false,
+      description: 'PF join date (optional)'
     }
   },
   {

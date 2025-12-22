@@ -120,7 +120,12 @@ export class DocumentService extends BaseService {
             if (metadata.certificate.issuingAuthority === '' || metadata.certificate.issuingAuthority === null || metadata.certificate.issuingAuthority === undefined) {
                 delete metadata.certificate.issuingAuthority;
             }
-            
+
+            // Handle optional certificateId - remove if empty
+            if (metadata.certificate.certificateId === '' || metadata.certificate.certificateId === null || metadata.certificate.certificateId === undefined) {
+                delete metadata.certificate.certificateId;
+            }
+
             // Convert string dates to Date objects if provided as strings
             if (metadata.certificate.issueDate) {
                 if (typeof metadata.certificate.issueDate === 'string' && metadata.certificate.issueDate.trim() !== '') {
@@ -235,6 +240,11 @@ export class DocumentService extends BaseService {
                 // Handle optional issuingAuthority - remove if empty
                 if (metadata.certificate.issuingAuthority === '' || metadata.certificate.issuingAuthority === null || metadata.certificate.issuingAuthority === undefined) {
                     delete metadata.certificate.issuingAuthority;
+                }
+
+                // Handle optional certificateId - remove if empty
+                if (metadata.certificate.certificateId === '' || metadata.certificate.certificateId === null || metadata.certificate.certificateId === undefined) {
+                    delete metadata.certificate.certificateId;
                 }
 
                 // Convert string dates to Date objects if provided as strings

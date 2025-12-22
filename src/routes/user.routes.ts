@@ -196,6 +196,7 @@ const userResponseSchema = {
     pfNumber: { type: 'string' },
     uanNumber: { type: 'string' },
     familyPfNumber: { type: 'string' },
+    pfJoinDate: { type: 'string', format: 'date-time' },
     // New fields for UAE + external user support
     country: { type: 'string' },
     currency: { type: 'string' },
@@ -750,6 +751,11 @@ export const userRoutes: RouteHandler = async (
               maxLength: 50,
               description: 'Family Provident Fund Number'
             },
+            pfJoinDate: {
+              type: 'string',
+              format: 'date-time',
+              description: 'PF join date (optional)'
+            },
             bankDetails: bankDetailsSchema,
             governmentIds: governmentIdsSchema,
             academicDetails: academicDetailsSchema,
@@ -937,6 +943,11 @@ export const userRoutes: RouteHandler = async (
               type: 'string',
               maxLength: 50,
               description: 'Family Provident Fund Number'
+            },
+            pfJoinDate: {
+              type: 'string',
+              format: 'date-time',
+              description: 'PF join date (optional)'
             },
             // Employee detail fields (63-70)
             confirmationDate: {
