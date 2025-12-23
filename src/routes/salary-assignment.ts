@@ -2,6 +2,7 @@ import { FastifyInstance, } from "fastify";
 import { authenticate } from "../middleware/auth";
 import { ISalaryAssignmentCreate, ISalaryAssignmentUpdate } from '../services/salary-assignment.service'
 import { Types } from "mongoose";
+import { SalaryAssignment } from "../models/salary-assignments.model";
 
 
 export async function salaryAssignmenteRoutes(fastify: FastifyInstance): Promise<void> {
@@ -47,7 +48,39 @@ export async function salaryAssignmenteRoutes(fastify: FastifyInstance): Promise
     fastify.put('/:id', { preHandler: [authenticate] },
         async (request, reply) => {
             try {
-                const structure = await request.container!.salaryAssignmentService.update(request.body as ISalaryAssignmentUpdate);
+                const { id } = request.params as { id: string };
+                
+                // Validate ObjectId
+                if (!Types.ObjectId.isValid(id)) {
+                    return reply.status(400).send({
+                        success: false,
+                        error: { message: "Invalid salary assignment ID" },
+                    });
+                }
+
+                const assignmentId = new Types.ObjectId(id);
+                
+                // Fetch existing document to get employeeId if not provided in body
+                const existingAssignment = await SalaryAssignment.findById(assignmentId);
+                if (!existingAssignment) {
+                    return reply.status(404).send({
+                        success: false,
+                        error: { message: "Salary Assignment not found" },
+                    });
+                }
+
+                const body = request.body as any;
+                
+                // Merge the ID from URL params into the request body
+                // Use existing employeeId if not provided in body
+                const updateData: ISalaryAssignmentUpdate = {
+                    ...body,
+                    _id: assignmentId,
+                    employeeId: body.employeeId ? new Types.ObjectId(body.employeeId) : existingAssignment.employeeId,
+                    salaryStructureId: body.salaryStructureId ? new Types.ObjectId(body.salaryStructureId) : existingAssignment.salaryStructureId,
+                };
+
+                const structure = await request.container!.salaryAssignmentService.update(updateData);
                 return reply.send({
                     success: true,
                     data: structure,

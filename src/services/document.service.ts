@@ -510,9 +510,36 @@ export class DocumentService extends BaseService {
             // Role-based access control with improved scope names
             if (access === 'own') {
                 // Any role can access their own documents
-                query.employeeId = new Types.ObjectId(user._id.toString());
-
-                req.log.info({ userId: user._id, access }, 'Fetching own documents');
+                // If employeeId is provided in query, validate it matches the logged-in user
+                if (employeeId) {
+                    // If admin provides employeeId, allow them to query that employee (switch to global behavior)
+                    if (user.role.toLowerCase() === 'admin') {
+                        // Admin can query any employee even with access='own'
+                        const employeeExists = await User.findById(employeeId).lean();
+                        if (!employeeExists) {
+                            return reply.status(404).send({
+                                success: false,
+                                error: 'Employee not found'
+                            });
+                        }
+                        query.employeeId = new Types.ObjectId(employeeId);
+                        req.log.info({ userId: user._id, targetEmployeeId: employeeId, access }, 'Admin fetching documents for specific employee with access=own');
+                    } else {
+                        // Non-admin: employeeId must match logged-in user
+                        if (employeeId !== user._id.toString()) {
+                            return reply.status(403).send({
+                                success: false,
+                                error: 'Unauthorized: You can only access your own documents'
+                            });
+                        }
+                        query.employeeId = new Types.ObjectId(employeeId);
+                        req.log.info({ userId: user._id, access }, 'Fetching own documents with explicit employeeId');
+                    }
+                } else {
+                    // No employeeId provided, use logged-in user's ID
+                    query.employeeId = new Types.ObjectId(user._id.toString());
+                    req.log.info({ userId: user._id, access }, 'Fetching own documents');
+                }
             }
             else if (access === 'team') {
                 // Only managers can access team documents

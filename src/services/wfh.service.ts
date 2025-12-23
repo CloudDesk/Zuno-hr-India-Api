@@ -14,7 +14,7 @@ export interface IWFHCreate {
   startDate: Date;
   endDate: Date;
   remarks?: string;
-  reason: string;
+  reason?: string; // Optional field
   appliedTo?: {
     _id: string;
     name: string;
@@ -26,6 +26,13 @@ export interface IWFHCreate {
     name: string;
     email: string;
   };
+  // Document attachments (optional, for apply on behalf)
+  documents?: Array<{
+    fileName: string;
+    filePath: string;
+    uploadDate?: Date;
+    uploadedBy?: Types.ObjectId;
+  }>;
 }
 
 export interface IWFHQuery {

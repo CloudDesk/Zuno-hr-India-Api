@@ -43,6 +43,13 @@ export interface ILeaveCreate {
     name: string;
     email: string;
   };
+  // Document attachments (optional, for apply on behalf)
+  documents?: Array<{
+    fileName: string;
+    filePath: string;
+    uploadDate?: Date;
+    uploadedBy?: Types.ObjectId;
+  }>;
 }
 
 export interface ILeaveQuery {

@@ -39,6 +39,13 @@ export interface IWFH extends Document {
   adminApproved?: boolean; // Admin approval status
   adminApprovedById?: Types.ObjectId; // Admin who approved
   adminApprovedAt?: Date; // Admin approval timestamp
+  // Document attachments (optional, for apply on behalf)
+  documents?: Array<{
+    fileName: string;
+    filePath: string;
+    uploadDate: Date;
+    uploadedBy?: Types.ObjectId;
+  }>;
 }
 
 const wfhSchema = new Schema<IWFH>(
@@ -96,6 +103,13 @@ const wfhSchema = new Schema<IWFH>(
     },
     adminApprovedById: { type: Schema.Types.ObjectId, ref: 'User' },
     adminApprovedAt: Date,
+    // Document attachments (optional, for apply on behalf)
+    documents: [{
+      fileName: { type: String, required: true },
+      filePath: { type: String, required: true },
+      uploadDate: { type: Date, default: Date.now },
+      uploadedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+    }],
   },
   {
     timestamps: true,

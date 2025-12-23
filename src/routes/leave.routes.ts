@@ -6,6 +6,11 @@ import { ILeaveCreate, ILeaveQuery } from '../services/leave.service';
 import { leaveSummaryRoutes } from './leave-summary.routes';
 import { Leave } from '../models';
 import mongoose from 'mongoose';
+import { parseMultipartForm } from '../utilis/parseMultiPartForm';
+import { uploadFileToGCP } from '../utilis/gcpStorage';
+import * as fs from 'fs';
+import * as path from 'path';
+import { Types } from 'mongoose';
 
 export const leaveRoutes: RouteHandler = async (
   fastify: FastifyInstance,
@@ -148,57 +153,8 @@ export const leaveRoutes: RouteHandler = async (
       schema: {
         tags: ['Leave Management'],
         summary: 'Apply for leave on behalf of employee (Admin only)',
-        description: 'Admin can apply for leave on behalf of an employee after 3 business days',
-        body: {
-          type: 'object',
-          required: ['userId', 'leaveTypeId', 'startDate', 'endDate'],
-          properties: {
-            userId: {
-              type: 'string',
-              description: 'ID of the employee for whom leave is being applied'
-            },
-            leaveTypeId: {
-              type: 'string',
-              description: 'Type of leave being requested'
-            },
-            startDate: {
-              type: 'string',
-              format: 'date',
-              description: 'Leave start date (YYYY-MM-DD)'
-            },
-            endDate: {
-              type: 'string',
-              format: 'date',
-              description: 'Leave end date (YYYY-MM-DD)'
-            },
-            remarks: {
-              type: 'string',
-              description: 'Additional remarks for the leave request'
-            },
-            leaveType: {
-              type: 'string',
-              description: 'Leave type (optional, will be fetched from leaveTypeId if not provided)'
-            },
-            reason: {
-              type: 'string',
-              description: 'Reason for leave'
-            },
-            appliedTo: {
-              type: 'object',
-              description: 'Manager to whom leave is applied'
-            },
-            leaveDuration: {
-              type: 'string',
-              enum: ['full-day', 'half-day'],
-              description: 'Leave duration type (India only). Default: full-day'
-            },
-            halfDayType: {
-              type: 'string',
-              enum: ['first-half', 'second-half'],
-              description: 'Half-day type - required when leaveDuration is half-day (India only)'
-            },
-          },
-        },
+        description: 'Admin can apply for leave on behalf of an employee after 3 business days. Supports optional document uploads.',
+        consumes: ['multipart/form-data'],
         response: {
           201: {
             type: 'object',
@@ -215,6 +171,7 @@ export const leaveRoutes: RouteHandler = async (
                   status: { type: 'string', enum: ['Pending', 'Approved', 'Rejected'] },
                   appliedOnBehalf: { type: 'boolean' },
                   appliedBy: { type: 'object' },
+                  documents: { type: 'array' },
                 }
               }
             }
@@ -236,39 +193,180 @@ export const leaveRoutes: RouteHandler = async (
           });
         }
 
-        const body = request.body as {
-          userId: string;
-          leaveTypeId: string;
-          startDate: string;
-          endDate: string;
-          remarks?: string;
-          leaveType?: string;
-          reason: string;
-          appliedTo: {
-            _id: string;
-            name: string;
-          };
-          leaveDuration?: 'full-day' | 'half-day';
-          halfDayType?: 'first-half' | 'second-half';
-        };
+        // Parse multipart form data or JSON body
+        let body: any;
+        let files: any[] = [];
+        
+        // Check if request has multipart content
+        const contentType = request.headers['content-type'] || '';
+        const isMultipart = contentType.includes('multipart/form-data');
+        
+        if (isMultipart) {
+          try {
+            const parsed = await parseMultipartForm(request);
+            body = parsed.body;
+            files = parsed.files || [];
+          } catch (parseError: any) {
+            console.error('Error parsing multipart form:', parseError);
+            // Fallback to request.body if parsing fails
+            body = (request as any).body || {};
+            files = [];
+          }
+        } else {
+          // Regular JSON body
+          body = request.body as any;
+          files = [];
+        }
+
+        // Debug logging
+        console.log('Content-Type:', contentType);
+        console.log('Is Multipart:', isMultipart);
+        console.log('Parsed body:', body);
+        console.log('Body keys:', Object.keys(body || {}));
+        console.log('Files count:', files.length);
+
+        // Validate required fields - handle both undefined and empty strings
+        const userId = body?.userId?.trim ? body.userId.trim() : body?.userId || '';
+        const leaveTypeId = body?.leaveTypeId?.trim ? body.leaveTypeId.trim() : body?.leaveTypeId || '';
+        const startDate = body?.startDate?.trim ? body.startDate.trim() : body?.startDate || '';
+        const endDate = body?.endDate?.trim ? body.endDate.trim() : body?.endDate || '';
+        const reason = body?.reason?.trim ? body.reason.trim() : body?.reason || ''; // Optional field
+
+        // Check which required fields are missing (reason is optional)
+        const missingFields: string[] = [];
+        if (!userId) missingFields.push('userId');
+        if (!leaveTypeId) missingFields.push('leaveTypeId');
+        if (!startDate) missingFields.push('startDate');
+        if (!endDate) missingFields.push('endDate');
+        // reason is optional, so we don't check it
+
+        if (missingFields.length > 0) {
+          console.log('Missing fields:', missingFields);
+          console.log('Body values:', { userId, leaveTypeId, startDate, endDate, reason });
+          return reply.status(400).send({
+            success: false,
+            error: { 
+              message: `Missing required fields: ${missingFields.join(', ')}`,
+              missingFields: missingFields
+            },
+          });
+        }
+
+        const remarks = body.remarks || (body as any).remarks;
+        const leaveType = body.leaveType || (body as any).leaveType;
+        const leaveDuration = body.leaveDuration || (body as any).leaveDuration || 'full-day';
+        const halfDayType = body.halfDayType || (body as any).halfDayType;
+
+        // Parse appliedTo if it's a JSON string
+        let appliedTo: { _id: string; name: string } | undefined;
+        if (body.appliedTo) {
+          try {
+            appliedTo = typeof body.appliedTo === 'string' ? JSON.parse(body.appliedTo) : body.appliedTo;
+          } catch {
+            appliedTo = body.appliedTo as any;
+          }
+        }
+
+        // Process uploaded documents (optional)
+        const documents: Array<{ fileName: string; filePath: string; uploadDate: Date; uploadedBy: Types.ObjectId }> = [];
+        const fileErrors: string[] = [];
+        
+        if (files && files.length > 0) {
+          // File validation constants
+          const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+          const ALLOWED_EXTENSIONS = ['.pdf', '.jpg', '.jpeg', '.png', '.doc', '.docx', '.xls', '.xlsx'];
+
+          for (const file of files) {
+            try {
+              // Validate file type
+              const fileExt = path.extname(file.filename).toLowerCase();
+              if (!ALLOWED_EXTENSIONS.includes(fileExt)) {
+                fileErrors.push(`File "${file.filename}" has invalid extension. Allowed: ${ALLOWED_EXTENSIONS.join(', ')}`);
+                continue;
+              }
+
+              // Validate file size
+              const buffer = await file.toBuffer();
+              if (buffer.length > MAX_FILE_SIZE) {
+                fileErrors.push(`File "${file.filename}" exceeds maximum size of 10MB`);
+                continue;
+              }
+
+              // Save file temporarily
+              const uploadsDir = path.resolve(__dirname, '..', '..', 'uploads');
+              await fs.promises.mkdir(uploadsDir, { recursive: true });
+              const timestamp = Date.now();
+              const randomSuffix = Math.random().toString(36).substring(2, 8);
+              const sanitizedFileName = file.filename.replace(/[^a-zA-Z0-9._-]/g, '_');
+              const tempFilePath = path.join(uploadsDir, `leave_${timestamp}_${randomSuffix}_${sanitizedFileName}`);
+
+              // Save file buffer to disk
+              await fs.promises.writeFile(tempFilePath, buffer);
+
+              // Upload to GCP
+              const newFileName = `Leave_Doc_${userId}_${timestamp}_${randomSuffix}${fileExt}`;
+              const gcpResult = await uploadFileToGCP({
+                filePath: tempFilePath,
+                fileName: newFileName,
+                employeeId: userId,
+                category: 'EmployeeLifecycle',
+                type: 'OfferLetter' // Using OfferLetter type for leave documents
+              });
+
+              // Clean up temp file
+              try {
+                await fs.promises.unlink(tempFilePath);
+              } catch (err) {
+                console.error('Error deleting temp file:', err);
+              }
+
+              if (gcpResult.success && gcpResult.fileUrl) {
+                documents.push({
+                  fileName: file.filename,
+                  filePath: gcpResult.fileUrl,
+                  uploadDate: new Date(),
+                  uploadedBy: new Types.ObjectId(currentUser._id),
+                });
+              } else {
+                fileErrors.push(`Failed to upload file "${file.filename}": ${gcpResult.error || 'Unknown error'}`);
+              }
+            } catch (fileError: any) {
+              console.error('Error processing file upload:', fileError);
+              fileErrors.push(`Error processing file "${file.filename}": ${fileError.message || 'Unknown error'}`);
+              // Continue with other files even if one fails
+            }
+          }
+
+          // If all files failed and there were files, return error
+          if (documents.length === 0 && files.length > 0 && fileErrors.length > 0) {
+            return reply.status(400).send({
+              success: false,
+              error: { 
+                message: 'All file uploads failed',
+                details: fileErrors
+              },
+            });
+          }
+        }
 
         const leaveData: ILeaveCreate = {
-          userId: body.userId,
-          leaveTypeId: body.leaveTypeId,
-          leaveType: body.leaveType,
-          startDate: new Date(body.startDate),
-          endDate: new Date(body.endDate),
-          remarks: body.remarks,
-          reason: body.reason,
-          appliedTo: body.appliedTo,
-          leaveDuration: body.leaveDuration || 'full-day',
-          halfDayType: body.halfDayType,
+          userId,
+          leaveTypeId,
+          leaveType,
+          startDate: new Date(startDate),
+          endDate: new Date(endDate),
+          remarks: remarks || undefined,
+          reason: reason || undefined, // Optional field
+          appliedTo,
+          leaveDuration: leaveDuration as 'full-day' | 'half-day',
+          halfDayType: halfDayType as 'first-half' | 'second-half' | undefined,
           appliedOnBehalf: true, // Mark as applied on behalf
           appliedBy: {
             _id: currentUser._id,
             name: currentUser.name,
             email: currentUser.email || '',
           },
+          documents: documents.length > 0 ? documents : undefined,
         };
 
         const leave = await request.container!.leaveService.create(leaveData);

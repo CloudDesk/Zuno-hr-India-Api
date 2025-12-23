@@ -444,9 +444,14 @@ export class DataMigrationService extends BaseService {
       'Shift Day (Required)',
       'Shift Start (Required)',
       'Shift End (Required)',
-      'First In (Optional)',
-      'Last Out (Optional)',
-      'Total Work Hours (Optional - Default: 0:00:00)',
+      'First In (Optional - Auto-calculates hours if provided)',
+      'Last Out (Optional - Auto-calculates hours if provided)',
+      'Total Work Hours (Optional - Auto-calculated if First In/Last Out provided)',
+      'Break Hours (Optional - Auto-calculated if First In/Last Out provided)',
+      'Actual Work Hours (Optional - Auto-calculated if First In/Last Out provided)',
+      'Shift Hours (Optional - Auto-calculated if First In/Last Out provided)',
+      'Shortfall Hours (Optional - Auto-calculated if First In/Last Out provided)',
+      'Excess Hours (Optional - Auto-calculated if First In/Last Out provided)',
       'Status (Optional - Default: complete)',
       'Is Within Window (Optional - Default: No)',
       'Is Late Entry (Optional - Default: No)',
@@ -463,13 +468,18 @@ export class DataMigrationService extends BaseService {
       4: { required: true, note: 'Format: YYYY-MM-DD' },
       5: { required: true, note: 'Format: ISO DateTime (e.g., 2025-01-15T09:00:00Z)' },
       6: { required: true, note: 'Format: ISO DateTime, must be > shift start' },
-      7: { required: false, note: 'Format: ISO DateTime' },
-      8: { required: false, note: 'Format: ISO DateTime' },
-      9: { required: false, note: 'Format: HH:mm:ss (e.g., 08:30:00)' },
-      10: { required: false, note: 'Attendance status' },
-      11: { required: false, note: 'Yes/No' },
-      12: { required: false, note: 'Yes/No' },
-      13: { required: false, note: 'Yes/No' }
+      7: { required: false, note: 'Format: ISO DateTime. If provided with Last Out, hours will be auto-calculated' },
+      8: { required: false, note: 'Format: ISO DateTime. If provided with First In, hours will be auto-calculated' },
+      9: { required: false, note: 'Format: HH:mm:ss (e.g., 08:30:00). Leave empty to auto-calculate from First In/Last Out' },
+      10: { required: false, note: 'Format: HH:mm:ss. Leave empty to auto-calculate (30 min if work > 6 hours)' },
+      11: { required: false, note: 'Format: HH:mm:ss. Leave empty to auto-calculate (Total - Break)' },
+      12: { required: false, note: 'Format: HH:mm:ss. Leave empty to auto-calculate (Shift End - Shift Start)' },
+      13: { required: false, note: 'Format: HH:mm:ss. Leave empty to auto-calculate if actual work < shift hours' },
+      14: { required: false, note: 'Format: HH:mm:ss. Leave empty to auto-calculate if actual work > shift hours' },
+      15: { required: false, note: 'Attendance status (complete, incomplete, etc.)' },
+      16: { required: false, note: 'Yes/No' },
+      17: { required: false, note: 'Yes/No' },
+      18: { required: false, note: 'Yes/No' }
     });
   }
 
@@ -594,10 +604,10 @@ export class DataMigrationService extends BaseService {
         user.probationDate ? new Date(user.probationDate).toISOString().split('T')[0] : '',
         user.location || '',
         user.phone || '',
-        user.emergencyContact 
-          ? (typeof user.emergencyContact === 'string' 
-              ? user.emergencyContact 
-              : user.emergencyContact.mobileNo || '')
+        user.emergencyContact
+          ? (typeof user.emergencyContact === 'string'
+            ? user.emergencyContact
+            : user.emergencyContact.mobileNo || '')
           : '',
         user.address || '',
         user.bloodGroup || '',
@@ -843,6 +853,11 @@ export class DataMigrationService extends BaseService {
       'First In',
       'Last Out',
       'Total Work Hours',
+      'Break Hours',
+      'Actual Work Hours',
+      'Shift Hours',
+      'Shortfall Hours',
+      'Excess Hours',
       'Status',
       'Is Within Window',
       'Is Late Entry',
@@ -872,6 +887,11 @@ export class DataMigrationService extends BaseService {
         record.firstIn ? new Date(record.firstIn).toISOString() : '',
         record.lastOut ? new Date(record.lastOut).toISOString() : '',
         record.totalWorkHours || '0:00:00',
+        record.breakHours || '0:00:00',
+        record.actualWorkHours || '0:00:00',
+        record.shiftHours || '0:00:00',
+        record.shortfallHours || '0:00:00',
+        record.excessHours || '0:00:00',
         record.status || '',
         record.isWithinWindow ? CONSTANTS.BOOLEAN_YES.toUpperCase() : CONSTANTS.BOOLEAN_NO.toUpperCase(),
         record.isLateEntry ? CONSTANTS.BOOLEAN_YES.toUpperCase() : CONSTANTS.BOOLEAN_NO.toUpperCase(),
@@ -1086,10 +1106,15 @@ export class DataMigrationService extends BaseService {
     rowData.firstIn = this.getCellValue(row, 7);
     rowData.lastOut = this.getCellValue(row, 8);
     rowData.totalWorkHours = this.getCellValue(row, 9);
-    rowData.status = this.getCellValue(row, 10);
-    rowData.isWithinWindow = this.parseBoolean(this.getCellValue(row, 11), false);
-    rowData.isLateEntry = this.parseBoolean(this.getCellValue(row, 12), false);
-    rowData.isEarlyExit = this.parseBoolean(this.getCellValue(row, 13), false);
+    rowData.breakHours = this.getCellValue(row, 10);
+    rowData.actualWorkHours = this.getCellValue(row, 11);
+    rowData.shiftHours = this.getCellValue(row, 12);
+    rowData.shortfallHours = this.getCellValue(row, 13);
+    rowData.excessHours = this.getCellValue(row, 14);
+    rowData.status = this.getCellValue(row, 15);
+    rowData.isWithinWindow = this.parseBoolean(this.getCellValue(row, 16), false);
+    rowData.isLateEntry = this.parseBoolean(this.getCellValue(row, 17), false);
+    rowData.isEarlyExit = this.parseBoolean(this.getCellValue(row, 18), false);
   }
 
   /**
@@ -2916,7 +2941,7 @@ export class DataMigrationService extends BaseService {
         // For half-day leaves, ensure noOfDays is 0.5
         let leaveDuration = row.leaveDuration || 'full-day';
         let noOfDays = row.noOfDays ? this.parseNumeric(row.noOfDays) : undefined;
-        
+
         // Special handling for restricted_holiday
         if (row.leaveType === 'restricted_holiday') {
           // Restricted holiday must be full-day, single date, noOfDays = 1
@@ -3101,6 +3126,67 @@ export class DataMigrationService extends BaseService {
           throw new Error('Shift end time must be after shift start time');
         }
 
+        // Check if firstIn and lastOut are provided for automatic calculation
+        const hasCheckInOut = firstIn && !isNaN(firstIn.getTime()) && lastOut && !isNaN(lastOut.getTime());
+
+        // Validate check-in/out times if both are provided
+        if (hasCheckInOut && lastOut.getTime() <= firstIn.getTime()) {
+          throw new Error('Last Out time must be after First In time');
+        }
+
+        // Check if admin has provided values (non-default values)
+        // Consider empty strings, null, undefined, '0:00:00', and whitespace as "not provided"
+        const adminProvidedTotalWorkHours = row.totalWorkHours &&
+          row.totalWorkHours !== '0:00:00' &&
+          row.totalWorkHours.trim() !== '' &&
+          row.totalWorkHours !== '00:00:00';
+        const adminProvidedBreakHours = row.breakHours &&
+          row.breakHours !== '0:00:00' &&
+          row.breakHours.trim() !== '' &&
+          row.breakHours !== '00:00:00';
+        const adminProvidedActualWorkHours = row.actualWorkHours &&
+          row.actualWorkHours !== '0:00:00' &&
+          row.actualWorkHours.trim() !== '' &&
+          row.actualWorkHours !== '00:00:00';
+        const adminProvidedShiftHours = row.shiftHours &&
+          row.shiftHours !== '0:00:00' &&
+          row.shiftHours.trim() !== '' &&
+          row.shiftHours !== '00:00:00';
+        const adminProvidedShortfallHours = row.shortfallHours &&
+          row.shortfallHours !== '0:00:00' &&
+          row.shortfallHours.trim() !== '' &&
+          row.shortfallHours !== '00:00:00';
+        const adminProvidedExcessHours = row.excessHours &&
+          row.excessHours !== '0:00:00' &&
+          row.excessHours.trim() !== '' &&
+          row.excessHours !== '00:00:00';
+
+        // Calculate metrics automatically if check-in/out provided and admin hasn't entered values
+        let calculatedMetrics: {
+          totalWorkHours: string;
+          breakHours: string;
+          actualWorkHours: string;
+          shiftHours: string;
+          shortfallHours: string;
+          excessHours: string;
+        } | null = null;
+
+        if (hasCheckInOut) {
+          try {
+            calculatedMetrics = await this.calculateAttendanceMetrics(
+              firstIn!,
+              lastOut!,
+              shiftStart,
+              shiftEnd
+            );
+            console.log(`✅ Auto-calculated attendance metrics for row ${row.rowNumber}:`, calculatedMetrics);
+          } catch (calcError: any) {
+            console.warn(`⚠️ Could not auto-calculate metrics for row ${row.rowNumber}: ${calcError.message}`);
+            // Continue with default values if calculation fails
+            calculatedMetrics = null;
+          }
+        }
+
         const recordData: any = {
           userId: new Types.ObjectId(row.userId),
           shiftId: new Types.ObjectId(row.shiftId),
@@ -3110,7 +3196,25 @@ export class DataMigrationService extends BaseService {
           shiftEnd: shiftEnd,
           firstIn: firstIn && !isNaN(firstIn.getTime()) ? firstIn : null,
           lastOut: lastOut && !isNaN(lastOut.getTime()) ? lastOut : null,
-          totalWorkHours: row.totalWorkHours || '0:00:00',
+          // Use admin-provided values if available, otherwise use calculated values, otherwise default
+          totalWorkHours: adminProvidedTotalWorkHours
+            ? row.totalWorkHours
+            : (calculatedMetrics?.totalWorkHours || '0:00:00'),
+          breakHours: adminProvidedBreakHours
+            ? row.breakHours
+            : (calculatedMetrics?.breakHours || '0:00:00'),
+          actualWorkHours: adminProvidedActualWorkHours
+            ? row.actualWorkHours
+            : (calculatedMetrics?.actualWorkHours || '0:00:00'),
+          shiftHours: adminProvidedShiftHours
+            ? row.shiftHours
+            : (calculatedMetrics?.shiftHours || '0:00:00'),
+          shortfallHours: adminProvidedShortfallHours
+            ? row.shortfallHours
+            : (calculatedMetrics?.shortfallHours || '0:00:00'),
+          excessHours: adminProvidedExcessHours
+            ? row.excessHours
+            : (calculatedMetrics?.excessHours || '0:00:00'),
           status: row.status || 'complete',
           isWithinWindow: row.isWithinWindow !== undefined ? row.isWithinWindow : false,
           isLateEntry: row.isLateEntry !== undefined ? row.isLateEntry : false,
@@ -3128,6 +3232,151 @@ export class DataMigrationService extends BaseService {
     }
 
     return { created, errors };
+  }
+
+  /**
+   * Calculate attendance metrics from check-in and check-out times
+   * Handles edge cases: negative times, invalid dates, zero duration
+   */
+  private async calculateAttendanceMetrics(
+    firstIn: Date,
+    lastOut: Date,
+    shiftStart: Date,
+    shiftEnd: Date
+  ): Promise<{
+    totalWorkHours: string;
+    breakHours: string;
+    actualWorkHours: string;
+    shiftHours: string;
+    shortfallHours: string;
+    excessHours: string;
+  }> {
+    // Validate dates
+    if (!firstIn || !lastOut || !shiftStart || !shiftEnd) {
+      throw new Error('All dates (firstIn, lastOut, shiftStart, shiftEnd) are required for calculation');
+    }
+
+    // Validate date validity
+    if (isNaN(firstIn.getTime()) || isNaN(lastOut.getTime()) ||
+      isNaN(shiftStart.getTime()) || isNaN(shiftEnd.getTime())) {
+      throw new Error('Invalid date values provided');
+    }
+
+    // Validate lastOut is after firstIn
+    if (lastOut.getTime() <= firstIn.getTime()) {
+      throw new Error('Last Out time must be after First In time');
+    }
+
+    // Validate shiftEnd is after shiftStart
+    if (shiftEnd.getTime() <= shiftStart.getTime()) {
+      throw new Error('Shift End time must be after Shift Start time');
+    }
+
+    // Calculate shift duration first
+    const shiftMinutes = (shiftEnd.getTime() - shiftStart.getTime()) / (1000 * 60);
+
+    // For night shifts spanning multiple days, normalize to single day working hours
+    // Check if shift spans multiple calendar days
+    const shiftStartDate = new Date(shiftStart);
+    const shiftEndDate = new Date(shiftEnd);
+    const isNightShift = shiftStartDate.toDateString() !== shiftEndDate.toDateString();
+
+    // Calculate actual time worked (for validation)
+    const actualWorkedMinutes = (lastOut.getTime() - firstIn.getTime()) / (1000 * 60);
+
+    // Handle negative or zero duration
+    if (actualWorkedMinutes <= 0) {
+      return {
+        totalWorkHours: '00:00:00',
+        breakHours: '00:00:00',
+        actualWorkHours: '00:00:00',
+        shiftHours: this.formatDuration(shiftMinutes),
+        shortfallHours: '00:00:00',
+        excessHours: '00:00:00',
+      };
+    }
+
+    // For night shifts: Calculate based on time-of-day difference (normalize to single day)
+    // Extract time portion and calculate hours worked within a day
+    // Example: 03:30 to 12:30 = 9 hours (not 33 hours across days)
+    let totalMinutes: number;
+    if (isNightShift) {
+      // Extract hours and minutes from shift times
+      const startHour = shiftStart.getUTCHours();
+      const startMin = shiftStart.getUTCMinutes();
+      const endHour = shiftEnd.getUTCHours();
+      const endMin = shiftEnd.getUTCMinutes();
+
+      // Calculate time difference in minutes (normalized to same day)
+      const startMinutes = startHour * 60 + startMin;
+      const endMinutes = endHour * 60 + endMin;
+
+      // Handle case where end time is next day (e.g., 03:30 to 12:30)
+      // If end time is less than start time, it means it's next day, so add 24 hours
+      if (endMinutes < startMinutes) {
+        totalMinutes = (24 * 60) - startMinutes + endMinutes;
+      } else {
+        totalMinutes = endMinutes - startMinutes;
+      }
+
+      // Use shift duration if calculated time seems unreasonable (fallback)
+      if (totalMinutes > 1440 || totalMinutes <= 0) { // > 24 hours or invalid
+        totalMinutes = shiftMinutes;
+      }
+    } else {
+      // For regular shifts: Use actual time worked
+      totalMinutes = actualWorkedMinutes;
+    }
+
+    // Improved break calculation that scales with work duration
+    // Rules:
+    // - ≤ 6 hours: 0 minutes break
+    // - > 6 hours and ≤ 8 hours: 30 minutes break
+    // - > 8 hours and ≤ 12 hours: 60 minutes break (1 hour)
+    // - > 12 hours: 30 minutes per 6 hours worked (proportional)
+    let breakMinutes = 0;
+    if (totalMinutes > 360) { // > 6 hours
+      if (totalMinutes <= 480) { // 6-8 hours
+        breakMinutes = 30;
+      } else if (totalMinutes <= 720) { // 8-12 hours
+        breakMinutes = 60; // 1 hour break
+      } else { // > 12 hours
+        // Proportional: 30 minutes break per 6 hours worked
+        // For 9 hours: (9 / 6) * 30 = 1.5 * 30 = 45 minutes
+        breakMinutes = Math.floor((totalMinutes / 360) * 30);
+        // Cap at reasonable maximum (e.g., 4 hours break for very long shifts)
+        breakMinutes = Math.min(breakMinutes, 240); // Max 4 hours break
+      }
+    }
+
+    // Calculate actual work minutes (total minus break)
+    const actualWorkMinutes = Math.max(0, totalMinutes - breakMinutes);
+
+    // For night shifts, also normalize shiftHours to match totalWorkHours calculation
+    // This ensures shiftHours represents the actual working hours, not calendar time
+    const normalizedShiftMinutes = isNightShift ? totalMinutes : shiftMinutes;
+
+    // Calculate shortfall/excess by comparing actual work vs shift requirement
+    const difference = actualWorkMinutes - normalizedShiftMinutes;
+
+    return {
+      totalWorkHours: this.formatDuration(totalMinutes),
+      breakHours: this.formatDuration(breakMinutes),
+      actualWorkHours: this.formatDuration(actualWorkMinutes),
+      shiftHours: this.formatDuration(normalizedShiftMinutes),
+      shortfallHours: difference < 0 ? this.formatDuration(Math.abs(difference)) : '00:00:00',
+      excessHours: difference > 0 ? this.formatDuration(difference) : '00:00:00',
+    };
+  }
+
+  /**
+   * Format duration in minutes to HH:mm:ss string
+   */
+  private formatDuration(minutes: number): string {
+    const hours = Math.floor(minutes / 60);
+    const mins = Math.floor(minutes % 60);
+    const secs = Math.floor((minutes % 1) * 60);
+    return `${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
   }
 
   /**
