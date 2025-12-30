@@ -4,7 +4,8 @@ import { ShiftAssignment, IShift } from '../models/shift.model';
 import { AttendanceRecord, IAttendanceRecord } from '../models/attendance-record.model';
 import { BaseService } from './base.service';
 import { RequestContext } from '../types/context';
-import { HolidayCalendar, IHoliday } from '../models';
+import { HolidayCalendar, IHoliday } from '../models/holiday-calendar.model';
+import { OptionalHolidayRequest } from '../models/optional-holiday-request.model';
 import * as ExcelJS from 'exceljs';
 
 
@@ -366,28 +367,64 @@ export class BiometricAttendanceService extends BaseService {
     const holiday = await this.checkHolidayCalendar(userId, shiftDay);
 
     if (holiday) {
-      // Update record with holiday information
-      record.status = 'holiday_swipe';
-      record.attendanceStatus = ['Holiday-Swipe'];
+      let isActuallyHoliday = true;
 
-      // Initialize regularization field if it doesn't exist
-      if (!record.regularization) {
-        record.regularization = {
-          isRegularized: true,
-          hasRegularizationRequest: false,
-          regularizationType: ['Holiday-Swipe'],
-          status: 'Approved',
-          regularizationId: new Types.ObjectId(), // Generate a new ID
-        };
-      } else {
-        // Update existing regularization field
-        record.regularization.isRegularized = true;
-        record.regularization.regularizationType = ['Holiday-Swipe'];
-        record.regularization.status = 'Approved';
+      // If it's an optional holiday, check if the user has an approved request (either via Optional Holiday Request or Leave Request)
+      if (holiday.type === 'optional') {
+        // 1. Check in OptionalHolidayRequest collection
+        const approvedOptionalRequest = await OptionalHolidayRequest.findOne({
+          userId,
+          holidayDate: shiftDay,
+          status: 'Approved'
+        });
+
+        // 2. Check in Leave collection (restricted_holiday type)
+        const approvedLeaveRequest = await mongoose.model('Leave').findOne({
+          userId,
+          startDate: { $lte: shiftDay },
+          endDate: { $gte: shiftDay },
+          leaveType: 'restricted_holiday',
+          status: 'Approved'
+        });
+
+        if (!approvedOptionalRequest && !approvedLeaveRequest) {
+          isActuallyHoliday = false;
+          console.log(`ℹ️ Date ${shiftDay.toISOString()} is an optional holiday, but user ${userId} has no approved request (OptionalHolidayRequest or Leave). Processing as regular day.`);
+        }
       }
 
-      // Save the updated record
-      await record.save();
+      if (isActuallyHoliday) {
+        // Update record with holiday information
+        record.status = 'holiday_swipe';
+        record.attendanceStatus = ['Holiday-Swipe'];
+
+        // Initialize regularization field if it doesn't exist
+        if (!record.regularization) {
+          record.regularization = {
+            isRegularized: true,
+            hasRegularizationRequest: false,
+            regularizationType: ['Holiday-Swipe'],
+            status: 'Approved',
+            regularizationId: new Types.ObjectId(), // Generate a new ID
+          };
+        } else {
+          // Update existing regularization safely
+          const reg = record.regularization;
+          reg.isRegularized = true;
+          reg.status = 'Approved';
+
+          if (!reg.regularizationType) {
+            reg.regularizationType = ['Holiday-Swipe'];
+          } else if (!reg.regularizationType.includes('Holiday-Swipe')) {
+            reg.regularizationType.push('Holiday-Swipe');
+          }
+
+          record.regularization = reg;
+        }
+
+        // Save the updated record
+        await record.save();
+      }
     }
 
     return record;
@@ -833,7 +870,7 @@ export class BiometricAttendanceService extends BaseService {
     if (validSwipes.length > 0) {
       const lastSwipe = validSwipes[validSwipes.length - 1];
       const timeDiff = newSwipe.timestamp.getTime() - lastSwipe.timestamp.getTime();
-      
+
       // Allow immediate check-out after check-in (within 3 seconds) - this handles rapid check-in/check-out
       if (lastSwipe.direction === 'IN' && newSwipe.direction === 'OUT' && timeDiff >= 0 && timeDiff < 3000) {
         // Allow immediate check-out after check-in (within 3 seconds)

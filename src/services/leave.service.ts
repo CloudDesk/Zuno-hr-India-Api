@@ -1,6 +1,8 @@
 import { BaseService } from './base.service';
 import { RequestContext } from '../types/context';
-import { IUser, Leave, User, LOV } from '../models';
+import { IUser, User } from '../models/user.model';
+import { Leave } from '../models/leave.model';
+import { LOV } from '../models/lov.model';
 import { FilterQuery, Types } from 'mongoose';
 import { ILeave } from '../models/leave.model';
 import { LeaveSummaryService } from './leave-summary.service';
@@ -1600,34 +1602,71 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
     }
 
 
-    // If leave is approved, mark attendance records as onLeave
+    // If leave is approved, mark attendance records
     if (updateData.status === 'Approved') {
       const startDate = new Date(leave.startDate);
       const endDate = new Date(leave.endDate);
 
-      // Create attendance records for each day of leave
+      // Create/update attendance records for each day of leave
       const currentDate = new Date(startDate);
 
       while (currentDate <= endDate) {
-        console.log(leave.userId);
-        console.log(leave, 'leave updated ==>> ');
-        let resatten = await AttendanceRecord.findOneAndUpdate(
+        // Find existing record to check for swipes
+        const existingRecord = await AttendanceRecord.findOne({
+          userId: leave.userId,
+          shiftDay: currentDate,
+        });
+
+        const hasSwipes = existingRecord && existingRecord.swipes && existingRecord.swipes.length > 0;
+        const isRestrictedHoliday = leave.leaveType === 'restricted_holiday';
+
+        let updateFields: any = {
+          updatedAt: new Date(),
+          updatedBy: updateData.approvedById
+        };
+
+        if (isRestrictedHoliday && hasSwipes) {
+          updateFields.status = 'holiday_swipe';
+          updateFields.attendanceStatus = ['Holiday-Swipe'];
+
+          // Initialize or update regularization for holiday swipe
+          if (!existingRecord.regularization) {
+            updateFields.regularization = {
+              isRegularized: true,
+              hasRegularizationRequest: false,
+              regularizationType: ['Holiday-Swipe'],
+              status: 'Approved',
+              regularizationId: new Types.ObjectId(),
+            };
+          } else {
+            // Create a safe copy of the regularization object
+            const reg = JSON.parse(JSON.stringify(existingRecord.regularization));
+            reg.isRegularized = true;
+
+            const regTypes = reg.regularizationType || [];
+            if (!regTypes.includes('Holiday-Swipe')) {
+              regTypes.push('Holiday-Swipe');
+            }
+            reg.regularizationType = regTypes;
+            reg.status = 'Approved';
+            updateFields.regularization = reg;
+          }
+        } else {
+          // All other leave cases (Regular leaves or Restricted Holiday without swipes)
+          updateFields.attendanceStatus = ['On-Leave'];
+        }
+
+        await AttendanceRecord.findOneAndUpdate(
           {
             userId: leave.userId,
             shiftDay: currentDate,
           },
           {
-            $set: {
-              // status: 'onLeave',
-              attendanceStatus: ['On-Leave'],
-              // leaveRequestId: leave._id,
-              updatedAt: new Date(),
-              updatedBy: updateData.approvedById
-            }
+            $set: updateFields
           },
           { upsert: true, strict: false }
         );
-        console.log(resatten, 'resatten');
+
         currentDate.setDate(currentDate.getDate() + 1);
       }
     }

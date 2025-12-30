@@ -1,6 +1,8 @@
 import { BaseService } from './base.service';
 import { RequestContext } from '../types/context';
-import { User, HolidayCalendar } from '../models';
+import { User } from '../models/user.model';
+import { HolidayCalendar } from '../models/holiday-calendar.model';
+import { AttendanceRecord } from '../models/attendance-record.model';
 import { Types } from 'mongoose';
 import { IOptionalHolidayRequest, OptionalHolidayRequest } from '../models/optional-holiday-request.model';
 import { generateEmailTemplate } from '../emails/templates';
@@ -111,7 +113,7 @@ export class OptionalHolidayService extends BaseService {
     // Normalize dates to YYYY-MM-DD format for comparison (ignore time)
     const holidayDateObj = new Date(holidayDate);
     const holidayDateStr = holidayDateObj.toISOString().split('T')[0];
-    
+
     const matchingHoliday = calendar.holidays.find((h) => {
       const hDateObj = new Date(h.date);
       const hDateStr = hDateObj.toISOString().split('T')[0];
@@ -125,7 +127,7 @@ export class OptionalHolidayService extends BaseService {
         const hDateStr = hDateObj.toISOString().split('T')[0];
         return hDateStr === holidayDateStr;
       });
-      
+
       if (dateExists) {
         return { isValid: false, error: `The selected date (${holidayDateStr}) exists in your calendar but is not marked as an optional holiday. Only dates marked as "optional" in the holiday calendar can be requested.` };
       } else {
@@ -190,7 +192,7 @@ export class OptionalHolidayService extends BaseService {
     if (search) {
       // Escape special regex characters in search string
       const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      
+
       // Search in holidayName, reason, and status (stored in document)
       const searchFilter: any[] = [
         { 'holidayName': { $regex: escapedSearch, $options: 'i' } },
@@ -300,7 +302,7 @@ export class OptionalHolidayService extends BaseService {
     }
     if (status) filter.status = status;
     if (year) filter.year = year;
-    
+
     if (startDate || endDate) {
       const dateFilter: any = {
         holidayDate: {}
@@ -321,7 +323,7 @@ export class OptionalHolidayService extends BaseService {
     // Handle search filter
     if (search) {
       const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      
+
       const searchConditions: any[] = [
         { holidayName: { $regex: escapedSearch, $options: 'i' } },
         { reason: { $regex: escapedSearch, $options: 'i' } },
@@ -502,7 +504,7 @@ export class OptionalHolidayService extends BaseService {
 
       if (admins && admins.length > 0) {
         const adminEmails = admins.map(admin => admin.email).filter(Boolean);
-        
+
         if (adminEmails.length > 0 && user) {
           const holidayDateFormatted = holidayDate.toLocaleDateString('en-US', {
             weekday: 'long',
@@ -588,6 +590,49 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
     if (updateData.remarks) request.remarks = updateData.remarks;
     await request.save();
 
+    // If approved, retroactively update attendance records if swipes exist for that day
+    if (updateData.status === 'Approved') {
+      const existingRecord = await AttendanceRecord.findOne({
+        userId: request.userId,
+        shiftDay: request.holidayDate
+      });
+
+      if (existingRecord && existingRecord.swipes && existingRecord.swipes.length > 0) {
+        console.log(`ℹ️ Retroactively updating attendance record for user ${request.userId} on ${request.holidayDate.toISOString()} to Holiday-Swipe`);
+
+        existingRecord.status = 'holiday_swipe';
+        if (!existingRecord.attendanceStatus.includes('Holiday-Swipe')) {
+          existingRecord.attendanceStatus.push('Holiday-Swipe');
+        }
+
+        // Initialize or update regularization for holiday swipe
+        if (!existingRecord.regularization) {
+          existingRecord.regularization = {
+            isRegularized: true,
+            hasRegularizationRequest: false,
+            regularizationType: ['Holiday-Swipe'],
+            status: 'Approved',
+            regularizationId: new Types.ObjectId(),
+          };
+        } else {
+          // Update existing regularization safely
+          const reg = existingRecord.regularization;
+          reg.isRegularized = true;
+          reg.status = 'Approved';
+
+          if (!reg.regularizationType) {
+            reg.regularizationType = ['Holiday-Swipe'];
+          } else if (!reg.regularizationType.includes('Holiday-Swipe')) {
+            reg.regularizationType.push('Holiday-Swipe');
+          }
+
+          existingRecord.regularization = reg;
+        }
+
+        await existingRecord.save();
+      }
+    }
+
     // Update restricted_holiday availed count in leave summary
     // This tracks how many optional holidays have been approved for the user in this year
     const year = request.year;
@@ -640,9 +685,9 @@ Holiday Details:
 ${request.reason ? `- Reason: ${request.reason}` : ''}
 ${updateData.remarks ? `- Remarks: ${updateData.remarks}` : ''}
 
-${updateData.status === 'Approved' 
-  ? '✅ Your optional holiday has been approved. This day will be counted as a holiday in your payroll.'
-  : '❌ Your optional holiday request has been rejected. This day will be treated as a working day.'}
+${updateData.status === 'Approved'
+            ? '✅ Your optional holiday has been approved. This day will be counted as a holiday in your payroll.'
+            : '❌ Your optional holiday request has been rejected. This day will be treated as a working day.'}
 
 Thank you for your understanding.
 
@@ -690,7 +735,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
         });
 
         const adminEmails = admins.map(admin => admin.email).filter(Boolean);
-        
+
         if (adminEmails.length > 0) {
           const adminEmailText = `Dear Admin,
 
