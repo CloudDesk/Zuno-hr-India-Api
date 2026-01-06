@@ -76,6 +76,7 @@ interface IShiftWindow {
   shiftEnd: Date;
   windowStart: Date;
   windowEnd: Date;
+  graceTimeInMinutes: number;
 }
 
 interface IAttendanceMetrics {
@@ -325,7 +326,13 @@ export class BiometricAttendanceService extends BaseService {
       windowEnd.setUTCDate(windowEnd.getUTCDate() + 1);
     }
 
-    return { shiftStart, shiftEnd, windowStart, windowEnd };
+    return {
+      shiftStart,
+      shiftEnd,
+      windowStart,
+      windowEnd,
+      graceTimeInMinutes: shift.graceTimeInMinutes ?? 0
+    };
   }
 
   private async findOrCreateAttendanceRecord(
@@ -550,11 +557,15 @@ export class BiometricAttendanceService extends BaseService {
     console.log('📍 IN swipe being created:', inSwipe);
     console.log('📍 Location in IN swipe:', inSwipe.location);
 
+    const graceTimeMs = (shiftWindow.graceTimeInMinutes || 0) * 60 * 1000;
+    const lateThreshold = new Date(shiftWindow.shiftStart.getTime() + graceTimeMs);
+
     record.swipes = [inSwipe];
     record.firstIn = timestamp;
-    record.isLateEntry = timestamp > shiftWindow.shiftStart;
+    record.isLateEntry = timestamp > lateThreshold;
     record.attendanceStatus = record.isLateEntry ? ['Late'] : ['On-Time'];
-    record.needsRegularization = record.isLateEntry;
+    // Incomplete attendance (missing checkout) ALWAYS needs regularization
+    record.needsRegularization = true;
 
     let workDuration = await this.getDuration(shiftWindow.shiftStart, shiftWindow.shiftEnd)
     console.log(workDuration, "workDuration")
@@ -602,9 +613,12 @@ export class BiometricAttendanceService extends BaseService {
     console.log('📍 OUT swipe being created:', outSwipe);
     console.log('📍 Location in OUT swipe:', outSwipe.location);
 
+    const graceTimeMs = (shiftWindow.graceTimeInMinutes || 0) * 60 * 1000;
+    const earlyExitThreshold = new Date(shiftWindow.shiftEnd.getTime() - graceTimeMs);
+
     record.swipes.push(outSwipe);
     record.lastOut = timestamp;
-    record.isEarlyExit = timestamp < shiftWindow.shiftEnd;
+    record.isEarlyExit = timestamp < earlyExitThreshold;
 
     // Calculate metrics
     const metrics = await this.calculateAttendanceMetrics(
@@ -682,14 +696,18 @@ export class BiometricAttendanceService extends BaseService {
       const firstInSwipe = sortedSwipes.find(s => s.direction === 'IN');
       const lastOutSwipe = [...sortedSwipes].reverse().find(s => s.direction === 'OUT');
 
+      const graceTimeMs = (shiftWindow.graceTimeInMinutes || 0) * 60 * 1000;
+      const lateThreshold = new Date(shiftWindow.shiftStart.getTime() + graceTimeMs);
+      const earlyExitThreshold = new Date(shiftWindow.shiftEnd.getTime() - graceTimeMs);
+
       if (firstInSwipe) {
         record.firstIn = firstInSwipe.timestamp;
-        record.isLateEntry = firstInSwipe.timestamp > shiftWindow.shiftStart;
+        record.isLateEntry = firstInSwipe.timestamp > lateThreshold;
       }
 
       if (lastOutSwipe) {
         record.lastOut = lastOutSwipe.timestamp;
-        record.isEarlyExit = lastOutSwipe.timestamp < shiftWindow.shiftEnd;
+        record.isEarlyExit = lastOutSwipe.timestamp < earlyExitThreshold;
       }
     }
 
@@ -749,11 +767,12 @@ export class BiometricAttendanceService extends BaseService {
     // Default break calculation (can be customized based on your rules)
     const breakMinutes = totalMinutes > 360 ? 30 : 0; // 30 min break for > 6 hours
 
-    // Calculate actual work minutes
+    // Calculate actual work minutes (for payroll/work hour tracking)
     const actualWorkMinutes = totalMinutes - breakMinutes;
 
-    // Calculate shortfall/excess
-    const difference = actualWorkMinutes - shiftMinutes;
+    // Calculate shortfall/excess based on TOTAL work time (not actual work time)
+    // This ensures break time doesn't affect shortfall/excess calculation
+    const difference = totalMinutes - shiftMinutes;
     console.log(difference, "difference")
 
     return {
@@ -971,14 +990,15 @@ export class BiometricAttendanceService extends BaseService {
     // Simple rule: 30 minutes break if total work > 6 hours, otherwise 0
     const breakMinutes = totalWorkMinutes > 360 ? 30 : 0;
 
-    // 4. Actual work = total work minus break
+    // 4. Actual work = total work minus break (for payroll/work hour tracking)
     const actualWorkMinutes = totalWorkMinutes - breakMinutes;
 
     // 5. Calculate shift duration
     const shiftMinutes = (shiftEnd.getTime() - shiftStart.getTime()) / (1000 * 60);
 
-    // 6. Calculate shortfall/excess
-    const difference = actualWorkMinutes - shiftMinutes;
+    // 6. Calculate shortfall/excess based on TOTAL work time (not actual work time)
+    // This ensures break time doesn't affect shortfall/excess calculation
+    const difference = totalWorkMinutes - shiftMinutes;
 
     return {
       totalWorkHours: await this.formatDuration(totalWorkMinutes),

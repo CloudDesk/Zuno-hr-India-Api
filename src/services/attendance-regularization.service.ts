@@ -374,7 +374,7 @@ export class AttendanceRegularizationService extends BaseService {
 
                 if (employeeUser) {
                     const adminEmails = admins.map(admin => admin.email).filter(Boolean);
-                    
+
                     if (adminEmails.length > 0) {
                         const shiftDayFormatted = regularization.shiftDay.toLocaleDateString('en-US', {
                             weekday: 'long',
@@ -619,7 +619,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
 
                     if (admins && admins.length > 0) {
                         const adminEmails = admins.map(admin => admin.email).filter(Boolean);
-                        
+
                         if (adminEmails.length > 0 && employeeUser) {
                             const shiftDayFormatted = shiftDay.toLocaleDateString('en-US', {
                                 weekday: 'long',
@@ -768,9 +768,9 @@ Regularization Details:
 - Reason: ${regularization.reason}
 ${regularization.comments ? `- Comments: ${regularization.comments}` : ''}
 
-${regularization.status === 'Approved' 
-  ? '✅ Your attendance regularization has been approved. The attendance record has been updated accordingly.'
-  : '❌ Your attendance regularization request has been rejected. The attendance record remains unchanged.'}
+${regularization.status === 'Approved'
+                    ? '✅ Your attendance regularization has been approved. The attendance record has been updated accordingly.'
+                    : '❌ Your attendance regularization request has been rejected. The attendance record remains unchanged.'}
 
 Thank you for your understanding.
 
@@ -821,7 +821,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
                 const toTimeFormatted = this.formatTimeLocal(regularization.to, userCountryForAdmin);
 
                 const adminEmails = admins.map(admin => admin.email).filter(Boolean);
-                
+
                 if (adminEmails.length > 0 && employeeForAdmin) {
                     const adminEmailText = `Dear Admin,
 
@@ -999,17 +999,17 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
         // Update the attendance record with the regularization details
         // IMPORTANT: Preserve existing biometric swipes if they exist and fall within regularization window
         // This maintains multiple swipe history while applying regularization
-        
+
         const shiftStart = attendanceRecord.shiftStart;
         const shiftEnd = attendanceRecord.shiftEnd;
-        
+
         // Check if we have existing biometric swipes to preserve
-        const hasExistingBiometricSwipes = attendanceRecord.swipes && 
-            attendanceRecord.swipes.length > 0 && 
+        const hasExistingBiometricSwipes = attendanceRecord.swipes &&
+            attendanceRecord.swipes.length > 0 &&
             attendanceRecord.swipes.some(s => s.deviceId !== 'manual');
-        
+
         let metrics;
-        
+
         if (hasExistingBiometricSwipes && attendanceRecord.swipes.length > 2) {
             // Multiple swipes exist - preserve them and recalculate metrics using multiple swipe logic
             // Only update firstIn/lastOut if regularization times are different
@@ -1019,7 +1019,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
             if (regularization.to.getTime() !== attendanceRecord.lastOut?.getTime()) {
                 attendanceRecord.lastOut = regularization.to;
             }
-            
+
             // Recalculate metrics using multiple swipe calculation
             // Filter swipes to ensure they have valid direction
             const validSwipes = attendanceRecord.swipes.filter(s => s.direction === 'IN' || s.direction === 'OUT') as Array<{ timestamp: Date; direction: 'IN' | 'OUT' }>;
@@ -1058,7 +1058,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
                     },
                 },
             ];
-            
+
             // Calculate metrics using simple 2-swipe logic
             metrics = await this.calculateAttendanceMetrics(
                 regularization.from,
@@ -1193,11 +1193,12 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
         // Default break calculation (can be customized based on your rules)
         const breakMinutes = totalMinutes > 360 ? 30 : 0; // 30 min break for > 6 hours
 
-        // Calculate actual work minutes
+        // Calculate actual work minutes (for payroll/work hour tracking)
         const actualWorkMinutes = totalMinutes - breakMinutes;
 
-        // Calculate shortfall/excess
-        const difference = actualWorkMinutes - shiftMinutes;
+        // Calculate shortfall/excess based on TOTAL work time (not actual work time)
+        // This ensures break time doesn't affect shortfall/excess calculation
+        const difference = totalMinutes - shiftMinutes;
         console.log(difference, "difference");
 
         return {
@@ -1397,8 +1398,9 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
         const totalBreakMinutes = breakPeriods.reduce((sum, breakPeriod) => sum + breakPeriod.durationMinutes, 0);
         const actualWorkMinutes = totalWorkMinutes;
         const shiftMinutes = (shiftEnd.getTime() - shiftStart.getTime()) / (1000 * 60);
-        const difference = actualWorkMinutes - shiftMinutes;
-        
+        // Calculate shortfall/excess based on TOTAL work time (not actual work time)
+        const difference = totalWorkMinutes - shiftMinutes;
+
         return {
             totalWorkHours: await this.formatDuration(totalWorkMinutes),
             breakHours: await this.formatDuration(totalBreakMinutes),

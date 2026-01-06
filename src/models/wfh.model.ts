@@ -66,7 +66,7 @@ const wfhSchema = new Schema<IWFH>(
       default: 'Pending',
     },
     remarks: String,
-    reason: { type: String, required: true },
+    reason: { type: String, required: false },
     appliedTo: {
       _id: String,
       name: String,
