@@ -2435,22 +2435,45 @@ export class BiometricAttendanceService extends BaseService {
           // Determine cell value and styling
           let cellValue = '';
           let fontColor = 'FF000000'; // Black
+          // Removed: No background colors (no WFH blue, no weekend gray, no holiday yellow)
+
+          // Get current date (today) at midnight for comparison
+          const today = new Date();
+          today.setHours(0, 0, 0, 0);
+          const cellDate = new Date(dateStr);
+          cellDate.setHours(0, 0, 0, 0);
+
           let bgColor: string | undefined;
 
-          // WFH takes priority for background color
-          if (isWFH) {
-            bgColor = 'FFADD8E6'; // Light blue for WFH
-          } else if (att.isWeekend) {
-            bgColor = 'FFE0E0E0'; // Light gray for weekends
-          }
-          // Removed: Holiday yellow background
-
           // Set status text
-          if (att.status === 'unknown' || !att.attendanceId) {
-            cellValue = 'Absent';
-            fontColor = 'FFFF0000'; // Red
-            // Don't show WFH for absent employees (no attendance record)
+          // Check if date is today
+          if (cellDate.getTime() === today.getTime()) {
+            // Today - show empty cell with gray background
+            cellValue = '';
+            fontColor = 'FF000000'; // Black
+            bgColor = 'FFD3D3D3'; // Light gray background for today
+          } else if (cellDate > today) {
+            // Future date - check if weekend
+            if (att.isWeekend) {
+              cellValue = 'Off';
+              fontColor = 'FF808080'; // Gray
+            } else {
+              cellValue = '-';
+              fontColor = 'FF808080'; // Gray
+            }
+          } else if (att.status === 'unknown' || !att.attendanceId) {
+            // Past date with no attendance
+            // Check if it's a weekend with no attendance
+            if (att.isWeekend) {
+              cellValue = 'Off';
+              fontColor = 'FF808080'; // Gray for weekend off
+            } else {
+              cellValue = 'Absent';
+              fontColor = 'FFFF0000'; // Red for absent
+            }
+            // Don't show WFH for absent/off employees (no attendance record)
           } else if (att.status === 'complete' || att.status === 'duplicate_swipes') {
+            // Past date with complete attendance
             // Treat duplicate_swipes as Present
             cellValue = 'Present';
             fontColor = 'FF008000'; // Green
@@ -2459,6 +2482,7 @@ export class BiometricAttendanceService extends BaseService {
               cellValue = 'WFH';
             }
           } else if (att.status === 'incomplete' || att.status === 'missing_checkout') {
+            // Past date with incomplete attendance
             cellValue = 'Incomplete';
             fontColor = 'FFFF8C00'; // Orange
             // Add WFH indicator for incomplete attendance
@@ -2466,6 +2490,7 @@ export class BiometricAttendanceService extends BaseService {
               cellValue = `${cellValue} (WFH)`;
             }
           } else {
+            // Past date with other status
             cellValue = att.status;
             // Add WFH indicator for other statuses with attendance
             if (isWFH) {
@@ -2482,6 +2507,7 @@ export class BiometricAttendanceService extends BaseService {
           cell.value = cellValue;
           cell.font = { color: { argb: fontColor } };
 
+          // Apply background color (only for today's date)
           if (bgColor) {
             cell.fill = {
               type: 'pattern',
