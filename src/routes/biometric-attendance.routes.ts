@@ -858,8 +858,8 @@ export const biometricAttendanceRoutes: RouteHandler = async (
         const excelBuffer = await request.container!.biometricAttendanceService.generateWeeklyReportByMonth(month);
 
         // Set response headers for file download
-        const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 
-                           'July', 'August', 'September', 'October', 'November', 'December'];
+        const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
+          'July', 'August', 'September', 'October', 'November', 'December'];
         const monthName = monthNames[monthNum - 1];
         const filename = `Weekly_Report_${monthName}_${year}.xlsx`;
         reply.header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -927,7 +927,8 @@ export const biometricAttendanceRoutes: RouteHandler = async (
                           status: { type: 'string' },  // 'unknown' if no record, otherwise actual status
                           attendanceStatus: { type: 'array', items: { type: 'string' } },
                           isWeekend: { type: 'boolean' },  // Only included if true
-                          isHoliday: { type: 'boolean' }   // Only included if true
+                          isHoliday: { type: 'boolean' },   // Only included if true
+                          isWFH: { type: 'boolean' }   // Only included if true (approved WFH)
                         }
                       }
                     }
@@ -966,7 +967,7 @@ export const biometricAttendanceRoutes: RouteHandler = async (
     async (request, reply) => {
       try {
         const { startDate, endDate } = request.query as { startDate: string; endDate: string };
-        
+
         // Validate date format
         const datePattern = /^\d{4}-\d{2}-\d{2}$/;
         if (!datePattern.test(startDate) || !datePattern.test(endDate)) {
@@ -992,17 +993,122 @@ export const biometricAttendanceRoutes: RouteHandler = async (
             error: { message: 'startDate must be before or equal to endDate' }
           });
         }
-        
+
         const result = await request.container!.biometricAttendanceService.getAdminAttendanceView(
           startDate,
           endDate
         );
-        
+
         return reply.send(result);
       } catch (error: any) {
         return reply.status(400).send({
           success: false,
           error: { message: error.message }
+        });
+      }
+    }
+  );
+
+  // Download admin attendance view as Excel
+  fastify.get(
+    '/admin/view/download',
+    {
+      onRequest: [authenticate],
+      schema: {
+        tags: ['Biometric Attendance'],
+        summary: 'Download admin attendance view as Excel file',
+        description: 'Downloads attendance data for all users within a date range as an Excel file. Uses the same data as /admin/view endpoint but returns it in Excel format with color coding for different statuses.',
+        querystring: {
+          type: 'object',
+          required: ['startDate', 'endDate'],
+          properties: {
+            startDate: {
+              type: 'string',
+              format: 'date',
+              description: 'Start date in YYYY-MM-DD format'
+            },
+            endDate: {
+              type: 'string',
+              format: 'date',
+              description: 'End date in YYYY-MM-DD format'
+            }
+          }
+        },
+        response: {
+          200: {
+            description: 'Excel file download',
+            content: {
+              'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': {
+                schema: {
+                  type: 'string',
+                  format: 'binary'
+                }
+              }
+            }
+          },
+          400: {
+            type: 'object',
+            properties: {
+              success: { type: 'boolean', default: false },
+              error: {
+                type: 'object',
+                properties: {
+                  message: { type: 'string' }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    async (request, reply) => {
+      try {
+        const { startDate, endDate } = request.query as { startDate: string; endDate: string };
+
+        // Validate date format
+        const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+        if (!datePattern.test(startDate) || !datePattern.test(endDate)) {
+          return reply.status(400).send({
+            success: false,
+            error: { message: 'Invalid date format. Please use YYYY-MM-DD format' }
+          });
+        }
+
+        // Validate date range
+        const start = new Date(startDate);
+        const end = new Date(endDate);
+        if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+          return reply.status(400).send({
+            success: false,
+            error: { message: 'Invalid date values' }
+          });
+        }
+
+        if (start > end) {
+          return reply.status(400).send({
+            success: false,
+            error: { message: 'startDate must be before or equal to endDate' }
+          });
+        }
+
+        // Generate Excel file
+        const excelBuffer = await request.container!.biometricAttendanceService.generateAdminAttendanceExcel(
+          startDate,
+          endDate
+        );
+
+        // Set response headers for file download
+        const filename = `Attendance_Report_${startDate}_to_${endDate}.xlsx`;
+        reply.header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        reply.header('Content-Disposition', `attachment; filename="${filename}"`);
+        reply.header('Content-Length', excelBuffer.length.toString());
+
+        return reply.send(excelBuffer);
+      } catch (error: any) {
+        console.error('Error downloading admin attendance Excel:', error);
+        return reply.status(400).send({
+          success: false,
+          error: { message: error.message || 'Failed to generate Excel file' }
         });
       }
     }

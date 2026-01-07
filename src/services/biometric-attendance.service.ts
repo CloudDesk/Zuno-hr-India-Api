@@ -6,6 +6,7 @@ import { BaseService } from './base.service';
 import { RequestContext } from '../types/context';
 import { HolidayCalendar, IHoliday } from '../models/holiday-calendar.model';
 import { OptionalHolidayRequest } from '../models/optional-holiday-request.model';
+import { WFH } from '../models/wfh.model';
 import * as ExcelJS from 'exceljs';
 
 
@@ -2180,6 +2181,36 @@ export class BiometricAttendanceService extends BaseService {
         holidaysByUser.set(userId, uniqueHolidays);
       });
 
+      // Step 6.5: Fetch WFH data for all users
+      const wfhRecords = await WFH.find({
+        userId: { $in: allUserIdsArray },
+        status: 'Approved', // Only approved WFH
+        startDate: { $lte: end },
+        endDate: { $gte: start }
+      }).lean();
+
+      // Create map: userId -> Set of WFH dates
+      const wfhByUser = new Map<string, Set<string>>();
+      wfhRecords.forEach(wfh => {
+        const userId = wfh.userId.toString();
+        if (!wfhByUser.has(userId)) {
+          wfhByUser.set(userId, new Set());
+        }
+
+        // Add all dates in the WFH range
+        const wfhStart = new Date(wfh.startDate);
+        wfhStart.setUTCHours(0, 0, 0, 0);
+        const wfhEnd = new Date(wfh.endDate);
+        wfhEnd.setUTCHours(23, 59, 59, 999);
+
+        const currentDate = new Date(wfhStart);
+        while (currentDate <= wfhEnd) {
+          const dateStr = currentDate.toISOString().split('T')[0];
+          wfhByUser.get(userId)!.add(dateStr);
+          currentDate.setUTCDate(currentDate.getUTCDate() + 1);
+        }
+      });
+
       // Step 7: Helper function to find shift assignment for a date
       const findShiftAssignmentForDate = (date: Date, shiftAssignments: any[]): any | null => {
         const dateStart = new Date(date);
@@ -2259,6 +2290,12 @@ export class BiometricAttendanceService extends BaseService {
             attendanceEntry.isHoliday = true;
           }
 
+          // Add WFH flag if applicable
+          const userWfhDates = wfhByUser.get(userId);
+          if (userWfhDates && userWfhDates.has(dateStr)) {
+            attendanceEntry.isWFH = true;
+          }
+
           attendance.push(attendanceEntry);
         });
 
@@ -2289,6 +2326,221 @@ export class BiometricAttendanceService extends BaseService {
       console.error('Error in getAdminAttendanceView:', error);
       throw new Error(`Failed to get admin attendance view: ${error.message}`);
     }
+  }
+
+  /**
+   * Generate Excel file for admin attendance view
+   * Reuses existing getAdminAttendanceView() method without modifying its logic
+   */
+  async generateAdminAttendanceExcel(startDate: string, endDate: string): Promise<Buffer> {
+    try {
+      // Get data using existing method (NO CHANGES to existing logic)
+      const result = await this.getAdminAttendanceView(startDate, endDate);
+
+      if (!result.success || !result.data) {
+        throw new Error('Failed to retrieve attendance data');
+      }
+
+      const { data, meta } = result;
+      const dateRange = meta.dateRange as string[];
+
+      // Fetch WFH data for all users in the date range
+      const start = new Date(startDate);
+      start.setUTCHours(0, 0, 0, 0);
+      const end = new Date(endDate);
+      end.setUTCHours(23, 59, 59, 999);
+
+      const allUserIds = data.map((user: any) => new Types.ObjectId(user.userId));
+
+      const wfhRecords = await WFH.find({
+        userId: { $in: allUserIds },
+        status: 'Approved', // Only show approved WFH
+        startDate: { $lte: end },
+        endDate: { $gte: start }
+      }).lean();
+
+      // Create a map: userId -> Set of WFH dates
+      const wfhByUserAndDate = new Map<string, Set<string>>();
+      wfhRecords.forEach(wfh => {
+        const userId = wfh.userId.toString();
+        if (!wfhByUserAndDate.has(userId)) {
+          wfhByUserAndDate.set(userId, new Set());
+        }
+
+        // Add all dates in the WFH range
+        const wfhStart = new Date(wfh.startDate);
+        wfhStart.setUTCHours(0, 0, 0, 0);
+        const wfhEnd = new Date(wfh.endDate);
+        wfhEnd.setUTCHours(23, 59, 59, 999);
+
+        const currentDate = new Date(wfhStart);
+        while (currentDate <= wfhEnd) {
+          const dateStr = currentDate.toISOString().split('T')[0];
+          wfhByUserAndDate.get(userId)!.add(dateStr);
+          currentDate.setUTCDate(currentDate.getUTCDate() + 1);
+        }
+      });
+
+      // Create Excel workbook
+      const workbook = new ExcelJS.Workbook();
+      const worksheet = workbook.addWorksheet('Attendance Report');
+
+      // Add title row
+      worksheet.mergeCells('A1:' + this.getColumnLetter(3 + dateRange.length) + '1');
+      const titleCell = worksheet.getCell('A1');
+      titleCell.value = `Attendance Report: ${startDate} to ${endDate}`;
+      titleCell.font = { bold: true, size: 14 };
+      titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+
+      // Add header row (row 3)
+      const headerRow = worksheet.getRow(3);
+      headerRow.getCell(1).value = 'Employee Code';
+      headerRow.getCell(2).value = 'Employee Name';
+      headerRow.getCell(3).value = 'Role';
+
+      // Add date columns
+      dateRange.forEach((date, index) => {
+        const colIndex = 4 + index;
+        headerRow.getCell(colIndex).value = date;
+      });
+
+      // Style header row
+      headerRow.font = { bold: true };
+      headerRow.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FFD3D3D3' }
+      };
+      headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+      headerRow.height = 20;
+
+      // Add data rows
+      data.forEach((user: any, userIndex: number) => {
+        const dataRow = worksheet.getRow(4 + userIndex);
+
+        dataRow.getCell(1).value = user.employeeCode || '';
+        dataRow.getCell(2).value = user.userName || '';
+        dataRow.getCell(3).value = user.role || '';
+
+        // Add attendance data for each date
+        user.attendance.forEach((att: any, dateIndex: number) => {
+          const colIndex = 4 + dateIndex;
+          const cell = dataRow.getCell(colIndex);
+          const dateStr = dateRange[dateIndex];
+
+          // Check if this user has WFH on this date
+          const userWfhDates = wfhByUserAndDate.get(user.userId);
+          const isWFH = userWfhDates && userWfhDates.has(dateStr);
+
+          // Determine cell value and styling
+          let cellValue = '';
+          let fontColor = 'FF000000'; // Black
+          let bgColor: string | undefined;
+
+          // WFH takes priority for background color
+          if (isWFH) {
+            bgColor = 'FFADD8E6'; // Light blue for WFH
+          } else if (att.isWeekend) {
+            bgColor = 'FFE0E0E0'; // Light gray for weekends
+          }
+          // Removed: Holiday yellow background
+
+          // Set status text
+          if (att.status === 'unknown' || !att.attendanceId) {
+            cellValue = 'Absent';
+            fontColor = 'FFFF0000'; // Red
+            // Don't show WFH for absent employees (no attendance record)
+          } else if (att.status === 'complete' || att.status === 'duplicate_swipes') {
+            // Treat duplicate_swipes as Present
+            cellValue = 'Present';
+            fontColor = 'FF008000'; // Green
+            // Add WFH indicator for complete attendance
+            if (isWFH) {
+              cellValue = 'WFH';
+            }
+          } else if (att.status === 'incomplete' || att.status === 'missing_checkout') {
+            cellValue = 'Incomplete';
+            fontColor = 'FFFF8C00'; // Orange
+            // Add WFH indicator for incomplete attendance
+            if (isWFH) {
+              cellValue = `${cellValue} (WFH)`;
+            }
+          } else {
+            cellValue = att.status;
+            // Add WFH indicator for other statuses with attendance
+            if (isWFH) {
+              cellValue = `${cellValue} (WFH)`;
+            }
+          }
+
+          // Removed: Don't add attendance status indicators (Late, Early-Exit, etc.)
+          // if (att.attendanceStatus && att.attendanceStatus.length > 0) {
+          //   const statusText = att.attendanceStatus.join(', ');
+          //   cellValue = `${cellValue} (${statusText})`;
+          // }
+
+          cell.value = cellValue;
+          cell.font = { color: { argb: fontColor } };
+
+          if (bgColor) {
+            cell.fill = {
+              type: 'pattern',
+              pattern: 'solid',
+              fgColor: { argb: bgColor }
+            };
+          }
+
+          cell.alignment = { horizontal: 'center', vertical: 'middle' };
+        });
+      });
+
+      // Set column widths
+      worksheet.getColumn(1).width = 15; // Employee Code
+      worksheet.getColumn(2).width = 25; // Employee Name
+      worksheet.getColumn(3).width = 15; // Role
+
+      // Set date column widths
+      dateRange.forEach((_, index) => {
+        worksheet.getColumn(4 + index).width = 20;
+      });
+
+      // Add borders to all cells
+      const totalRows = 3 + data.length;
+      const totalCols = 3 + dateRange.length;
+
+      for (let row = 3; row <= totalRows; row++) {
+        for (let col = 1; col <= totalCols; col++) {
+          const cell = worksheet.getRow(row).getCell(col);
+          cell.border = {
+            top: { style: 'thin' },
+            left: { style: 'thin' },
+            bottom: { style: 'thin' },
+            right: { style: 'thin' }
+          };
+        }
+      }
+
+      // Generate Excel buffer
+      const buffer = Buffer.from(await workbook.xlsx.writeBuffer());
+      return buffer;
+
+    } catch (error: any) {
+      console.error('Error generating admin attendance Excel:', error);
+      throw new Error(`Failed to generate attendance Excel: ${error.message}`);
+    }
+  }
+
+  /**
+   * Helper method to convert column index to Excel column letter
+   */
+  private getColumnLetter(columnNumber: number): string {
+    let columnLetter = '';
+    while (columnNumber > 0) {
+      const remainder = (columnNumber - 1) % 26;
+      columnLetter = String.fromCharCode(65 + remainder) + columnLetter;
+      columnNumber = Math.floor((columnNumber - 1) / 26);
+    }
+    return columnLetter;
   }
 
 }
