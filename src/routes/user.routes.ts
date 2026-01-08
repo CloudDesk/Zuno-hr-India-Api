@@ -185,6 +185,19 @@ const userResponseSchema = {
     nationality: { type: 'string' },
     employmentStatus: { type: 'string' },
     holidayCalendarId: { type: 'string' },
+    holidayCalendarHistory: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          calendarId: { type: 'string' },
+          year: { type: 'number' },
+          isActive: { type: 'boolean' },
+          assignedAt: { type: 'string', format: 'date-time' },
+          assignedBy: { type: 'string' }
+        }
+      }
+    },
     weekendId: { type: 'string' },
     createdAt: { type: 'string', format: 'date-time' },
     updatedAt: { type: 'string', format: 'date-time' },

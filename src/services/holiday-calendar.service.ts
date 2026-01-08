@@ -75,21 +75,30 @@ export class HolidayCalendarService extends BaseService {
             { session }
         );
 
-        // Add active entry and set current pointer
+        // Add active entry and set current pointer (only for current year)
+        // ✅ FIX: Only set holidayCalendarId if assigning CURRENT YEAR calendar
+        const currentYear = new Date().getFullYear();
+
+        const updateFields: any = {
+            $push: {
+                holidayCalendarHistory: {
+                    calendarId,
+                    year,
+                    isActive: true,
+                    assignedAt: new Date(),
+                    ...(assignedBy ? { assignedBy } : {})
+                }
+            }
+        };
+
+        // Only update holidayCalendarId if this is the current year
+        if (year === currentYear) {
+            updateFields.$set = { holidayCalendarId: calendarId };
+        }
+
         await User.updateMany(
             { _id: { $in: userIds } },
-            {
-                $set: { holidayCalendarId: calendarId },
-                $push: {
-                    holidayCalendarHistory: {
-                        calendarId,
-                        year,
-                        isActive: true,
-                        assignedAt: new Date(),
-                        ...(assignedBy ? { assignedBy } : {})
-                    }
-                }
-            },
+            updateFields,
             { session }
         );
     }
@@ -107,10 +116,10 @@ export class HolidayCalendarService extends BaseService {
             { session }
         );
 
+        // Mark as inactive in history
         await User.updateMany(
             { _id: { $in: userIds } },
             {
-                $unset: { holidayCalendarId: "" },
                 $set: { "holidayCalendarHistory.$[entry].isActive": false }
             },
             {
@@ -118,6 +127,43 @@ export class HolidayCalendarService extends BaseService {
                 session
             }
         );
+
+        // ✅ FIX: Only unset holidayCalendarId if deactivating CURRENT YEAR calendar
+        const currentYear = new Date().getFullYear();
+
+        if (year === currentYear) {
+            // For each user, check if they have another active calendar for current year
+            for (const userId of userIds) {
+                const user = await User.findById(userId).select('holidayCalendarHistory').session(session);
+
+                if (user?.holidayCalendarHistory) {
+                    // Find another active calendar for current year (excluding the one being deactivated)
+                    const currentYearCalendar = user.holidayCalendarHistory.find(
+                        (entry: any) =>
+                            entry.year === currentYear &&
+                            entry.isActive === true &&
+                            entry.calendarId.toString() !== calendarId.toString()
+                    );
+
+                    if (currentYearCalendar) {
+                        // Set to the other active current year calendar
+                        await User.updateOne(
+                            { _id: userId },
+                            { $set: { holidayCalendarId: currentYearCalendar.calendarId } },
+                            { session }
+                        );
+                    } else {
+                        // No other active calendar for current year, unset
+                        await User.updateOne(
+                            { _id: userId },
+                            { $unset: { holidayCalendarId: "" } },
+                            { session }
+                        );
+                    }
+                }
+            }
+        }
+        // If deactivating past/future year, don't touch holidayCalendarId
     }
     private async validateUserCalendars(userIds: string[], year: number, excludeCalendarId?: string) {
         if (!userIds.length) return;
@@ -421,14 +467,39 @@ export class HolidayCalendarService extends BaseService {
             session.endSession();
         }
     }
-    async getCalendarsByUserId(userId: string): Promise<IHolidayCalendar | null> {
+    async getCalendarsByUserId(userId: string, year?: number): Promise<IHolidayCalendar | null> {
         if (!Types.ObjectId.isValid(userId)) {
             throw new Error('Invalid user ID');
         }
 
         const userObjectId = new Types.ObjectId(userId);
 
-        // First, check if user has a direct holidayCalendarId reference (Method 1)
+        // If year is specified, look for that specific year in holidayCalendarHistory
+        if (year) {
+            const user = await User.findById(userId).select('holidayCalendarHistory').lean();
+
+            if (!user?.holidayCalendarHistory || user.holidayCalendarHistory.length === 0) {
+                return null;
+            }
+
+            // Find the active calendar for the specified year
+            const historyEntry = user.holidayCalendarHistory.find(
+                (entry: any) => entry.year === year && entry.isActive === true
+            );
+
+            if (!historyEntry) {
+                return null;
+            }
+
+            // Fetch the calendar details
+            const calendar = await HolidayCalendar.findById(historyEntry.calendarId)
+                .select('-assignedTo -createdAt -updatedAt')
+                .lean();
+
+            return calendar;
+        }
+
+        // If no year specified, use the current logic (holidayCalendarId field)
         const user = await User.findById(userId).select('holidayCalendarId').lean();
         if (user?.holidayCalendarId) {
             const calendar = await HolidayCalendar.findById(user.holidayCalendarId)

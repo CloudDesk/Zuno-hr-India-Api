@@ -7,6 +7,7 @@ import { RequestContext } from '../types/context';
 import { HolidayCalendar, IHoliday } from '../models/holiday-calendar.model';
 import { OptionalHolidayRequest } from '../models/optional-holiday-request.model';
 import { WFH } from '../models/wfh.model';
+import { Leave } from '../models/leave.model';
 import * as ExcelJS from 'exceljs';
 
 
@@ -1302,6 +1303,36 @@ export class BiometricAttendanceService extends BaseService {
 
     console.log('Retrieved records ', allRecords);
 
+    // Fetch WFH data for the same period
+    const wfhRecords = await WFH.find({
+      userId: baseQuery.userId ? baseQuery.userId : { $exists: true },
+      status: 'Approved',
+      startDate: { $lte: utcEndDate },
+      endDate: { $gte: utcStartDate }
+    }).lean();
+
+    // Create map: userId -> Set of WFH dates
+    const wfhByUserAndDate = new Map<string, Set<string>>();
+    wfhRecords.forEach(wfh => {
+      const userId = wfh.userId.toString();
+      if (!wfhByUserAndDate.has(userId)) {
+        wfhByUserAndDate.set(userId, new Set());
+      }
+
+      // Add all dates in the WFH range
+      const wfhStart = new Date(wfh.startDate);
+      wfhStart.setUTCHours(0, 0, 0, 0);
+      const wfhEnd = new Date(wfh.endDate);
+      wfhEnd.setUTCHours(23, 59, 59, 999);
+
+      const currentDate = new Date(wfhStart);
+      while (currentDate <= wfhEnd) {
+        const dateStr = currentDate.toISOString().split('T')[0];
+        wfhByUserAndDate.get(userId)!.add(dateStr);
+        currentDate.setUTCDate(currentDate.getUTCDate() + 1);
+      }
+    });
+
     // Initialize Map to store user records
     const userRecords = new Map();
 
@@ -1333,6 +1364,11 @@ export class BiometricAttendanceService extends BaseService {
 
       const userRecord = userRecords.get(userId);
 
+      // Check if this date is a WFH day for this user
+      const shiftDayStr = new Date(record.shiftDay).toISOString().split('T')[0];
+      const userWfhDates = wfhByUserAndDate.get(userId);
+      const isWFH = userWfhDates && userWfhDates.has(shiftDayStr);
+
       // Process the record
       const processedRecord = {
         _id: record._id,
@@ -1358,7 +1394,8 @@ export class BiometricAttendanceService extends BaseService {
         breakHours: record.breakHours,
         actualWorkHours: record.actualWorkHours,
         shiftHours: record.shiftHours,
-        outOfWindowSwipes: record.outOfWindowSwipes || []
+        outOfWindowSwipes: record.outOfWindowSwipes || [],
+        isWFH: isWFH || false  // Add WFH flag
 
       };
 
@@ -2211,6 +2248,49 @@ export class BiometricAttendanceService extends BaseService {
         }
       });
 
+      // Step 6.6: Fetch all approved leaves (including restricted holidays)
+      const approvedLeaves = await Leave.find({
+        userId: { $in: allUserIdsArray },
+        status: 'Approved',
+        startDate: { $lte: end },
+        endDate: { $gte: start }
+      }).lean();
+
+      // Create map: userId -> date -> leave type
+      const leaveByUserAndDate = new Map<string, Map<string, string>>();
+      const approvedRestrictedHolidaysByUser = new Map<string, Set<string>>();
+
+      approvedLeaves.forEach(leave => {
+        const userId = leave.userId.toString();
+
+        // Store leave type for each date
+        if (!leaveByUserAndDate.has(userId)) {
+          leaveByUserAndDate.set(userId, new Map());
+        }
+
+        // Add all dates in the leave range
+        const leaveStart = new Date(leave.startDate);
+        leaveStart.setUTCHours(0, 0, 0, 0);
+        const leaveEnd = new Date(leave.endDate);
+        leaveEnd.setUTCHours(23, 59, 59, 999);
+
+        const currentDate = new Date(leaveStart);
+        while (currentDate <= leaveEnd) {
+          const dateStr = currentDate.toISOString().split('T')[0];
+          leaveByUserAndDate.get(userId)!.set(dateStr, leave.leaveType || 'leave');
+
+          // Also track restricted holidays separately (for backward compatibility)
+          if (leave.leaveType === 'restricted_holiday') {
+            if (!approvedRestrictedHolidaysByUser.has(userId)) {
+              approvedRestrictedHolidaysByUser.set(userId, new Set());
+            }
+            approvedRestrictedHolidaysByUser.get(userId)!.add(dateStr);
+          }
+
+          currentDate.setUTCDate(currentDate.getUTCDate() + 1);
+        }
+      });
+
       // Step 7: Helper function to find shift assignment for a date
       const findShiftAssignmentForDate = (date: Date, shiftAssignments: any[]): any | null => {
         const dateStart = new Date(date);
@@ -2280,14 +2360,38 @@ export class BiometricAttendanceService extends BaseService {
             attendanceStatus: record ? record.attendanceStatus || [] : [],
           };
 
+          // Add leave information if applicable
+          const userLeaves = leaveByUserAndDate.get(userId);
+          const leaveType = userLeaves?.get(dateStr);
+          if (leaveType) {
+            attendanceEntry.leaveType = leaveType;
+
+            // Add display label for frontend
+            if (leaveType === 'restricted_holiday') {
+              attendanceEntry.displayLabel = 'RH';
+            } else if (leaveType === 'annual_leave' || leaveType?.toLowerCase().includes('annual')) {
+              attendanceEntry.displayLabel = 'AL';
+            } else {
+              attendanceEntry.displayLabel = 'Leave';
+            }
+          }
+
           // Add weekend flag only if it's a weekend
           if (isWeekend) {
             attendanceEntry.isWeekend = true;
           }
 
-          // Add holiday flag if applicable
+          // Add holiday information if applicable
           if (holiday) {
             attendanceEntry.isHoliday = true;
+            attendanceEntry.holidayType = holiday.type; // 'mandatory' or 'optional'
+
+            // Check if this is an approved restricted holiday (optional holiday that was approved)
+            if (holiday.type === 'optional') {
+              const userApprovedDates = approvedRestrictedHolidaysByUser.get(userId);
+              const isApproved = userApprovedDates && userApprovedDates.has(dateStr);
+              attendanceEntry.isRestrictedHoliday = isApproved || false;
+            }
           }
 
           // Add WFH flag if applicable
@@ -2381,6 +2485,89 @@ export class BiometricAttendanceService extends BaseService {
         }
       });
 
+      // Fetch Leave data for all users
+      const leaveRecords = await Leave.find({
+        userId: { $in: allUserIds },
+        status: 'Approved', // Only approved leaves
+        startDate: { $lte: end },
+        endDate: { $gte: start }
+      }).lean();
+
+      // Create map: userId -> date -> leave type
+      const leaveByUserAndDate = new Map<string, Map<string, string>>();
+      leaveRecords.forEach(leave => {
+        const userId = leave.userId.toString();
+        if (!leaveByUserAndDate.has(userId)) {
+          leaveByUserAndDate.set(userId, new Map());
+        }
+
+        // Add all dates in the Leave range with leave type
+        const leaveStart = new Date(leave.startDate);
+        leaveStart.setUTCHours(0, 0, 0, 0);
+        const leaveEnd = new Date(leave.endDate);
+        leaveEnd.setUTCHours(23, 59, 59, 999);
+
+        const currentDate = new Date(leaveStart);
+        while (currentDate <= leaveEnd) {
+          const dateStr = currentDate.toISOString().split('T')[0];
+          leaveByUserAndDate.get(userId)!.set(dateStr, leave.leaveType || 'leave');
+          currentDate.setUTCDate(currentDate.getUTCDate() + 1);
+        }
+      });
+
+      // Fetch Holiday Calendar data for all users
+      const userHolidayCalendarIds = data
+        .map((user: any) => user.holidayCalendarId)
+        .filter((id: any) => id);
+
+      const holidayCalendars = await HolidayCalendar.find({
+        $or: [
+          { _id: { $in: userHolidayCalendarIds } },
+          { assignedTo: { $in: allUserIds } }
+        ]
+      }).lean();
+
+      // Create map: userId -> holidays by date
+      const holidaysByUser = new Map<string, Map<string, { name: string; type: string }>>();
+
+      data.forEach((user: any) => {
+        const userId = user.userId;
+        const userCalendar = holidayCalendars.find(cal =>
+          cal._id.toString() === user.holidayCalendarId?.toString() ||
+          cal.assignedTo?.some((id: any) => id.toString() === userId)
+        );
+
+        if (userCalendar && userCalendar.holidays) {
+          const holidayMap = new Map<string, { name: string; type: string }>();
+          userCalendar.holidays.forEach((holiday: any) => {
+            const dateStr = new Date(holiday.date).toISOString().split('T')[0];
+            holidayMap.set(dateStr, {
+              name: holiday.name,
+              type: holiday.type
+            });
+          });
+          holidaysByUser.set(userId, holidayMap);
+        }
+      });
+
+      // Fetch approved optional holiday requests
+      const optionalHolidayRequests = await OptionalHolidayRequest.find({
+        userId: { $in: allUserIds },
+        status: 'Approved',
+        holidayDate: { $gte: start, $lte: end }
+      }).lean();
+
+      // Create map: userId -> Set of approved optional holiday dates
+      const approvedOptionalHolidaysByUser = new Map<string, Set<string>>();
+      optionalHolidayRequests.forEach(req => {
+        const userId = req.userId.toString();
+        if (!approvedOptionalHolidaysByUser.has(userId)) {
+          approvedOptionalHolidaysByUser.set(userId, new Set());
+        }
+        const dateStr = new Date(req.holidayDate).toISOString().split('T')[0];
+        approvedOptionalHolidaysByUser.get(userId)!.add(dateStr);
+      });
+
       // Create Excel workbook
       const workbook = new ExcelJS.Workbook();
       const worksheet = workbook.addWorksheet('Attendance Report');
@@ -2432,6 +2619,11 @@ export class BiometricAttendanceService extends BaseService {
           const userWfhDates = wfhByUserAndDate.get(user.userId);
           const isWFH = userWfhDates && userWfhDates.has(dateStr);
 
+          // Check if this user has Leave on this date
+          const userLeaveDates = leaveByUserAndDate.get(user.userId);
+          const leaveType = userLeaveDates?.get(dateStr);
+          const isLeave = !!leaveType;
+
           // Determine cell value and styling
           let cellValue = '';
           let fontColor = 'FF000000'; // Black
@@ -2445,56 +2637,98 @@ export class BiometricAttendanceService extends BaseService {
 
           let bgColor: string | undefined;
 
+          // Check if this date is a holiday for this user
+          const userHolidays = holidaysByUser.get(user.userId);
+          const holiday = userHolidays?.get(dateStr);
+          const isApprovedOptionalHoliday = approvedOptionalHolidaysByUser.get(user.userId)?.has(dateStr);
+
+          // Determine if we should show holiday status
+          let showHoliday = false;
+
           // Set status text
-          // Check if date is today
-          if (cellDate.getTime() === today.getTime()) {
-            // Today - show empty cell with gray background
-            cellValue = '';
-            fontColor = 'FF000000'; // Black
-            bgColor = 'FFD3D3D3'; // Light gray background for today
-          } else if (cellDate > today) {
-            // Future date - check if weekend
-            if (att.isWeekend) {
-              cellValue = 'Off';
-              fontColor = 'FF808080'; // Gray
+          // PRIORITY 1: Check for approved leave (shows even for future dates)
+          if (isLeave) {
+            // Check leave type and display appropriate abbreviation
+            if (leaveType === 'restricted_holiday') {
+              cellValue = 'RH';
+              fontColor = 'FF0000FF'; // Blue for restricted holiday
+            } else if (leaveType === 'annual_leave' || leaveType?.toLowerCase().includes('annual')) {
+              // Match 'annual_leave', 'Annual Leave', 'annual', etc.
+              cellValue = 'AL';
+              fontColor = 'FF0000FF'; // Blue for annual leave
             } else {
-              cellValue = '-';
-              fontColor = 'FF808080'; // Gray
+              // For other leave types (sick_leave, casual_leave, etc.)
+              cellValue = 'Leave';
+              fontColor = 'FF0000FF'; // Blue for leave
             }
-          } else if (att.status === 'unknown' || !att.attendanceId) {
-            // Past date with no attendance
-            // Check if it's a weekend with no attendance
-            if (att.isWeekend) {
-              cellValue = 'Off';
-              fontColor = 'FF808080'; // Gray for weekend off
+          } else if (holiday) {
+            // PRIORITY 2: Check for holidays
+            if (holiday.type === 'mandatory') {
+              // Mandatory holiday - always show H
+              cellValue = 'H';
+              fontColor = 'FF800080'; // Purple for holiday
+              showHoliday = true;
+            } else if (holiday.type === 'optional' && isApprovedOptionalHoliday) {
+              // Restricted holiday (optional) - only show if approved
+              cellValue = 'RH';
+              fontColor = 'FF800080'; // Purple for restricted holiday
+              showHoliday = true;
+            }
+            // If optional holiday not approved, showHoliday remains false
+          }
+
+          if (!isLeave && !showHoliday) {
+            // Continue with normal logic if not leave or holiday
+            if (cellDate.getTime() === today.getTime()) {
+              // PRIORITY 3: Check if date is today
+              // Today - show empty cell with gray background
+              cellValue = '';
+              fontColor = 'FF000000'; // Black
+              bgColor = 'FFD3D3D3'; // Light gray background for today
+            } else if (cellDate > today) {
+              // Future date - check if weekend
+              if (att.isWeekend) {
+                cellValue = 'Off';
+                fontColor = 'FF808080'; // Gray
+              } else {
+                cellValue = '-';
+                fontColor = 'FF808080'; // Gray
+              }
+            } else if (att.status === 'unknown' || !att.attendanceId) {
+              // Past date with no attendance
+              // Check if it's a weekend with no attendance
+              if (att.isWeekend) {
+                cellValue = 'Off';
+                fontColor = 'FF808080'; // Gray for weekend off
+              } else {
+                cellValue = 'A';  // Abbreviated "Absent"
+                fontColor = 'FFFF0000'; // Red for absent
+              }
+              // Don't show WFH for absent/off employees (no attendance record)
+            } else if (att.status === 'complete' || att.status === 'duplicate_swipes') {
+              // Past date with complete attendance
+              // Treat duplicate_swipes as Present
+              cellValue = 'Present';
+              fontColor = 'FF008000'; // Green
+              // Add WFH indicator for complete attendance
+              if (isWFH) {
+                cellValue = 'WFH';
+              }
+            } else if (att.status === 'incomplete' || att.status === 'missing_checkout') {
+              // Past date with incomplete attendance
+              cellValue = 'Incomplete';
+              fontColor = 'FFFF8C00'; // Orange
+              // Add WFH indicator for incomplete attendance
+              if (isWFH) {
+                cellValue = `${cellValue} (WFH)`;
+              }
             } else {
-              cellValue = 'Absent';
-              fontColor = 'FFFF0000'; // Red for absent
-            }
-            // Don't show WFH for absent/off employees (no attendance record)
-          } else if (att.status === 'complete' || att.status === 'duplicate_swipes') {
-            // Past date with complete attendance
-            // Treat duplicate_swipes as Present
-            cellValue = 'Present';
-            fontColor = 'FF008000'; // Green
-            // Add WFH indicator for complete attendance
-            if (isWFH) {
-              cellValue = 'WFH';
-            }
-          } else if (att.status === 'incomplete' || att.status === 'missing_checkout') {
-            // Past date with incomplete attendance
-            cellValue = 'Incomplete';
-            fontColor = 'FFFF8C00'; // Orange
-            // Add WFH indicator for incomplete attendance
-            if (isWFH) {
-              cellValue = `${cellValue} (WFH)`;
-            }
-          } else {
-            // Past date with other status
-            cellValue = att.status;
-            // Add WFH indicator for other statuses with attendance
-            if (isWFH) {
-              cellValue = `${cellValue} (WFH)`;
+              // Past date with other status
+              cellValue = att.status;
+              // Add WFH indicator for other statuses with attendance
+              if (isWFH) {
+                cellValue = `${cellValue} (WFH)`;
+              }
             }
           }
 

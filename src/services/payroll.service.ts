@@ -245,7 +245,8 @@ export class PayrollService extends BaseService {
         // [PayrollStatus.Failed]: [PayrollStatus.RetryPending, PayrollStatus.Cancelled],
         [PayrollStatus.Failed]: [PayrollStatus.Completed, PayrollStatus.Failed],
         [PayrollStatus.RetryPending]: [PayrollStatus.InPayment, PayrollStatus.Cancelled],
-        [PayrollStatus.Cancelled]: []
+        [PayrollStatus.Cancelled]: [],
+        // [PayrollStatus.Hold]: [PayrollStatus.Draft, PayrollStatus.PendingApproval, PayrollStatus.InPayment] // ⭐ Can release from hold
     };
 
     private static maxRetries = 3;
@@ -1973,27 +1974,40 @@ export class PayrollService extends BaseService {
         let weekendDaysCount = 0,
             holidayDays = 0;
 
-        // Fetch the user's holiday calendar
-        const user = await User.findById(employeeId, 'holidayCalendarId').lean();
-        console.log(user, 'user getWorkingDaysInMonth');
-        const holidayCalendarId = user?.holidayCalendarId;
+        // ✅ FIX: Fetch the user's holiday calendar for the specific year
+        // Query holidayCalendarHistory for year-specific calendar
+        const user = await User.findById(employeeId).select('holidayCalendarHistory').lean();
+        let holidayCalendar = null;
 
-        if (holidayCalendarId) {
-            const holidayCalendar = await HolidayCalendar.findById(holidayCalendarId, 'holidays').lean();
-            const holidays = holidayCalendar?.holidays || [];
+        if (user?.holidayCalendarHistory && user.holidayCalendarHistory.length > 0) {
+            // Find the active calendar for the specified year
+            const historyEntry = user.holidayCalendarHistory.find(
+                (entry: any) => entry.year === year && entry.isActive === true
+            );
+
+            if (historyEntry) {
+                // Fetch the calendar details for this year
+                holidayCalendar = await HolidayCalendar.findById(historyEntry.calendarId)
+                    .select('holidays')
+                    .lean();
+            }
+        }
+
+        if (holidayCalendar) {
+            const holidays = holidayCalendar.holidays || [];
             console.log(holidays, 'holidaysholidays');
-            
+
             // Separate mandatory and optional holidays
-            const mandatoryHolidays = holidays.filter((h) => {
+            const mandatoryHolidays = holidays.filter((h: any) => {
                 const holidayDate = new Date(h.date);
-                return holidayDate.getFullYear() === year && 
-                       holidayDate.getMonth() === monthNumber - 1 &&
-                       h.type === 'mandatory';
+                return holidayDate.getFullYear() === year &&
+                    holidayDate.getMonth() === monthNumber - 1 &&
+                    h.type === 'mandatory';
             });
-            
+
             // Count mandatory holidays
             const mandatoryHolidayCount = mandatoryHolidays.length;
-            
+
             // Get APPROVED restricted_holiday leaves for this employee in this month
             // Note: Restricted holidays are now part of the Leave system (leaveType: 'restricted_holiday')
             const approvedRestrictedHolidays = await Leave.find({
@@ -2005,16 +2019,16 @@ export class PayrollService extends BaseService {
                     { endDate: { $gte: firstDay, $lte: lastDay } },
                 ],
             }).select('noOfDays').lean();
-            
+
             // Sum all noOfDays to get total restricted holiday days (supports decimals if needed)
             const approvedRestrictedHolidayDays = approvedRestrictedHolidays.reduce(
-                (sum, leave) => sum + (leave.noOfDays || 0), 
+                (sum, leave) => sum + (leave.noOfDays || 0),
                 0
             );
-            
+
             // Total holiday days = mandatory + approved restricted holidays
             holidayDays = mandatoryHolidayCount + Math.round(approvedRestrictedHolidayDays);
-            
+
             console.log(`Holiday breakdown: ${mandatoryHolidayCount} mandatory + ${approvedRestrictedHolidayDays} approved restricted holidays = ${holidayDays} total`);
         }
 
@@ -2049,10 +2063,11 @@ export class PayrollService extends BaseService {
         console.log(weekendDays, 'weekendDays after shiftAssignments');
 
         // Calculate weekend days and working days
-        const holidayDates = holidayCalendarId
-            ? (await HolidayCalendar.findById(holidayCalendarId, 'holidays').lean())?.holidays.map(
-                (h) => new Date(h.date).toISOString().split('T')[0],
-            ) || []
+        // ✅ FIX: Use the holidayCalendar object fetched earlier (with year parameter)
+        const holidayDates = holidayCalendar
+            ? (holidayCalendar.holidays || []).map(
+                (h: any) => new Date(h.date).toISOString().split('T')[0],
+            )
             : [];
 
         for (let i = 1; i <= daysInMonth; i++) {

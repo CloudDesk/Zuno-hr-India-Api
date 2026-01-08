@@ -449,7 +449,7 @@ export async function holidayCalendarRoutes(fastify: FastifyInstance): Promise<v
         }
     );
 
-    fastify.get<{ Params: { userId: string } }>(
+    fastify.get<{ Params: { userId: string }; Querystring: { year?: number } }>(
         '/user/:userId',
         {
             onRequest: [authenticate],
@@ -463,6 +463,15 @@ export async function holidayCalendarRoutes(fastify: FastifyInstance): Promise<v
                         userId: {
                             type: 'string',
                             description: 'User ID to fetch calendar for'
+                        }
+                    }
+                },
+                querystring: {
+                    type: 'object',
+                    properties: {
+                        year: {
+                            type: 'number',
+                            description: 'Filter by specific year'
                         }
                     }
                 },
@@ -507,7 +516,8 @@ export async function holidayCalendarRoutes(fastify: FastifyInstance): Promise<v
         },
         async (request, reply) => {
             try {
-                const result = await request.container!.holidayCalendarService.getCalendarsByUserId(request.params.userId);
+                const year = request.query.year;
+                const result = await request.container!.holidayCalendarService.getCalendarsByUserId(request.params.userId, year);
                 return reply.send({
                     success: true,
                     data: result
