@@ -646,6 +646,7 @@ userSchema.index({ email: 1 }, { unique: true });
 userSchema.index({ employeeCode: 1 }, { unique: true });
 userSchema.index({ checkinId: 1 }, { unique: true, sparse: true });
 userSchema.index({ biometricId: 1 }, { unique: true, sparse: true });
+userSchema.index({ phone: 1 }, { sparse: true }); // For WhatsApp authentication
 userSchema.index({ managerId: 1 });
 userSchema.index({ role: 1 });
 userSchema.index({ active: 1 });

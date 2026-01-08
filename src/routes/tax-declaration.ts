@@ -143,4 +143,119 @@ export async function taxDeclarationRoutes(fastify: FastifyInstance): Promise<vo
             }
         }
     )
+
+    // Bulk enable Form12B for migration (Admin only - one-time operation)
+    fastify.post('/bulk-enable-form12b',
+        {
+            preHandler: [authenticate]
+        },
+        async (request, reply) => {
+            try {
+                const { employeeIds, financialYear } = request.body as {
+                    employeeIds: string[];
+                    financialYear: string;
+                };
+
+                // Validate input
+                if (!employeeIds || !Array.isArray(employeeIds) || employeeIds.length === 0) {
+                    return reply.status(400).send({
+                        success: false,
+                        error: { message: 'employeeIds must be a non-empty array' }
+                    });
+                }
+
+                if (!financialYear) {
+                    return reply.status(400).send({
+                        success: false,
+                        error: { message: 'financialYear is required' }
+                    });
+                }
+
+                const result = await request.container!.taxDeclarationService.bulkEnableForm12B({
+                    employeeIds,
+                    financialYear
+                });
+
+                return reply.send({
+                    success: result.success,
+                    message: `Form12B enabled for ${result.updated} employee(s)`,
+                    data: {
+                        updated: result.updated,
+                        failed: result.failed.length,
+                        failedEmployees: result.failed,
+                        details: result.details
+                    }
+                });
+
+            } catch (error: any) {
+                return reply.status(400).send({
+                    success: false,
+                    error: { message: error.message }
+                });
+            }
+        }
+    )
+
+    // Bulk create tax declarations for migration (Admin only - one-time operation)
+    fastify.post('/bulk-create',
+        {
+            preHandler: [authenticate]
+        },
+        async (request, reply) => {
+            try {
+                const { employeeIds, financialYear, regime } = request.body as {
+                    employeeIds: string[];
+                    financialYear: string;
+                    regime: 'new' | 'old';
+                };
+
+                // Validate input
+                if (!employeeIds || !Array.isArray(employeeIds) || employeeIds.length === 0) {
+                    return reply.status(400).send({
+                        success: false,
+                        error: { message: 'employeeIds must be a non-empty array' }
+                    });
+                }
+
+                if (!financialYear) {
+                    return reply.status(400).send({
+                        success: false,
+                        error: { message: 'financialYear is required' }
+                    });
+                }
+
+                if (!regime || (regime !== 'new' && regime !== 'old')) {
+                    return reply.status(400).send({
+                        success: false,
+                        error: { message: 'regime must be either "new" or "old"' }
+                    });
+                }
+
+                const result = await request.container!.taxDeclarationService.bulkCreateTaxDeclarations({
+                    employeeIds,
+                    financialYear,
+                    regime
+                });
+
+                return reply.send({
+                    success: result.success,
+                    message: `Created: ${result.created}, Skipped: ${result.skipped}, Failed: ${result.failed}`,
+                    data: {
+                        created: result.created,
+                        skipped: result.skipped,
+                        skippedEmployees: result.skippedEmployees,
+                        failed: result.failed,
+                        failedEmployees: result.failedEmployees,
+                        details: result.details
+                    }
+                });
+
+            } catch (error: any) {
+                return reply.status(400).send({
+                    success: false,
+                    error: { message: error.message }
+                });
+            }
+        }
+    )
 }

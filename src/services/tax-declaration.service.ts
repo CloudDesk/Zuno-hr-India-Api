@@ -752,6 +752,151 @@ export class TaxDeclarationService extends BaseService {
         return taxDeclaration;
     }
 
+    // Bulk update isForm12BApplicable for migration purposes
+    // This is a one-time admin operation to enable Form12B for existing employees
+    async bulkEnableForm12B(data: {
+        employeeIds: string[];
+        financialYear: string;
+    }): Promise<{
+        success: boolean;
+        updated: number;
+        failed: string[];
+        details: Array<{ employeeId: string; status: string; message?: string }>;
+    }> {
+        const { employeeIds, financialYear } = data;
+        const results: Array<{ employeeId: string; status: string; message?: string }> = [];
+        let updatedCount = 0;
+        const failedEmployees: string[] = [];
+
+        console.log(`Bulk enabling Form12B for FY: ${financialYear}, Employee IDs:`, employeeIds);
+
+        for (const employeeId of employeeIds) {
+            try {
+                // Find tax declaration for this employee and FY
+                const taxDeclaration = await TaxDeclaration.findOne({
+                    employeeId: new Types.ObjectId(employeeId),
+                    financialYear
+                });
+
+                if (!taxDeclaration) {
+                    results.push({
+                        employeeId,
+                        status: 'failed',
+                        message: `Tax declaration not found for FY ${financialYear}`
+                    });
+                    failedEmployees.push(employeeId);
+                    continue;
+                }
+
+                // Update the flag
+                taxDeclaration.isForm12BApplicable = true;
+                await taxDeclaration.save();
+
+                results.push({
+                    employeeId,
+                    status: 'success',
+                    message: 'Form12B enabled successfully'
+                });
+                updatedCount++;
+
+            } catch (error: any) {
+                results.push({
+                    employeeId,
+                    status: 'error',
+                    message: error.message
+                });
+                failedEmployees.push(employeeId);
+            }
+        }
+
+        return {
+            success: updatedCount > 0,
+            updated: updatedCount,
+            failed: failedEmployees,
+            details: results
+        };
+    }
+
+    // Bulk create tax declarations for migration purposes
+    // Checks for existing records and creates only for employees without existing declarations
+    async bulkCreateTaxDeclarations(data: {
+        employeeIds: string[];
+        financialYear: string;
+        regime: 'new' | 'old';
+    }): Promise<{
+        success: boolean;
+        created: number;
+        skipped: number;
+        failed: number;
+        skippedEmployees: string[];
+        failedEmployees: string[];
+        details: Array<{ employeeId: string; status: string; message?: string }>;
+    }> {
+        const { employeeIds, financialYear, regime } = data;
+        const results: Array<{ employeeId: string; status: string; message?: string }> = [];
+        let createdCount = 0;
+        let skippedCount = 0;
+        let failedCount = 0;
+        const skippedEmployees: string[] = [];
+        const failedEmployees: string[] = [];
+
+        console.log(`Bulk creating tax declarations for FY: ${financialYear}, Regime: ${regime}, Employee IDs:`, employeeIds);
+
+        for (const employeeId of employeeIds) {
+            try {
+                // Check if tax declaration already exists for this employee and FY
+                const existingDeclaration = await TaxDeclaration.findOne({
+                    employeeId: new Types.ObjectId(employeeId),
+                    financialYear
+                });
+
+                if (existingDeclaration) {
+                    results.push({
+                        employeeId,
+                        status: 'skipped',
+                        message: `Tax declaration already exists for FY ${financialYear}`
+                    });
+                    skippedEmployees.push(employeeId);
+                    skippedCount++;
+                    continue;
+                }
+
+                // Create tax declaration using existing create method
+                await this.create({
+                    employeeId,
+                    financialYear,
+                    regime
+                });
+
+                results.push({
+                    employeeId,
+                    status: 'success',
+                    message: 'Tax declaration created successfully'
+                });
+                createdCount++;
+
+            } catch (error: any) {
+                results.push({
+                    employeeId,
+                    status: 'failed',
+                    message: error.message
+                });
+                failedEmployees.push(employeeId);
+                failedCount++;
+            }
+        }
+
+        return {
+            success: createdCount > 0,
+            created: createdCount,
+            skipped: skippedCount,
+            failed: failedCount,
+            skippedEmployees,
+            failedEmployees,
+            details: results
+        };
+    }
+
     async findAll(query: { page?: number; limit?: number; search?: string }):
         Promise<{
             taxDeclarations: ITaxDeclaration[],
