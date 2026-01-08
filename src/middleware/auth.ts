@@ -46,8 +46,8 @@ export const authenticate = async (
     if (hasWhatsAppAuth) {
       // WhatsApp authentication flow
       // Check both body (POST) and query (GET) for phoneNumber
-      const phoneNumber = 
-        (request.body as any)?.phoneNumber || 
+      const phoneNumber =
+        (request.body as any)?.phoneNumber ||
         (request.query as any)?.phoneNumber;
       const timestamp = request.headers["x-whatsapp-timestamp"] as string;
 
@@ -94,17 +94,40 @@ export const authenticate = async (
 
       // Normalize phone number
       const normalizedPhone = phoneNumber.replace(/[\s\-\(\)]/g, "");
+      
+      console.log("🔍 WhatsApp Auth - Looking for user with phone:", normalizedPhone);
 
-      // Find user by phone number
-      const user = await User.findOne({
-        phone: normalizedPhone,
-        active: true,
-      }).select(
-        "_id email name role departmentId active country currency licenseType portalAccess"
-      );
+      // Try multiple phone formats (with/without country code)
+      const phoneVariants = [
+        normalizedPhone,                                          // As provided
+        normalizedPhone.replace(/^\+91/, ""),                    // Remove +91 if present
+        normalizedPhone.replace(/^\+/, ""),                      // Remove any + prefix
+        normalizedPhone.startsWith("+") ? normalizedPhone : `+91${normalizedPhone}`, // Add +91
+      ];
+      
+      // Remove duplicates
+      const uniquePhoneVariants = [...new Set(phoneVariants)];
+      console.log("🔍 WhatsApp Auth - Trying phone variants:", uniquePhoneVariants);
+
+      // Find user by any phone variant
+      let user = null;
+      for (const phoneVariant of uniquePhoneVariants) {
+        user = await User.findOne({
+          phone: phoneVariant,
+          active: true,
+        }).select(
+          "_id email name role departmentId active country currency licenseType portalAccess"
+        );
+        
+        if (user) {
+          console.log("✅ WhatsApp Auth - User found with phone:", phoneVariant, `(${user.email})`);
+          break;
+        }
+      }
 
       if (!user) {
-        throw new Error("User not found or inactive");
+        console.log("❌ WhatsApp Auth - User not found for any variant");
+        throw new Error(`User not found or inactive for phone: ${normalizedPhone}`);
       }
 
       if (!user.portalAccess) {
