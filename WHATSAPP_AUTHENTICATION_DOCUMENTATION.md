@@ -47,6 +47,7 @@ This document describes the WhatsApp authentication implementation for the Zuno 
 **Authentication Methods**:
 
 #### Method 1: Direct Secret Comparison (Simpler)
+
 ```typescript
 Headers:
   x-whatsapp-secret: <FACEBOOK_APP_SECRET>
@@ -56,6 +57,7 @@ Body:
 ```
 
 #### Method 2: Signature with Timestamp (More Secure)
+
 ```typescript
 Headers:
   x-whatsapp-signature: <HMAC_SHA256_signature>
@@ -66,14 +68,16 @@ Body:
 ```
 
 **Signature Calculation** (for Method 2):
+
 ```javascript
 const signature = crypto
-  .createHmac('sha256', FACEBOOK_APP_SECRET)
+  .createHmac("sha256", FACEBOOK_APP_SECRET)
   .update(phoneNumber + timestamp)
-  .digest('hex');
+  .digest("hex");
 ```
 
 **Security Features**:
+
 - Timestamp validation (5-minute expiry window)
 - Active user check
 - Portal access verification
@@ -88,21 +92,24 @@ userSchema.index({ phone: 1 }, { sparse: true }); // For WhatsApp authentication
 ```
 
 **Query**:
+
 ```typescript
-const user = await User.findOne({ 
+const user = await User.findOne({
   phone: normalizedPhone,
-  active: true 
+  active: true,
 });
 ```
 
 ### 3. Environment Variables
 
 **Required**:
+
 ```bash
 FACEBOOK_APP_SECRET=your_facebook_app_secret_here
 ```
 
 **Where to find**:
+
 1. Go to Meta Developer Console: https://developers.facebook.com
 2. Select your WhatsApp app
 3. Navigate to: **Settings → Basic**
@@ -116,15 +123,15 @@ FACEBOOK_APP_SECRET=your_facebook_app_secret_here
 
 ```typescript
 // Node.js WhatsApp Backend
-const response = await fetch('https://your-api.com/api/v1/payslip/me', {
-  method: 'GET',
+const response = await fetch("https://your-api.com/api/v1/payslip/me", {
+  method: "GET",
   headers: {
-    'x-whatsapp-secret': process.env.FACEBOOK_APP_SECRET,
-    'Content-Type': 'application/json'
+    "x-whatsapp-secret": process.env.FACEBOOK_APP_SECRET,
+    "Content-Type": "application/json",
   },
   body: JSON.stringify({
-    phoneNumber: '+919876543210'
-  })
+    phoneNumber: "+919876543210",
+  }),
 });
 ```
 
@@ -132,23 +139,23 @@ const response = await fetch('https://your-api.com/api/v1/payslip/me', {
 
 ```typescript
 // Node.js WhatsApp Backend
-const phoneNumber = '+919876543210';
+const phoneNumber = "+919876543210";
 const timestamp = Math.floor(Date.now() / 1000).toString();
 const signature = crypto
-  .createHmac('sha256', process.env.FACEBOOK_APP_SECRET)
+  .createHmac("sha256", process.env.FACEBOOK_APP_SECRET)
   .update(phoneNumber + timestamp)
-  .digest('hex');
+  .digest("hex");
 
-const response = await fetch('https://your-api.com/api/v1/payslip/me', {
-  method: 'GET',
+const response = await fetch("https://your-api.com/api/v1/payslip/me", {
+  method: "GET",
   headers: {
-    'x-whatsapp-signature': signature,
-    'x-whatsapp-timestamp': timestamp,
-    'Content-Type': 'application/json'
+    "x-whatsapp-signature": signature,
+    "x-whatsapp-timestamp": timestamp,
+    "Content-Type": "application/json",
   },
   body: JSON.stringify({
-    phoneNumber: phoneNumber
-  })
+    phoneNumber: phoneNumber,
+  }),
 });
 ```
 
@@ -158,18 +165,16 @@ const response = await fetch('https://your-api.com/api/v1/payslip/me', {
 
 ```typescript
 // Example: payslip.routes.ts
-import { authenticate, authenticateWhatsApp } from '../middleware/auth';
+import { authenticate, authenticateWhatsApp } from "../middleware/auth";
 
 // For web/mobile app (JWT)
-fastify.get('/payslip/me', 
-  { preHandler: authenticate }, 
-  getMyPayslip
-);
+fastify.get("/payslip/me", { preHandler: authenticate }, getMyPayslip);
 
 // For WhatsApp (phone number)
-fastify.get('/whatsapp/payslip/me', 
-  { preHandler: authenticateWhatsApp }, 
-  getMyPayslip  // Same controller!
+fastify.get(
+  "/whatsapp/payslip/me",
+  { preHandler: authenticateWhatsApp },
+  getMyPayslip // Same controller!
 );
 ```
 
@@ -196,10 +201,12 @@ fastify.get('/whatsapp/payslip/me',
 **Recommended**: E.164 format (international format with country code)
 
 Examples:
+
 - India: `+919876543210`
 - UAE: `+971501234567`
 
 **Normalization**: The middleware automatically removes:
+
 - Spaces: `+91 98765 43210` → `+919876543210`
 - Dashes: `+91-9876543210` → `+919876543210`
 - Parentheses: `+91 (98765) 43210` → `+919876543210`
@@ -219,14 +226,14 @@ Examples:
 
 **Common Errors**:
 
-| Error Message | Cause | Solution |
-|---------------|-------|----------|
-| `Phone number is required` | Missing phoneNumber in body | Include phoneNumber in request body |
-| `FACEBOOK_APP_SECRET not configured` | Missing env variable | Add FACEBOOK_APP_SECRET to .env |
-| `Invalid WhatsApp authentication credentials` | Wrong secret or signature | Verify FACEBOOK_APP_SECRET matches |
-| `Request timestamp expired` | Timestamp > 5 minutes old | Generate fresh timestamp |
-| `User not found or inactive` | No user with phone number | User doesn't exist or is inactive |
-| `User does not have portal access` | portalAccess = false | Enable portal access for user |
+| Error Message                                 | Cause                       | Solution                            |
+| --------------------------------------------- | --------------------------- | ----------------------------------- |
+| `Phone number is required`                    | Missing phoneNumber in body | Include phoneNumber in request body |
+| `FACEBOOK_APP_SECRET not configured`          | Missing env variable        | Add FACEBOOK_APP_SECRET to .env     |
+| `Invalid WhatsApp authentication credentials` | Wrong secret or signature   | Verify FACEBOOK_APP_SECRET matches  |
+| `Request timestamp expired`                   | Timestamp > 5 minutes old   | Generate fresh timestamp            |
+| `User not found or inactive`                  | No user with phone number   | User doesn't exist or is inactive   |
+| `User does not have portal access`            | portalAccess = false        | Enable portal access for user       |
 
 ## Testing
 
@@ -284,7 +291,7 @@ curl -X GET https://your-api.com/api/v1/payslip/me \
 
 ```typescript
 // whatsapp-backend/src/services/zunoApiService.ts
-import crypto from 'crypto';
+import crypto from "crypto";
 
 class ZunoApiService {
   private apiBaseUrl: string;
@@ -300,18 +307,18 @@ class ZunoApiService {
    */
   private generateSignature(phoneNumber: string, timestamp: string): string {
     return crypto
-      .createHmac('sha256', this.appSecret)
+      .createHmac("sha256", this.appSecret)
       .update(phoneNumber + timestamp)
-      .digest('hex');
+      .digest("hex");
   }
 
   /**
    * Make authenticated request to Zuno HR API
    */
   async makeAuthenticatedRequest(
-    endpoint: string, 
-    phoneNumber: string, 
-    method: string = 'GET',
+    endpoint: string,
+    phoneNumber: string,
+    method: string = "GET",
     body?: any
   ) {
     const timestamp = Math.floor(Date.now() / 1000).toString();
@@ -320,18 +327,18 @@ class ZunoApiService {
     const options: RequestInit = {
       method,
       headers: {
-        'x-whatsapp-signature': signature,
-        'x-whatsapp-timestamp': timestamp,
-        'Content-Type': 'application/json'
+        "x-whatsapp-signature": signature,
+        "x-whatsapp-timestamp": timestamp,
+        "Content-Type": "application/json",
       },
-      body: JSON.stringify({ phoneNumber, ...body })
+      body: JSON.stringify({ phoneNumber, ...body }),
     };
 
     const response = await fetch(`${this.apiBaseUrl}${endpoint}`, options);
-    
+
     if (!response.ok) {
       const error = await response.json();
-      throw new Error(error.error?.message || 'API request failed');
+      throw new Error(error.error?.message || "API request failed");
     }
 
     return response.json();
@@ -341,7 +348,7 @@ class ZunoApiService {
    * Get user's latest payslip
    */
   async getPayslip(phoneNumber: string) {
-    return this.makeAuthenticatedRequest('/api/v1/payslip/me', phoneNumber);
+    return this.makeAuthenticatedRequest("/api/v1/payslip/me", phoneNumber);
   }
 
   /**
@@ -349,9 +356,9 @@ class ZunoApiService {
    */
   async getAttendance(phoneNumber: string, month?: string, year?: string) {
     return this.makeAuthenticatedRequest(
-      '/api/v1/attendance/my-attendance',
+      "/api/v1/attendance/my-attendance",
       phoneNumber,
-      'GET',
+      "GET",
       { month, year }
     );
   }
@@ -360,7 +367,10 @@ class ZunoApiService {
    * Get user's leave balance
    */
   async getLeaveBalance(phoneNumber: string) {
-    return this.makeAuthenticatedRequest('/api/v1/leaves/my-balance', phoneNumber);
+    return this.makeAuthenticatedRequest(
+      "/api/v1/leaves/my-balance",
+      phoneNumber
+    );
   }
 }
 
@@ -381,11 +391,13 @@ export default new ZunoApiService();
 ### Issue: User not found
 
 **Possible Causes**:
+
 1. Phone number not stored in database
 2. Phone number format mismatch
 3. User is inactive
 
 **Solution**:
+
 ```bash
 # Check user in MongoDB
 db.users.findOne({ phone: "+919876543210" })
@@ -400,11 +412,13 @@ db.users.updateOne(
 ### Issue: Authentication fails
 
 **Possible Causes**:
+
 1. Wrong FACEBOOK_APP_SECRET
 2. Signature mismatch
 3. Timestamp expired
 
 **Solution**:
+
 - Verify both backends have same FACEBOOK_APP_SECRET
 - Check signature generation logic
 - Ensure timestamp is current (within 5 minutes)
@@ -421,6 +435,7 @@ db.users.updateOne(
 ## Support
 
 For issues or questions about WhatsApp authentication:
+
 1. Check logs: `console.log` statements in `authenticateWhatsApp`
 2. Verify phone number format in database
 3. Test with cURL commands provided above
