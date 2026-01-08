@@ -45,10 +45,10 @@ export const authenticate = async (
 
     if (hasWhatsAppAuth) {
       // WhatsApp authentication flow
-      const { phoneNumber } = request.body as {
-        phoneNumber?: string;
-        [key: string]: any;
-      };
+      // Check both body (POST) and query (GET) for phoneNumber
+      const phoneNumber = 
+        (request.body as any)?.phoneNumber || 
+        (request.query as any)?.phoneNumber;
       const timestamp = request.headers["x-whatsapp-timestamp"] as string;
 
       if (!phoneNumber) {
