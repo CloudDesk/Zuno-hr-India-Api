@@ -1515,26 +1515,48 @@ export class PayrollService extends BaseService {
         // Validate salary structure for country-specific requirements
         this.validateSalaryStructureForCountry(salaryStructure, employeeCountry, employeeId);
 
-        // EPF
+        // EPF - Corrected calculation
+        // When Basic >= ₹15,000, cap EPF at 12% of ₹15,000 = ₹1,800 (not 15000/12 = ₹1,250)
         const epfEmployee =
             (salaryStructure.statutoryDeductions.epf.employeeContribution / 100) * (basic + da);
         const epfEmployer =
             (salaryStructure.statutoryDeductions.epf.employerContribution / 100) * (basic + da);
+
+        // Calculate max EPF contribution (12% of ₹15,000 ceiling)
+        const maxEpfContribution =
+            (salaryStructure.statutoryDeductions.epf.employeeContribution / 100) *
+            salaryStructure.statutoryDeductions.epf.maxLimit;
+
+        // Apply ceiling if basic >= maxLimit
         const finalEpfEmployee = Math.round(
             basic >= salaryStructure.statutoryDeductions.epf.maxLimit
-                ? Math.min(epfEmployee, salaryStructure.statutoryDeductions.epf.maxLimit / 12)
-                : epfEmployee);
-        const finalEpfEmployer = Math.round(epfEmployer);
+                ? maxEpfContribution  // 12% × ₹15,000 = ₹1,800
+                : epfEmployee
+        );
+
+        // Employer contribution should also be capped (EPF compliance)
+        const finalEpfEmployer = Math.round(
+            basic >= salaryStructure.statutoryDeductions.epf.maxLimit
+                ? maxEpfContribution  // 12% × ₹15,000 = ₹1,800
+                : epfEmployer
+        );
+
         /*
-            //calculateDeductions
-            epfEmployee =(12/100)*(15484) => 1858.08
-            epfEmployer =(12/100)*(15484) => 1858.08
-            minEpfEmployee = Math.min(epfEmployee, 15000 / 12) ==>1250
-            finalEpfEmployee = 15484>=15000 ?1250 : 1858.08 ==>1250
-          */
+            CORRECTED EPF CALCULATION:
+            Example: Basic = ₹18,030
+            - epfEmployee = (12/100) * 18030 = ₹2,163.60
+            - maxEpfContribution = (12/100) * 15000 = ₹1,800
+            - Since 18030 >= 15000: finalEpfEmployee = ₹1,800 ✓
+            
+            Example: Basic = ₹8,000
+            - epfEmployee = (12/100) * 8000 = ₹960
+            - Since 8000 < 15000: finalEpfEmployee = ₹960 ✓
+        */
         console.log(epfEmployee, 'epfEmployee');
         console.log(epfEmployer, 'epfEmployer');
+        console.log(maxEpfContribution, 'maxEpfContribution');
         console.log(finalEpfEmployee, 'finalEpfEmployee');
+        console.log(finalEpfEmployer, 'finalEpfEmployer');
 
         // ESI
         const esiLimit = salaryStructure.statutoryDeductions.esi.applicabilityLimit;
