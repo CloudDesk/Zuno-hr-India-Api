@@ -1724,16 +1724,17 @@ export class PayrollService extends BaseService {
     }
 
     // Counts approved leaves for an employee within a month.
-    // Only includes annual_leave and restricted_holiday for payable days calculation
+    // Only includes annual_leave and compOff (NOT restricted_holiday - already counted in holidayDays)
     private async fetchApprovedLeaves(employeeId: Types.ObjectId, year: number, monthNumber: number) {
         const { firstDay, lastDay } = this.getMonthBoundaries(year, monthNumber);
 
-        // Fetch approved leaves and sum up noOfDays to support half-day leaves (0.5 days)
-        // ONLY annual_leave and restricted_holiday are counted as payable days
+        // Fetch approved ANNUAL LEAVES and COMP-OFF LEAVES
+        // NOTE: restricted_holiday is EXCLUDED because it's already counted in holidayDays
+        // from getWorkingDaysInMonth() to prevent double-counting in payableDays
         const leaves = await Leave.find({
             userId: employeeId,  // Use userId field from Leave model
             status: 'Approved',
-            leaveType: { $in: ['annual_leave', 'restricted_holiday'] }, // Only these two types
+            leaveType: { $in: ['annual', 'compOff'] }, // Annual leave + Comp-off
             $or: [
                 { startDate: { $gte: firstDay, $lte: lastDay } },
                 { endDate: { $gte: firstDay, $lte: lastDay } },
@@ -1742,7 +1743,7 @@ export class PayrollService extends BaseService {
 
         // Sum all noOfDays to get total leave days (supports decimals for half-day leaves)
         const totalLeaveDays = leaves.reduce((sum, leave) => sum + (leave.noOfDays || 0), 0);
-        console.log(totalLeaveDays, `fetchApprovedLeaves - Total: ${totalLeaveDays} days from ${leaves.length} leaves (annual_leave + restricted_holiday only)`);
+        console.log(totalLeaveDays, `fetchApprovedLeaves - Total: ${totalLeaveDays} days from ${leaves.length} leaves (annual_leave + compOff, restricted holidays counted separately in holidayDays)`);
         return totalLeaveDays;
     }
 
@@ -1754,6 +1755,37 @@ export class PayrollService extends BaseService {
         console.log(monthNumber, 'monthNumber');
         const { firstDay, lastDay, daysInMonth } = this.getMonthBoundaries(year, monthNumber);
         console.log(monthNumber, firstDay, lastDay, daysInMonth, '1 getMonthlyAttendance');
+
+        // Get employee's weekend days first (needed to filter out weekend attendance)
+        const { workingDays, weekendDays: weekendDaysCount, holidayDays } = await this.getWorkingDaysInMonth(
+            employeeId,
+            year,
+            monthNumber,
+        );
+        console.log("getWorkingDaysInMonth before attendance", workingDays, weekendDaysCount, holidayDays);
+
+        // Fetch shift assignment to get weekend day numbers (0=Sunday, 6=Saturday)
+        const shiftAssignments = await ShiftAssignment.find(
+            {
+                userId: employeeId,
+                $or: [
+                    { endDate: { $exists: false }, startDate: { $lte: lastDay } },
+                    { endDate: { $gte: firstDay }, startDate: { $lte: lastDay } },
+                ],
+            },
+            'weekendDays',
+        ).lean();
+
+        const weekendDaysSet = new Set<number>();
+        if (shiftAssignments.length === 0) {
+            weekendDaysSet.add(0); // Default to Sunday
+        } else {
+            shiftAssignments.forEach((shift) => {
+                (shift.weekendDays || []).forEach((day: number) => weekendDaysSet.add(day));
+            });
+        }
+        const weekendDayNumbers = Array.from(weekendDaysSet);
+        console.log('Weekend day numbers:', weekendDayNumbers);
 
         // Fetch attendance records including regularized ones
         const attendanceRecords = await AttendanceRecord.aggregate([
@@ -1768,6 +1800,10 @@ export class PayrollService extends BaseService {
             },
             {
                 $addFields: {
+                    // Check if shiftDay falls on a weekend
+                    isWeekendDay: {
+                        $in: [{ $dayOfWeek: '$shiftDay' }, weekendDayNumbers.map(d => d + 1)] // MongoDB dayOfWeek is 1-indexed (1=Sunday)
+                    },
                     // Parse actualWorkHours (HH:mm:ss) into decimal hours
                     actualWorkHoursNumeric: {
                         $cond: {
@@ -1870,19 +1906,25 @@ export class PayrollService extends BaseService {
                     isOnLeave: {
                         $cond: [{ $in: ['On-Leave', '$attendanceStatus'] }, 1, 0],
                     },
+                    // UPDATED: Only count as present if NOT a weekend day
                     isPresent: {
                         $cond: [
                             {
-                                $or: [
-                                    { $in: ['Late', '$attendanceStatus'] },
-                                    { $in: ['On-Time', '$attendanceStatus'] },
-                                    { $in: ['Early-Exit', '$attendanceStatus'] },
-                                    { $in: ['Present', '$attendanceStatus'] },
+                                $and: [
+                                    { $eq: ['$isWeekendDay', false] }, // ← SKIP WEEKENDS!
                                     {
-                                        $and: [
-                                            { $in: ['Out-Of-Window', '$attendanceStatus'] },
-                                            { $eq: ['$regularization.isRegularized', true] },
-                                            { $eq: ['$regularization.status', 'Approved'] },
+                                        $or: [
+                                            { $in: ['Late', '$attendanceStatus'] },
+                                            { $in: ['On-Time', '$attendanceStatus'] },
+                                            { $in: ['Early-Exit', '$attendanceStatus'] },
+                                            { $in: ['Present', '$attendanceStatus'] },
+                                            {
+                                                $and: [
+                                                    { $in: ['Out-Of-Window', '$attendanceStatus'] },
+                                                    { $eq: ['$regularization.isRegularized', true] },
+                                                    { $eq: ['$regularization.status', 'Approved'] },
+                                                ],
+                                            },
                                         ],
                                     },
                                 ],
@@ -1891,8 +1933,30 @@ export class PayrollService extends BaseService {
                             0,
                         ],
                     },
-                    isLate: { $cond: [{ $in: ['Late', '$attendanceStatus'] }, 1, 0] },
-                    isEarlyExit: { $cond: [{ $in: ['Early-Exit', '$attendanceStatus'] }, 1, 0] },
+                    isLate: {
+                        $cond: [
+                            {
+                                $and: [
+                                    { $eq: ['$isWeekendDay', false] },
+                                    { $in: ['Late', '$attendanceStatus'] }
+                                ]
+                            },
+                            1,
+                            0
+                        ]
+                    },
+                    isEarlyExit: {
+                        $cond: [
+                            {
+                                $and: [
+                                    { $eq: ['$isWeekendDay', false] },
+                                    { $in: ['Early-Exit', '$attendanceStatus'] }
+                                ]
+                            },
+                            1,
+                            0
+                        ]
+                    },
                 },
             },
             {
@@ -1904,6 +1968,27 @@ export class PayrollService extends BaseService {
                     earlyExitDays: { $sum: '$isEarlyExit' },
                     absentDays: { $sum: '$isAbsent' },
                     leaveDays: { $sum: '$isOnLeave' },
+                    weekendWorkDays: {
+                        $sum: {
+                            $cond: [
+                                {
+                                    $and: [
+                                        { $eq: ['$isWeekendDay', true] },
+                                        {
+                                            $or: [
+                                                { $in: ['Late', '$attendanceStatus'] },
+                                                { $in: ['On-Time', '$attendanceStatus'] },
+                                                { $in: ['Early-Exit', '$attendanceStatus'] },
+                                                { $in: ['Present', '$attendanceStatus'] },
+                                            ]
+                                        }
+                                    ]
+                                },
+                                1,
+                                0
+                            ]
+                        }
+                    },
                     totalWorkHours: { $sum: '$actualWorkHoursNumeric' },
                     excessHours: { $sum: '$excessHoursNumeric' },
                 },
@@ -1912,12 +1997,6 @@ export class PayrollService extends BaseService {
 
         console.log(attendanceRecords, 'attendanceRecords');
 
-        const { workingDays, weekendDays, holidayDays } = await this.getWorkingDaysInMonth(
-            employeeId,
-            year,
-            monthNumber,
-        );
-        console.log("getWorkingDaysInMonth", workingDays, weekendDays, holidayDays);
         const result = attendanceRecords[0] || {};
         // Calculate absentDays as totalDaysInMonth - (presentDays + lateDays + earlyExitDays + holidayDays + weekendDays)
         const calculatedAbsentDays = Math.max(
@@ -1927,7 +2006,7 @@ export class PayrollService extends BaseService {
                 (result.lateDays || 0) +
                 (result.earlyExitDays || 0) +
                 holidayDays +
-                weekendDays
+                weekendDaysCount
             )
         );
         let response = {
@@ -1935,12 +2014,13 @@ export class PayrollService extends BaseService {
             absentDays: calculatedAbsentDays,
             lateDays: result.lateDays || 0,
             leaveDays: result.leaveDays || 0,
+            weekendWorkDays: result.weekendWorkDays || 0, // New field to track weekend work
             totalWorkHours: result.totalWorkHours || 0,
             excessHours: result.excessHours || 0,
-            weekendDays: weekendDays || 0,
+            weekendDays: weekendDaysCount || 0,
             holidayDays: holidayDays || 0,
         };
-        console.log(response, 'response getMonthlyAttendance');
+        console.log(response, 'response getMonthlyAttendance (weekend attendance excluded from presentDays)');
         return response
     }
     // Converts month name or number to two-digit string format.
