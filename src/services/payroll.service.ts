@@ -1724,26 +1724,25 @@ export class PayrollService extends BaseService {
     }
 
     // Counts approved leaves for an employee within a month.
-    // Note: restricted_holiday leaves are excluded here because they are counted in holidayDays
+    // Only includes annual_leave and restricted_holiday for payable days calculation
     private async fetchApprovedLeaves(employeeId: Types.ObjectId, year: number, monthNumber: number) {
         const { firstDay, lastDay } = this.getMonthBoundaries(year, monthNumber);
 
         // Fetch approved leaves and sum up noOfDays to support half-day leaves (0.5 days)
-        // EXCLUDE restricted_holiday leaves - they are counted separately in holidayDays
-        // This fixes the bug where countDocuments() was counting records instead of days
+        // ONLY annual_leave and restricted_holiday are counted as payable days
         const leaves = await Leave.find({
             userId: employeeId,  // Use userId field from Leave model
             status: 'Approved',
-            leaveType: { $ne: 'restricted_holiday' }, // Exclude restricted holidays (counted in holidayDays)
+            leaveType: { $in: ['annual_leave', 'restricted_holiday'] }, // Only these two types
             $or: [
                 { startDate: { $gte: firstDay, $lte: lastDay } },
                 { endDate: { $gte: firstDay, $lte: lastDay } },
             ],
-        }).select('noOfDays').lean();
+        }).select('noOfDays leaveType').lean();
 
         // Sum all noOfDays to get total leave days (supports decimals for half-day leaves)
         const totalLeaveDays = leaves.reduce((sum, leave) => sum + (leave.noOfDays || 0), 0);
-        console.log(totalLeaveDays, `1 fetchApprovedLeaves - Total days: ${totalLeaveDays} from ${leaves.length} leave records (restricted_holiday excluded)`);
+        console.log(totalLeaveDays, `fetchApprovedLeaves - Total: ${totalLeaveDays} days from ${leaves.length} leaves (annual_leave + restricted_holiday only)`);
         return totalLeaveDays;
     }
 
