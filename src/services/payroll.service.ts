@@ -1727,7 +1727,7 @@ export class PayrollService extends BaseService {
     // Only includes annual_leave and compOff (NOT restricted_holiday - already counted in holidayDays)
     private async fetchApprovedLeaves(employeeId: Types.ObjectId, year: number, monthNumber: number) {
         const { firstDay, lastDay } = this.getMonthBoundaries(year, monthNumber);
-
+        console.log(firstDay, lastDay, 'firstDay, lastDay fetchApprovedLeaves');
         // Fetch approved ANNUAL LEAVES and COMP-OFF LEAVES
         // NOTE: restricted_holiday is EXCLUDED because it's already counted in holidayDays
         // from getWorkingDaysInMonth() to prevent double-counting in payableDays
@@ -1740,7 +1740,7 @@ export class PayrollService extends BaseService {
                 { endDate: { $gte: firstDay, $lte: lastDay } },
             ],
         }).select('noOfDays leaveType').lean();
-
+        console.log(leaves, 'leaves fetchApprovedLeaves');
         // Sum all noOfDays to get total leave days (supports decimals for half-day leaves)
         const totalLeaveDays = leaves.reduce((sum, leave) => sum + (leave.noOfDays || 0), 0);
         console.log(totalLeaveDays, `fetchApprovedLeaves - Total: ${totalLeaveDays} days from ${leaves.length} leaves (annual_leave + compOff, restricted holidays counted separately in holidayDays)`);
