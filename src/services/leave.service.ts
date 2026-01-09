@@ -98,15 +98,28 @@ export class LeaveService extends BaseService {
     userId: Types.ObjectId,
     holidayDate: Date
   ): Promise<{ isValid: boolean; holidayName?: string; error?: string }> {
-    const user = await User.findById(userId).select('holidayCalendarId').lean();
+    const user = await User.findById(userId).select('holidayCalendarId holidayCalendarHistory').lean();
     if (!user) {
       return { isValid: false, error: 'User not found' };
     }
-    if (!user.holidayCalendarId) {
-      return { isValid: false, error: 'No holiday calendar assigned to your account. Please contact HR.' };
+
+    // Determine target year from the holiday date
+    const targetYear = new Date(holidayDate).getFullYear();
+    let targetCalendarId = user.holidayCalendarId;
+
+    // Check history for specific year
+    if (user.holidayCalendarHistory && user.holidayCalendarHistory.length > 0) {
+      const historicEntry = user.holidayCalendarHistory.find(h => h.year === targetYear);
+      if (historicEntry) {
+        targetCalendarId = historicEntry.calendarId.toString();
+      }
     }
 
-    const calendar = await HolidayCalendar.findById(user.holidayCalendarId).lean();
+    if (!targetCalendarId) {
+      return { isValid: false, error: 'No holiday calendar assigned to your account for this year. Please contact HR.' };
+    }
+
+    const calendar = await HolidayCalendar.findById(targetCalendarId).lean();
     if (!calendar) {
       return { isValid: false, error: 'Holiday calendar not found. Please contact HR.' };
     }
