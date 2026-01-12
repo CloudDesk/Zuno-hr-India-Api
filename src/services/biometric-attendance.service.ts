@@ -2344,10 +2344,16 @@ export class BiometricAttendanceService extends BaseService {
 
           // Check if this date is a weekend
           let isWeekend = false;
+          const dateObj = new Date(dateStr);
+          const dayOfWeek = dateObj.getUTCDay(); // 0 = Sunday, 6 = Saturday
+
           if (applicableAssignment) {
-            const dateObj = new Date(dateStr);
-            const dayOfWeek = dateObj.getUTCDay(); // 0 = Sunday, 6 = Saturday
             if (applicableAssignment.weekendDays && applicableAssignment.weekendDays.includes(dayOfWeek)) {
+              isWeekend = true;
+            }
+          } else {
+            // Default to Sat/Sun if no assignment
+            if (dayOfWeek === 0 || dayOfWeek === 6) {
               isWeekend = true;
             }
           }
@@ -2622,7 +2628,7 @@ export class BiometricAttendanceService extends BaseService {
           // Check if this user has Leave on this date
           const userLeaveDates = leaveByUserAndDate.get(user.userId);
           const leaveType = userLeaveDates?.get(dateStr);
-          const isLeave = !!leaveType;
+          const isLeave = !!leaveType && !att.isWeekend;
 
           // Determine cell value and styling
           let cellValue = '';
