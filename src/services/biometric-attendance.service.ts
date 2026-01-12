@@ -2347,13 +2347,8 @@ export class BiometricAttendanceService extends BaseService {
           const dateObj = new Date(dateStr);
           const dayOfWeek = dateObj.getUTCDay(); // 0 = Sunday, 6 = Saturday
 
-          if (applicableAssignment) {
-            if (applicableAssignment.weekendDays && applicableAssignment.weekendDays.includes(dayOfWeek)) {
-              isWeekend = true;
-            }
-          } else {
-            // Default to Sat/Sun if no assignment
-            if (dayOfWeek === 0 || dayOfWeek === 6) {
+          if (applicableAssignment && applicableAssignment.weekendDays) {
+            if (applicableAssignment.weekendDays.includes(dayOfWeek)) {
               isWeekend = true;
             }
           }
@@ -2722,11 +2717,17 @@ export class BiometricAttendanceService extends BaseService {
               }
             } else if (att.status === 'incomplete' || att.status === 'missing_checkout') {
               // Past date with incomplete attendance
-              cellValue = 'Incomplete';
-              fontColor = 'FFFF8C00'; // Orange
-              // Add WFH indicator for incomplete attendance
-              if (isWFH) {
-                cellValue = `${cellValue} (WFH)`;
+              // Check for weekend (DB flag only - strictly based on shift assignment)
+              if (att.isWeekend) {
+                cellValue = 'Off';
+                fontColor = 'FF808080'; // Gray
+              } else {
+                cellValue = 'Incomplete';
+                fontColor = 'FFFF8C00'; // Orange
+                // Add WFH indicator for incomplete attendance
+                if (isWFH) {
+                  cellValue = `${cellValue} (WFH)`;
+                }
               }
             } else {
               // Past date with other status
