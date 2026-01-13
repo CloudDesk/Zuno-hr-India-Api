@@ -242,11 +242,10 @@ export class PayrollService extends BaseService {
         [PayrollStatus.PendingApproval]: [PayrollStatus.InPayment, PayrollStatus.Cancelled],
         [PayrollStatus.InPayment]: [PayrollStatus.Completed, PayrollStatus.Failed],
         [PayrollStatus.Completed]: [],
-        // [PayrollStatus.Failed]: [PayrollStatus.RetryPending, PayrollStatus.Cancelled],
         [PayrollStatus.Failed]: [PayrollStatus.Completed, PayrollStatus.Failed],
         [PayrollStatus.RetryPending]: [PayrollStatus.InPayment, PayrollStatus.Cancelled],
         [PayrollStatus.Cancelled]: [],
-        // [PayrollStatus.Hold]: [PayrollStatus.Draft, PayrollStatus.PendingApproval, PayrollStatus.InPayment] // ⭐ Can release from hold
+        // [PayrollStatus.Hold]: [PayrollStatus.Draft, PayrollStatus.PendingApproval, PayrollStatus.InPayment]
     };
 
     private static maxRetries = 3;
@@ -398,6 +397,26 @@ export class PayrollService extends BaseService {
         const result = await Payroll.deleteMany(query);
         console.log(`Deleted ${result.deletedCount} payroll records for ${month}-${year}${country ? ` for country ${country}` : ''}`);
         return result.deletedCount > 0;
+    }
+
+    // Delete a single payroll record by ID (Only if status is Draft)
+    async deletePayrollRecord(id: string) {
+        if (!Types.ObjectId.isValid(id)) {
+            throw new Error('Invalid Payroll ID');
+        }
+
+        const payroll = await Payroll.findById(id);
+
+        if (!payroll) {
+            throw new Error('Payroll record not found');
+        }
+
+        if (payroll.status !== PayrollStatus.Draft) {
+            throw new Error(`Cannot delete payroll record with status '${payroll.status}'. Only 'Draft' records can be deleted.`);
+        }
+
+        await Payroll.findByIdAndDelete(id);
+        return { success: true, message: 'Payroll record deleted successfully' };
     }
 
     async getUserIdsByFilters(
@@ -1788,7 +1807,245 @@ export class PayrollService extends BaseService {
         console.log('Weekend day numbers:', weekendDayNumbers);
 
         // Fetch attendance records including regularized ones
+        // const attendanceRecords = await AttendanceRecord.aggregate([
+        //     {
+        //         $match: {
+        //             userId: employeeId,
+        //             shiftDay: {
+        //                 $gte: firstDay,
+        //                 $lte: lastDay,
+        //             },
+        //         },
+        //     },
+        //     {
+        //         $addFields: {
+        //             // Check if shiftDay falls on a weekend
+        //             isWeekendDay: {
+        //                 $in: [{ $dayOfWeek: '$shiftDay' }, weekendDayNumbers.map(d => d + 1)] // MongoDB dayOfWeek is 1-indexed (1=Sunday)
+        //             },
+        //             // Parse actualWorkHours (HH:mm:ss) into decimal hours
+        //             actualWorkHoursNumeric: {
+        //                 $cond: {
+        //                     if: { $or: [{ $eq: ['$actualWorkHours', null] }, { $eq: ['$actualWorkHours', ''] }] },
+        //                     then: 0,
+        //                     else: {
+        //                         $let: {
+        //                             vars: {
+        //                                 timeParts: { $split: ['$actualWorkHours', ':'] },
+        //                             },
+        //                             in: {
+        //                                 $add: [
+        //                                     { $toDouble: { $arrayElemAt: ['$$timeParts', 0] } }, // Hours
+        //                                     {
+        //                                         $divide: [
+        //                                             { $toDouble: { $arrayElemAt: ['$$timeParts', 1] } }, // Minutes
+        //                                             60,
+        //                                         ],
+        //                                     },
+        //                                     {
+        //                                         $divide: [
+        //                                             { $toDouble: { $arrayElemAt: ['$$timeParts', 2] } }, // Seconds
+        //                                             3600,
+        //                                         ],
+        //                                     },
+        //                                 ],
+        //                             },
+        //                         },
+        //                     },
+        //                 },
+        //             },
+        //             // Parse excessHours (HH:mm:ss) into decimal hours
+        //             excessHoursNumeric: {
+        //                 $cond: {
+        //                     if: { $or: [{ $eq: ['$excessHours', null] }, { $eq: ['$excessHours', ''] }] },
+        //                     then: 0,
+        //                     else: {
+        //                         $let: {
+        //                             vars: {
+        //                                 timeParts: { $split: ['$excessHours', ':'] },
+        //                             },
+        //                             in: {
+        //                                 $add: [
+        //                                     { $toDouble: { $arrayElemAt: ['$$timeParts', 0] } }, // Hours
+        //                                     {
+        //                                         $divide: [
+        //                                             { $toDouble: { $arrayElemAt: ['$$timeParts', 1] } }, // Minutes
+        //                                             60,
+        //                                         ],
+        //                                     },
+        //                                     {
+        //                                         $divide: [
+        //                                             { $toDouble: { $arrayElemAt: ['$$timeParts', 2] } }, // Seconds
+        //                                             3600,
+        //                                         ],
+        //                                     },
+        //                                 ],
+        //                             },
+        //                         },
+        //                     },
+        //                 },
+        //             },
+        //             isOutOfWindowPresent: {
+        //                 $cond: [
+        //                     {
+        //                         $and: [
+        //                             { $in: ['Out-Of-Window', '$attendanceStatus'] },
+        //                             { $eq: ['$regularization.isRegularized', true] },
+        //                             { $eq: ['$regularization.status', 'Approved'] },
+        //                         ],
+        //                     },
+        //                     1,
+        //                     0,
+        //                 ],
+        //             },
+        //             isAbsent: {
+        //                 $cond: [
+        //                     {
+        //                         $or: [
+        //                             { $in: ['Absent', '$attendanceStatus'] },
+        //                             {
+        //                                 $and: [
+        //                                     { $in: ['Out-Of-Window', '$attendanceStatus'] },
+        //                                     {
+        //                                         $not: {
+        //                                             $and: [
+        //                                                 { $eq: ['$regularization.isRegularized', true] },
+        //                                                 { $eq: ['$regularization.status', 'Approved'] },
+        //                                             ],
+        //                                         },
+        //                                     },
+        //                                 ],
+        //                             },
+        //                         ],
+        //                     },
+        //                     1,
+        //                     0,
+        //                 ],
+        //             },
+        //             isOnLeave: {
+        //                 $cond: [
+        //                     {
+        //                         $or: [
+        //                             { $in: ['On-Leave', '$attendanceStatus'] },
+        //                             {
+        //                                 $and: [
+        //                                     { $in: ['Override', '$attendanceStatus'] },
+        //                                     { $in: ['On-Leave', '$attendanceStatus'] }
+        //                                 ]
+        //                             }
+        //                         ]
+        //                     },
+        //                     1,
+        //                     0
+        //                 ],
+        //             },
+        //             // UPDATED: Only count as present if NOT a weekend day
+        //             isPresent: {
+        //                 $cond: [
+        //                     {
+        //                         $and: [
+        //                             { $eq: ['$isWeekendDay', false] }, // ← SKIP WEEKENDS!
+        //                             {
+        //                                 $or: [
+        //                                     { $in: ['Late', '$attendanceStatus'] },
+        //                                     { $in: ['On-Time', '$attendanceStatus'] },
+        //                                     { $in: ['Early-Exit', '$attendanceStatus'] },
+        //                                     { $in: ['Present', '$attendanceStatus'] },
+        //                                     {
+        //                                         $and: [
+        //                                             { $in: ['Override', '$attendanceStatus'] },
+        //                                             { $in: ['Present', '$attendanceStatus'] },
+        //                                         ],
+        //                                     },
+        //                                     {
+        //                                         $and: [
+        //                                             { $in: ['Out-Of-Window', '$attendanceStatus'] },
+        //                                             { $eq: ['$regularization.isRegularized', true] },
+        //                                             { $eq: ['$regularization.status', 'Approved'] },
+        //                                         ],
+        //                                     },
+        //                                 ],
+        //                             },
+        //                         ],
+        //                     },
+        //                     1,
+        //                     0,
+        //                 ],
+        //             },
+        //             isLate: {
+        //                 $cond: [
+        //                     {
+        //                         $and: [
+        //                             { $eq: ['$isWeekendDay', false] },
+        //                             { $in: ['Late', '$attendanceStatus'] }
+        //                         ]
+        //                     },
+        //                     1,
+        //                     0
+        //                 ]
+        //             },
+        //             isEarlyExit: {
+        //                 $cond: [
+        //                     {
+        //                         $and: [
+        //                             { $eq: ['$isWeekendDay', false] },
+        //                             { $in: ['Early-Exit', '$attendanceStatus'] }
+        //                         ]
+        //                     },
+        //                     1,
+        //                     0
+        //                 ]
+        //             },
+        //         },
+        //     },
+        //     {
+        //         $group: {
+        //             _id: null,
+        //             totalDays: { $sum: 1 },
+        //             presentDays: { $sum: '$isPresent' },
+        //             lateDays: { $sum: '$isLate' },
+        //             earlyExitDays: { $sum: '$isEarlyExit' },
+        //             absentDays: { $sum: '$isAbsent' },
+        //             leaveDays: { $sum: '$isOnLeave' },
+        //             weekendWorkDays: {
+        //                 $sum: {
+        //                     $cond: [
+        //                         {
+        //                             $and: [
+        //                                 { $eq: ['$isWeekendDay', true] },
+        //                                 {
+        //                                     $or: [
+        //                                         { $in: ['Late', '$attendanceStatus'] },
+        //                                         { $in: ['On-Time', '$attendanceStatus'] },
+        //                                         { $in: ['Early-Exit', '$attendanceStatus'] },
+        //                                         { $in: ['Present', '$attendanceStatus'] },
+        //                                     ]
+        //                                 }
+        //                             ]
+        //                         },
+        //                         1,
+        //                         0
+        //                     ]
+        //                 }
+        //             },
+        //             totalWorkHours: { $sum: '$actualWorkHoursNumeric' },
+        //             excessHours: { $sum: '$excessHoursNumeric' },
+        //         },
+        //     },
+        // ]);
+        // Fetch attendance records including regularized ones
+        const rawRecords = await AttendanceRecord.find({
+            userId: employeeId,
+            shiftDay: {
+                $gte: firstDay,
+                $lte: lastDay,
+            },
+        }).select('shiftDay attendanceStatus status').lean();
+
+        console.log('🔍 RAW ATTENDANCE RECORDS:', JSON.stringify(rawRecords, null, 2));
+        console.log('🔍 Total raw records found:', rawRecords.length);
         const attendanceRecords = await AttendanceRecord.aggregate([
+            // 1️⃣ Match employee & date range
             {
                 $match: {
                     userId: employeeId,
@@ -1798,87 +2055,121 @@ export class PayrollService extends BaseService {
                     },
                 },
             },
+
+            // 2️⃣ Detect weekend (SAFE: separate stage)
             {
                 $addFields: {
-                    // Check if shiftDay falls on a weekend
                     isWeekendDay: {
-                        $in: [{ $dayOfWeek: '$shiftDay' }, weekendDayNumbers.map(d => d + 1)] // MongoDB dayOfWeek is 1-indexed (1=Sunday)
+                        $in: [
+                            { $dayOfWeek: '$shiftDay' },
+                            weekendDayNumbers.map(d => (d === 0 ? 1 : d + 1)) // JS → Mongo mapping
+                        ],
                     },
-                    // Parse actualWorkHours (HH:mm:ss) into decimal hours
+                },
+            },
+
+            // 3️⃣ Convert time strings → decimal hours
+            {
+                $addFields: {
                     actualWorkHoursNumeric: {
                         $cond: {
                             if: { $or: [{ $eq: ['$actualWorkHours', null] }, { $eq: ['$actualWorkHours', ''] }] },
                             then: 0,
                             else: {
                                 $let: {
-                                    vars: {
-                                        timeParts: { $split: ['$actualWorkHours', ':'] },
-                                    },
+                                    vars: { time: { $split: ['$actualWorkHours', ':'] } },
                                     in: {
                                         $add: [
-                                            { $toDouble: { $arrayElemAt: ['$$timeParts', 0] } }, // Hours
-                                            {
-                                                $divide: [
-                                                    { $toDouble: { $arrayElemAt: ['$$timeParts', 1] } }, // Minutes
-                                                    60,
-                                                ],
-                                            },
-                                            {
-                                                $divide: [
-                                                    { $toDouble: { $arrayElemAt: ['$$timeParts', 2] } }, // Seconds
-                                                    3600,
-                                                ],
-                                            },
+                                            { $toDouble: { $arrayElemAt: ['$$time', 0] } },
+                                            { $divide: [{ $toDouble: { $arrayElemAt: ['$$time', 1] } }, 60] },
+                                            { $divide: [{ $toDouble: { $arrayElemAt: ['$$time', 2] } }, 3600] },
                                         ],
                                     },
                                 },
                             },
                         },
                     },
-                    // Parse excessHours (HH:mm:ss) into decimal hours
+
                     excessHoursNumeric: {
                         $cond: {
                             if: { $or: [{ $eq: ['$excessHours', null] }, { $eq: ['$excessHours', ''] }] },
                             then: 0,
                             else: {
                                 $let: {
-                                    vars: {
-                                        timeParts: { $split: ['$excessHours', ':'] },
-                                    },
+                                    vars: { time: { $split: ['$excessHours', ':'] } },
                                     in: {
                                         $add: [
-                                            { $toDouble: { $arrayElemAt: ['$$timeParts', 0] } }, // Hours
-                                            {
-                                                $divide: [
-                                                    { $toDouble: { $arrayElemAt: ['$$timeParts', 1] } }, // Minutes
-                                                    60,
-                                                ],
-                                            },
-                                            {
-                                                $divide: [
-                                                    { $toDouble: { $arrayElemAt: ['$$timeParts', 2] } }, // Seconds
-                                                    3600,
-                                                ],
-                                            },
+                                            { $toDouble: { $arrayElemAt: ['$$time', 0] } },
+                                            { $divide: [{ $toDouble: { $arrayElemAt: ['$$time', 1] } }, 60] },
+                                            { $divide: [{ $toDouble: { $arrayElemAt: ['$$time', 2] } }, 3600] },
                                         ],
                                     },
                                 },
                             },
                         },
                     },
-                    isOutOfWindowPresent: {
+                },
+            },
+
+            // 4️⃣ Attendance flags (SAFE: uses isWeekendDay)
+            {
+                $addFields: {
+                    isPresent: {
                         $cond: [
                             {
                                 $and: [
-                                    { $in: ['Out-Of-Window', '$attendanceStatus'] },
-                                    { $eq: ['$regularization.isRegularized', true] },
-                                    { $eq: ['$regularization.status', 'Approved'] },
+                                    { $eq: ['$isWeekendDay', false] },
+                                    {
+                                        $or: [
+                                            { $in: ['Present', '$attendanceStatus'] },
+                                            { $in: ['Late', '$attendanceStatus'] },
+                                            { $in: ['On-Time', '$attendanceStatus'] },
+                                            { $in: ['Early-Exit', '$attendanceStatus'] },
+                                            {
+                                                $and: [
+                                                    { $in: ['Override', '$attendanceStatus'] },
+                                                    { $in: ['Present', '$attendanceStatus'] },
+                                                ],
+                                            },
+                                        ],
+                                    },
                                 ],
                             },
                             1,
                             0,
                         ],
                     },
+
+                    isLate: {
+                        $cond: [
+                            {
+                                $and: [
+                                    { $eq: ['$isWeekendDay', false] },
+                                    { $in: ['Late', '$attendanceStatus'] },
+                                ],
+                            },
+                            1,
+                            0,
+                        ],
+                    },
+
+                    isEarlyExit: {
+                        $cond: [
+                            {
+                                $and: [
+                                    { $eq: ['$isWeekendDay', false] },
+                                    { $in: ['Early-Exit', '$attendanceStatus'] },
+                                ],
+                            },
+                            1,
+                            0,
+                        ],
+                    },
+
+                    isOnLeave: {
+                        $cond: [{ $in: ['On-Leave', '$attendanceStatus'] }, 1, 0],
+                    },
+
                     isAbsent: {
                         $cond: [
                             {
@@ -1903,62 +2194,10 @@ export class PayrollService extends BaseService {
                             0,
                         ],
                     },
-                    isOnLeave: {
-                        $cond: [{ $in: ['On-Leave', '$attendanceStatus'] }, 1, 0],
-                    },
-                    // UPDATED: Only count as present if NOT a weekend day
-                    isPresent: {
-                        $cond: [
-                            {
-                                $and: [
-                                    { $eq: ['$isWeekendDay', false] }, // ← SKIP WEEKENDS!
-                                    {
-                                        $or: [
-                                            { $in: ['Late', '$attendanceStatus'] },
-                                            { $in: ['On-Time', '$attendanceStatus'] },
-                                            { $in: ['Early-Exit', '$attendanceStatus'] },
-                                            { $in: ['Present', '$attendanceStatus'] },
-                                            {
-                                                $and: [
-                                                    { $in: ['Out-Of-Window', '$attendanceStatus'] },
-                                                    { $eq: ['$regularization.isRegularized', true] },
-                                                    { $eq: ['$regularization.status', 'Approved'] },
-                                                ],
-                                            },
-                                        ],
-                                    },
-                                ],
-                            },
-                            1,
-                            0,
-                        ],
-                    },
-                    isLate: {
-                        $cond: [
-                            {
-                                $and: [
-                                    { $eq: ['$isWeekendDay', false] },
-                                    { $in: ['Late', '$attendanceStatus'] }
-                                ]
-                            },
-                            1,
-                            0
-                        ]
-                    },
-                    isEarlyExit: {
-                        $cond: [
-                            {
-                                $and: [
-                                    { $eq: ['$isWeekendDay', false] },
-                                    { $in: ['Early-Exit', '$attendanceStatus'] }
-                                ]
-                            },
-                            1,
-                            0
-                        ]
-                    },
                 },
             },
+
+            // 5️⃣ Final aggregation
             {
                 $group: {
                     _id: null,
@@ -1968,43 +2207,37 @@ export class PayrollService extends BaseService {
                     earlyExitDays: { $sum: '$isEarlyExit' },
                     absentDays: { $sum: '$isAbsent' },
                     leaveDays: { $sum: '$isOnLeave' },
+
                     weekendWorkDays: {
                         $sum: {
                             $cond: [
                                 {
                                     $and: [
                                         { $eq: ['$isWeekendDay', true] },
-                                        {
-                                            $or: [
-                                                { $in: ['Late', '$attendanceStatus'] },
-                                                { $in: ['On-Time', '$attendanceStatus'] },
-                                                { $in: ['Early-Exit', '$attendanceStatus'] },
-                                                { $in: ['Present', '$attendanceStatus'] },
-                                            ]
-                                        }
-                                    ]
+                                        { $in: ['Present', '$attendanceStatus'] },
+                                    ],
                                 },
                                 1,
-                                0
-                            ]
-                        }
+                                0,
+                            ],
+                        },
                     },
+
                     totalWorkHours: { $sum: '$actualWorkHoursNumeric' },
                     excessHours: { $sum: '$excessHoursNumeric' },
                 },
             },
         ]);
-
+        console.log('****************');
         console.log(attendanceRecords, 'attendanceRecords');
-
+        console.log('****************');
         const result = attendanceRecords[0] || {};
-        // Calculate absentDays as totalDaysInMonth - (presentDays + lateDays + earlyExitDays + holidayDays + weekendDays)
+        // Calculate absentDays as totalDaysInMonth - (presentDays + holidayDays + weekendDays)
+        // NOTE: presentDays ALREADY includes lateDays, earlyExitDays, and onTime days.
         const calculatedAbsentDays = Math.max(
             0,
             daysInMonth - (
                 (result.presentDays || 0) +
-                (result.lateDays || 0) +
-                (result.earlyExitDays || 0) +
                 holidayDays +
                 weekendDaysCount
             )

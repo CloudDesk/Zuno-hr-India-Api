@@ -24,7 +24,8 @@ enum PayrollStatus {
     Completed = "Completed",
     Failed = "Failed",
     RetryPending = "RetryPending",
-    Cancelled = "Cancelled"
+    Cancelled = "Cancelled",
+    // Hold = "Hold"
 }
 interface PayrollSummaryRequest {
     month: number;
@@ -137,7 +138,7 @@ export const payrollRoutes: RouteHandler = async (fastify: FastifyInstance): Pro
 
                     finalUserIds = await request.container!.payrollService.getUserIdsByFilters(finalFilters, monthYear);
                 }
-                console.log(finalUserIds,"finalUserIds")
+                console.log(finalUserIds, "finalUserIds")
                 if (!finalUserIds || finalUserIds.length === 0) {
                     return reply.status(404).send({
                         success: false,
@@ -184,8 +185,8 @@ export const payrollRoutes: RouteHandler = async (fastify: FastifyInstance): Pro
                             },
                             description: 'Optional array of payroll statuses to filter by'
                         },
-                        country: { 
-                            type: 'string', 
+                        country: {
+                            type: 'string',
                             enum: ['AE', 'IN'],
                             description: 'Optional country filter for payroll summary'
                         }
@@ -410,7 +411,8 @@ export const payrollRoutes: RouteHandler = async (fastify: FastifyInstance): Pro
                                 'Completed',
                                 'Failed',
                                 'RetryPending',
-                                'Cancelled'
+                                'Cancelled',
+                                // 'Hold'
                             ]
                         },
                         failureReason: { type: 'string', description: 'Reason for failure (required for Failed status)' },
@@ -720,7 +722,40 @@ export const payrollRoutes: RouteHandler = async (fastify: FastifyInstance): Pro
                 });
             }
         }
-    )
+    );
+
+    // Delete single payroll record
+    fastify.delete(
+        '/record/:id',
+        {
+            onRequest: [authenticate],
+            schema: {
+                params: {
+                    type: 'object',
+                    required: ['id'],
+                    properties: {
+                        id: { type: 'string' }
+                    }
+                }
+            }
+        },
+        async (request, reply) => {
+            try {
+                const { id } = request.params as { id: string };
+                // Call deletePayrollRecord which ensures status is 'Draft'
+                const result = await request.container!.payrollService.deletePayrollRecord(id);
+                return reply.send({
+                    success: true,
+                    data: result
+                });
+            } catch (error: any) {
+                return reply.status(400).send({
+                    success: false,
+                    error: { message: error.message }
+                });
+            }
+        }
+    );
     /*
         fastify.put(
             '/approval/status',
