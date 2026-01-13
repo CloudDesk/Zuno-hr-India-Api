@@ -199,8 +199,10 @@ export class DataMigrationService extends BaseService {
       'Role (Required)',
       'Specific Role (Optional)',
       'Department ID (Required)',
+      'Cost Center (Required)',
       'Manager ID (Required)',
-      'Employee No (Optional)',
+      'Employee No (Required)',
+      'Employment Status (Required)',
       'Check-in ID (Optional)',
       'Biometric ID (Optional - Non-IN/AE only)',
       'Active (Optional - Default: Yes. Can be set to No for historical data migration)',
@@ -217,7 +219,7 @@ export class DataMigrationService extends BaseService {
       'Marital Status (Optional)',
       'Spouse Name (Optional)',
       'Separation Date (Optional)',
-      'Notice Period (Optional)',
+      'Notice Period (Required)',
       'Personal Mail ID (Optional)',
       'Country (Required)',
       'Currency (Optional - Auto-set by Country)',
@@ -241,36 +243,38 @@ export class DataMigrationService extends BaseService {
       3: { required: true, note: 'Must be one of: admin, manager, staff, external' },
       4: { required: false, note: 'Specific role designation' },
       5: { required: true, note: 'Must exist in Department LOV' },
-      6: { required: true, note: 'Valid User ID of manager (Required)' },
-      7: { required: false, note: 'Employee number, must be unique if provided' },
-      8: { required: false, note: 'Check-in ID, must be unique if provided' },
-      9: { required: false, note: 'Only for non-IN/AE countries, must be unique if provided' },
-      10: { required: false, note: 'Yes/No, defaults to Yes. Can be set to No for historical data migration' },
-      11: { required: true, note: 'Format: YYYY-MM-DD or DD/MM/YYYY (Required)' },
-      12: { required: false, note: 'Format: YYYY-MM-DD or DD/MM/YYYY. Employee confirmation date (Optional)' },
-      13: { required: false, note: 'Format: YYYY-MM-DD or DD/MM/YYYY. Employee probation date (Optional)' },
-      14: { required: false, note: 'User location' },
-      15: { required: false, note: 'Phone number' },
-      16: { required: false, note: 'Emergency contact information' },
-      17: { required: false, note: 'User address' },
-      18: { required: false, note: 'Blood group' },
-      19: { required: true, note: 'Format: YYYY-MM-DD or DD/MM/YYYY (Required)' },
-      20: { required: false, note: 'Father\'s name' },
-      21: { required: false, note: 'Single, Married, Divorced, or Widowed' },
-      22: { required: false, note: 'Spouse name (if married)' },
-      23: { required: false, note: 'Format: YYYY-MM-DD or DD/MM/YYYY. Employee separation date' },
-      24: { required: false, note: 'Notice period in days (number)' },
-      25: { required: false, note: 'Personal email address (must be valid format)' },
-      26: { required: true, note: 'Required field. Must be IN or AE' },
-      27: { required: false, note: 'INR for IN, AED for AE (auto-set if not provided)' },
-      28: { required: false, note: 'employee or external, defaults to employee' },
-      29: { required: false, note: 'Yes/No, defaults to Yes' },
-      30: { required: false, note: 'Required for AE users: Standard Employment Visa, Domestic Worker Visa, or Green Visa' },
-      31: { required: false, note: 'Required for AE users, must be future date, format: YYYY-MM-DD' },
-      32: { required: false, note: 'Yes/No, defaults to Yes' },
-      33: { required: false, note: 'Client assignment' },
-      34: { required: false, note: 'Valid Holiday Calendar ID' },
-      35: { required: false, note: 'Valid Shift ID. Required if shift-assignment is also being imported. Shift assignment will be created with joining date as start date and weekend [0,6]' }
+      6: { required: true, note: 'Cost center identifier' },
+      7: { required: true, note: 'Valid User ID of manager (Required)' },
+      8: { required: true, note: 'Employee number, must be unique' },
+      9: { required: true, note: 'Employment Status (e.g. Permanent, Contract)' },
+      10: { required: false, note: 'Check-in ID, must be unique if provided' },
+      11: { required: false, note: 'Only for non-IN/AE countries, must be unique if provided' },
+      12: { required: false, note: 'Yes/No, defaults to Yes. Can be set to No for historical data migration' },
+      13: { required: true, note: 'Format: YYYY-MM-DD or DD/MM/YYYY (Required)' },
+      14: { required: false, note: 'Format: YYYY-MM-DD or DD/MM/YYYY. Employee confirmation date (Optional)' },
+      15: { required: false, note: 'Format: YYYY-MM-DD or DD/MM/YYYY. Employee probation date (Optional)' },
+      16: { required: false, note: 'User location' },
+      17: { required: false, note: 'Phone number' },
+      18: { required: false, note: 'Emergency contact information' },
+      19: { required: false, note: 'User address' },
+      20: { required: false, note: 'Blood group' },
+      21: { required: true, note: 'Format: YYYY-MM-DD or DD/MM/YYYY (Required)' },
+      22: { required: false, note: 'Father\'s name' },
+      23: { required: false, note: 'Single, Married, Divorced, or Widowed' },
+      24: { required: false, note: 'Spouse name (if married)' },
+      25: { required: false, note: 'Format: YYYY-MM-DD or DD/MM/YYYY. Employee separation date' },
+      26: { required: true, note: 'Notice period in days (number)' },
+      27: { required: false, note: 'Personal email address (must be valid format)' },
+      28: { required: true, note: 'Required field. Must be IN or AE' },
+      29: { required: false, note: 'INR for IN, AED for AE (auto-set if not provided)' },
+      30: { required: false, note: 'employee or external, defaults to employee' },
+      31: { required: false, note: 'Yes/No, defaults to Yes' },
+      32: { required: false, note: 'Required for AE users: Standard Employment Visa, Domestic Worker Visa, or Green Visa' },
+      33: { required: false, note: 'Required for AE users, must be future date, format: YYYY-MM-DD' },
+      34: { required: false, note: 'Yes/No, defaults to Yes' },
+      35: { required: false, note: 'Client assignment' },
+      36: { required: false, note: 'Valid Holiday Calendar ID' },
+      37: { required: false, note: 'Valid Shift ID. Required if shift-assignment is also being imported. Shift assignment will be created with joining date as start date and weekend [0,6]' }
     });
   }
 
@@ -1004,36 +1008,38 @@ export class DataMigrationService extends BaseService {
     rowData.role = this.getCellValue(row, 3);
     rowData.specificRole = this.getCellValue(row, 4);
     rowData.departmentId = this.getCellValue(row, 5);
-    rowData.managerId = this.getCellValue(row, 6);
-    rowData.employeeNo = this.getCellValue(row, 7);
-    rowData.checkinId = this.getCellValue(row, 8);
-    rowData.biometricId = this.getCellValue(row, 9);
-    rowData.active = this.parseBoolean(this.getCellValue(row, 10), true);
-    rowData.joiningDate = this.getCellValue(row, 11);
-    rowData.confirmationDate = this.getCellValue(row, 12); // Required
-    rowData.probationDate = this.getCellValue(row, 13); // Required
-    rowData.location = this.getCellValue(row, 14);
-    rowData.phone = this.getCellValue(row, 15);
-    rowData.emergencyContact = this.getCellValue(row, 16);
-    rowData.address = this.getCellValue(row, 17);
-    rowData.bloodGroup = this.getCellValue(row, 18);
-    rowData.dateOfBirth = this.getCellValue(row, 19);
-    rowData.fatherName = this.getCellValue(row, 20);
-    rowData.maritalStatus = this.getCellValue(row, 21);
-    rowData.spouseName = this.getCellValue(row, 22);
-    rowData.separationDate = this.getCellValue(row, 23);
-    rowData.noticePeriod = this.getCellValue(row, 24);
-    rowData.personalMailId = this.getCellValue(row, 25);
-    rowData.country = this.getCellValue(row, 26);
-    rowData.currency = this.getCellValue(row, 27) || CONSTANTS.DEFAULT_CURRENCY_INR;
-    rowData.licenseType = this.getCellValue(row, 28) || CONSTANTS.DEFAULT_LICENSE_TYPE;
-    rowData.portalAccess = this.parseBoolean(this.getCellValue(row, 29), true);
-    rowData.visaType = this.getCellValue(row, 30);
-    rowData.visaExpiryDate = this.getCellValue(row, 31);
-    rowData.visaIsActive = this.parseBoolean(this.getCellValue(row, 32), true);
-    rowData.client = this.getCellValue(row, 33);
-    rowData.holidayCalendarId = this.getCellValue(row, 34);
-    rowData.shiftId = this.getCellValue(row, 35); // For automatic shift assignment creation
+    rowData.costCenter = this.getCellValue(row, 6);
+    rowData.managerId = this.getCellValue(row, 7);
+    rowData.employeeNo = this.getCellValue(row, 8);
+    rowData.employmentStatus = this.getCellValue(row, 9);
+    rowData.checkinId = this.getCellValue(row, 10);
+    rowData.biometricId = this.getCellValue(row, 11);
+    rowData.active = this.parseBoolean(this.getCellValue(row, 12), true);
+    rowData.joiningDate = this.getCellValue(row, 13);
+    rowData.confirmationDate = this.getCellValue(row, 14); // Required
+    rowData.probationDate = this.getCellValue(row, 15); // Required
+    rowData.location = this.getCellValue(row, 16);
+    rowData.phone = this.getCellValue(row, 17);
+    rowData.emergencyContact = this.getCellValue(row, 18);
+    rowData.address = this.getCellValue(row, 19);
+    rowData.bloodGroup = this.getCellValue(row, 20);
+    rowData.dateOfBirth = this.getCellValue(row, 21);
+    rowData.fatherName = this.getCellValue(row, 22);
+    rowData.maritalStatus = this.getCellValue(row, 23);
+    rowData.spouseName = this.getCellValue(row, 24);
+    rowData.separationDate = this.getCellValue(row, 25);
+    rowData.noticePeriod = this.getCellValue(row, 26);
+    rowData.personalMailId = this.getCellValue(row, 27);
+    rowData.country = this.getCellValue(row, 28);
+    rowData.currency = this.getCellValue(row, 29) || CONSTANTS.DEFAULT_CURRENCY_INR;
+    rowData.licenseType = this.getCellValue(row, 30) || CONSTANTS.DEFAULT_LICENSE_TYPE;
+    rowData.portalAccess = this.parseBoolean(this.getCellValue(row, 31), true);
+    rowData.visaType = this.getCellValue(row, 32);
+    rowData.visaExpiryDate = this.getCellValue(row, 33);
+    rowData.visaIsActive = this.parseBoolean(this.getCellValue(row, 34), true);
+    rowData.client = this.getCellValue(row, 35);
+    rowData.holidayCalendarId = this.getCellValue(row, 36);
+    rowData.shiftId = this.getCellValue(row, 37); // For automatic shift assignment creation
     // Note: FCM Token is not imported - it's set automatically when users log into the mobile app
   }
 
@@ -1418,8 +1424,35 @@ export class DataMigrationService extends BaseService {
         }
       }
 
-      // Employee Number validation
-      if (row.employeeNo?.trim()) {
+      // Cost Center validation (required)
+      if (!row.costCenter?.trim()) {
+        rowErrors.push({
+          rowNumber: row.rowNumber,
+          field: 'costCenter',
+          message: 'Cost Center is required',
+          severity: 'error'
+        });
+      }
+
+      // Employment Status validation (required)
+      if (!row.employmentStatus?.trim()) {
+        rowErrors.push({
+          rowNumber: row.rowNumber,
+          field: 'employmentStatus',
+          message: 'Employment Status is required',
+          severity: 'error'
+        });
+      }
+
+      // Employee Number validation (Required)
+      if (!row.employeeNo?.trim()) {
+        rowErrors.push({
+          rowNumber: row.rowNumber,
+          field: 'employeeNo',
+          message: 'Employee Number is required',
+          severity: 'error'
+        });
+      } else {
         if (existingEmployeeNos.has(row.employeeNo.trim())) {
           rowErrors.push({
             rowNumber: row.rowNumber,
@@ -1441,6 +1474,16 @@ export class DataMigrationService extends BaseService {
             });
           }
         }
+      }
+
+      // Notice Period validation (Required)
+      if (row.noticePeriod === undefined || row.noticePeriod === null || row.noticePeriod === '') {
+        rowErrors.push({
+          rowNumber: row.rowNumber,
+          field: 'noticePeriod',
+          message: 'Notice Period is required',
+          severity: 'error'
+        });
       }
 
       // Check-in ID validation
@@ -2864,6 +2907,8 @@ export class DataMigrationService extends BaseService {
           role: row.role?.toLowerCase().trim(),
           specificRole: row.specificRole?.trim() || undefined,
           departmentId: row.departmentId?.trim(),
+          costCenter: row.costCenter?.trim(),
+          employmentStatus: row.employmentStatus?.trim(),
           employeeCode: row.employeeNo?.trim() || undefined,
           checkinId: row.checkinId?.trim() || undefined,
           active: isActive, // Can be false for historical data migration

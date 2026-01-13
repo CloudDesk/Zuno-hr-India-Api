@@ -1501,99 +1501,133 @@ export class BiometricAttendanceService extends BaseService {
     }
   }
 
-  async insertBulkAttendanceRecords(userId: string[], month: number, year: number) {
+  async insertBulkAttendanceRecords(userIds: string[], month: number, year: number, skipRandomLop: boolean = true) {
     try {
-      const shifts = {
-        NOON: {
-          shiftId: '67d7e4a6361b9b6799e3e3c4',
-          shiftCode: 'NOON',
-          startHour: 13,
-          endHour: 22,
-          gracePeriod: 15 // in minutes
-        },
-        MORN: {
-          shiftId: '6810647b376481dc7bfa2127',
-          shiftCode: 'MORN',
-          startHour: 9,
-          endHour: 18,
-          gracePeriod: 15 // in minutes
-        },
-        GEN: {
-          shiftId: '6810647b376481dc7bfa2127',
-          shiftCode: 'GEN',
-          startHour: 9,
-          endHour: 18,
-          gracePeriod: 15 // in minutes
-        }
-      };
-
       const bulkRecords = [];
-      const endOfMonth = new Date(year, month, 0);
+      const startDate = new Date(Date.UTC(year, month - 1, 1)); // Start of month UTC
+      const endDate = new Date(Date.UTC(year, month, 0)); // End of month UTC
 
-      for (const user of userId) {
-        const userObjectId = new mongoose.Types.ObjectId(user);
+      for (const userId of userIds) {
+        const userObjectId = new mongoose.Types.ObjectId(userId);
 
-        // Collect working days
-        const workingDays: number[] = [];
-        for (let i = 1; i <= endOfMonth.getDate(); i++) {
-          const day = new Date(year, month - 1, i);
-          const dow = day.getDay();
-          if (dow !== 0 && dow !== 6) workingDays.push(i); // Exclude weekends
+        // Fetch shift assignments for this user overlapping the month
+        // We look for assignments where startDate <= monthEnd AND (endDate >= monthStart OR endDate is null)
+        const assignments = await ShiftAssignment.find({
+          userId: userObjectId,
+          startDate: { $lte: endDate },
+          $or: [{ endDate: { $gte: startDate } }, { endDate: null }]
+        }).populate('shiftId').lean();
+
+        if (!assignments || assignments.length === 0) {
+          console.warn(`No shift assignments found for user ${userId} in ${month}/${year}`);
+          continue;
         }
 
-        // Randomly select one day as LOP
-        const lopDay = Math.random() < 0.5 ? workingDays[0] : workingDays[workingDays.length - 1];
+        // Identify working days for LOP calculation
+        const workingDays: number[] = [];
+        for (let i = 1; i <= endDate.getUTCDate(); i++) {
+          const currentDate = new Date(Date.UTC(year, month - 1, i));
 
-        for (let i = 1; i <= endOfMonth.getDate(); i++) {
-          const currentDate = new Date(year, month - 1, i);
-          const dow = currentDate.getDay();
+          // Find active assignment for this day
+          const activeAssignment = assignments.find(a => {
+            const assignmentStart = new Date(a.startDate);
+            const assignmentEnd = a.endDate ? new Date(a.endDate) : new Date(8640000000000000); // Far future
+            return currentDate >= assignmentStart && currentDate <= assignmentEnd;
+          });
 
-          if (dow === 0 || dow === 6 || i === lopDay) continue;
+          if (activeAssignment && activeAssignment.shiftId) {
+            const dayOfWeek = currentDate.getUTCDay();
+            const weekendDays = activeAssignment.weekendDays || [0, 6]; // Default Sat, Sun if not specified
+            if (!weekendDays.includes(dayOfWeek)) {
+              workingDays.push(i);
+            }
+          }
+        }
 
-          // const shiftType = i % 2 === 0 ? 'NOON' : 'MORN';
-          const shiftType = i % 2 === 0 ? 'GEN' : 'GEN';
-          const shift = shifts[shiftType];
+        if (workingDays.length === 0) continue;
 
-          // Normalize shiftDay to UTC midnight (OLD BEHAVIOR - UTC date)
+        // Randomly select one day as LOP (Loss of Pay) simulation ONLY if skipRandomLop is false
+        let lopDay = -1;
+        if (!skipRandomLop) {
+          lopDay = Math.random() < 0.5 ? workingDays[0] : workingDays[workingDays.length - 1];
+        }
+
+        // Process each day
+        for (let i = 1; i <= endDate.getUTCDate(); i++) {
+          // Skip if it is the simulated LOP day
+          if (i === lopDay) continue;
+
+          const currentDate = new Date(Date.UTC(year, month - 1, i));
+
+          // Find active assignment for this day
+          const activeAssignment = assignments.find(a => {
+            const assignmentStart = new Date(a.startDate);
+            const assignmentEnd = a.endDate ? new Date(a.endDate) : new Date(8640000000000000);
+            return currentDate >= assignmentStart && currentDate <= assignmentEnd;
+          });
+
+          // Skip if no active assignment or if it's a weekend
+          if (!activeAssignment || !activeAssignment.shiftId) continue;
+
+          const dayOfWeek = currentDate.getUTCDay();
+          const weekendDays = activeAssignment.weekendDays || [0, 6];
+          if (weekendDays.includes(dayOfWeek)) continue;
+
+          const shiftDetails = activeAssignment.shiftId as any;
+
+          // Parse shift start/end times (e.g., "09:00", "18:00")
+          const [startHour, startMin] = (shiftDetails.startTime || '09:00').split(':').map(Number);
+          const [endHour, endMin] = (shiftDetails.endTime || '18:00').split(':').map(Number);
+          const gracePeriod = 15; // default grace period if not in shift object
+
+          // Normalize shiftDay to UTC midnight
           const shiftDay = new Date(currentDate);
-          shiftDay.setUTCHours(0, 0, 0, 0);
 
-          // Shift start & end
+          // Calculate Shift Start DateTime
           const shiftStart = new Date(currentDate);
-          shiftStart.setHours(shift.startHour, 0, 0, 0);
+          shiftStart.setUTCHours(startHour, startMin, 0, 0);
 
+          // Calculate Shift End DateTime
           const shiftEnd = new Date(currentDate);
-          shiftEnd.setHours(shift.endHour, 0, 0, 0);
+          shiftEnd.setUTCHours(endHour, endMin, 0, 0);
 
-          // Grace threshold = shift start + grace period
+          // Handle overnight shifts (if end time is before start time)
+          if (shiftEnd < shiftStart) {
+            shiftEnd.setUTCDate(shiftEnd.getUTCDate() + 1);
+          }
+
+          // Grace threshold
           const graceThreshold = new Date(shiftStart.getTime());
-          graceThreshold.setMinutes(graceThreshold.getMinutes() + shift.gracePeriod);
+          graceThreshold.setUTCMinutes(graceThreshold.getUTCMinutes() + gracePeriod);
 
-          // Generate IN and OUT swipe times
+          // Generate Random Swipe Times
+          // In: Start time + random 0-15 mins
           const firstIn = new Date(shiftStart.getTime());
-          firstIn.setMinutes(firstIn.getMinutes() + Math.floor(Math.random() * 15));
+          firstIn.setUTCMinutes(firstIn.getUTCMinutes() + Math.floor(Math.random() * 15));
 
+          // Out: End time - random 0-15 mins
           const lastOut = new Date(shiftEnd.getTime());
-          lastOut.setMinutes(lastOut.getMinutes() - Math.floor(Math.random() * 15));
+          lastOut.setUTCMinutes(lastOut.getUTCMinutes() - Math.floor(Math.random() * 15));
 
-          // Calculate flags
+          // Calculate Flags
           const isLateEntry = firstIn.getTime() > graceThreshold.getTime();
           const isEarlyExit = lastOut.getTime() < shiftEnd.getTime();
 
           const totalWorkHours = ((lastOut.getTime() - firstIn.getTime()) / (1000 * 60 * 60)).toFixed(2);
           const actualWorkHours = (parseFloat(totalWorkHours) - 1).toFixed(2); // assuming 1hr break
-          const shortfallHours = (9 - parseFloat(totalWorkHours)).toFixed(2);
+          const shiftDuration = ((shiftEnd.getTime() - shiftStart.getTime()) / (1000 * 60 * 60));
+          const shortfallHours = (shiftDuration - parseFloat(totalWorkHours)).toFixed(2);
 
           bulkRecords.push({
             userId: userObjectId,
-            shiftId: shift.shiftId,
-            shiftCode: shift.shiftCode,
-            shiftDay: shiftDay, // UTC date normalized
+            shiftId: shiftDetails._id,
+            shiftCode: shiftDetails.code,
+            shiftDay: shiftDay,
             shiftStart,
             shiftEnd,
             swipes: [
-              { timestamp: firstIn, direction: 'IN', deviceId: 'DEVICE_1', location: 'Main Gate' },
-              { timestamp: lastOut, direction: 'OUT', deviceId: 'DEVICE_1', location: 'Main Gate' }
+              { timestamp: firstIn, direction: 'IN', deviceId: 'SIMULATOR', location: 'Simulation' },
+              { timestamp: lastOut, direction: 'OUT', deviceId: 'SIMULATOR', location: 'Simulation' }
             ],
             firstIn,
             lastOut,
@@ -1604,8 +1638,8 @@ export class BiometricAttendanceService extends BaseService {
             totalWorkHours,
             breakHours: '01:00',
             actualWorkHours,
-            shiftHours: '09:00',
-            shortfallHours,
+            shiftHours: shiftDuration.toFixed(2), // Dynamic shift duration
+            shortfallHours: parseFloat(shortfallHours) > 0 ? shortfallHours : '0',
             excessHours: '0',
             status: 'complete',
             attendanceStatus: isLateEntry ? ['Late', 'Present'] : ['On-Time', 'Present'],
@@ -1616,7 +1650,9 @@ export class BiometricAttendanceService extends BaseService {
         }
       }
 
-      await AttendanceRecord.insertMany(bulkRecords);
+      if (bulkRecords.length > 0) {
+        await AttendanceRecord.insertMany(bulkRecords);
+      }
       return `Bulk attendance records inserted successfully: ${bulkRecords.length}`;
     } catch (error) {
       console.error('Attendance error:', error);

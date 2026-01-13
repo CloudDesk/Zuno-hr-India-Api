@@ -700,11 +700,11 @@ export const biometricAttendanceRoutes: RouteHandler = async (
   "year":2025
 } */
       try {
-        const { userId, month, year } = request.body as { userId: string[]; month: number; year: number };
+        const { userId, month, year, skipRandomLop } = request.body as { userId: string[]; month: number; year: number; skipRandomLop?: boolean };
         if (!userId || !month || !year) {
           return reply.status(400).send({ error: 'userId, month, and year are required' });
         }
-        const result = await request.container!.biometricAttendanceService.insertBulkAttendanceRecords(userId, month, year);
+        const result = await request.container!.biometricAttendanceService.insertBulkAttendanceRecords(userId, month, year, skipRandomLop);
         return reply.send(result);
       } catch (error: any) {
         return reply.status(400).send({
