@@ -2257,7 +2257,8 @@ export class BiometricAttendanceService extends BaseService {
       }).lean();
 
       // Create map: userId -> date -> leave type
-      const leaveByUserAndDate = new Map<string, Map<string, string>>();
+      // Create map: userId -> date -> leave details
+      const leaveByUserAndDate = new Map<string, Map<string, { type: string, duration?: string, halfDayType?: string }>>();
       const approvedRestrictedHolidaysByUser = new Map<string, Set<string>>();
 
       approvedLeaves.forEach(leave => {
@@ -2277,7 +2278,11 @@ export class BiometricAttendanceService extends BaseService {
         const currentDate = new Date(leaveStart);
         while (currentDate <= leaveEnd) {
           const dateStr = currentDate.toISOString().split('T')[0];
-          leaveByUserAndDate.get(userId)!.set(dateStr, leave.leaveType || 'leave');
+          leaveByUserAndDate.get(userId)!.set(dateStr, {
+            type: leave.leaveType || 'leave',
+            duration: leave.leaveDuration,
+            halfDayType: leave.halfDayType
+          });
 
           // Also track restricted holidays separately (for backward compatibility)
           if (leave.leaveType === 'restricted_holiday') {
@@ -2363,14 +2368,18 @@ export class BiometricAttendanceService extends BaseService {
 
           // Add leave information if applicable
           const userLeaves = leaveByUserAndDate.get(userId);
-          const leaveType = userLeaves?.get(dateStr);
-          if (leaveType) {
-            attendanceEntry.leaveType = leaveType;
+          const leaveDetails = userLeaves?.get(dateStr);
+          if (leaveDetails) {
+            attendanceEntry.leaveType = leaveDetails.type;
+            attendanceEntry.leaveDuration = leaveDetails.duration;
+            attendanceEntry.halfDayType = leaveDetails.halfDayType;
+
+            const typeStr = leaveDetails.type;
 
             // Add display label for frontend
-            if (leaveType === 'restricted_holiday') {
+            if (typeStr === 'restricted_holiday') {
               attendanceEntry.displayLabel = 'RH';
-            } else if (leaveType === 'annual_leave' || leaveType?.toLowerCase().includes('annual')) {
+            } else if (typeStr === 'annual_leave' || typeStr?.toLowerCase().includes('annual')) {
               attendanceEntry.displayLabel = 'AL';
             } else {
               attendanceEntry.displayLabel = 'Leave';
@@ -2622,8 +2631,11 @@ export class BiometricAttendanceService extends BaseService {
 
           // Check if this user has Leave on this date
           const userLeaveDates = leaveByUserAndDate.get(user.userId);
-          const leaveType = userLeaveDates?.get(dateStr);
-          const isLeave = !!leaveType && !att.isWeekend;
+          const leaveDetails = userLeaveDates?.get(dateStr); // Now returns { type, duration, halfDayType } or undefined
+          // Check if leave exists (and not overridden by weekend logic, though usually leave overrides weekend in display if approved)
+          // Note: Previously we checked !att.isWeekend, but if user applied leave ON weekend (e.g. comp off), we should probably show it?
+          // For now, keeping existing logic: strictly hide leave if it matches weekend flag
+          const isLeave = !!leaveDetails && !att.isWeekend;
 
           // Determine cell value and styling
           let cellValue = '';
@@ -2647,21 +2659,57 @@ export class BiometricAttendanceService extends BaseService {
           let showHoliday = false;
 
           // Set status text
+          // Set status text
           // PRIORITY 1: Check for approved leave (shows even for future dates)
           if (isLeave) {
-            // Check leave type and display appropriate abbreviation
-            if (leaveType === 'restricted_holiday') {
-              cellValue = 'RH';
-              fontColor = 'FF0000FF'; // Blue for restricted holiday
-            } else if (leaveType === 'annual_leave' || leaveType?.toLowerCase().includes('annual')) {
-              // Match 'annual_leave', 'Annual Leave', 'annual', etc.
-              cellValue = 'AL';
-              fontColor = 'FF0000FF'; // Blue for annual leave
-            } else {
-              // For other leave types (sick_leave, casual_leave, etc.)
-              cellValue = 'Leave';
-              fontColor = 'FF0000FF'; // Blue for leave
+            const typeStr = (leaveDetails as any).type;
+            const duration = (leaveDetails as any).duration;
+            const halfDayType = (leaveDetails as any).halfDayType;
+            let leaveAbbr = 'Leave';
+            let leaveColor = 'FF0000FF'; // Blue
+
+            // Determine Abbreviation
+            if (typeStr === 'restricted_holiday') {
+              leaveAbbr = 'RH';
+            } else if (typeStr === 'annual_leave' || typeStr?.toLowerCase().includes('annual')) {
+              leaveAbbr = 'AL';
+            } else if (typeStr === 'sick' || typeStr?.toLowerCase().includes('sick')) {
+              leaveAbbr = 'SL';
+            } else if (typeStr === 'casual' || typeStr?.toLowerCase().includes('casual')) {
+              leaveAbbr = 'CL';
+            } else if (typeStr === 'compOff') {
+              leaveAbbr = 'CO';
+            } else if (typeStr === 'lossOfPay') {
+              leaveAbbr = 'LOP';
+              leaveColor = 'FFFF0000'; // Red for Loss of Pay? Or keep Blue? Usually LOP is warning.
             }
+
+            // Handle Half-Day Logic
+            if (duration === 'half-day') {
+              // Check if there is Present attendance
+              const isPresent = (att.status === 'complete' || att.status === 'duplicate_swipes' ||
+                (att.status === 'incomplete' && att.totalWorkHours && parseFloat(att.totalWorkHours) > 2));
+
+              if (isPresent) {
+                if (halfDayType === 'first-half') {
+                  // First Half Leave, Second Half Present -> AL/P
+                  cellValue = `${leaveAbbr}/P`;
+                } else {
+                  // Second Half Leave, First Half Present -> P/AL
+                  cellValue = `P/${leaveAbbr}`;
+                }
+                // If present, maybe use Black or Mixed color? Keeping Blue for Leave emphasis.
+              } else {
+                // Half day leave but no attendance record found (Absent for other half? or just not synced)
+                // Show as 0.5 AL
+                cellValue = `${leaveAbbr} (0.5)`;
+              }
+            } else {
+              // Full Day Leave
+              cellValue = leaveAbbr;
+            }
+
+            fontColor = leaveColor;
           } else if (holiday) {
             // PRIORITY 2: Check for holidays
             if (holiday.type === 'mandatory') {
