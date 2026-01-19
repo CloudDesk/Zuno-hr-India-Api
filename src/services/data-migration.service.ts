@@ -466,44 +466,26 @@ export class DataMigrationService extends BaseService {
       'Shift ID (Required)',
       'Shift Code (Required)',
       'Shift Day (Required)',
-      'Shift Start (Required)',
-      'Shift End (Required)',
-      'First In (Optional - Auto-calculates hours if provided)',
-      'Last Out (Optional - Auto-calculates hours if provided)',
-      'Total Work Hours (Optional - Auto-calculated if First In/Last Out provided)',
-      'Break Hours (Optional - Auto-calculated if First In/Last Out provided)',
-      'Actual Work Hours (Optional - Auto-calculated if First In/Last Out provided)',
-      'Shift Hours (Optional - Auto-calculated if First In/Last Out provided)',
-      'Shortfall Hours (Optional - Auto-calculated if First In/Last Out provided)',
-      'Excess Hours (Optional - Auto-calculated if First In/Last Out provided)',
-      'Status (Optional - Default: complete)',
-      'Is Within Window (Optional - Default: No)',
-      'Is Late Entry (Optional - Default: No)',
-      'Is Early Exit (Optional - Default: No)'
+      'Shift Start (Optional - Auto 09:00)',
+      'Shift End (Optional - Auto 18:00)',
+      'Attendance Type (Required - Present / Half Day / Absent)',
+      'Half Type (Optional - First Half / Second Half)',
+      'Is WFH (Optional - Yes / No)'
     ];
     worksheet.addRow(headers);
     this.styleHeaderRow(worksheet.getRow(1));
 
     // Add detailed notes to header cells
     this.addFieldRequirementNotes(worksheet, {
-      1: { required: true, note: 'Valid User ID' },
-      2: { required: true, note: 'Valid Shift ID' },
+      1: { required: true, note: 'Valid User ID from system' },
+      2: { required: true, note: 'Valid Shift ID from system' },
       3: { required: true, note: 'Shift code (should match Shift ID)' },
-      4: { required: true, note: 'Format: YYYY-MM-DD' },
-      5: { required: true, note: 'Format: ISO DateTime (e.g., 2025-01-15T09:00:00Z)' },
-      6: { required: true, note: 'Format: ISO DateTime, must be > shift start' },
-      7: { required: false, note: 'Format: ISO DateTime. If provided with Last Out, hours will be auto-calculated' },
-      8: { required: false, note: 'Format: ISO DateTime. If provided with First In, hours will be auto-calculated' },
-      9: { required: false, note: 'Format: HH:mm:ss (e.g., 08:30:00). Leave empty to auto-calculate from First In/Last Out' },
-      10: { required: false, note: 'Format: HH:mm:ss. Leave empty to auto-calculate (30 min if work > 6 hours)' },
-      11: { required: false, note: 'Format: HH:mm:ss. Leave empty to auto-calculate (Total - Break)' },
-      12: { required: false, note: 'Format: HH:mm:ss. Leave empty to auto-calculate (Shift End - Shift Start)' },
-      13: { required: false, note: 'Format: HH:mm:ss. Leave empty to auto-calculate if actual work < shift hours' },
-      14: { required: false, note: 'Format: HH:mm:ss. Leave empty to auto-calculate if actual work > shift hours' },
-      15: { required: false, note: 'Attendance status (complete, incomplete, etc.)' },
-      16: { required: false, note: 'Yes/No' },
-      17: { required: false, note: 'Yes/No' },
-      18: { required: false, note: 'Yes/No' }
+      4: { required: true, note: 'Format: YYYY-MM-DD (e.g., 2024-01-15)' },
+      5: { required: false, note: 'Format: ISO DateTime. Auto-filled to 09:00 if empty' },
+      6: { required: false, note: 'Format: ISO DateTime. Auto-filled to 18:00 if empty' },
+      7: { required: true, note: 'Values: Present, Full Day, Half Day, Absent. REQUIRED field.' },
+      8: { required: false, note: 'Values: First Half, Second Half. Only when Attendance Type is Half Day.' },
+      9: { required: false, note: 'Values: Yes, No. Mark Yes if employee worked from home.' }
     });
   }
 
@@ -1110,18 +1092,21 @@ export class DataMigrationService extends BaseService {
     rowData.shiftDay = this.getCellValue(row, 4);
     rowData.shiftStart = this.getCellValue(row, 5);
     rowData.shiftEnd = this.getCellValue(row, 6);
-    rowData.firstIn = this.getCellValue(row, 7);
-    rowData.lastOut = this.getCellValue(row, 8);
-    rowData.totalWorkHours = this.getCellValue(row, 9);
-    rowData.breakHours = this.getCellValue(row, 10);
-    rowData.actualWorkHours = this.getCellValue(row, 11);
-    rowData.shiftHours = this.getCellValue(row, 12);
-    rowData.shortfallHours = this.getCellValue(row, 13);
-    rowData.excessHours = this.getCellValue(row, 14);
-    rowData.status = this.getCellValue(row, 15);
-    rowData.isWithinWindow = this.parseBoolean(this.getCellValue(row, 16), false);
-    rowData.isLateEntry = this.parseBoolean(this.getCellValue(row, 17), false);
-    rowData.isEarlyExit = this.parseBoolean(this.getCellValue(row, 18), false);
+    rowData.firstIn = null; // Not in simplified template
+    rowData.lastOut = null; // Not in simplified template
+    rowData.totalWorkHours = null; // Auto-calculated
+    rowData.breakHours = null; // Auto-calculated
+    rowData.actualWorkHours = null; // Auto-calculated
+    rowData.shiftHours = null; // Auto-calculated
+    rowData.shortfallHours = null; // Auto-calculated
+    rowData.excessHours = null; // Auto-calculated
+    rowData.status = null; // Auto-set
+    rowData.isWithinWindow = false; // Default
+    rowData.isLateEntry = false; // Default
+    rowData.isEarlyExit = false; // Default
+    rowData.attendanceType = this.getCellValue(row, 7); // Column 7
+    rowData.halfType = this.getCellValue(row, 8); // Column 8
+    rowData.isWFH = this.parseBoolean(this.getCellValue(row, 9), false); // Column 9
   }
 
   /**
@@ -2657,7 +2642,7 @@ export class DataMigrationService extends BaseService {
     const [existingUsers, existingShifts] = await Promise.all([
       userIds.length > 0
         ? User.find({ _id: { $in: userIds.map(id => new Types.ObjectId(id)) } })
-          .select('_id')
+          .select('_id joiningDate separationDate')
           .lean()
         : Promise.resolve([]),
       shiftIds.length > 0
@@ -2668,7 +2653,12 @@ export class DataMigrationService extends BaseService {
     ]);
 
     const validUserIds = new Set(existingUsers.map(u => u._id.toString()));
+    const userJoiningDates = new Map(existingUsers.map(u => [u._id.toString(), u.joiningDate ? new Date(u.joiningDate) : null]));
+    const userSeparationDates = new Map(existingUsers.map(u => [u._id.toString(), u.separationDate ? new Date(u.separationDate) : null]));
     const validShiftIds = new Set(existingShifts.map(s => s._id.toString()));
+
+    // Track user+date combinations to prevent duplicates within the import file
+    const seenRecords = new Set<string>();
     const shiftCodes = new Set(existingShifts.map(s => s.code?.toUpperCase()).filter(Boolean));
 
     for (const row of rows) {
@@ -2740,15 +2730,26 @@ export class DataMigrationService extends BaseService {
         });
       }
 
-      // Validate shiftStart and shiftEnd (required DateTime fields)
-      if (!row.shiftStart) {
-        rowErrors.push({
-          rowNumber: row.rowNumber,
-          field: 'shiftStart',
-          message: 'Shift start time is required',
-          severity: 'error'
-        });
-      } else {
+      // Joining Date Validation
+      if (shiftDay && row.userId && userJoiningDates.get(row.userId)) {
+        const joiningDate = userJoiningDates.get(row.userId)!;
+        // Normalize time portion for comparison
+        joiningDate.setHours(0, 0, 0, 0);
+        const recordDay = new Date(shiftDay);
+        recordDay.setHours(0, 0, 0, 0);
+
+        if (recordDay < joiningDate) {
+          rowErrors.push({
+            rowNumber: row.rowNumber,
+            field: 'shiftDay',
+            message: `Attendance date (${recordDay.toLocaleDateString()}) is before user joining date (${joiningDate.toLocaleDateString()})`,
+            severity: 'error'
+          });
+        }
+      }
+
+      // Validate shiftStart and shiftEnd (Optional - Auto-fill based on day if missing)
+      if (row.shiftStart) {
         const shiftStart = new Date(row.shiftStart);
         if (isNaN(shiftStart.getTime())) {
           rowErrors.push({
@@ -2760,14 +2761,7 @@ export class DataMigrationService extends BaseService {
         }
       }
 
-      if (!row.shiftEnd) {
-        rowErrors.push({
-          rowNumber: row.rowNumber,
-          field: 'shiftEnd',
-          message: 'Shift end time is required',
-          severity: 'error'
-        });
-      } else {
+      if (row.shiftEnd) {
         const shiftEnd = new Date(row.shiftEnd);
         if (isNaN(shiftEnd.getTime())) {
           rowErrors.push({
@@ -2786,6 +2780,79 @@ export class DataMigrationService extends BaseService {
               severity: 'error'
             });
           }
+        }
+      }
+
+      // Check for duplicates within the import file
+      if (row.userId && shiftDay) {
+        const recordKey = `${row.userId}_${shiftDay.toISOString().split('T')[0]}`;
+        if (seenRecords.has(recordKey)) {
+          rowErrors.push({
+            rowNumber: row.rowNumber,
+            field: 'shiftDay',
+            message: `Duplicate record: User ${row.userId} already has an attendance entry for ${shiftDay.toLocaleDateString()} in this import file`,
+            severity: 'error'
+          });
+        } else {
+          seenRecords.add(recordKey);
+        }
+      }
+
+      // Post-Separation Date Validation
+      if (shiftDay && row.userId && userSeparationDates.get(row.userId)) {
+        const separationDate = userSeparationDates.get(row.userId)!;
+        // Normalize time portion for comparison
+        const sepDate = new Date(separationDate);
+        sepDate.setHours(23, 59, 59, 999); // End of separation day
+        const recordDay = new Date(shiftDay);
+        recordDay.setHours(0, 0, 0, 0);
+
+        if (recordDay > sepDate) {
+          rowErrors.push({
+            rowNumber: row.rowNumber,
+            field: 'shiftDay',
+            message: `Attendance date (${recordDay.toLocaleDateString()}) is after user separation date (${separationDate.toLocaleDateString()})`,
+            severity: 'error'
+          });
+        }
+      }
+
+      // Validate Attendance Type (Mandatory)
+      if (!row.attendanceType) {
+        rowErrors.push({
+          rowNumber: row.rowNumber,
+          field: 'attendanceType',
+          message: 'Attendance Type is required (Present / Half Day / Absent)',
+          severity: 'error'
+        });
+      } else {
+        const type = row.attendanceType.toString().trim().toLowerCase();
+        const validTypes = ['present', 'full day', 'half day', 'half-day', 'absent'];
+        if (!validTypes.includes(type)) {
+          rowErrors.push({
+            rowNumber: row.rowNumber,
+            field: 'attendanceType',
+            message: `Invalid Attendance Type. Must be one of: Present, Full Day, Half Day, Absent`,
+            severity: 'error'
+          });
+        }
+
+        // Half Type Restrictions
+        const halfTypeProvided = row.halfType && row.halfType.toString().trim() !== '';
+        if ((type === 'present' || type === 'full day') && halfTypeProvided) {
+          rowErrors.push({
+            rowNumber: row.rowNumber,
+            field: 'halfType',
+            message: "Half Type should not be provided when Attendance Type is 'Present' or 'Full Day'",
+            severity: 'error'
+          });
+        } else if ((type === 'half day' || type === 'half-day') && !halfTypeProvided) {
+          rowErrors.push({
+            rowNumber: row.rowNumber,
+            field: 'halfType',
+            message: "Half Type (First Half / Second Half) is required when Attendance Type is 'Half Day'",
+            severity: 'error'
+          });
         }
       }
 
@@ -3536,20 +3603,55 @@ export class DataMigrationService extends BaseService {
         }
 
         // Parse and validate dates
-        const shiftStart = row.shiftStart ? new Date(row.shiftStart) : null;
-        const shiftEnd = row.shiftEnd ? new Date(row.shiftEnd) : null;
-        const firstIn = row.firstIn ? new Date(row.firstIn) : null;
-        const lastOut = row.lastOut ? new Date(row.lastOut) : null;
+        let shiftStart = row.shiftStart ? new Date(row.shiftStart) : null;
+        let shiftEnd = row.shiftEnd ? new Date(row.shiftEnd) : null;
+        const shiftDay = this.parseDate(row.shiftDay!);
+        if (!shiftDay) {
+          throw new Error(`Invalid shift day format at row ${row.rowNumber}`);
+        }
 
+        // If shift times not provided, fetch from Shift Master
+        if ((!shiftStart || isNaN(shiftStart.getTime())) || (!shiftEnd || isNaN(shiftEnd.getTime()))) {
+          // Fetch the actual shift details from database
+          const shift = await Shift.findById(row.shiftId).select('startTime endTime').lean();
+
+          if (shift && shift.startTime && shift.endTime) {
+            // Use actual shift times from master
+            if (!shiftStart || isNaN(shiftStart.getTime())) {
+              shiftStart = new Date(shiftDay);
+              const [startHours, startMinutes] = shift.startTime.split(':').map(Number);
+              // Set hours and then adjust for IST (+5:30) offset to keep it as 9 AM Local
+              shiftStart.setUTCHours(startHours, startMinutes, 0, 0);
+              shiftStart.setMinutes(shiftStart.getMinutes() - 330); // Subtract 330 mins (5.5 hrs) for IST
+            }
+
+            if (!shiftEnd || isNaN(shiftEnd.getTime())) {
+              shiftEnd = new Date(shiftDay);
+              const [endHours, endMinutes] = shift.endTime.split(':').map(Number);
+              shiftEnd.setUTCHours(endHours, endMinutes, 0, 0);
+              shiftEnd.setMinutes(shiftEnd.getMinutes() - 330); // Subtract 330 mins (5.5 hrs) for IST
+
+              // Check if it's an overnight shift (end time < start time)
+              if (shiftEnd <= shiftStart) {
+                shiftEnd.setDate(shiftEnd.getDate() + 1);
+              }
+            }
+          } else {
+            // Throw error instead of falling back to 9-6 to ensure data accuracy
+            throw new Error(`Shift timings (startTime/endTime) not found for Shift ID: ${row.shiftId} in the Shift Master.`);
+          }
+        }
+
+        // Final validation
         if (!shiftStart || isNaN(shiftStart.getTime())) {
           throw new Error('Invalid shift start time');
         }
         if (!shiftEnd || isNaN(shiftEnd.getTime())) {
           throw new Error('Invalid shift end time');
         }
-        if (shiftEnd <= shiftStart) {
-          throw new Error('Shift end time must be after shift start time');
-        }
+
+        const firstIn = row.firstIn ? new Date(row.firstIn) : null;
+        const lastOut = row.lastOut ? new Date(row.lastOut) : null;
 
         // Check if firstIn and lastOut are provided for automatic calculation
         const hasCheckInOut = firstIn && !isNaN(firstIn.getTime()) && lastOut && !isNaN(lastOut.getTime());
@@ -3596,7 +3698,50 @@ export class DataMigrationService extends BaseService {
           excessHours: string;
         } | null = null;
 
-        if (hasCheckInOut) {
+        // Specialized logic for "Attendance Type" (Easy Entry Mode)
+        let status = row.status || 'complete';
+        let attendanceStatus: string[] = [];
+
+        if (row.attendanceType) {
+          const type = row.attendanceType.toString().trim().toLowerCase();
+          if (type === 'present' || type === 'full day') {
+            calculatedMetrics = {
+              totalWorkHours: '09:00:00',
+              breakHours: '00:00:00',
+              actualWorkHours: '09:00:00',
+              shiftHours: '09:00:00',
+              shortfallHours: '00:00:00',
+              excessHours: '00:00:00'
+            };
+            status = 'complete';
+            attendanceStatus = ['Present'];
+          } else if (type === 'half day' || type === 'half-day') {
+            calculatedMetrics = {
+              totalWorkHours: '04:30:00',
+              breakHours: '00:00:00',
+              actualWorkHours: '04:30:00',
+              shiftHours: '09:00:00',
+              shortfallHours: '04:30:00', // Shortfall reflects half day
+              excessHours: '00:00:00'
+            };
+            status = 'incomplete';
+            attendanceStatus = ['Present']; // Still present
+          } else if (type === 'absent') {
+            calculatedMetrics = {
+              totalWorkHours: '00:00:00',
+              breakHours: '00:00:00',
+              actualWorkHours: '00:00:00',
+              shiftHours: '09:00:00',
+              shortfallHours: '09:00:00',
+              excessHours: '00:00:00'
+            };
+            status = 'complete';
+            attendanceStatus = ['Absent'];
+          }
+        }
+
+        // Fallback to normal calculation if no Attendance Type provided
+        if (!calculatedMetrics && hasCheckInOut) {
           try {
             calculatedMetrics = await this.calculateAttendanceMetrics(
               firstIn!,
@@ -3605,6 +3750,11 @@ export class DataMigrationService extends BaseService {
               shiftEnd
             );
             console.log(`✅ Auto-calculated attendance metrics for row ${row.rowNumber}:`, calculatedMetrics);
+
+            // Auto-tag Present if working > 0 hours and no tag exists
+            if (calculatedMetrics && calculatedMetrics.actualWorkHours !== '00:00:00' && calculatedMetrics.actualWorkHours !== '0:00:00') {
+              if (attendanceStatus.length === 0) attendanceStatus.push('Present');
+            }
           } catch (calcError: any) {
             console.warn(`⚠️ Could not auto-calculate metrics for row ${row.rowNumber}: ${calcError.message}`);
             // Continue with default values if calculation fails
@@ -3640,14 +3790,51 @@ export class DataMigrationService extends BaseService {
           excessHours: adminProvidedExcessHours
             ? row.excessHours
             : (calculatedMetrics?.excessHours || '0:00:00'),
-          status: row.status || 'complete',
+          status: status,
+          attendanceStatus: attendanceStatus, // Add the populated status
           isWithinWindow: row.isWithinWindow !== undefined ? row.isWithinWindow : false,
           isLateEntry: row.isLateEntry !== undefined ? row.isLateEntry : false,
-          isEarlyExit: row.isEarlyExit !== undefined ? row.isEarlyExit : false
+          isEarlyExit: row.isEarlyExit !== undefined ? row.isEarlyExit : false,
+          isWFH: row.isWFH !== undefined ? row.isWFH : false,
+          halfType: row.halfType && (row.halfType.toString().toLowerCase().includes('first')) ? 'First Half' :
+            row.halfType && (row.halfType.toString().toLowerCase().includes('second')) ? 'Second Half' : undefined
         };
 
-        const record = new AttendanceRecord(recordData);
-        await record.save();
+        // Check for existing record to handle updates/merges
+        let record = await AttendanceRecord.findOne({
+          userId: recordData.userId,
+          shiftDay: recordData.shiftDay
+        });
+
+        // Check for approved leaves on this day to handle Half-Day + Leave joins
+        const approvedLeave = await Leave.findOne({
+          userId: recordData.userId,
+          status: 'Approved',
+          startDate: { $lte: recordData.shiftDay },
+          endDate: { $gte: recordData.shiftDay }
+        }).lean();
+
+        const isLeaveHalfDay = approvedLeave && approvedLeave.leaveDuration === 'half-day';
+        const isAttendanceHalfDay = row.attendanceType && (row.attendanceType.toString().toLowerCase().includes('half'));
+
+        // Logic: If it's a Half-Day Leave AND a Half-Day Attendance import, 
+        // the combined status should be 'leave_swipe' to avoid being marked 'incomplete'.
+        if (approvedLeave && (isLeaveHalfDay || isAttendanceHalfDay)) {
+          recordData.status = 'leave_swipe';
+          if (!recordData.attendanceStatus.includes('On-Leave')) {
+            recordData.attendanceStatus.push('On-Leave');
+          }
+        }
+
+        if (record) {
+          // Update existing record
+          Object.assign(record, recordData);
+          await record.save();
+        } else {
+          // Create new record
+          record = new AttendanceRecord(recordData);
+          await record.save();
+        }
         created++;
       } catch (error: any) {
         const errorMessage = error.message || 'Unknown error occurred';

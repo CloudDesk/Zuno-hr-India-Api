@@ -1667,6 +1667,11 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
         } else {
           // All other leave cases (Regular leaves or Restricted Holiday without swipes)
           updateFields.attendanceStatus = ['On-Leave'];
+
+          // India-specific: Handle half-day leave type
+          if (leave.leaveDuration === 'half-day' && leave.halfDayType) {
+            updateFields.halfType = leave.halfDayType === 'first-half' ? 'First Half' : 'Second Half';
+          }
         }
 
         await AttendanceRecord.findOneAndUpdate(

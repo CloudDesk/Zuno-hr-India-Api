@@ -354,6 +354,8 @@ export const biometricAttendanceRoutes: RouteHandler = async (
                           isWithinWindow: { type: 'boolean' },
                           isLateEntry: { type: 'boolean' },
                           isEarlyExit: { type: 'boolean' },
+                          isWFH: { type: 'boolean' },
+                          halfType: { type: 'string', nullable: true },
                           needsRegularization: { type: 'boolean' },
                           exceessHours: { type: 'string' },
                           shortfallHours: { type: 'string' },
@@ -928,7 +930,8 @@ export const biometricAttendanceRoutes: RouteHandler = async (
                           attendanceStatus: { type: 'array', items: { type: 'string' } },
                           isWeekend: { type: 'boolean' },  // Only included if true
                           isHoliday: { type: 'boolean' },   // Only included if true
-                          isWFH: { type: 'boolean' }   // Only included if true (approved WFH)
+                          isWFH: { type: 'boolean' },   // Only included if true (approved WFH)
+                          halfType: { type: 'string', nullable: true }
                         }
                       }
                     }
