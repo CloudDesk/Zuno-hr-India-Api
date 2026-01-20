@@ -24,6 +24,7 @@ export interface IExportRequest {
 export interface IImportRow {
   rowNumber: number;
   [key: string]: any;
+  shiftDayEnd?: string;
 }
 
 export interface IValidationError {
@@ -466,6 +467,7 @@ export class DataMigrationService extends BaseService {
       'Shift ID (Required)',
       'Shift Code (Required)',
       'Shift Day (Required)',
+      'Shift Day End (Optional - For Range Insert)',
       'Shift Start (Optional - Auto 09:00)',
       'Shift End (Optional - Auto 18:00)',
       'Attendance Type (Required - Present / Half Day / Absent)',
@@ -481,11 +483,12 @@ export class DataMigrationService extends BaseService {
       2: { required: true, note: 'Valid Shift ID from system' },
       3: { required: true, note: 'Shift code (should match Shift ID)' },
       4: { required: true, note: 'Format: YYYY-MM-DD (e.g., 2024-01-15)' },
-      5: { required: false, note: 'Format: ISO DateTime. Auto-filled to 09:00 if empty' },
-      6: { required: false, note: 'Format: ISO DateTime. Auto-filled to 18:00 if empty' },
-      7: { required: true, note: 'Values: Present, Full Day, Half Day, Absent. REQUIRED field.' },
-      8: { required: false, note: 'Values: First Half, Second Half. Only when Attendance Type is Half Day.' },
-      9: { required: false, note: 'Values: Yes, No. Mark Yes if employee worked from home.' }
+      5: { required: false, note: 'Optional End Date to create range (e.g., 2025-01-31). If provided, creates records for all dates from Shift Day to this date.' },
+      6: { required: false, note: 'Format: ISO DateTime. Auto-filled to 09:00 if empty' },
+      7: { required: false, note: 'Format: ISO DateTime. Auto-filled to 18:00 if empty' },
+      8: { required: true, note: 'Values: Present, Full Day, Half Day, Absent. REQUIRED field.' },
+      9: { required: false, note: 'Values: First Half, Second Half. Only when Attendance Type is Half Day.' },
+      10: { required: false, note: 'Values: Yes, No. Mark Yes if employee worked from home.' }
     });
   }
 
@@ -943,40 +946,84 @@ export class DataMigrationService extends BaseService {
     const rows: IImportRow[] = [];
     let rowNumber = 2; // Start from row 2 (row 1 is header)
 
-    worksheet.eachRow((row, index) => {
-      if (index === 1) return; // Skip header row
+    // For attendance records, we need to handle potential date ranges (expansion)
+    if (objectType === 'attendance-record') {
+      worksheet.eachRow((row, index) => {
+        if (index === 1) return; // Skip header
 
-      const rowData: IImportRow = { rowNumber };
+        const rowData: IImportRow = { rowNumber };
+        this.parseAttendanceRecordRow(row, rowData);
 
-      switch (objectType) {
-        case 'user':
-          this.parseUserRow(row, rowData);
-          break;
-        case 'shift':
-          this.parseShiftRow(row, rowData);
-          break;
-        case 'leave':
-          this.parseLeaveRow(row, rowData);
-          break;
-        case 'salary-assignment':
-          this.parseSalaryAssignmentRow(row, rowData);
-          break;
-        case 'salary-structure':
-          this.parseSalaryStructureRow(row, rowData);
-          break;
-        case 'attendance-record':
-          this.parseAttendanceRecordRow(row, rowData);
-          break;
-      }
+        // Check if data exists
+        const hasData = Object.keys(rowData).some(key => key !== 'rowNumber' && rowData[key] !== undefined && rowData[key] !== '');
 
-      // Only add rows that have at least one non-empty field
-      const hasData = Object.keys(rowData).some(key => key !== 'rowNumber' && rowData[key] !== undefined && rowData[key] !== '');
-      if (hasData) {
-        rows.push(rowData);
-      }
+        if (hasData) {
+          // Check for date range expansion
+          const shiftDayStartStr = rowData.shiftDay;
+          const shiftDayEndStr = rowData.shiftDayEnd; // This is added in parseAttendanceRecordRow
 
-      rowNumber++;
-    });
+          const shiftDayStart = this.parseDate(shiftDayStartStr!);
+          const shiftDayEnd = shiftDayEndStr ? this.parseDate(shiftDayEndStr) : null;
+
+          if (shiftDayStart && shiftDayEnd && shiftDayEnd > shiftDayStart) {
+            // RANGE EXPLOSION 💥
+            // Loop from Start to End
+            const currentDate = new Date(shiftDayStart);
+            const endDate = new Date(shiftDayEnd);
+
+            while (currentDate <= endDate) {
+              // Create a CLONE of the row data
+              const clonedRow = { ...rowData };
+              // Update the shift day for this specific instance
+              clonedRow.shiftDay = currentDate.toISOString().split('T')[0];
+              // Remove the end date from the clone to avoid confusion
+              delete clonedRow.shiftDayEnd;
+
+              rows.push(clonedRow);
+              // Move to next day
+              currentDate.setDate(currentDate.getDate() + 1);
+            }
+          } else {
+            // Standard Single Row
+            rows.push(rowData);
+          }
+        }
+        rowNumber++;
+      });
+    } else {
+      // Standard parsing for other types
+      worksheet.eachRow((row, index) => {
+        if (index === 1) return; // Skip header row
+
+        const rowData: IImportRow = { rowNumber };
+
+        switch (objectType) {
+          case 'user':
+            this.parseUserRow(row, rowData);
+            break;
+          case 'shift':
+            this.parseShiftRow(row, rowData);
+            break;
+          case 'leave':
+            this.parseLeaveRow(row, rowData);
+            break;
+          case 'salary-assignment':
+            this.parseSalaryAssignmentRow(row, rowData);
+            break;
+          case 'salary-structure':
+            this.parseSalaryStructureRow(row, rowData);
+            break;
+        }
+
+        // Only add rows that have at least one non-empty field
+        const hasData = Object.keys(rowData).some(key => key !== 'rowNumber' && rowData[key] !== undefined && rowData[key] !== '');
+        if (hasData) {
+          rows.push(rowData);
+        }
+
+        rowNumber++;
+      });
+    }
 
     return rows;
   }
@@ -1090,8 +1137,9 @@ export class DataMigrationService extends BaseService {
     rowData.shiftId = this.getCellValue(row, 2);
     rowData.shiftCode = this.getCellValue(row, 3);
     rowData.shiftDay = this.getCellValue(row, 4);
-    rowData.shiftStart = this.getCellValue(row, 5);
-    rowData.shiftEnd = this.getCellValue(row, 6);
+    rowData.shiftDayEnd = this.getCellValue(row, 5); // Column 5 - Range End Date
+    rowData.shiftStart = this.getCellValue(row, 6); // Column 6
+    rowData.shiftEnd = this.getCellValue(row, 7); // Column 7
     rowData.firstIn = null; // Not in simplified template
     rowData.lastOut = null; // Not in simplified template
     rowData.totalWorkHours = null; // Auto-calculated
@@ -1104,9 +1152,9 @@ export class DataMigrationService extends BaseService {
     rowData.isWithinWindow = false; // Default
     rowData.isLateEntry = false; // Default
     rowData.isEarlyExit = false; // Default
-    rowData.attendanceType = this.getCellValue(row, 7); // Column 7
-    rowData.halfType = this.getCellValue(row, 8); // Column 8
-    rowData.isWFH = this.parseBoolean(this.getCellValue(row, 9), false); // Column 9
+    rowData.attendanceType = this.getCellValue(row, 8); // Column 8
+    rowData.halfType = this.getCellValue(row, 9); // Column 9
+    rowData.isWFH = this.parseBoolean(this.getCellValue(row, 10), false); // Column 10
   }
 
   /**
@@ -3827,9 +3875,10 @@ export class DataMigrationService extends BaseService {
         }
 
         if (record) {
-          // Update existing record
-          Object.assign(record, recordData);
-          await record.save();
+          // DUPLICATE CHECK: Do NOT overwrite existing database records
+          errors.push(`Row ${row.rowNumber}: Duplicate - Record already exists in database for User ${row.userId} on ${row.shiftDay}`);
+          console.warn(`Skipping duplicate database record for User ${row.userId} on ${row.shiftDay}`);
+          continue;
         } else {
           // Create new record
           record = new AttendanceRecord(recordData);
