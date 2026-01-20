@@ -1664,6 +1664,18 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
             reg.status = 'Approved';
             updateFields.regularization = reg;
           }
+        } else if (leave.leaveType && (leave.leaveType.toLowerCase() === 'wfh' || leave.leaveType.toLowerCase() === 'work from home' || leave.leaveType.toLowerCase() === 'work_from_home' || leave.leaveType.toLowerCase() === 'work-from-home')) {
+          // Work From Home Logic
+          updateFields.isWFH = true;
+          // WFH counts as Present, not On-Leave
+          // We check if there are existing statuses to preserve
+          updateFields.attendanceStatus = ['Present'];
+
+          // If half-day WFH (rare but possible)
+          if (leave.leaveDuration === 'half-day' && leave.halfDayType) {
+            updateFields.halfType = leave.halfDayType === 'first-half' ? 'First Half' : 'Second Half';
+            // You might want to handle 'Half Day' status here if needed, but usually WFH is treated as full presence or handled via half-day flags
+          }
         } else {
           // All other leave cases (Regular leaves or Restricted Holiday without swipes)
           updateFields.attendanceStatus = ['On-Leave'];

@@ -341,14 +341,14 @@ export class DataMigrationService extends BaseService {
     // Add detailed notes to header cells
     this.addFieldRequirementNotes(worksheet, {
       1: { required: true, note: 'Valid User ID' },
-      2: { required: false, note: 'MongoDB ID (Preferred)' },
-      3: { required: false, note: 'Exact Leave Name (e.g. Sick Leave)' },
-      4: { required: true, note: 'YYYY-MM-DD' },
-      5: { required: true, note: 'YYYY-MM-DD' },
-      6: { required: false, note: 'Default: Approved' },
-      7: { required: false, note: 'full-day or half-day' },
+      2: { required: false, note: 'MongoDB ID (Preferred). Leave blank for FULL_MONTH_PRESENT' },
+      3: { required: false, note: 'Exact Leave Name (e.g. Sick Leave) OR use "FULL_MONTH_PRESENT" for months with no leaves' },
+      4: { required: true, note: 'YYYY-MM-DD (e.g., 2024-01-01 for first day of month)' },
+      5: { required: true, note: 'YYYY-MM-DD (e.g., 2024-01-31 for last day of month)' },
+      6: { required: false, note: 'Default: Approved. Not used for FULL_MONTH_PRESENT' },
+      7: { required: false, note: 'full-day or half-day. Not used for FULL_MONTH_PRESENT' },
       8: { required: false, note: 'Required if Duration is half-day' },
-      9: { required: false, note: 'Override auto-calculation' }
+      9: { required: false, note: 'Override auto-calculation. Use 0 for FULL_MONTH_PRESENT' }
     });
   }
 
@@ -2131,7 +2131,7 @@ export class DataMigrationService extends BaseService {
     const [existingUsers, existingLeaves] = await Promise.all([
       userIds.length > 0
         ? User.find({ _id: { $in: userIds.map(id => new Types.ObjectId(id)) } })
-          .select('_id joiningDate holidayCalendarId')
+          .select('_id joiningDate holidayCalendarId country')
           .lean()
         : Promise.resolve([]),
       userIds.length > 0
@@ -2151,27 +2151,42 @@ export class DataMigrationService extends BaseService {
     // ... (rest of caching)
 
     // Cache Holidays for relevant Calendars to minimize DB calls
-    // We need to fetch holidays for all calendars involved
-    // Cache Holidays for relevant Calendars to minimize DB calls
-    // We need to fetch holidays for all calendars involved
-    const allCalendarIds = [...new Set(existingUsers.map(u => u.holidayCalendarId).filter(id => !!id).map(id => id!.toString()))];
-    const holidaysMap = new Map<string, Array<{ date: string, type: string }>>();
+    // We fetch calendars for all relevant years and all user assignments
+    const yearsInImport = [...new Set(rows.map(r => {
+      const d = this.parseDate(r.startDate || '');
+      return d ? d.getFullYear() : null;
+    }).filter(y => y !== null))] as number[];
 
-    if (allCalendarIds.length > 0) {
+    const currentCalendarIds = [...new Set(existingUsers.map(u => u.holidayCalendarId).filter(id => !!id).map(id => id!.toString()))];
+    const holidaysMap = new Map<string, Array<{ originalDate: Date, type: string }>>(); // Key: CalendarID
+    const userYearHolidaysMap = new Map<string, Array<{ originalDate: Date, type: string }>>(); // Key: userId_year
+
+    if (currentCalendarIds.length > 0 || yearsInImport.length > 0) {
       const calendars = await HolidayCalendar.find({
-        _id: { $in: allCalendarIds.map(id => new Types.ObjectId(id)) }
-      }).select('_id holidays').lean();
+        $or: [
+          { _id: { $in: currentCalendarIds.map(id => new Types.ObjectId(id)) } },
+          {
+            year: { $in: yearsInImport },
+            assignedTo: { $in: userIds.map(id => new Types.ObjectId(id)) }
+          }
+        ]
+      }).select('_id year assignedTo holidays').lean();
 
       calendars.forEach(cal => {
-        const cid = cal._id.toString();
-        if (!holidaysMap.has(cid)) holidaysMap.set(cid, []);
+        const hList = cal.holidays.map(h => ({
+          originalDate: new Date(h.date),
+          type: h.type
+        }));
 
-        cal.holidays.forEach(h => {
-          holidaysMap.get(cid)?.push({
-            date: new Date(h.date).toISOString().split('T')[0], // YYYY-MM-DD
-            type: h.type
+        // Cache by Calendar ID
+        holidaysMap.set(cal._id.toString(), hList);
+
+        // Cache by userId_year for precise lookup
+        if (cal.assignedTo) {
+          cal.assignedTo.forEach(uid => {
+            userYearHolidaysMap.set(`${uid.toString()}_${cal.year}`, hList);
           });
-        });
+        }
       });
     }
     console.log('DEBUG: Using Leave Type LOV ID:', leaveTypeLovId);
@@ -2211,28 +2226,29 @@ export class DataMigrationService extends BaseService {
       }
 
       // Resolve Leave Type
-      let resolvedTypeName = row.leaveTypeName?.toString().toLowerCase().trim();
+      let inputTypeName = row.leaveTypeName?.toString().trim();
+      let matchedType: string | undefined = undefined;
 
-      // If ID is provided, treat it as potential type name validation
-      if (row.leaveTypeId && !resolvedTypeName) {
-        const potentialType = row.leaveTypeId.toString().toLowerCase().trim();
-        if (ALL_LEAVE_TYPES.includes(potentialType as any)) {
-          resolvedTypeName = potentialType;
-        }
+      if (inputTypeName) {
+        matchedType = ALL_LEAVE_TYPES.find(t => t.toLowerCase() === inputTypeName!.toLowerCase());
+      } else if (row.leaveTypeId) {
+        const potentialType = row.leaveTypeId.toString().trim();
+        matchedType = ALL_LEAVE_TYPES.find(t => t.toLowerCase() === potentialType.toLowerCase());
       }
 
       let isValidType = false;
-      if (resolvedTypeName && ALL_LEAVE_TYPES.includes(resolvedTypeName as any)) {
+      if (matchedType) {
         isValidType = true;
         row.leaveTypeId = leaveTypeLovId; // Set the LOV Group ID as required by Model
-        row.leaveType = resolvedTypeName; // Set the specific type string
+        row.leaveType = matchedType;      // Set the correctly cased type string (e.g., 'compOff')
       }
 
       if (!isValidType) {
-        if (!resolvedTypeName) {
+        const displayValue = inputTypeName || row.leaveTypeId || 'Unknown';
+        if (!displayValue || displayValue === 'Unknown') {
           rowErrors.push({ rowNumber: row.rowNumber, field: 'leaveTypeName', message: 'Leave Type Name is required', severity: 'error' });
         } else {
-          rowErrors.push({ rowNumber: row.rowNumber, field: 'leaveTypeId', message: `Invalid Leave Type: '${resolvedTypeName}'. Allowed: ${ALL_LEAVE_TYPES.join(', ')}`, severity: 'error' });
+          rowErrors.push({ rowNumber: row.rowNumber, field: 'leaveTypeId', message: `Invalid Leave Type: '${displayValue}'. Allowed: ${ALL_LEAVE_TYPES.join(', ')}`, severity: 'error' });
         }
       }
 
@@ -2309,7 +2325,19 @@ export class DataMigrationService extends BaseService {
       // Only if basic date checks passed
       if (row.userId && startDate && endDate && !rowErrors.some(e => e.field === 'startDate' || e.field === 'endDate')) {
         const user = userMap.get(row.userId);
-        const holidays = user?.holidayCalendarId ? holidaysMap.get(user.holidayCalendarId.toString()) : [];
+        const country = user?.country || 'IN';
+        const countryOffsets: Record<string, number> = { 'IN': 5.5, 'AE': 4 };
+        const offset = countryOffsets[country] || 5.5;
+
+        const year = startDate.getFullYear();
+        let holidays = userYearHolidaysMap.get(`${row.userId}_${year}`);
+
+        // Fallback to currently assigned holidayCalendarId if no year-specific assignment found
+        if (!holidays && user?.holidayCalendarId) {
+          holidays = holidaysMap.get(user.holidayCalendarId.toString());
+        }
+
+        if (!holidays) holidays = [];
 
         // Check overlapping Shift Assignment for Weekend info
         const loopDate = new Date(startDate);
@@ -2344,10 +2372,22 @@ export class DataMigrationService extends BaseService {
           */
 
           // 2. Holiday Check
-          const holiday = holidays?.find(h => h.date === dateStr);
-          if (holiday) {
-            // Specific Rule: Restricted Holiday leave cannot be taken on a Mandatory Holiday
-            if (row.leaveType === 'restricted_holiday' && holiday.type === 'mandatory') {
+          const holiday = holidays?.find(h => {
+            const logicalDate = new Date(h.originalDate.getTime() + (offset * 60 * 60 * 1000));
+            return logicalDate.toISOString().split('T')[0] === dateStr;
+          });
+
+          if (row.leaveType === 'restricted_holiday') {
+            if (!holiday) {
+              rowErrors.push({
+                rowNumber: row.rowNumber,
+                field: 'startDate',
+                message: `Cannot apply 'Restricted Holiday' on ${dateStr}. This date is NOT defined as an Optional Holiday in your calendar.`,
+                severity: 'error'
+              });
+              break;
+            }
+            if (holiday.type === 'mandatory') {
               rowErrors.push({
                 rowNumber: row.rowNumber,
                 field: 'startDate',
@@ -2356,27 +2396,35 @@ export class DataMigrationService extends BaseService {
               });
               break;
             }
-
-            // General Rule: Removed to allow range imports.
-            // We allow 'Annual' on a Holiday in the Excel, but we will SKIP creating an attendance record for it.
-            /*
-            const isExemptType = (row.leaveType === 'restricted_holiday' || row.leaveType === 'compensatory_off');
-            if (!isExemptType) {
+            if (holiday.type !== 'optional') {
               rowErrors.push({
-                 rowNumber: row.rowNumber,
-                 field: 'startDate',
-                 message: `Cannot apply '${row.leaveType}' on Holiday (${dateStr} - ${holiday.type}). (Restricted)`,
-                 severity: 'error'
+                rowNumber: row.rowNumber,
+                field: 'startDate',
+                message: `Date ${dateStr} is a '${holiday.type}' holiday, not an Optional/Restricted holiday.`,
+                severity: 'error'
               });
               break;
             }
-            */
           }
+
+          // General Rule: Removed to allow range imports.
+          // We allow 'Annual' on a Holiday in the Excel, but we will SKIP creating an attendance record for it.
+          /*
+          const isExemptType = (row.leaveType === 'restricted_holiday' || row.leaveType === 'compensatory_off');
+          if (!isExemptType) {
+            rowErrors.push({
+               rowNumber: row.rowNumber,
+               field: 'startDate',
+               message: `Cannot apply '${row.leaveType}' on Holiday (${dateStr} - ${holiday.type}). (Restricted)`,
+               severity: 'error'
+            });
+            break;
+          }
+          */
 
           loopDate.setUTCDate(loopDate.getUTCDate() + 1);
         }
       }
-
       // VALIDATION 2: Check Duplicate / Overlapping Leave
       if (row.userId && validUserIds.has(row.userId) && startDate && endDate) {
         const existingUserLeaves = userLeavesMap.get(row.userId);
@@ -3226,15 +3274,56 @@ export class DataMigrationService extends BaseService {
 
   /**
    * Insert Leave records
+   * After creating leaves, auto-creates "Present" attendance for balance days
    */
   private async insertLeaves(rows: IImportRow[]): Promise<{ created: number; errors: string[] }> {
     const errors: string[] = [];
     let created = 0;
 
+    // Track users and date ranges for balance day creation
+    const userDateRanges = new Map<string, { minDate: Date; maxDate: Date }>();
+
     for (const row of rows) {
       try {
         // Leave Type logic is handled in validation phase (validateLeaves)
         // row.leaveTypeId and row.leaveType should be correctly populated there.
+
+        // SPECIAL CASE: FULL_MONTH_PRESENT - No actual leave, just create attendance
+        // This is for employees with NO leaves in a month - creates "Present" for entire period
+        if (row.leaveType === 'FULL_MONTH_PRESENT' || row.leaveType === 'NO_LEAVE' || row.leaveType === 'full_month_present') {
+          console.log(`📅 [No Leave] Creating full period attendance for user ${row.userId}`);
+
+          const startDate = this.parseDate(row.startDate!);
+          const endDate = this.parseDate(row.endDate!);
+
+          if (startDate && endDate) {
+            const userId = row.userId.toString();
+
+            // Auto-Expand to Full Month for attendance population
+            const monthStart = new Date(startDate);
+            monthStart.setUTCDate(1);
+            monthStart.setUTCHours(0, 0, 0, 0);
+
+            const monthEnd = new Date(endDate);
+            monthEnd.setUTCMonth(monthEnd.getUTCMonth() + 1);
+            monthEnd.setUTCDate(0); // Last day of month
+            monthEnd.setUTCHours(23, 59, 59, 999);
+
+            // Track date range for balance day creation
+            if (!userDateRanges.has(userId)) {
+              userDateRanges.set(userId, { minDate: monthStart, maxDate: monthEnd });
+            } else {
+              const range = userDateRanges.get(userId)!;
+              if (monthStart < range.minDate) range.minDate = monthStart;
+              if (monthEnd > range.maxDate) range.maxDate = monthEnd;
+            }
+
+            console.log(`✅ [No Leave] Queued full month attendance population for user ${userId} (${monthStart.toISOString().split('T')[0]} to ${monthEnd.toISOString().split('T')[0]})`);
+          }
+
+          // Don't create leave record, skip to next row
+          continue;
+        }
 
         // Safety check - rows should already be validated, but double-check ObjectId format
         if (!this.isValidObjectId(row.userId) || !this.isValidObjectId(row.leaveTypeId)) {
@@ -3256,11 +3345,7 @@ export class DataMigrationService extends BaseService {
           if (row.leaveType === 'restricted_holiday') {
             noOfDays = 1;
           }
-          // If noOfDays is missing for full-day, calculate it ? Or leave undefined for service to calculate?
-          // Since we are inserting directly into DB (via Mongoose model),
-          // Model usually doesn't auto-calc on save unless logic hook.
-          // But existing code seems to expect noOfDays.
-          // Let's use simple Date diff if missing.
+          // If noOfDays is missing for full-day, calculate it
           if (!noOfDays && row.startDate && row.endDate) {
             const s = this.parseDate(row.startDate!);
             const e = this.parseDate(row.endDate!);
@@ -3272,14 +3357,14 @@ export class DataMigrationService extends BaseService {
               const endDateUtc = new Date(e);
               endDateUtc.setUTCHours(0, 0, 0, 0);
 
-              // Find Shift Assignment covering start date (assuming single assignment for duration for simplicity)
+              // Find Shift Assignment covering start date
               const assignment = await ShiftAssignment.findOne({
                 userId: new Types.ObjectId(row.userId),
                 startDate: { $lte: loopDate },
                 $or: [{ endDate: { $gte: loopDate } }, { endDate: null }]
               });
 
-              const weekendDays = assignment?.weekendDays || []; // Default no weekends if no assignment found
+              const weekendDays = assignment?.weekendDays || [];
 
               while (loopDate <= endDateUtc) {
                 const dayOfWeek = loopDate.getUTCDay();
@@ -3296,7 +3381,7 @@ export class DataMigrationService extends BaseService {
         const leaveData: any = {
           userId: new Types.ObjectId(row.userId),
           leaveTypeId: new Types.ObjectId(row.leaveTypeId),
-          leaveType: row.leaveType?.trim(), // Optional name
+          leaveType: row.leaveType?.trim(),
           startDate: this.parseDate(row.startDate!),
           endDate: this.parseDate(row.endDate!),
           noOfDays: noOfDays,
@@ -3335,6 +3420,31 @@ export class DataMigrationService extends BaseService {
         });
         created++;
 
+        // Track user date ranges for balance day creation
+        const userId = row.userId.toString();
+        const startDate = this.parseDate(row.startDate!);
+        const endDate = this.parseDate(row.endDate!);
+
+        if (startDate && endDate) {
+          // Auto-Expand to Full Month for attendance population
+          const monthStart = new Date(startDate);
+          monthStart.setUTCDate(1);
+          monthStart.setUTCHours(0, 0, 0, 0);
+
+          const monthEnd = new Date(endDate);
+          monthEnd.setUTCMonth(monthEnd.getUTCMonth() + 1);
+          monthEnd.setUTCDate(0);
+          monthEnd.setUTCHours(23, 59, 59, 999);
+
+          if (!userDateRanges.has(userId)) {
+            userDateRanges.set(userId, { minDate: monthStart, maxDate: monthEnd });
+          } else {
+            const range = userDateRanges.get(userId)!;
+            if (monthStart < range.minDate) range.minDate = monthStart;
+            if (monthEnd > range.maxDate) range.maxDate = monthEnd;
+          }
+        }
+
         // If leave is approved, update attendance records to reflect "On-Leave"
         if (leave.status === 'Approved') {
           await this.processLeaveAttendance(leave);
@@ -3346,7 +3456,176 @@ export class DataMigrationService extends BaseService {
       }
     }
 
+    // After all leaves are processed, create "Present" attendance for balance days
+    console.log('🔄 [Data Migration] Creating balance day attendance for users:', userDateRanges.size);
+    for (const [userId, dateRange] of userDateRanges) {
+      try {
+        await this.createBalanceDayAttendance(userId, dateRange.minDate, dateRange.maxDate);
+      } catch (error: any) {
+        console.error(`⚠️ [Data Migration] Error creating balance days for user ${userId}:`, error.message);
+        errors.push(`Balance days for user ${userId}: ${error.message}`);
+      }
+    }
+
     return { created, errors };
+  }
+
+  /**
+   * Create "Present" attendance for balance days (non-leave working days)
+   * Excludes: weekends, holidays, and days with existing attendance
+   */
+  private async createBalanceDayAttendance(userId: string, startDate: Date, endDate: Date): Promise<void> {
+    // 1. Fetch user to get country, joining date, separation date, and holiday calendar
+    const user = await User.findById(userId).select('country joiningDate separationDate holidayCalendarId holidayCalendarHistory');
+    if (!user) return;
+
+    const joiningDate = user.joiningDate ? new Date(user.joiningDate) : null;
+    if (joiningDate) joiningDate.setUTCHours(0, 0, 0, 0);
+
+    const separationDate = user.separationDate ? new Date(user.separationDate) : null;
+    if (separationDate) separationDate.setUTCHours(23, 59, 59, 999);
+
+    const country = user.country || 'IN';
+    const countryOffsets: Record<string, number> = { 'IN': 5.5, 'AE': 4 };
+    const offset = countryOffsets[country] || 5.5;
+
+    // 2. Batch fetch Holidays (Year-Aware)
+    const years = [];
+    for (let y = startDate.getUTCFullYear(); y <= endDate.getUTCFullYear(); y++) years.push(y);
+
+    let allHolidays: Set<string> = new Set();
+    const history = user.holidayCalendarHistory || [];
+
+    for (const year of years) {
+      // Find calendar ID for this specific year
+      const yearEntry = history.find((h: any) => h.year === year);
+      const calendarId = yearEntry ? yearEntry.calendarId : user.holidayCalendarId;
+
+      if (calendarId) {
+        const calendar = await HolidayCalendar.findById(calendarId).select('holidays').lean();
+        if (calendar?.holidays) {
+          calendar.holidays.forEach((h: any) => {
+            const hDate = new Date(h.date);
+            // Apply offset to get logical day (handle local midnight storage)
+            const logicalDate = new Date(hDate.getTime() + (offset * 60 * 60 * 1000));
+            allHolidays.add(logicalDate.toISOString().split('T')[0]);
+          });
+        }
+      }
+    }
+
+    // 3. PERFORMANCE: Batch fetch all assignments and existing attendance for the range
+    const allAssignments = await ShiftAssignment.find({
+      userId: new Types.ObjectId(userId),
+      startDate: { $lte: endDate },
+      $or: [{ endDate: { $gte: startDate } }, { endDate: null }]
+    }).lean();
+
+    const existingAttendanceDates = new Set(
+      (await AttendanceRecord.find({
+        userId: new Types.ObjectId(userId),
+        shiftDay: { $gte: startDate, $lte: endDate }
+      }).select('shiftDay').lean()).map(a => a.shiftDay.toISOString().split('T')[0])
+    );
+
+    let balanceDaysCreated = 0;
+    const loopDate = new Date(startDate);
+    loopDate.setUTCHours(0, 0, 0, 0);
+
+    while (loopDate <= endDate) {
+      const currentDate = new Date(loopDate);
+      const dateStr = currentDate.toISOString().split('T')[0];
+
+      // A. Protective Checks (Dates)
+      if (joiningDate && currentDate < joiningDate) {
+        loopDate.setUTCDate(loopDate.getUTCDate() + 1);
+        continue;
+      }
+      if (separationDate && currentDate > separationDate) {
+        break; // Exit loop early if they have left the company
+      }
+
+      // B. Skip if attendance already exists
+      if (existingAttendanceDates.has(dateStr)) {
+        loopDate.setUTCDate(loopDate.getUTCDate() + 1);
+        continue;
+      }
+
+      // C. Find correct assignment locally (NO DB CALL)
+      const assignment = allAssignments.find(a => {
+        const aStart = new Date(a.startDate);
+        const aEnd = a.endDate ? new Date(a.endDate) : null;
+        return currentDate >= aStart && (!aEnd || currentDate <= aEnd);
+      });
+
+      if (!assignment) {
+        loopDate.setUTCDate(loopDate.getUTCDate() + 1);
+        continue;
+      }
+
+      // D. Weekend & Holiday Checks
+      const dayOfWeek = currentDate.getUTCDay();
+      const weekendDays = assignment.weekendDays || [];
+      if (weekendDays.includes(dayOfWeek) || allHolidays.has(dateStr)) {
+        loopDate.setUTCDate(loopDate.getUTCDate() + 1);
+        continue;
+      }
+
+      // E. Get Shift Info (Cached if possible, but shifts are few)
+      const shift = await Shift.findById(assignment.shiftId).lean();
+      if (!shift) {
+        loopDate.setUTCDate(loopDate.getUTCDate() + 1);
+        continue;
+      }
+
+      // F. Create Record (Same creation logic as before, but safer)
+      try {
+        const parseTimeWithOffset = (timeStr: string, baseDate: Date, countryOffset: number) => {
+          const [h, m] = timeStr.split(':').map(Number);
+          const d = new Date(baseDate);
+          const totalMinutes = (h * 60) + m - (countryOffset * 60);
+          d.setUTCHours(0, totalMinutes, 0, 0);
+          return d;
+        };
+
+        const shiftStart = parseTimeWithOffset(shift.startTime, currentDate, offset);
+        const shiftEnd = parseTimeWithOffset(shift.endTime, currentDate, offset);
+        if (shift.isOvernightShift) shiftEnd.setUTCDate(shiftEnd.getUTCDate() + 1);
+
+        const shiftDurationMs = shiftEnd.getTime() - shiftStart.getTime();
+        const durationHours = Math.floor(shiftDurationMs / (1000 * 60 * 60));
+        const durationMinutes = Math.floor((shiftDurationMs % (1000 * 60 * 60)) / (1000 * 60));
+        const shiftHoursStr = `${durationHours}:${durationMinutes.toString().padStart(2, '0')}:00`;
+
+        await AttendanceRecord.collection.insertOne({
+          userId: new Types.ObjectId(userId),
+          shiftId: shift._id,
+          shiftCode: shift.code,
+          shiftDay: currentDate,
+          shiftStart,
+          shiftEnd,
+          status: 'complete',
+          attendanceStatus: ['Present'],
+          swipes: [],
+          shiftHours: shiftHoursStr,
+          totalWorkHours: shiftHoursStr,
+          breakHours: '0:00:00',
+          actualWorkHours: shiftHoursStr,
+          shortfallHours: '0:00:00',
+          excessHours: '0:00:00',
+          isLateEntry: false,
+          isEarlyExit: false,
+          createdAt: new Date(),
+          updatedAt: new Date()
+        });
+        balanceDaysCreated++;
+      } catch (e: any) {
+        console.error(`Error on ${dateStr}:`, e.message);
+      }
+
+      loopDate.setUTCDate(loopDate.getUTCDate() + 1);
+    }
+    console.log(`✅ [Migration Complete] Generated ${balanceDaysCreated} attendance records for user ${userId}`);
   }
 
   /**
@@ -3400,33 +3679,37 @@ export class DataMigrationService extends BaseService {
         // Need to fetch user's holiday calendar
         // Optimization: Fetch User & Holiday only if not cached or do it simply here
 
-        // Fetch User to get Calendar ID
-        const leaveUser = await User.findById(leave.userId).select('holidayCalendarId');
-        if (leaveUser && leaveUser.holidayCalendarId) {
+        // Fetch User to get Calendar History (Year-Aware)
+        const leaveUser = await User.findById(leave.userId).select('holidayCalendarId holidayCalendarHistory country');
+        if (leaveUser) {
+          const country = leaveUser.country || 'IN';
+          const countryOffsets: Record<string, number> = { 'IN': 5.5, 'AE': 4 };
+          const offset = countryOffsets[country] || 5.5;
+
           const dateStr = currentDate.toISOString().split('T')[0];
+          const leaveYear = currentDate.getUTCFullYear();
 
-          // Correctly fetch the Calendar Document first
-          const calendar = await HolidayCalendar.findById(leaveUser.holidayCalendarId).select('holidays').lean();
+          // Find specific calendar for this year
+          const historyEntry = (leaveUser.holidayCalendarHistory || []).find((h: any) => h.year === leaveYear);
+          const activeCalendarId = historyEntry ? historyEntry.calendarId : leaveUser.holidayCalendarId;
 
-          if (calendar && calendar.holidays) {
-            // Check if dateStr exists in holidays array
-            const holiday = calendar.holidays.find(h => new Date(h.date).toISOString().split('T')[0] === dateStr);
+          if (activeCalendarId) {
+            const calendar = await HolidayCalendar.findById(activeCalendarId).select('holidays').lean();
 
-            if (holiday) {
-              // Found a holiday.
-              // Rule: "holiday except restricted holiday okay"
-              // If Leave is RH, and Holiday is Restricted -> OK (Create Attendance 'On-Leave').
-              // If Leave is Annual, and Holiday is Mandatory -> SKIP.
-              // If Leave is Annual, and Holiday is Restricted? -> Usually SKIP (Holiday takes precedence).
+            if (calendar && calendar.holidays) {
+              const holiday = calendar.holidays.find(h => {
+                const hDate = new Date(h.date);
+                const logicalDate = new Date(hDate.getTime() + (offset * 60 * 60 * 1000));
+                return logicalDate.toISOString().split('T')[0] === dateStr;
+              });
 
-              // So, if Leave Type is NOT 'restricted_holiday' (and maybe 'compensatory_off'), SKIP.
-
-              const isRestrictedLeave = (leave.leaveType === 'restricted_holiday' || leave.leaveType === 'compensatory_off');
-
-              if (!isRestrictedLeave) {
-                console.log(`ℹ️ [Leave Migration] Skipping Holiday for ${leave.userId} on ${currentDate.toISOString()}`);
-                loopDate.setUTCDate(loopDate.getUTCDate() + 1);
-                continue;
+              if (holiday) {
+                const isRestrictedLeave = (leave.leaveType === 'restricted_holiday' || leave.leaveType === 'compensatory_off');
+                if (!isRestrictedLeave) {
+                  console.log(`ℹ️ [Leave Migration] Skipping Holiday for ${leave.userId} on ${currentDate.toISOString()}`);
+                  loopDate.setUTCDate(loopDate.getUTCDate() + 1);
+                  continue;
+                }
               }
             }
           }
@@ -3660,33 +3943,37 @@ export class DataMigrationService extends BaseService {
 
         // If shift times not provided, fetch from Shift Master
         if ((!shiftStart || isNaN(shiftStart.getTime())) || (!shiftEnd || isNaN(shiftEnd.getTime()))) {
-          // Fetch the actual shift details from database
-          const shift = await Shift.findById(row.shiftId).select('startTime endTime').lean();
+          // Fetch the actual shift details and user country
+          const [shift, user] = await Promise.all([
+            Shift.findById(row.shiftId).select('startTime endTime isOvernightShift').lean(),
+            User.findById(row.userId).select('country').lean()
+          ]);
 
           if (shift && shift.startTime && shift.endTime) {
-            // Use actual shift times from master
+            const country = user?.country || 'IN';
+            const countryOffsets: Record<string, number> = { 'IN': 5.5, 'AE': 4 };
+            const offset = countryOffsets[country] || 5.5;
+
+            const parseTimeWithOffset = (timeStr: string, baseDate: Date, countryOffset: number) => {
+              const [h, m] = timeStr.split(':').map(Number);
+              const d = new Date(baseDate);
+              const totalMinutes = (h * 60) + m - (countryOffset * 60);
+              d.setUTCHours(0, totalMinutes, 0, 0);
+              return d;
+            };
+
             if (!shiftStart || isNaN(shiftStart.getTime())) {
-              shiftStart = new Date(shiftDay);
-              const [startHours, startMinutes] = shift.startTime.split(':').map(Number);
-              // Set hours and then adjust for IST (+5:30) offset to keep it as 9 AM Local
-              shiftStart.setUTCHours(startHours, startMinutes, 0, 0);
-              shiftStart.setMinutes(shiftStart.getMinutes() - 330); // Subtract 330 mins (5.5 hrs) for IST
+              shiftStart = parseTimeWithOffset(shift.startTime, shiftDay, offset);
             }
 
             if (!shiftEnd || isNaN(shiftEnd.getTime())) {
-              shiftEnd = new Date(shiftDay);
-              const [endHours, endMinutes] = shift.endTime.split(':').map(Number);
-              shiftEnd.setUTCHours(endHours, endMinutes, 0, 0);
-              shiftEnd.setMinutes(shiftEnd.getMinutes() - 330); // Subtract 330 mins (5.5 hrs) for IST
-
-              // Check if it's an overnight shift (end time < start time)
-              if (shiftEnd <= shiftStart) {
-                shiftEnd.setDate(shiftEnd.getDate() + 1);
+              shiftEnd = parseTimeWithOffset(shift.endTime, shiftDay, offset);
+              if (shift.isOvernightShift) {
+                shiftEnd.setUTCDate(shiftEnd.getUTCDate() + 1);
               }
             }
           } else {
-            // Throw error instead of falling back to 9-6 to ensure data accuracy
-            throw new Error(`Shift timings (startTime/endTime) not found for Shift ID: ${row.shiftId} in the Shift Master.`);
+            throw new Error(`Shift timings not found for Shift ID: ${row.shiftId}`);
           }
         }
 

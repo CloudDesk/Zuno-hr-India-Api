@@ -19,7 +19,9 @@ export const ALL_LEAVE_TYPES = [
     'otherUnpaid',
     'maternity',  // NEW: UAE-specific
     'work_from_home',  // NEW: Work From Home (merged from WFH)
-    'restricted_holiday'  // NEW: Restricted/Optional Holiday (merged from optional holiday)
+    'restricted_holiday',  // NEW: Restricted/Optional Holiday (merged from optional holiday)
+    'full_month_present',  // SPECIAL: For data migration - creates attendance without leave record
+    'no_leave'  // SPECIAL: Alias for full_month_present
 ] as const;
 
 export type LeaveType = typeof ALL_LEAVE_TYPES[number];
@@ -55,7 +57,9 @@ export const LEAVE_TYPE_LABELS: Record<LeaveType, string> = {
     otherUnpaid: 'Other Unpaid',
     maternity: 'Maternity Leave',
     work_from_home: 'Work From Home',
-    restricted_holiday: 'Restricted Holiday'
+    restricted_holiday: 'Restricted Holiday',
+    full_month_present: 'Full Month Present (No Leave)',
+    no_leave: 'No Leave'
 };
 
 // Maternity leave configuration for UAE
