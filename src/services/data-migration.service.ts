@@ -3738,12 +3738,21 @@ export class DataMigrationService extends BaseService {
           } else {
             // Half Day: Merge status, don't wipe work data
             attendanceRecord.status = 'leave_swipe'; // Mark as leave day
-            // Add 'Half-Day' to attendanceStatus if not already present
+            // Add 'On-Leave' to attendanceStatus if not already present
             if (!attendanceRecord.attendanceStatus.includes(statusTag)) {
               attendanceRecord.attendanceStatus.push(statusTag);
             }
-            // Do NOT clear any existing work hours, swipes, or late/early flags
-            // as the user might have worked the other half of the day.
+
+            // SPECIAL MIGRATION LOGIC:
+            // If the record was previously "Absent" or empty, and this is a Half-Day leave,
+            // we should assume the other half is "Present" (similar to new creation logic).
+            if (attendanceRecord.attendanceStatus.includes('Absent')) {
+              attendanceRecord.attendanceStatus = attendanceRecord.attendanceStatus.filter(s => s !== 'Absent');
+              attendanceRecord.attendanceStatus.push('Present');
+
+              // We should probably update hours here too, but updating existing records is risky.
+              // Let's assume if it exists, it has data. 
+            }
           }
           await attendanceRecord.save();
           console.log(`✅ Updated attendance for user ${leave.userId} on ${currentDate.toISOString()} to ${statusTag}`);
@@ -3783,6 +3792,38 @@ export class DataMigrationService extends BaseService {
                 sEnd.setUTCDate(sEnd.getUTCDate() + 1);
               }
 
+              const shiftDurationMs = sEnd.getTime() - sStart.getTime();
+              let workHoursStr = '0:00:00';
+              let shortfallStr = '0:00:00';
+              const statuses = [statusTag];
+
+              if (isHalfDay) {
+                // For Half-Day, we assume the other half is Present
+                statuses.push('Present');
+
+                // Calculate half duration for work hours
+                const halfDurationMs = shiftDurationMs / 2;
+                const h = Math.floor(halfDurationMs / (1000 * 60 * 60));
+                const m = Math.floor((halfDurationMs % (1000 * 60 * 60)) / (1000 * 60));
+                workHoursStr = `${h}:${m.toString().padStart(2, '0')}:00`;
+
+                // Techincally shortfall is the other half if we consider 'Present' implies work
+                // But for migration, we usually just set work hours. 
+                // Let's set shortfall as well since there are no swipes.
+                shortfallStr = workHoursStr;
+              }
+
+              // Calculate full shift hours string for reference
+              const fh = Math.floor(shiftDurationMs / (1000 * 60 * 60));
+              const fm = Math.floor((shiftDurationMs % (1000 * 60 * 60)) / (1000 * 60));
+              const shiftHoursStr = `${fh}:${fm.toString().padStart(2, '0')}:00`;
+
+              // Resolve Half Type for Attendance Record
+              // Maps 'first-half' (from Leave) -> 'First Half' (for Attendance Model)
+              const recordHalfType = (isHalfDay && leave.halfDayType)
+                ? (leave.halfDayType === 'first-half' ? 'First Half' : 'Second Half')
+                : undefined;
+
               const newRecord = await AttendanceRecord.create({
                 userId: leave.userId,
                 shiftId: shift._id,
@@ -3790,16 +3831,18 @@ export class DataMigrationService extends BaseService {
                 shiftDay: currentDate,
                 shiftStart: sStart,
                 shiftEnd: sEnd,
-                status: 'leave_swipe',
-                attendanceStatus: [statusTag],
+                status: 'leave_swipe', // Still marked as leave_swipe type
+                attendanceStatus: statuses,
                 swipes: [],
-                totalWorkHours: '0:00:00',
+                shiftHours: shiftHoursStr,
+                totalWorkHours: workHoursStr,
                 breakHours: '0:00:00',
-                actualWorkHours: '0:00:00',
-                shortfallHours: '0:00:00',
+                actualWorkHours: workHoursStr,
+                shortfallHours: shortfallStr,
                 excessHours: '0:00:00',
                 isLateEntry: false,
-                isEarlyExit: false
+                isEarlyExit: false,
+                halfType: recordHalfType
               });
               console.log(`✅ Created NEW attendance for user ${leave.userId} on ${currentDate.toISOString()}:`, JSON.stringify(newRecord.toJSON(), null, 2));
             } else {
