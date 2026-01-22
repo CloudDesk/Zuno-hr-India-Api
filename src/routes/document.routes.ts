@@ -2176,20 +2176,20 @@ export const documentRoutes = async (
                     });
                 }
 
-                // Get uploaded file
-                const file = (request as any).file;
-                if (!file) {
+                // Get uploaded file (filesUpload uses .any(), so files are in request.files array)
+                const files = (request as any).files;
+                if (!files || files.length === 0) {
                     return reply.status(400).send({
                         success: false,
                         error: 'No file uploaded'
                     });
                 }
+                const file = files[0]; // Get the first file
 
-                // Parse form data
-                const formData = await parseMultipartForm(request);
-                const documentName = (formData.body as any).documentName as string;
-                const year = parseInt((formData.body as any).year as string);
-                const description = (formData.body as any).description as string | undefined;
+                // Get form fields from request.body (multer already parsed them)
+                const documentName = (request.body as any)?.documentName as string;
+                const year = parseInt((request.body as any)?.year as string);
+                const description = (request.body as any)?.description as string | undefined;
 
                 // Validate required fields
                 if (!documentName || !year) {
