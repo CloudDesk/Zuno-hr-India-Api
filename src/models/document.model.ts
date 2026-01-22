@@ -2,8 +2,8 @@ import { Document as DocumentM, Schema, Types, model } from 'mongoose';
 
 export interface IDocument extends DocumentM {
     employeeId: Types.ObjectId; // Links to the employee
-    type: 'Payslip' | 'TimesheetFile' | 'Form16' | 'Form12B' | 'Form12BB' | 'OfferLetter' | 'HikeLetter' | 'Certificate' | 'AdminUpload' | 'GovernmentId' | 'Academic' | 'Experience'; // Document types
-    category: 'Payroll' | 'Timesheet' | 'Tax' | 'EmployeeLifecycle' | 'Certification'; // Document categories
+    type: 'Payslip' | 'TimesheetFile' | 'Form16' | 'Form12B' | 'Form12BB' | 'OfferLetter' | 'HikeLetter' | 'Certificate' | 'AdminUpload' | 'GovernmentId' | 'Academic' | 'Experience' | 'AttendanceFile'; // Document types
+    category: 'Payroll' | 'Timesheet' | 'Tax' | 'EmployeeLifecycle' | 'Certification' | 'Attendance'; // Document categories
     tags?: string[]; // e.g., ['2025', 'Confidential', 'Exported', 'Degree', 'Aadhaar']
     fileName: string; // e.g., 'ABCDE1234F_2025-06.xlsx'
     filePath: string; // GCP or local path
@@ -168,6 +168,12 @@ export interface IDocument extends DocumentM {
                 comments?: string;
             };
         };
+        attendanceFile?: {
+            documentName: string; // User-friendly name for the attendance file
+            year: number; // Year for the attendance file (e.g., 2024, 2025)
+            uploadedAt: Date; // When admin uploaded
+            description?: string; // Optional description
+        };
     };
     auditLog?: Array<{
         action: 'Upload' | 'View' | 'Download' | 'Send' | 'Generate' | 'Acknowledge' | 'Verify' | 'Update' | 'Re-upload' | 'Re-Generate'; // Added Re-Generate for Form12BB
@@ -182,12 +188,12 @@ const documentSchema = new Schema<IDocument>(
         employeeId: { type: Schema.Types.ObjectId, required: true, ref: 'User' },
         type: {
             type: String,
-            enum: ['Payslip', 'TimesheetFile', 'Form16', 'OfferLetter', 'HikeLetter', 'Certificate', 'Form12B', 'Form12BB', 'AdminUpload', 'GovernmentId', 'Academic', 'Experience'],
+            enum: ['Payslip', 'TimesheetFile', 'Form16', 'OfferLetter', 'HikeLetter', 'Certificate', 'Form12B', 'Form12BB', 'AdminUpload', 'GovernmentId', 'Academic', 'Experience', 'AttendanceFile'],
             required: true,
         },
         category: {
             type: String,
-            enum: ['Payroll', 'Timesheet', 'Tax', 'EmployeeLifecycle', 'Certification'],
+            enum: ['Payroll', 'Timesheet', 'Tax', 'EmployeeLifecycle', 'Certification', 'Attendance'],
             required: true,
         },
         tags: [{ type: String }],
@@ -298,6 +304,9 @@ const documentSchema = new Schema<IDocument>(
                     if (docType === 'Experience') {
                         return value.experience && value.experience.companyName && value.experience.uploadedAt;
                     }
+                    if (docType === 'AttendanceFile') {
+                        return value.attendanceFile && value.attendanceFile.documentName && value.attendanceFile.year && value.attendanceFile.uploadedAt;
+                    }
 
                     return true;
                 },
@@ -331,6 +340,7 @@ documentSchema.index({ type: 1, 'metadata.hikeLetter.effectiveDate': 1 });
 documentSchema.index({ type: 1, 'metadata.certificate.certificateType': 1 }); // Added for certificates
 documentSchema.index({ type: 1, 'metadata.certificate.academicDetails.qualificationType': 1 }); // Added for academic certificates
 documentSchema.index({ type: 1, 'metadata.form12B.financialYear': 1 }, { partialFilterExpression: { type: 'Form12B' } });
+documentSchema.index({ type: 1, 'metadata.attendanceFile.year': 1 }); // Added for attendance files
 
 // Unique constraints for multiple instances
 documentSchema.index(

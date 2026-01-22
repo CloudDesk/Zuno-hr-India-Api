@@ -3014,4 +3014,99 @@ export class DocumentService extends BaseService {
         return updatedDocument;
     }
 
+    // Upload Attendance File (Admin Only)
+    async uploadAttendanceFile(
+        file: any,
+        documentName: string,
+        year: number,
+        description: string | undefined,
+        uploadedBy: Types.ObjectId
+    ): Promise<IDocument> {
+        try {
+            // Validate file type (only Excel and PDF allowed)
+            const allowedExtensions = ['.xlsx', '.xls', '.pdf'];
+            const fileExtension = path.extname(file.originalname).toLowerCase();
+
+            if (!allowedExtensions.includes(fileExtension)) {
+                throw new Error('Invalid file type. Only Excel (.xlsx, .xls) and PDF files are allowed.');
+            }
+
+            // Validate year
+            const currentYear = new Date().getFullYear();
+            if (year < 2020 || year > currentYear + 1) {
+                throw new Error(`Invalid year. Year must be between 2020 and ${currentYear + 1}.`);
+            }
+
+            // Create uploads directory
+            const uploadsDir = path.resolve(__dirname, '..', '..', 'uploads');
+            await fsPromises.mkdir(uploadsDir, { recursive: true });
+
+            // Generate unique filename
+            const cleanDocName = documentName.replace(/[^a-zA-Z0-9]/g, '_');
+            const timestamp = Date.now();
+            const baseFileName = `Doc_Attendance_${year}_${cleanDocName}_${timestamp}${fileExtension}`;
+            const tempFilePath = path.join(uploadsDir, baseFileName);
+
+            // Move uploaded file to temp location
+            await fsPromises.rename(file.path, tempFilePath);
+
+            // Upload to GCP Cloud Storage
+            const gcpResult = await uploadFileToGCP({
+                filePath: tempFilePath,
+                fileName: baseFileName,
+                employeeId: uploadedBy.toString(), // Using admin's ID as reference
+                category: 'Attendance',
+                type: 'AttendanceFile'
+            });
+
+            if (!gcpResult.success) {
+                throw new Error(`Failed to upload attendance file to GCP: ${gcpResult.error}`);
+            }
+
+            const fileUrl = gcpResult.fileUrl!;
+
+            // Clean up temp file
+            try {
+                await fsPromises.unlink(tempFilePath);
+            } catch (err) {
+                console.warn(`Failed to delete temp file ${tempFilePath}:`, err);
+            }
+
+            // Create document record
+            const document = new Document({
+                employeeId: uploadedBy, // Using admin's ID as the uploader
+                type: 'AttendanceFile',
+                category: 'Attendance',
+                fileName: file.originalname,
+                filePath: fileUrl,
+                uploadDate: new Date(),
+                uploadedBy: uploadedBy,
+                accessLevel: 'Role-Based', // Accessible by admins and managers
+                status: 'Uploaded',
+                tags: ['Attendance', `${year}`],
+                metadata: {
+                    attendanceFile: {
+                        documentName: documentName,
+                        year: year,
+                        uploadedAt: new Date(),
+                        description: description || undefined
+                    }
+                },
+                version: 1,
+                auditLog: [{
+                    action: 'Upload',
+                    performedBy: uploadedBy,
+                    timestamp: new Date(),
+                    details: `Attendance file uploaded: ${documentName} for year ${year}`
+                }]
+            });
+
+            await document.save();
+            return document;
+
+        } catch (error: any) {
+            throw new Error(`Failed to upload attendance file: ${error.message}`);
+        }
+    }
+
 }

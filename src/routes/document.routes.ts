@@ -6,6 +6,7 @@ import { User, IUser } from "../models/user.model";
 import path from "path";
 import { parseMultipartForm } from "../utilis/parseMultiPartForm";
 import { Document } from "../models/document.model";
+import { Types } from "mongoose";
 
 export interface IForm12BSubmission {
     employeeId: string;
@@ -35,8 +36,8 @@ export interface IForm12BBGenerate {
 export interface IDocumentQuery {
     access?: 'own' | 'team' | 'global';
     employeeId?: string;
-    type?: 'Payslip' | 'TimesheetFile' | 'Form16' | 'Form12B' | 'Form12BB' | 'OfferLetter' | 'HikeLetter' | 'Certificate' | 'AdminUpload'
-    category?: 'Payroll' | 'Timesheet' | 'Tax' | 'EmployeeLifecycle' | 'Certification';
+    type?: 'Payslip' | 'TimesheetFile' | 'Form16' | 'Form12B' | 'Form12BB' | 'OfferLetter' | 'HikeLetter' | 'Certificate' | 'AdminUpload' | 'AttendanceFile'
+    category?: 'Payroll' | 'Timesheet' | 'Tax' | 'EmployeeLifecycle' | 'Certification' | 'Attendance';
     year?: number;
     month?: number;
     financialYear?: string;
@@ -728,8 +729,8 @@ export const documentRoutes = async (
                     properties: {
                         access: { type: 'string', enum: ['own', 'team', 'global'], default: 'own' },
                         employeeId: { type: 'string' },
-                        type: { type: 'string', enum: ['Payslip', 'TimesheetFile', 'Form16', 'Form12B', 'Form12BB', 'OfferLetter', 'HikeLetter', 'Certificate', 'AdminUpload'] },
-                        category: { type: 'string', enum: ['Payroll', 'Timesheet', 'Tax', 'EmployeeLifecycle', 'Certification'] },
+                        type: { type: 'string', enum: ['Payslip', 'TimesheetFile', 'Form16', 'Form12B', 'Form12BB', 'OfferLetter', 'HikeLetter', 'Certificate', 'AdminUpload', 'AttendanceFile'] },
+                        category: { type: 'string', enum: ['Payroll', 'Timesheet', 'Tax', 'EmployeeLifecycle', 'Certification', 'Attendance'] },
                         year: { type: 'integer' },
                         month: { type: 'integer' },
                         financialYear: { type: 'string' },
@@ -764,11 +765,11 @@ export const documentRoutes = async (
                                         },
                                         type: {
                                             type: 'string',
-                                            enum: ['Payslip', 'TimesheetFile', 'Form16', 'OfferLetter', 'HikeLetter', 'Certificate', 'Form12B', 'Form12BB', 'AdminUpload']
+                                            enum: ['Payslip', 'TimesheetFile', 'Form16', 'OfferLetter', 'HikeLetter', 'Certificate', 'Form12B', 'Form12BB', 'AdminUpload', 'AttendanceFile']
                                         },
                                         category: {
                                             type: 'string',
-                                            enum: ['Payroll', 'Timesheet', 'Tax', 'EmployeeLifecycle', 'Certification']
+                                            enum: ['Payroll', 'Timesheet', 'Tax', 'EmployeeLifecycle', 'Certification', 'Attendance']
                                         },
                                         tags: {
                                             type: 'array',
@@ -1067,8 +1068,8 @@ export const documentRoutes = async (
                                         },
                                         required: ['_id', 'name', 'email']
                                     },
-                                    type: { type: 'string', enum: ['Payslip', 'TimesheetFile', 'Form16', 'OfferLetter', 'HikeLetter', 'Certificate', 'Form12B', 'Form12BB', 'AdminUpload'] },
-                                    category: { type: 'string', enum: ['Payroll', 'Timesheet', 'Tax', 'EmployeeLifecycle', 'Certification'] },
+                                    type: { type: 'string', enum: ['Payslip', 'TimesheetFile', 'Form16', 'OfferLetter', 'HikeLetter', 'Certificate', 'Form12B', 'Form12BB', 'AdminUpload', 'AttendanceFile'] },
+                                    category: { type: 'string', enum: ['Payroll', 'Timesheet', 'Tax', 'EmployeeLifecycle', 'Certification', 'Attendance'] },
                                     tags: { type: 'array', items: { type: 'string' } },
                                     fileName: { type: 'string' },
                                     filePath: { type: 'string' },
@@ -2125,6 +2126,113 @@ export const documentRoutes = async (
                 return reply.status(500).send({
                     success: false,
                     error: `Internal server error: ${errorMessage}`
+                });
+            }
+        }
+    );
+
+    // Admin: Upload Attendance File
+    fastify.post(
+        '/attendance/upload',
+        {
+            preHandler: [authenticate, filesUpload],
+            schema: {
+                consumes: ['multipart/form-data'],
+                response: {
+                    200: {
+                        type: 'object',
+                        properties: {
+                            success: { type: 'boolean' },
+                            data: {
+                                type: 'object',
+                                properties: {
+                                    documentId: { type: 'string' },
+                                    fileName: { type: 'string' },
+                                    documentName: { type: 'string' },
+                                    year: { type: 'number' },
+                                    fileUrl: { type: 'string' }
+                                }
+                            },
+                            message: { type: 'string' }
+                        }
+                    },
+                    400: {
+                        type: 'object',
+                        properties: {
+                            success: { type: 'boolean', const: false },
+                            error: { type: 'string' }
+                        }
+                    }
+                }
+            }
+        },
+        async (request, reply) => {
+            try {
+                // Check if user is admin
+                if (request.user.role !== 'admin') {
+                    return reply.status(403).send({
+                        success: false,
+                        error: 'Only admins can upload attendance files'
+                    });
+                }
+
+                // Get uploaded file
+                const file = (request as any).file;
+                if (!file) {
+                    return reply.status(400).send({
+                        success: false,
+                        error: 'No file uploaded'
+                    });
+                }
+
+                // Parse form data
+                const formData = await parseMultipartForm(request);
+                const documentName = (formData.body as any).documentName as string;
+                const year = parseInt((formData.body as any).year as string);
+                const description = (formData.body as any).description as string | undefined;
+
+                // Validate required fields
+                if (!documentName || !year) {
+                    return reply.status(400).send({
+                        success: false,
+                        error: 'Document name and year are required'
+                    });
+                }
+
+                // Validate year format
+                if (isNaN(year)) {
+                    return reply.status(400).send({
+                        success: false,
+                        error: 'Year must be a valid number'
+                    });
+                }
+
+                // Upload the file
+                const document = await request.container!.documentService.uploadAttendanceFile(
+                    file,
+                    documentName,
+                    year,
+                    description,
+                    new Types.ObjectId(request.user._id)
+                );
+
+                return reply.status(200).send({
+                    success: true,
+                    data: {
+                        documentId: document._id.toString(),
+                        fileName: document.fileName,
+                        documentName: document.metadata.attendanceFile?.documentName,
+                        year: document.metadata.attendanceFile?.year,
+                        fileUrl: document.filePath
+                    },
+                    message: 'Attendance file uploaded successfully'
+                });
+
+            } catch (error: any) {
+                console.error('Error uploading attendance file:', error);
+                return reply.status(400).send({
+                    success: false,
+                    error: error.message || 'Failed to upload attendance file'
                 });
             }
         }
