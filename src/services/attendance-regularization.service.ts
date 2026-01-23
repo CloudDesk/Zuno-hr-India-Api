@@ -1332,9 +1332,15 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
         const timezoneOffset = this.getTimezoneOffset(userCountry);
         console.log(`Converting shift times for country: ${userCountry}, Timezone offset: UTC+${timezoneOffset.hours}:${timezoneOffset.minutes.toString().padStart(2, '0')}`);
 
-        const convertLocalToUTC = (localHours: number, localMinutes: number): { hours: number; minutes: number } => {
+        // ✅ FIX: Create a copy of shiftDay to avoid mutating the original parameter
+        // This prevents the attendance record from being created with the wrong date
+        const baseDate = new Date(shiftDay);
+
+        // ✅ FIX: Track date offsets separately instead of mutating the original shiftDay
+        const convertLocalToUTC = (localHours: number, localMinutes: number): { hours: number; minutes: number; dateOffset: number } => {
             let utcHours = localHours - timezoneOffset.hours;
             let utcMinutes = localMinutes - timezoneOffset.minutes;
+            let dateOffset = 0; // Track date adjustment needed
 
             if (utcMinutes < 0) {
                 utcMinutes += 60;
@@ -1343,10 +1349,10 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
 
             if (utcHours < 0) {
                 utcHours += 24;
-                shiftDay.setUTCDate(shiftDay.getUTCDate() - 1);
+                dateOffset = -1; // Need to go back one day for this time
             }
 
-            return { hours: utcHours, minutes: utcMinutes };
+            return { hours: utcHours, minutes: utcMinutes, dateOffset };
         };
 
         const startLocal = parseTime(shift.startTime);
@@ -1359,18 +1365,25 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
         const windowStartUTC = convertLocalToUTC(windowStartLocal.hours, windowStartLocal.minutes);
         const windowEndUTC = convertLocalToUTC(windowEndLocal.hours, windowEndLocal.minutes);
 
-        const shiftStart = new Date(shiftDay);
+        // ✅ FIX: Create dates from baseDate (copy) and apply date offsets
+        // This ensures the original shiftDay parameter is never mutated
+        const shiftStart = new Date(baseDate);
+        shiftStart.setUTCDate(shiftStart.getUTCDate() + startUTC.dateOffset);
         shiftStart.setUTCHours(startUTC.hours, startUTC.minutes, 0, 0);
 
-        const shiftEnd = new Date(shiftDay);
+        const shiftEnd = new Date(baseDate);
+        shiftEnd.setUTCDate(shiftEnd.getUTCDate() + endUTC.dateOffset);
         shiftEnd.setUTCHours(endUTC.hours, endUTC.minutes, 0, 0);
 
-        const windowStart = new Date(shiftDay);
+        const windowStart = new Date(baseDate);
+        windowStart.setUTCDate(windowStart.getUTCDate() + windowStartUTC.dateOffset);
         windowStart.setUTCHours(windowStartUTC.hours, windowStartUTC.minutes, 0, 0);
 
-        const windowEnd = new Date(shiftDay);
+        const windowEnd = new Date(baseDate);
+        windowEnd.setUTCDate(windowEnd.getUTCDate() + windowEndUTC.dateOffset);
         windowEnd.setUTCHours(windowEndUTC.hours, windowEndUTC.minutes, 0, 0);
 
+        // Handle overnight shifts (end time is next day)
         if (endUTC.hours < startUTC.hours ||
             (endUTC.hours === startUTC.hours && endUTC.minutes < startUTC.minutes)) {
             shiftEnd.setUTCDate(shiftEnd.getUTCDate() + 1);
