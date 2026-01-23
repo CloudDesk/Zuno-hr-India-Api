@@ -494,6 +494,10 @@ export class DocumentService extends BaseService {
             location
         } = req.query;
 
+        // Parse year and month to numbers if provided
+        const yearNum = year !== undefined ? (typeof year === 'string' ? parseInt(year, 10) : Number(year)) : undefined;
+        const monthNum = month !== undefined ? (typeof month === 'string' ? parseInt(month, 10) : Number(month)) : undefined;
+
 
         // Input validation
         if (!user || !user._id) {
@@ -698,20 +702,20 @@ export class DocumentService extends BaseService {
                 }
             }
             // Apply date filters based on document type
-            if (category === 'Payroll' && (year !== undefined || month !== undefined)) {
-                if (year !== undefined) {
-                    query['metadata.payslip.year'] = year;
+            if (category === 'Payroll' && (yearNum !== undefined || monthNum !== undefined)) {
+                if (yearNum !== undefined && !isNaN(yearNum)) {
+                    query['metadata.payslip.year'] = yearNum;
                 }
-                if (month !== undefined) {
-                    query['metadata.payslip.month'] = month;
+                if (monthNum !== undefined && !isNaN(monthNum)) {
+                    query['metadata.payslip.month'] = monthNum;
                 }
             }
-            else if (category === 'Timesheet' && (year !== undefined || month !== undefined)) {
-                if (year !== undefined) {
-                    query['metadata.timesheet.year'] = year;
+            else if (category === 'Timesheet' && (yearNum !== undefined || monthNum !== undefined)) {
+                if (yearNum !== undefined && !isNaN(yearNum)) {
+                    query['metadata.timesheet.year'] = yearNum;
                 }
-                if (month !== undefined) {
-                    query['metadata.timesheet.month'] = month;
+                if (monthNum !== undefined && !isNaN(monthNum)) {
+                    query['metadata.timesheet.month'] = monthNum;
                 }
             }
             else if (category === 'Tax' && type === 'Form16' && financialYear) {
@@ -723,8 +727,9 @@ export class DocumentService extends BaseService {
             else if (category === 'Tax' && type === 'Form12BB' && financialYear) {
                 query['metadata.form12BB.financialYear'] = financialYear;
             }
-
-
+            else if (category === 'Attendance' && type === 'AttendanceFile' && yearNum !== undefined && !isNaN(yearNum)) {
+                query['metadata.attendanceFile.year'] = yearNum;
+            }
 
             console.log({ query, access, user: user._id }, 'Final query for documents');
             console.log(JSON.stringify(query), "query in getDocuments")
@@ -2734,6 +2739,381 @@ export class DocumentService extends BaseService {
     }
 
     /**
+     * Admin Upload Payslip - Upload payslip for employee using same structure as generated payslips
+     * This creates a Payslip document (not AdminUpload) with the same metadata structure
+     */
+    async adminUploadPayslip(
+        employeeId: string,
+        month: number,
+        year: number,
+        uploadedFile: any,
+        netSalary?: number
+    ): Promise<IDocument> {
+        // Validate employee exists
+        const employee = await User.findById(employeeId);
+        if (!employee) {
+            throw new Error(`Employee with ID ${employeeId} not found`);
+        }
+
+        // Validate month and year
+        if (month < 1 || month > 12) {
+            throw new Error('Invalid month. Month must be between 1 and 12.');
+        }
+        if (year < 2000 || year > 2100) {
+            throw new Error('Invalid year. Year must be between 2000 and 2100.');
+        }
+
+        // Check if payslip already exists for this month/year
+        const existingDocument = await Document.findOne({
+            employeeId: new Types.ObjectId(employeeId),
+            type: 'Payslip',
+            'metadata.payslip.month': month,
+            'metadata.payslip.year': year,
+        });
+
+        // Generate filename
+        const monthStr = month <= 9 ? `0${month}` : `${month}`;
+        const cleanName = employee.name.replace(/[^a-zA-Z0-9]/g, '_');
+        const originalExtension = path.extname(uploadedFile.filename);
+        const filename = `Doc_Payslip_${employee._id.toString().slice(-5)}_${cleanName}_${year}_${monthStr}${originalExtension}`;
+
+        // Save file to temp location first
+        const uploadsDir = path.resolve(__dirname, '..', '..', 'uploads');
+        await fsPromises.mkdir(uploadsDir, { recursive: true });
+        const tempFilePath = path.join(uploadsDir, filename);
+
+        // Write file buffer to disk
+        let buffer: Buffer;
+        try {
+            buffer = await uploadedFile.toBuffer();
+        } catch (err) {
+            throw new Error(`Failed to read uploaded file: ${err instanceof Error ? err.message : 'Unknown error'}`);
+        }
+
+        try {
+            await fsPromises.writeFile(tempFilePath, buffer);
+        } catch (err) {
+            throw new Error(`Failed to save file temporarily: ${err instanceof Error ? err.message : 'Unknown error'}`);
+        }
+
+        // Upload file to GCP Cloud Storage
+        const gcpResult = await uploadFileToGCP({
+            filePath: tempFilePath,
+            fileName: filename,
+            employeeId: employeeId,
+            category: 'Payroll',
+            type: 'Payslip'
+        });
+
+        if (!gcpResult.success) {
+            // Clean up temp file before throwing error
+            try {
+                await fsPromises.unlink(tempFilePath);
+            } catch (cleanupErr) {
+                console.error('Error cleaning up temp file after GCP failure:', cleanupErr);
+            }
+            throw new Error(`Failed to upload file to GCP: ${gcpResult.error}`);
+        }
+
+        if (!gcpResult.fileUrl) {
+            // Clean up temp file before throwing error
+            try {
+                await fsPromises.unlink(tempFilePath);
+            } catch (cleanupErr) {
+                console.error('Error cleaning up temp file after GCP failure:', cleanupErr);
+            }
+            throw new Error('GCP upload succeeded but no file URL returned');
+        }
+
+        const fileUrl = gcpResult.fileUrl;
+
+        // Clean up temp file
+        try {
+            await fsPromises.unlink(tempFilePath);
+        } catch (err) {
+            console.error('Error deleting temp file:', err);
+        }
+
+        // Prepare document data with same structure as generated payslips
+        const documentData = {
+            employeeId: new Types.ObjectId(employeeId),
+            type: 'Payslip' as const,
+            category: 'Payroll' as const,
+            fileName: filename,
+            filePath: fileUrl,
+            tags: ['Payslip', `${year}`, `month-${month}`],
+            uploadDate: new Date(),
+            uploadedBy: new Types.ObjectId(this.context.user?._id || employeeId),
+            version: existingDocument ? existingDocument.version + 1 : 1,
+            accessLevel: 'Private' as const,
+            status: 'Generated' as const,
+            metadata: {
+                payslip: {
+                    payrollId: null, // No payrollId for manually uploaded payslips
+                    monthYear: `${year}-${monthStr}`,
+                    month,
+                    year,
+                    netSalary: netSalary || 0,
+                    paySummary: {
+                        gross: 0,
+                        net: netSalary || 0,
+                        deductions: 0,
+                        bonus: 0,
+                        reimbursement: 0,
+                    },
+                    presentDays: 0,
+                    totalDays: 0,
+                    payableDays: 0,
+                    isExport: false,
+                },
+            },
+            auditLog: [
+                {
+                    action: 'Upload' as const,
+                    performedBy: new Types.ObjectId(this.context.user?._id || employeeId),
+                    timestamp: new Date(),
+                    details: `Admin uploaded payslip for ${employee.name} for ${month}-${year}`,
+                },
+            ],
+        };
+
+        if (existingDocument) {
+            // Delete old file from GCP (non-blocking - don't fail if this fails)
+            if (existingDocument.filePath) {
+                try {
+                    await deleteFileFromGCP(existingDocument.filePath);
+                } catch (err) {
+                    console.warn(`Failed to delete old file from GCP: ${existingDocument.filePath}`, err);
+                    // Continue with update even if old file deletion fails
+                }
+            }
+
+            // Preserve existing audit log and append new entry
+            const existingAuditLog = existingDocument.auditLog || [];
+            documentData.auditLog = [
+                ...(existingAuditLog as any[]),
+                ...documentData.auditLog
+            ];
+
+            Object.assign(existingDocument, documentData);
+
+            try {
+                await existingDocument.save();
+                return existingDocument;
+            } catch (err) {
+                // If save fails, try to clean up the new GCP file
+                try {
+                    await deleteFileFromGCP(fileUrl);
+                } catch (cleanupErr) {
+                    console.error('Error cleaning up GCP file after save failure:', cleanupErr);
+                }
+                throw new Error(`Failed to update existing payslip: ${err instanceof Error ? err.message : 'Unknown error'}`);
+            }
+        } else {
+            const newDocument = new Document(documentData);
+            try {
+                await newDocument.save();
+                return newDocument;
+            } catch (err) {
+                // If save fails, try to clean up the GCP file
+                try {
+                    await deleteFileFromGCP(fileUrl);
+                } catch (cleanupErr) {
+                    console.error('Error cleaning up GCP file after save failure:', cleanupErr);
+                }
+                throw new Error(`Failed to save payslip document: ${err instanceof Error ? err.message : 'Unknown error'}`);
+            }
+        }
+    }
+
+    /**
+     * Validate payslip file before upload
+     */
+    private async validatePayslipFile(file: any, month: number): Promise<void> {
+        // Validate file exists
+        if (!file) {
+            throw new Error(`No file provided for month ${month}`);
+        }
+
+        // Validate file type
+        const allowedExtensions = ['.pdf', '.docx', '.doc'];
+        const fileExt = path.extname(file.filename).toLowerCase();
+        if (!allowedExtensions.includes(fileExt)) {
+            throw new Error(`Invalid file type for month ${month}. Allowed: ${allowedExtensions.join(', ')}`);
+        }
+
+        // Validate file size (max 10MB)
+        const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+        try {
+            const buffer = await file.toBuffer();
+            if (buffer.length > MAX_FILE_SIZE) {
+                throw new Error(`File for month ${month} exceeds maximum size of 10MB`);
+            }
+            if (buffer.length === 0) {
+                throw new Error(`File for month ${month} is empty`);
+            }
+        } catch (err) {
+            if (err instanceof Error && (err.message.includes('exceeds') || err.message.includes('empty'))) {
+                throw err;
+            }
+            throw new Error(`Failed to read file for month ${month}: ${err instanceof Error ? err.message : 'Unknown error'}`);
+        }
+    }
+
+    /**
+     * Admin Upload Payslips For Year - Upload multiple payslips for a full year
+     * Validates months based on employee's joining date
+     * Handles partial success (some months can succeed even if others fail)
+     */
+    async adminUploadPayslipsForYear(
+        employeeId: string,
+        year: number,
+        filesMap: Map<number, { file: any; netSalary?: number }>
+    ): Promise<{
+        success: number;
+        failed: number;
+        payslips: Array<{
+            month: number;
+            documentId: string;
+            fileName: string;
+            filePath: string;
+            status: string;
+        }>;
+        errors: Array<{
+            month: number;
+            error: string;
+        }>;
+    }> {
+        // Validate employee exists and is active
+        const employee = await User.findById(employeeId);
+        if (!employee) {
+            throw new Error(`Employee with ID ${employeeId} not found`);
+        }
+
+        if (!employee.active) {
+            throw new Error(`Employee ${employee.name} is not active`);
+        }
+
+        // Validate joining date exists
+        if (!employee.joiningDate) {
+            throw new Error(`Employee ${employee.name} does not have a joining date`);
+        }
+
+        // Validate year
+        if (year < 2000 || year > 2100) {
+            throw new Error('Invalid year. Year must be between 2000 and 2100.');
+        }
+
+        // Calculate valid months based on joining date
+        const joiningDate = new Date(employee.joiningDate);
+        const joiningYear = joiningDate.getFullYear();
+        const joiningMonth = joiningDate.getMonth() + 1; // JavaScript months are 0-based
+
+        let validMonths: number[] = [];
+        if (year === joiningYear) {
+            // Same year: can only upload from joining month onwards
+            validMonths = Array.from({ length: 12 - joiningMonth + 1 }, (_, i) => joiningMonth + i);
+        } else if (year > joiningYear) {
+            // Future year: can upload all 12 months
+            validMonths = Array.from({ length: 12 }, (_, i) => i + 1);
+        } else {
+            // Past year: invalid (employee not joined yet)
+            throw new Error(`Cannot upload payslips for year ${year}. Employee joined on ${joiningDate.toISOString().split('T')[0]} (year ${joiningYear})`);
+        }
+
+        // Validate filesMap has at least 1 entry, max 12
+        if (filesMap.size === 0) {
+            throw new Error('No files provided. Expected at least 1 file.');
+        }
+
+        if (filesMap.size > 12) {
+            throw new Error(`Too many files. Maximum 12 files allowed (one per month). Found: ${filesMap.size}`);
+        }
+
+        // Validate all uploaded months are valid
+        const uploadedMonths = Array.from(filesMap.keys());
+        const invalidMonths = uploadedMonths.filter(month => !validMonths.includes(month));
+
+        if (invalidMonths.length > 0) {
+            const invalidMonthNames = invalidMonths.map(m => monthNames[m - 1]).join(', ');
+            const validMonthNames = validMonths.map(m => monthNames[m - 1]).join(', ');
+            throw new Error(
+                `Cannot upload payslips for months: ${invalidMonthNames}. ` +
+                `Employee joined on ${joiningDate.toISOString().split('T')[0]} (${monthNames[joiningMonth - 1]} ${joiningYear}). ` +
+                `Valid months for ${year}: ${validMonthNames}`
+            );
+        }
+
+        // Validate no duplicate months
+        const monthSet = new Set(uploadedMonths);
+        if (monthSet.size !== uploadedMonths.length) {
+            throw new Error('Duplicate months found. Each month can only be uploaded once.');
+        }
+
+        // Process each month sequentially
+        const results = {
+            success: 0,
+            failed: 0,
+            payslips: [] as Array<{
+                month: number;
+                documentId: string;
+                fileName: string;
+                filePath: string;
+                status: string;
+            }>,
+            errors: [] as Array<{
+                month: number;
+                error: string;
+            }>
+        };
+
+        // Sort months to process in order
+        const sortedMonths = Array.from(filesMap.keys()).sort((a, b) => a - b);
+
+        for (const month of sortedMonths) {
+            const { file, netSalary } = filesMap.get(month)!;
+
+            try {
+                // Validate file for this month
+                await this.validatePayslipFile(file, month);
+
+                // Upload using existing method
+                const document = await this.adminUploadPayslip(
+                    employeeId,
+                    month,
+                    year,
+                    file,
+                    netSalary
+                );
+
+                results.success++;
+                results.payslips.push({
+                    month,
+                    documentId: document._id.toString(),
+                    fileName: document.fileName,
+                    filePath: document.filePath,
+                    status: document.status
+                });
+
+                console.log(`[INFO] Month ${month} (${monthNames[month - 1]}) uploaded successfully: documentId=${document._id}`);
+            } catch (error) {
+                results.failed++;
+                const errorMessage = error instanceof Error ? error.message : String(error);
+                results.errors.push({
+                    month,
+                    error: errorMessage
+                });
+                console.warn(`[WARN] Month ${month} (${monthNames[month - 1]}) upload failed: ${errorMessage}`);
+                // Continue to next month
+            }
+        }
+
+        console.log(`[INFO] Bulk payslip upload completed: employeeId=${employeeId}, year=${year}, success=${results.success}, failed=${results.failed}`);
+
+        return results;
+    }
+
+    /**
      * Get admin uploaded documents with filters
      */
     async getAdminUploadedDocuments(filters: {
@@ -3012,6 +3392,101 @@ export class DocumentService extends BaseService {
         }
 
         return updatedDocument;
+    }
+
+    // Upload Attendance File (Admin Only)
+    async uploadAttendanceFile(
+        file: any,
+        documentName: string,
+        year: number,
+        description: string | undefined,
+        uploadedBy: Types.ObjectId
+    ): Promise<IDocument> {
+        try {
+            // Validate file type (only Excel and PDF allowed)
+            const allowedExtensions = ['.xlsx', '.xls', '.pdf'];
+            const fileExtension = path.extname(file.originalname).toLowerCase();
+
+            if (!allowedExtensions.includes(fileExtension)) {
+                throw new Error('Invalid file type. Only Excel (.xlsx, .xls) and PDF files are allowed.');
+            }
+
+            // Validate year
+            const currentYear = new Date().getFullYear();
+            if (year < 2020 || year > currentYear + 1) {
+                throw new Error(`Invalid year. Year must be between 2020 and ${currentYear + 1}.`);
+            }
+
+            // Create uploads directory
+            const uploadsDir = path.resolve(__dirname, '..', '..', 'uploads');
+            await fsPromises.mkdir(uploadsDir, { recursive: true });
+
+            // Generate unique filename
+            const cleanDocName = documentName.replace(/[^a-zA-Z0-9]/g, '_');
+            const timestamp = Date.now();
+            const baseFileName = `Doc_Attendance_${year}_${cleanDocName}_${timestamp}${fileExtension}`;
+            const tempFilePath = path.join(uploadsDir, baseFileName);
+
+            // Move uploaded file to temp location
+            await fsPromises.rename(file.path, tempFilePath);
+
+            // Upload to GCP Cloud Storage
+            const gcpResult = await uploadFileToGCP({
+                filePath: tempFilePath,
+                fileName: baseFileName,
+                employeeId: uploadedBy.toString(), // Using admin's ID as reference
+                category: 'Attendance',
+                type: 'AttendanceFile'
+            });
+
+            if (!gcpResult.success) {
+                throw new Error(`Failed to upload attendance file to GCP: ${gcpResult.error}`);
+            }
+
+            const fileUrl = gcpResult.fileUrl!;
+
+            // Clean up temp file
+            try {
+                await fsPromises.unlink(tempFilePath);
+            } catch (err) {
+                console.warn(`Failed to delete temp file ${tempFilePath}:`, err);
+            }
+
+            // Create document record
+            const document = new Document({
+                employeeId: uploadedBy, // Using admin's ID as the uploader
+                type: 'AttendanceFile',
+                category: 'Attendance',
+                fileName: file.originalname,
+                filePath: fileUrl,
+                uploadDate: new Date(),
+                uploadedBy: uploadedBy,
+                accessLevel: 'Role-Based', // Accessible by admins and managers
+                status: 'Uploaded',
+                tags: ['Attendance', `${year}`],
+                metadata: {
+                    attendanceFile: {
+                        documentName: documentName,
+                        year: year,
+                        uploadedAt: new Date(),
+                        description: description || undefined
+                    }
+                },
+                version: 1,
+                auditLog: [{
+                    action: 'Upload',
+                    performedBy: uploadedBy,
+                    timestamp: new Date(),
+                    details: `Attendance file uploaded: ${documentName} for year ${year}`
+                }]
+            });
+
+            await document.save();
+            return document;
+
+        } catch (error: any) {
+            throw new Error(`Failed to upload attendance file: ${error.message}`);
+        }
     }
 
 }

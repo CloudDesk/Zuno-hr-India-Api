@@ -437,10 +437,8 @@ export class PayslipService extends BaseService {
     };
 
     const activeBankData = employee.bankDetails?.find(bank => bank?.isActive);
-    const govtIds = {
-      pan: { number: "PAN1341235" },
-      pf: { number: "PF0000", uan: "UAN0000" },
-    };
+
+
 
     const isUaePayroll = payroll.country?.toUpperCase() === 'AE';
 
@@ -466,7 +464,7 @@ export class PayslipService extends BaseService {
       basicValue + hraValue + otherAllowanceValue + daValue + travelAllowanceValue;
 
     console.log(activeBankData, "activeBankData")
-    console.log(govtIds, "govtIds")
+
 
     const netSalaryValue = isUaePayroll ? sanitizeAmount(payroll.netSalary) : (payroll.netSalary || 0);
     const netPayNumeric = Math.round(netSalaryValue);
@@ -489,14 +487,15 @@ export class PayslipService extends BaseService {
       empDes: employeeDesignation || '-',
       empDept: isUaePayroll ? formatLabel(employee.departmentId) : formatLabel(employee.departmentId),
       empLocation: isUaePayroll ? formatLabel(employee.location) : formatLabel(employee.location),
-      empNo: isUaePayroll ? (sanitizeText(employee.biometricId) || '-') : (employee.biometricId || '-'),
+      empNo: isUaePayroll ? (sanitizeText(employee.employeeCode) || '-') : (employee.employeeCode || '-'),
 
       // Bank & ID Info
+      // Fallback: If no active bank found, use the first one available
       bankName: isUaePayroll ? (sanitizeText(activeBankData?.bankName) || '-') : (activeBankData?.bankName || '-'),
       bankAccNo: isUaePayroll ? (sanitizeText(activeBankData?.accountNumber) || '-') : (activeBankData?.accountNumber || '-'),
-      panNo: govtIds?.pan?.number || '-',
-      pfNo: govtIds?.pf?.number || '-',
-      pfUan: govtIds?.pf?.uan || '-',
+      panNo: employee.governmentIds?.pan?.number || '-',
+      pfNo: employee.pfNumber || employee.governmentIds?.pf?.number || '-',
+      pfUan: employee.uanNumber || employee.governmentIds?.pf?.uan || '-',
 
       // Payslip Info
       payMonth: this.getMonthName(payroll.month),

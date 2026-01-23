@@ -24,6 +24,7 @@ export interface IExportRequest {
 export interface IImportRow {
   rowNumber: number;
   [key: string]: any;
+  shiftDayEnd?: string;
 }
 
 export interface IValidationError {
@@ -340,14 +341,14 @@ export class DataMigrationService extends BaseService {
     // Add detailed notes to header cells
     this.addFieldRequirementNotes(worksheet, {
       1: { required: true, note: 'Valid User ID' },
-      2: { required: false, note: 'MongoDB ID (Preferred)' },
-      3: { required: false, note: 'Exact Leave Name (e.g. Sick Leave)' },
-      4: { required: true, note: 'YYYY-MM-DD' },
-      5: { required: true, note: 'YYYY-MM-DD' },
-      6: { required: false, note: 'Default: Approved' },
-      7: { required: false, note: 'full-day or half-day' },
+      2: { required: false, note: 'MongoDB ID (Preferred). Leave blank for FULL_MONTH_PRESENT' },
+      3: { required: false, note: 'Exact Leave Name (e.g. Sick Leave) OR use "FULL_MONTH_PRESENT" for months with no leaves' },
+      4: { required: true, note: 'YYYY-MM-DD (e.g., 2024-01-01 for first day of month)' },
+      5: { required: true, note: 'YYYY-MM-DD (e.g., 2024-01-31 for last day of month)' },
+      6: { required: false, note: 'Default: Approved. Not used for FULL_MONTH_PRESENT' },
+      7: { required: false, note: 'full-day or half-day. Not used for FULL_MONTH_PRESENT' },
       8: { required: false, note: 'Required if Duration is half-day' },
-      9: { required: false, note: 'Override auto-calculation' }
+      9: { required: false, note: 'Override auto-calculation. Use 0 for FULL_MONTH_PRESENT' }
     });
   }
 
@@ -466,44 +467,28 @@ export class DataMigrationService extends BaseService {
       'Shift ID (Required)',
       'Shift Code (Required)',
       'Shift Day (Required)',
-      'Shift Start (Required)',
-      'Shift End (Required)',
-      'First In (Optional - Auto-calculates hours if provided)',
-      'Last Out (Optional - Auto-calculates hours if provided)',
-      'Total Work Hours (Optional - Auto-calculated if First In/Last Out provided)',
-      'Break Hours (Optional - Auto-calculated if First In/Last Out provided)',
-      'Actual Work Hours (Optional - Auto-calculated if First In/Last Out provided)',
-      'Shift Hours (Optional - Auto-calculated if First In/Last Out provided)',
-      'Shortfall Hours (Optional - Auto-calculated if First In/Last Out provided)',
-      'Excess Hours (Optional - Auto-calculated if First In/Last Out provided)',
-      'Status (Optional - Default: complete)',
-      'Is Within Window (Optional - Default: No)',
-      'Is Late Entry (Optional - Default: No)',
-      'Is Early Exit (Optional - Default: No)'
+      'Shift Day End (Optional - For Range Insert)',
+      'Shift Start (Optional - Auto 09:00)',
+      'Shift End (Optional - Auto 18:00)',
+      'Attendance Type (Required - Present / Half Day / Absent)',
+      'Half Type (Optional - First Half / Second Half)',
+      'Is WFH (Optional - Yes / No)'
     ];
     worksheet.addRow(headers);
     this.styleHeaderRow(worksheet.getRow(1));
 
     // Add detailed notes to header cells
     this.addFieldRequirementNotes(worksheet, {
-      1: { required: true, note: 'Valid User ID' },
-      2: { required: true, note: 'Valid Shift ID' },
+      1: { required: true, note: 'Valid User ID from system' },
+      2: { required: true, note: 'Valid Shift ID from system' },
       3: { required: true, note: 'Shift code (should match Shift ID)' },
-      4: { required: true, note: 'Format: YYYY-MM-DD' },
-      5: { required: true, note: 'Format: ISO DateTime (e.g., 2025-01-15T09:00:00Z)' },
-      6: { required: true, note: 'Format: ISO DateTime, must be > shift start' },
-      7: { required: false, note: 'Format: ISO DateTime. If provided with Last Out, hours will be auto-calculated' },
-      8: { required: false, note: 'Format: ISO DateTime. If provided with First In, hours will be auto-calculated' },
-      9: { required: false, note: 'Format: HH:mm:ss (e.g., 08:30:00). Leave empty to auto-calculate from First In/Last Out' },
-      10: { required: false, note: 'Format: HH:mm:ss. Leave empty to auto-calculate (30 min if work > 6 hours)' },
-      11: { required: false, note: 'Format: HH:mm:ss. Leave empty to auto-calculate (Total - Break)' },
-      12: { required: false, note: 'Format: HH:mm:ss. Leave empty to auto-calculate (Shift End - Shift Start)' },
-      13: { required: false, note: 'Format: HH:mm:ss. Leave empty to auto-calculate if actual work < shift hours' },
-      14: { required: false, note: 'Format: HH:mm:ss. Leave empty to auto-calculate if actual work > shift hours' },
-      15: { required: false, note: 'Attendance status (complete, incomplete, etc.)' },
-      16: { required: false, note: 'Yes/No' },
-      17: { required: false, note: 'Yes/No' },
-      18: { required: false, note: 'Yes/No' }
+      4: { required: true, note: 'Format: YYYY-MM-DD (e.g., 2024-01-15)' },
+      5: { required: false, note: 'Optional End Date to create range (e.g., 2025-01-31). If provided, creates records for all dates from Shift Day to this date.' },
+      6: { required: false, note: 'Format: ISO DateTime. Auto-filled to 09:00 if empty' },
+      7: { required: false, note: 'Format: ISO DateTime. Auto-filled to 18:00 if empty' },
+      8: { required: true, note: 'Values: Present, Full Day, Half Day, Absent. REQUIRED field.' },
+      9: { required: false, note: 'Values: First Half, Second Half. Only when Attendance Type is Half Day.' },
+      10: { required: false, note: 'Values: Yes, No. Mark Yes if employee worked from home.' }
     });
   }
 
@@ -961,40 +946,84 @@ export class DataMigrationService extends BaseService {
     const rows: IImportRow[] = [];
     let rowNumber = 2; // Start from row 2 (row 1 is header)
 
-    worksheet.eachRow((row, index) => {
-      if (index === 1) return; // Skip header row
+    // For attendance records, we need to handle potential date ranges (expansion)
+    if (objectType === 'attendance-record') {
+      worksheet.eachRow((row, index) => {
+        if (index === 1) return; // Skip header
 
-      const rowData: IImportRow = { rowNumber };
+        const rowData: IImportRow = { rowNumber };
+        this.parseAttendanceRecordRow(row, rowData);
 
-      switch (objectType) {
-        case 'user':
-          this.parseUserRow(row, rowData);
-          break;
-        case 'shift':
-          this.parseShiftRow(row, rowData);
-          break;
-        case 'leave':
-          this.parseLeaveRow(row, rowData);
-          break;
-        case 'salary-assignment':
-          this.parseSalaryAssignmentRow(row, rowData);
-          break;
-        case 'salary-structure':
-          this.parseSalaryStructureRow(row, rowData);
-          break;
-        case 'attendance-record':
-          this.parseAttendanceRecordRow(row, rowData);
-          break;
-      }
+        // Check if data exists
+        const hasData = Object.keys(rowData).some(key => key !== 'rowNumber' && rowData[key] !== undefined && rowData[key] !== '');
 
-      // Only add rows that have at least one non-empty field
-      const hasData = Object.keys(rowData).some(key => key !== 'rowNumber' && rowData[key] !== undefined && rowData[key] !== '');
-      if (hasData) {
-        rows.push(rowData);
-      }
+        if (hasData) {
+          // Check for date range expansion
+          const shiftDayStartStr = rowData.shiftDay;
+          const shiftDayEndStr = rowData.shiftDayEnd; // This is added in parseAttendanceRecordRow
 
-      rowNumber++;
-    });
+          const shiftDayStart = this.parseDate(shiftDayStartStr!);
+          const shiftDayEnd = shiftDayEndStr ? this.parseDate(shiftDayEndStr) : null;
+
+          if (shiftDayStart && shiftDayEnd && shiftDayEnd > shiftDayStart) {
+            // RANGE EXPLOSION 💥
+            // Loop from Start to End
+            const currentDate = new Date(shiftDayStart);
+            const endDate = new Date(shiftDayEnd);
+
+            while (currentDate <= endDate) {
+              // Create a CLONE of the row data
+              const clonedRow = { ...rowData };
+              // Update the shift day for this specific instance
+              clonedRow.shiftDay = currentDate.toISOString().split('T')[0];
+              // Remove the end date from the clone to avoid confusion
+              delete clonedRow.shiftDayEnd;
+
+              rows.push(clonedRow);
+              // Move to next day
+              currentDate.setDate(currentDate.getDate() + 1);
+            }
+          } else {
+            // Standard Single Row
+            rows.push(rowData);
+          }
+        }
+        rowNumber++;
+      });
+    } else {
+      // Standard parsing for other types
+      worksheet.eachRow((row, index) => {
+        if (index === 1) return; // Skip header row
+
+        const rowData: IImportRow = { rowNumber };
+
+        switch (objectType) {
+          case 'user':
+            this.parseUserRow(row, rowData);
+            break;
+          case 'shift':
+            this.parseShiftRow(row, rowData);
+            break;
+          case 'leave':
+            this.parseLeaveRow(row, rowData);
+            break;
+          case 'salary-assignment':
+            this.parseSalaryAssignmentRow(row, rowData);
+            break;
+          case 'salary-structure':
+            this.parseSalaryStructureRow(row, rowData);
+            break;
+        }
+
+        // Only add rows that have at least one non-empty field
+        const hasData = Object.keys(rowData).some(key => key !== 'rowNumber' && rowData[key] !== undefined && rowData[key] !== '');
+        if (hasData) {
+          rows.push(rowData);
+        }
+
+        rowNumber++;
+      });
+    }
 
     return rows;
   }
@@ -1108,20 +1137,24 @@ export class DataMigrationService extends BaseService {
     rowData.shiftId = this.getCellValue(row, 2);
     rowData.shiftCode = this.getCellValue(row, 3);
     rowData.shiftDay = this.getCellValue(row, 4);
-    rowData.shiftStart = this.getCellValue(row, 5);
-    rowData.shiftEnd = this.getCellValue(row, 6);
-    rowData.firstIn = this.getCellValue(row, 7);
-    rowData.lastOut = this.getCellValue(row, 8);
-    rowData.totalWorkHours = this.getCellValue(row, 9);
-    rowData.breakHours = this.getCellValue(row, 10);
-    rowData.actualWorkHours = this.getCellValue(row, 11);
-    rowData.shiftHours = this.getCellValue(row, 12);
-    rowData.shortfallHours = this.getCellValue(row, 13);
-    rowData.excessHours = this.getCellValue(row, 14);
-    rowData.status = this.getCellValue(row, 15);
-    rowData.isWithinWindow = this.parseBoolean(this.getCellValue(row, 16), false);
-    rowData.isLateEntry = this.parseBoolean(this.getCellValue(row, 17), false);
-    rowData.isEarlyExit = this.parseBoolean(this.getCellValue(row, 18), false);
+    rowData.shiftDayEnd = this.getCellValue(row, 5); // Column 5 - Range End Date
+    rowData.shiftStart = this.getCellValue(row, 6); // Column 6
+    rowData.shiftEnd = this.getCellValue(row, 7); // Column 7
+    rowData.firstIn = null; // Not in simplified template
+    rowData.lastOut = null; // Not in simplified template
+    rowData.totalWorkHours = null; // Auto-calculated
+    rowData.breakHours = null; // Auto-calculated
+    rowData.actualWorkHours = null; // Auto-calculated
+    rowData.shiftHours = null; // Auto-calculated
+    rowData.shortfallHours = null; // Auto-calculated
+    rowData.excessHours = null; // Auto-calculated
+    rowData.status = null; // Auto-set
+    rowData.isWithinWindow = false; // Default
+    rowData.isLateEntry = false; // Default
+    rowData.isEarlyExit = false; // Default
+    rowData.attendanceType = this.getCellValue(row, 8); // Column 8
+    rowData.halfType = this.getCellValue(row, 9); // Column 9
+    rowData.isWFH = this.parseBoolean(this.getCellValue(row, 10), false); // Column 10
   }
 
   /**
@@ -2098,7 +2131,7 @@ export class DataMigrationService extends BaseService {
     const [existingUsers, existingLeaves] = await Promise.all([
       userIds.length > 0
         ? User.find({ _id: { $in: userIds.map(id => new Types.ObjectId(id)) } })
-          .select('_id joiningDate holidayCalendarId')
+          .select('_id joiningDate holidayCalendarId country')
           .lean()
         : Promise.resolve([]),
       userIds.length > 0
@@ -2118,27 +2151,42 @@ export class DataMigrationService extends BaseService {
     // ... (rest of caching)
 
     // Cache Holidays for relevant Calendars to minimize DB calls
-    // We need to fetch holidays for all calendars involved
-    // Cache Holidays for relevant Calendars to minimize DB calls
-    // We need to fetch holidays for all calendars involved
-    const allCalendarIds = [...new Set(existingUsers.map(u => u.holidayCalendarId).filter(id => !!id).map(id => id!.toString()))];
-    const holidaysMap = new Map<string, Array<{ date: string, type: string }>>();
+    // We fetch calendars for all relevant years and all user assignments
+    const yearsInImport = [...new Set(rows.map(r => {
+      const d = this.parseDate(r.startDate || '');
+      return d ? d.getFullYear() : null;
+    }).filter(y => y !== null))] as number[];
 
-    if (allCalendarIds.length > 0) {
+    const currentCalendarIds = [...new Set(existingUsers.map(u => u.holidayCalendarId).filter(id => !!id).map(id => id!.toString()))];
+    const holidaysMap = new Map<string, Array<{ originalDate: Date, type: string }>>(); // Key: CalendarID
+    const userYearHolidaysMap = new Map<string, Array<{ originalDate: Date, type: string }>>(); // Key: userId_year
+
+    if (currentCalendarIds.length > 0 || yearsInImport.length > 0) {
       const calendars = await HolidayCalendar.find({
-        _id: { $in: allCalendarIds.map(id => new Types.ObjectId(id)) }
-      }).select('_id holidays').lean();
+        $or: [
+          { _id: { $in: currentCalendarIds.map(id => new Types.ObjectId(id)) } },
+          {
+            year: { $in: yearsInImport },
+            assignedTo: { $in: userIds.map(id => new Types.ObjectId(id)) }
+          }
+        ]
+      }).select('_id year assignedTo holidays').lean();
 
       calendars.forEach(cal => {
-        const cid = cal._id.toString();
-        if (!holidaysMap.has(cid)) holidaysMap.set(cid, []);
+        const hList = cal.holidays.map(h => ({
+          originalDate: new Date(h.date),
+          type: h.type
+        }));
 
-        cal.holidays.forEach(h => {
-          holidaysMap.get(cid)?.push({
-            date: new Date(h.date).toISOString().split('T')[0], // YYYY-MM-DD
-            type: h.type
+        // Cache by Calendar ID
+        holidaysMap.set(cal._id.toString(), hList);
+
+        // Cache by userId_year for precise lookup
+        if (cal.assignedTo) {
+          cal.assignedTo.forEach(uid => {
+            userYearHolidaysMap.set(`${uid.toString()}_${cal.year}`, hList);
           });
-        });
+        }
       });
     }
     console.log('DEBUG: Using Leave Type LOV ID:', leaveTypeLovId);
@@ -2178,28 +2226,29 @@ export class DataMigrationService extends BaseService {
       }
 
       // Resolve Leave Type
-      let resolvedTypeName = row.leaveTypeName?.toString().toLowerCase().trim();
+      let inputTypeName = row.leaveTypeName?.toString().trim();
+      let matchedType: string | undefined = undefined;
 
-      // If ID is provided, treat it as potential type name validation
-      if (row.leaveTypeId && !resolvedTypeName) {
-        const potentialType = row.leaveTypeId.toString().toLowerCase().trim();
-        if (ALL_LEAVE_TYPES.includes(potentialType as any)) {
-          resolvedTypeName = potentialType;
-        }
+      if (inputTypeName) {
+        matchedType = ALL_LEAVE_TYPES.find(t => t.toLowerCase() === inputTypeName!.toLowerCase());
+      } else if (row.leaveTypeId) {
+        const potentialType = row.leaveTypeId.toString().trim();
+        matchedType = ALL_LEAVE_TYPES.find(t => t.toLowerCase() === potentialType.toLowerCase());
       }
 
       let isValidType = false;
-      if (resolvedTypeName && ALL_LEAVE_TYPES.includes(resolvedTypeName as any)) {
+      if (matchedType) {
         isValidType = true;
         row.leaveTypeId = leaveTypeLovId; // Set the LOV Group ID as required by Model
-        row.leaveType = resolvedTypeName; // Set the specific type string
+        row.leaveType = matchedType;      // Set the correctly cased type string (e.g., 'compOff')
       }
 
       if (!isValidType) {
-        if (!resolvedTypeName) {
+        const displayValue = inputTypeName || row.leaveTypeId || 'Unknown';
+        if (!displayValue || displayValue === 'Unknown') {
           rowErrors.push({ rowNumber: row.rowNumber, field: 'leaveTypeName', message: 'Leave Type Name is required', severity: 'error' });
         } else {
-          rowErrors.push({ rowNumber: row.rowNumber, field: 'leaveTypeId', message: `Invalid Leave Type: '${resolvedTypeName}'. Allowed: ${ALL_LEAVE_TYPES.join(', ')}`, severity: 'error' });
+          rowErrors.push({ rowNumber: row.rowNumber, field: 'leaveTypeId', message: `Invalid Leave Type: '${displayValue}'. Allowed: ${ALL_LEAVE_TYPES.join(', ')}`, severity: 'error' });
         }
       }
 
@@ -2276,7 +2325,19 @@ export class DataMigrationService extends BaseService {
       // Only if basic date checks passed
       if (row.userId && startDate && endDate && !rowErrors.some(e => e.field === 'startDate' || e.field === 'endDate')) {
         const user = userMap.get(row.userId);
-        const holidays = user?.holidayCalendarId ? holidaysMap.get(user.holidayCalendarId.toString()) : [];
+        const country = user?.country || 'IN';
+        const countryOffsets: Record<string, number> = { 'IN': 5.5, 'AE': 4 };
+        const offset = countryOffsets[country] || 5.5;
+
+        const year = startDate.getFullYear();
+        let holidays = userYearHolidaysMap.get(`${row.userId}_${year}`);
+
+        // Fallback to currently assigned holidayCalendarId if no year-specific assignment found
+        if (!holidays && user?.holidayCalendarId) {
+          holidays = holidaysMap.get(user.holidayCalendarId.toString());
+        }
+
+        if (!holidays) holidays = [];
 
         // Check overlapping Shift Assignment for Weekend info
         const loopDate = new Date(startDate);
@@ -2311,10 +2372,22 @@ export class DataMigrationService extends BaseService {
           */
 
           // 2. Holiday Check
-          const holiday = holidays?.find(h => h.date === dateStr);
-          if (holiday) {
-            // Specific Rule: Restricted Holiday leave cannot be taken on a Mandatory Holiday
-            if (row.leaveType === 'restricted_holiday' && holiday.type === 'mandatory') {
+          const holiday = holidays?.find(h => {
+            const logicalDate = new Date(h.originalDate.getTime() + (offset * 60 * 60 * 1000));
+            return logicalDate.toISOString().split('T')[0] === dateStr;
+          });
+
+          if (row.leaveType === 'restricted_holiday') {
+            if (!holiday) {
+              rowErrors.push({
+                rowNumber: row.rowNumber,
+                field: 'startDate',
+                message: `Cannot apply 'Restricted Holiday' on ${dateStr}. This date is NOT defined as an Optional Holiday in your calendar.`,
+                severity: 'error'
+              });
+              break;
+            }
+            if (holiday.type === 'mandatory') {
               rowErrors.push({
                 rowNumber: row.rowNumber,
                 field: 'startDate',
@@ -2323,27 +2396,35 @@ export class DataMigrationService extends BaseService {
               });
               break;
             }
-
-            // General Rule: Removed to allow range imports.
-            // We allow 'Annual' on a Holiday in the Excel, but we will SKIP creating an attendance record for it.
-            /*
-            const isExemptType = (row.leaveType === 'restricted_holiday' || row.leaveType === 'compensatory_off');
-            if (!isExemptType) {
+            if (holiday.type !== 'optional') {
               rowErrors.push({
-                 rowNumber: row.rowNumber,
-                 field: 'startDate',
-                 message: `Cannot apply '${row.leaveType}' on Holiday (${dateStr} - ${holiday.type}). (Restricted)`,
-                 severity: 'error'
+                rowNumber: row.rowNumber,
+                field: 'startDate',
+                message: `Date ${dateStr} is a '${holiday.type}' holiday, not an Optional/Restricted holiday.`,
+                severity: 'error'
               });
               break;
             }
-            */
           }
+
+          // General Rule: Removed to allow range imports.
+          // We allow 'Annual' on a Holiday in the Excel, but we will SKIP creating an attendance record for it.
+          /*
+          const isExemptType = (row.leaveType === 'restricted_holiday' || row.leaveType === 'compensatory_off');
+          if (!isExemptType) {
+            rowErrors.push({
+               rowNumber: row.rowNumber,
+               field: 'startDate',
+               message: `Cannot apply '${row.leaveType}' on Holiday (${dateStr} - ${holiday.type}). (Restricted)`,
+               severity: 'error'
+            });
+            break;
+          }
+          */
 
           loopDate.setUTCDate(loopDate.getUTCDate() + 1);
         }
       }
-
       // VALIDATION 2: Check Duplicate / Overlapping Leave
       if (row.userId && validUserIds.has(row.userId) && startDate && endDate) {
         const existingUserLeaves = userLeavesMap.get(row.userId);
@@ -2657,7 +2738,7 @@ export class DataMigrationService extends BaseService {
     const [existingUsers, existingShifts] = await Promise.all([
       userIds.length > 0
         ? User.find({ _id: { $in: userIds.map(id => new Types.ObjectId(id)) } })
-          .select('_id')
+          .select('_id joiningDate separationDate')
           .lean()
         : Promise.resolve([]),
       shiftIds.length > 0
@@ -2668,7 +2749,12 @@ export class DataMigrationService extends BaseService {
     ]);
 
     const validUserIds = new Set(existingUsers.map(u => u._id.toString()));
+    const userJoiningDates = new Map(existingUsers.map(u => [u._id.toString(), u.joiningDate ? new Date(u.joiningDate) : null]));
+    const userSeparationDates = new Map(existingUsers.map(u => [u._id.toString(), u.separationDate ? new Date(u.separationDate) : null]));
     const validShiftIds = new Set(existingShifts.map(s => s._id.toString()));
+
+    // Track user+date combinations to prevent duplicates within the import file
+    const seenRecords = new Set<string>();
     const shiftCodes = new Set(existingShifts.map(s => s.code?.toUpperCase()).filter(Boolean));
 
     for (const row of rows) {
@@ -2740,15 +2826,26 @@ export class DataMigrationService extends BaseService {
         });
       }
 
-      // Validate shiftStart and shiftEnd (required DateTime fields)
-      if (!row.shiftStart) {
-        rowErrors.push({
-          rowNumber: row.rowNumber,
-          field: 'shiftStart',
-          message: 'Shift start time is required',
-          severity: 'error'
-        });
-      } else {
+      // Joining Date Validation
+      if (shiftDay && row.userId && userJoiningDates.get(row.userId)) {
+        const joiningDate = userJoiningDates.get(row.userId)!;
+        // Normalize time portion for comparison
+        joiningDate.setHours(0, 0, 0, 0);
+        const recordDay = new Date(shiftDay);
+        recordDay.setHours(0, 0, 0, 0);
+
+        if (recordDay < joiningDate) {
+          rowErrors.push({
+            rowNumber: row.rowNumber,
+            field: 'shiftDay',
+            message: `Attendance date (${recordDay.toLocaleDateString()}) is before user joining date (${joiningDate.toLocaleDateString()})`,
+            severity: 'error'
+          });
+        }
+      }
+
+      // Validate shiftStart and shiftEnd (Optional - Auto-fill based on day if missing)
+      if (row.shiftStart) {
         const shiftStart = new Date(row.shiftStart);
         if (isNaN(shiftStart.getTime())) {
           rowErrors.push({
@@ -2760,14 +2857,7 @@ export class DataMigrationService extends BaseService {
         }
       }
 
-      if (!row.shiftEnd) {
-        rowErrors.push({
-          rowNumber: row.rowNumber,
-          field: 'shiftEnd',
-          message: 'Shift end time is required',
-          severity: 'error'
-        });
-      } else {
+      if (row.shiftEnd) {
         const shiftEnd = new Date(row.shiftEnd);
         if (isNaN(shiftEnd.getTime())) {
           rowErrors.push({
@@ -2786,6 +2876,79 @@ export class DataMigrationService extends BaseService {
               severity: 'error'
             });
           }
+        }
+      }
+
+      // Check for duplicates within the import file
+      if (row.userId && shiftDay) {
+        const recordKey = `${row.userId}_${shiftDay.toISOString().split('T')[0]}`;
+        if (seenRecords.has(recordKey)) {
+          rowErrors.push({
+            rowNumber: row.rowNumber,
+            field: 'shiftDay',
+            message: `Duplicate record: User ${row.userId} already has an attendance entry for ${shiftDay.toLocaleDateString()} in this import file`,
+            severity: 'error'
+          });
+        } else {
+          seenRecords.add(recordKey);
+        }
+      }
+
+      // Post-Separation Date Validation
+      if (shiftDay && row.userId && userSeparationDates.get(row.userId)) {
+        const separationDate = userSeparationDates.get(row.userId)!;
+        // Normalize time portion for comparison
+        const sepDate = new Date(separationDate);
+        sepDate.setHours(23, 59, 59, 999); // End of separation day
+        const recordDay = new Date(shiftDay);
+        recordDay.setHours(0, 0, 0, 0);
+
+        if (recordDay > sepDate) {
+          rowErrors.push({
+            rowNumber: row.rowNumber,
+            field: 'shiftDay',
+            message: `Attendance date (${recordDay.toLocaleDateString()}) is after user separation date (${separationDate.toLocaleDateString()})`,
+            severity: 'error'
+          });
+        }
+      }
+
+      // Validate Attendance Type (Mandatory)
+      if (!row.attendanceType) {
+        rowErrors.push({
+          rowNumber: row.rowNumber,
+          field: 'attendanceType',
+          message: 'Attendance Type is required (Present / Half Day / Absent)',
+          severity: 'error'
+        });
+      } else {
+        const type = row.attendanceType.toString().trim().toLowerCase();
+        const validTypes = ['present', 'full day', 'half day', 'half-day', 'absent'];
+        if (!validTypes.includes(type)) {
+          rowErrors.push({
+            rowNumber: row.rowNumber,
+            field: 'attendanceType',
+            message: `Invalid Attendance Type. Must be one of: Present, Full Day, Half Day, Absent`,
+            severity: 'error'
+          });
+        }
+
+        // Half Type Restrictions
+        const halfTypeProvided = row.halfType && row.halfType.toString().trim() !== '';
+        if ((type === 'present' || type === 'full day') && halfTypeProvided) {
+          rowErrors.push({
+            rowNumber: row.rowNumber,
+            field: 'halfType',
+            message: "Half Type should not be provided when Attendance Type is 'Present' or 'Full Day'",
+            severity: 'error'
+          });
+        } else if ((type === 'half day' || type === 'half-day') && !halfTypeProvided) {
+          rowErrors.push({
+            rowNumber: row.rowNumber,
+            field: 'halfType',
+            message: "Half Type (First Half / Second Half) is required when Attendance Type is 'Half Day'",
+            severity: 'error'
+          });
         }
       }
 
@@ -3111,15 +3274,56 @@ export class DataMigrationService extends BaseService {
 
   /**
    * Insert Leave records
+   * After creating leaves, auto-creates "Present" attendance for balance days
    */
   private async insertLeaves(rows: IImportRow[]): Promise<{ created: number; errors: string[] }> {
     const errors: string[] = [];
     let created = 0;
 
+    // Track users and date ranges for balance day creation
+    const userDateRanges = new Map<string, { minDate: Date; maxDate: Date }>();
+
     for (const row of rows) {
       try {
         // Leave Type logic is handled in validation phase (validateLeaves)
         // row.leaveTypeId and row.leaveType should be correctly populated there.
+
+        // SPECIAL CASE: FULL_MONTH_PRESENT - No actual leave, just create attendance
+        // This is for employees with NO leaves in a month - creates "Present" for entire period
+        if (row.leaveType === 'FULL_MONTH_PRESENT' || row.leaveType === 'NO_LEAVE' || row.leaveType === 'full_month_present') {
+          console.log(`📅 [No Leave] Creating full period attendance for user ${row.userId}`);
+
+          const startDate = this.parseDate(row.startDate!);
+          const endDate = this.parseDate(row.endDate!);
+
+          if (startDate && endDate) {
+            const userId = row.userId.toString();
+
+            // Auto-Expand to Full Month for attendance population
+            const monthStart = new Date(startDate);
+            monthStart.setUTCDate(1);
+            monthStart.setUTCHours(0, 0, 0, 0);
+
+            const monthEnd = new Date(endDate);
+            monthEnd.setUTCMonth(monthEnd.getUTCMonth() + 1);
+            monthEnd.setUTCDate(0); // Last day of month
+            monthEnd.setUTCHours(23, 59, 59, 999);
+
+            // Track date range for balance day creation
+            if (!userDateRanges.has(userId)) {
+              userDateRanges.set(userId, { minDate: monthStart, maxDate: monthEnd });
+            } else {
+              const range = userDateRanges.get(userId)!;
+              if (monthStart < range.minDate) range.minDate = monthStart;
+              if (monthEnd > range.maxDate) range.maxDate = monthEnd;
+            }
+
+            console.log(`✅ [No Leave] Queued full month attendance population for user ${userId} (${monthStart.toISOString().split('T')[0]} to ${monthEnd.toISOString().split('T')[0]})`);
+          }
+
+          // Don't create leave record, skip to next row
+          continue;
+        }
 
         // Safety check - rows should already be validated, but double-check ObjectId format
         if (!this.isValidObjectId(row.userId) || !this.isValidObjectId(row.leaveTypeId)) {
@@ -3141,11 +3345,7 @@ export class DataMigrationService extends BaseService {
           if (row.leaveType === 'restricted_holiday') {
             noOfDays = 1;
           }
-          // If noOfDays is missing for full-day, calculate it ? Or leave undefined for service to calculate?
-          // Since we are inserting directly into DB (via Mongoose model),
-          // Model usually doesn't auto-calc on save unless logic hook.
-          // But existing code seems to expect noOfDays.
-          // Let's use simple Date diff if missing.
+          // If noOfDays is missing for full-day, calculate it
           if (!noOfDays && row.startDate && row.endDate) {
             const s = this.parseDate(row.startDate!);
             const e = this.parseDate(row.endDate!);
@@ -3157,14 +3357,14 @@ export class DataMigrationService extends BaseService {
               const endDateUtc = new Date(e);
               endDateUtc.setUTCHours(0, 0, 0, 0);
 
-              // Find Shift Assignment covering start date (assuming single assignment for duration for simplicity)
+              // Find Shift Assignment covering start date
               const assignment = await ShiftAssignment.findOne({
                 userId: new Types.ObjectId(row.userId),
                 startDate: { $lte: loopDate },
                 $or: [{ endDate: { $gte: loopDate } }, { endDate: null }]
               });
 
-              const weekendDays = assignment?.weekendDays || []; // Default no weekends if no assignment found
+              const weekendDays = assignment?.weekendDays || [];
 
               while (loopDate <= endDateUtc) {
                 const dayOfWeek = loopDate.getUTCDay();
@@ -3181,7 +3381,7 @@ export class DataMigrationService extends BaseService {
         const leaveData: any = {
           userId: new Types.ObjectId(row.userId),
           leaveTypeId: new Types.ObjectId(row.leaveTypeId),
-          leaveType: row.leaveType?.trim(), // Optional name
+          leaveType: row.leaveType?.trim(),
           startDate: this.parseDate(row.startDate!),
           endDate: this.parseDate(row.endDate!),
           noOfDays: noOfDays,
@@ -3220,6 +3420,31 @@ export class DataMigrationService extends BaseService {
         });
         created++;
 
+        // Track user date ranges for balance day creation
+        const userId = row.userId.toString();
+        const startDate = this.parseDate(row.startDate!);
+        const endDate = this.parseDate(row.endDate!);
+
+        if (startDate && endDate) {
+          // Auto-Expand to Full Month for attendance population
+          const monthStart = new Date(startDate);
+          monthStart.setUTCDate(1);
+          monthStart.setUTCHours(0, 0, 0, 0);
+
+          const monthEnd = new Date(endDate);
+          monthEnd.setUTCMonth(monthEnd.getUTCMonth() + 1);
+          monthEnd.setUTCDate(0);
+          monthEnd.setUTCHours(23, 59, 59, 999);
+
+          if (!userDateRanges.has(userId)) {
+            userDateRanges.set(userId, { minDate: monthStart, maxDate: monthEnd });
+          } else {
+            const range = userDateRanges.get(userId)!;
+            if (monthStart < range.minDate) range.minDate = monthStart;
+            if (monthEnd > range.maxDate) range.maxDate = monthEnd;
+          }
+        }
+
         // If leave is approved, update attendance records to reflect "On-Leave"
         if (leave.status === 'Approved') {
           await this.processLeaveAttendance(leave);
@@ -3231,7 +3456,176 @@ export class DataMigrationService extends BaseService {
       }
     }
 
+    // After all leaves are processed, create "Present" attendance for balance days
+    console.log('🔄 [Data Migration] Creating balance day attendance for users:', userDateRanges.size);
+    for (const [userId, dateRange] of userDateRanges) {
+      try {
+        await this.createBalanceDayAttendance(userId, dateRange.minDate, dateRange.maxDate);
+      } catch (error: any) {
+        console.error(`⚠️ [Data Migration] Error creating balance days for user ${userId}:`, error.message);
+        errors.push(`Balance days for user ${userId}: ${error.message}`);
+      }
+    }
+
     return { created, errors };
+  }
+
+  /**
+   * Create "Present" attendance for balance days (non-leave working days)
+   * Excludes: weekends, holidays, and days with existing attendance
+   */
+  private async createBalanceDayAttendance(userId: string, startDate: Date, endDate: Date): Promise<void> {
+    // 1. Fetch user to get country, joining date, separation date, and holiday calendar
+    const user = await User.findById(userId).select('country joiningDate separationDate holidayCalendarId holidayCalendarHistory');
+    if (!user) return;
+
+    const joiningDate = user.joiningDate ? new Date(user.joiningDate) : null;
+    if (joiningDate) joiningDate.setUTCHours(0, 0, 0, 0);
+
+    const separationDate = user.separationDate ? new Date(user.separationDate) : null;
+    if (separationDate) separationDate.setUTCHours(23, 59, 59, 999);
+
+    const country = user.country || 'IN';
+    const countryOffsets: Record<string, number> = { 'IN': 5.5, 'AE': 4 };
+    const offset = countryOffsets[country] || 5.5;
+
+    // 2. Batch fetch Holidays (Year-Aware)
+    const years = [];
+    for (let y = startDate.getUTCFullYear(); y <= endDate.getUTCFullYear(); y++) years.push(y);
+
+    let allHolidays: Set<string> = new Set();
+    const history = user.holidayCalendarHistory || [];
+
+    for (const year of years) {
+      // Find calendar ID for this specific year
+      const yearEntry = history.find((h: any) => h.year === year);
+      const calendarId = yearEntry ? yearEntry.calendarId : user.holidayCalendarId;
+
+      if (calendarId) {
+        const calendar = await HolidayCalendar.findById(calendarId).select('holidays').lean();
+        if (calendar?.holidays) {
+          calendar.holidays.forEach((h: any) => {
+            const hDate = new Date(h.date);
+            // Apply offset to get logical day (handle local midnight storage)
+            const logicalDate = new Date(hDate.getTime() + (offset * 60 * 60 * 1000));
+            allHolidays.add(logicalDate.toISOString().split('T')[0]);
+          });
+        }
+      }
+    }
+
+    // 3. PERFORMANCE: Batch fetch all assignments and existing attendance for the range
+    const allAssignments = await ShiftAssignment.find({
+      userId: new Types.ObjectId(userId),
+      startDate: { $lte: endDate },
+      $or: [{ endDate: { $gte: startDate } }, { endDate: null }]
+    }).lean();
+
+    const existingAttendanceDates = new Set(
+      (await AttendanceRecord.find({
+        userId: new Types.ObjectId(userId),
+        shiftDay: { $gte: startDate, $lte: endDate }
+      }).select('shiftDay').lean()).map(a => a.shiftDay.toISOString().split('T')[0])
+    );
+
+    let balanceDaysCreated = 0;
+    const loopDate = new Date(startDate);
+    loopDate.setUTCHours(0, 0, 0, 0);
+
+    while (loopDate <= endDate) {
+      const currentDate = new Date(loopDate);
+      const dateStr = currentDate.toISOString().split('T')[0];
+
+      // A. Protective Checks (Dates)
+      if (joiningDate && currentDate < joiningDate) {
+        loopDate.setUTCDate(loopDate.getUTCDate() + 1);
+        continue;
+      }
+      if (separationDate && currentDate > separationDate) {
+        break; // Exit loop early if they have left the company
+      }
+
+      // B. Skip if attendance already exists
+      if (existingAttendanceDates.has(dateStr)) {
+        loopDate.setUTCDate(loopDate.getUTCDate() + 1);
+        continue;
+      }
+
+      // C. Find correct assignment locally (NO DB CALL)
+      const assignment = allAssignments.find(a => {
+        const aStart = new Date(a.startDate);
+        const aEnd = a.endDate ? new Date(a.endDate) : null;
+        return currentDate >= aStart && (!aEnd || currentDate <= aEnd);
+      });
+
+      if (!assignment) {
+        loopDate.setUTCDate(loopDate.getUTCDate() + 1);
+        continue;
+      }
+
+      // D. Weekend & Holiday Checks
+      const dayOfWeek = currentDate.getUTCDay();
+      const weekendDays = assignment.weekendDays || [];
+      if (weekendDays.includes(dayOfWeek) || allHolidays.has(dateStr)) {
+        loopDate.setUTCDate(loopDate.getUTCDate() + 1);
+        continue;
+      }
+
+      // E. Get Shift Info (Cached if possible, but shifts are few)
+      const shift = await Shift.findById(assignment.shiftId).lean();
+      if (!shift) {
+        loopDate.setUTCDate(loopDate.getUTCDate() + 1);
+        continue;
+      }
+
+      // F. Create Record (Same creation logic as before, but safer)
+      try {
+        const parseTimeWithOffset = (timeStr: string, baseDate: Date, countryOffset: number) => {
+          const [h, m] = timeStr.split(':').map(Number);
+          const d = new Date(baseDate);
+          const totalMinutes = (h * 60) + m - (countryOffset * 60);
+          d.setUTCHours(0, totalMinutes, 0, 0);
+          return d;
+        };
+
+        const shiftStart = parseTimeWithOffset(shift.startTime, currentDate, offset);
+        const shiftEnd = parseTimeWithOffset(shift.endTime, currentDate, offset);
+        if (shift.isOvernightShift) shiftEnd.setUTCDate(shiftEnd.getUTCDate() + 1);
+
+        const shiftDurationMs = shiftEnd.getTime() - shiftStart.getTime();
+        const durationHours = Math.floor(shiftDurationMs / (1000 * 60 * 60));
+        const durationMinutes = Math.floor((shiftDurationMs % (1000 * 60 * 60)) / (1000 * 60));
+        const shiftHoursStr = `${durationHours}:${durationMinutes.toString().padStart(2, '0')}:00`;
+
+        await AttendanceRecord.collection.insertOne({
+          userId: new Types.ObjectId(userId),
+          shiftId: shift._id,
+          shiftCode: shift.code,
+          shiftDay: currentDate,
+          shiftStart,
+          shiftEnd,
+          status: 'complete',
+          attendanceStatus: ['Present'],
+          swipes: [],
+          shiftHours: shiftHoursStr,
+          totalWorkHours: shiftHoursStr,
+          breakHours: '0:00:00',
+          actualWorkHours: shiftHoursStr,
+          shortfallHours: '0:00:00',
+          excessHours: '0:00:00',
+          isLateEntry: false,
+          isEarlyExit: false,
+          createdAt: new Date(),
+          updatedAt: new Date()
+        });
+        balanceDaysCreated++;
+      } catch (e: any) {
+        console.error(`Error on ${dateStr}:`, e.message);
+      }
+
+      loopDate.setUTCDate(loopDate.getUTCDate() + 1);
+    }
+    console.log(`✅ [Migration Complete] Generated ${balanceDaysCreated} attendance records for user ${userId}`);
   }
 
   /**
@@ -3285,33 +3679,37 @@ export class DataMigrationService extends BaseService {
         // Need to fetch user's holiday calendar
         // Optimization: Fetch User & Holiday only if not cached or do it simply here
 
-        // Fetch User to get Calendar ID
-        const leaveUser = await User.findById(leave.userId).select('holidayCalendarId');
-        if (leaveUser && leaveUser.holidayCalendarId) {
+        // Fetch User to get Calendar History (Year-Aware)
+        const leaveUser = await User.findById(leave.userId).select('holidayCalendarId holidayCalendarHistory country');
+        if (leaveUser) {
+          const country = leaveUser.country || 'IN';
+          const countryOffsets: Record<string, number> = { 'IN': 5.5, 'AE': 4 };
+          const offset = countryOffsets[country] || 5.5;
+
           const dateStr = currentDate.toISOString().split('T')[0];
+          const leaveYear = currentDate.getUTCFullYear();
 
-          // Correctly fetch the Calendar Document first
-          const calendar = await HolidayCalendar.findById(leaveUser.holidayCalendarId).select('holidays').lean();
+          // Find specific calendar for this year
+          const historyEntry = (leaveUser.holidayCalendarHistory || []).find((h: any) => h.year === leaveYear);
+          const activeCalendarId = historyEntry ? historyEntry.calendarId : leaveUser.holidayCalendarId;
 
-          if (calendar && calendar.holidays) {
-            // Check if dateStr exists in holidays array
-            const holiday = calendar.holidays.find(h => new Date(h.date).toISOString().split('T')[0] === dateStr);
+          if (activeCalendarId) {
+            const calendar = await HolidayCalendar.findById(activeCalendarId).select('holidays').lean();
 
-            if (holiday) {
-              // Found a holiday.
-              // Rule: "holiday except restricted holiday okay"
-              // If Leave is RH, and Holiday is Restricted -> OK (Create Attendance 'On-Leave').
-              // If Leave is Annual, and Holiday is Mandatory -> SKIP.
-              // If Leave is Annual, and Holiday is Restricted? -> Usually SKIP (Holiday takes precedence).
+            if (calendar && calendar.holidays) {
+              const holiday = calendar.holidays.find(h => {
+                const hDate = new Date(h.date);
+                const logicalDate = new Date(hDate.getTime() + (offset * 60 * 60 * 1000));
+                return logicalDate.toISOString().split('T')[0] === dateStr;
+              });
 
-              // So, if Leave Type is NOT 'restricted_holiday' (and maybe 'compensatory_off'), SKIP.
-
-              const isRestrictedLeave = (leave.leaveType === 'restricted_holiday' || leave.leaveType === 'compensatory_off');
-
-              if (!isRestrictedLeave) {
-                console.log(`ℹ️ [Leave Migration] Skipping Holiday for ${leave.userId} on ${currentDate.toISOString()}`);
-                loopDate.setUTCDate(loopDate.getUTCDate() + 1);
-                continue;
+              if (holiday) {
+                const isRestrictedLeave = (leave.leaveType === 'restricted_holiday' || leave.leaveType === 'compensatory_off');
+                if (!isRestrictedLeave) {
+                  console.log(`ℹ️ [Leave Migration] Skipping Holiday for ${leave.userId} on ${currentDate.toISOString()}`);
+                  loopDate.setUTCDate(loopDate.getUTCDate() + 1);
+                  continue;
+                }
               }
             }
           }
@@ -3340,12 +3738,21 @@ export class DataMigrationService extends BaseService {
           } else {
             // Half Day: Merge status, don't wipe work data
             attendanceRecord.status = 'leave_swipe'; // Mark as leave day
-            // Add 'Half-Day' to attendanceStatus if not already present
+            // Add 'On-Leave' to attendanceStatus if not already present
             if (!attendanceRecord.attendanceStatus.includes(statusTag)) {
               attendanceRecord.attendanceStatus.push(statusTag);
             }
-            // Do NOT clear any existing work hours, swipes, or late/early flags
-            // as the user might have worked the other half of the day.
+
+            // SPECIAL MIGRATION LOGIC:
+            // If the record was previously "Absent" or empty, and this is a Half-Day leave,
+            // we should assume the other half is "Present" (similar to new creation logic).
+            if (attendanceRecord.attendanceStatus.includes('Absent')) {
+              attendanceRecord.attendanceStatus = attendanceRecord.attendanceStatus.filter(s => s !== 'Absent');
+              attendanceRecord.attendanceStatus.push('Present');
+
+              // We should probably update hours here too, but updating existing records is risky.
+              // Let's assume if it exists, it has data. 
+            }
           }
           await attendanceRecord.save();
           console.log(`✅ Updated attendance for user ${leave.userId} on ${currentDate.toISOString()} to ${statusTag}`);
@@ -3385,6 +3792,38 @@ export class DataMigrationService extends BaseService {
                 sEnd.setUTCDate(sEnd.getUTCDate() + 1);
               }
 
+              const shiftDurationMs = sEnd.getTime() - sStart.getTime();
+              let workHoursStr = '0:00:00';
+              let shortfallStr = '0:00:00';
+              const statuses = [statusTag];
+
+              if (isHalfDay) {
+                // For Half-Day, we assume the other half is Present
+                statuses.push('Present');
+
+                // Calculate half duration for work hours
+                const halfDurationMs = shiftDurationMs / 2;
+                const h = Math.floor(halfDurationMs / (1000 * 60 * 60));
+                const m = Math.floor((halfDurationMs % (1000 * 60 * 60)) / (1000 * 60));
+                workHoursStr = `${h}:${m.toString().padStart(2, '0')}:00`;
+
+                // Techincally shortfall is the other half if we consider 'Present' implies work
+                // But for migration, we usually just set work hours. 
+                // Let's set shortfall as well since there are no swipes.
+                shortfallStr = workHoursStr;
+              }
+
+              // Calculate full shift hours string for reference
+              const fh = Math.floor(shiftDurationMs / (1000 * 60 * 60));
+              const fm = Math.floor((shiftDurationMs % (1000 * 60 * 60)) / (1000 * 60));
+              const shiftHoursStr = `${fh}:${fm.toString().padStart(2, '0')}:00`;
+
+              // Resolve Half Type for Attendance Record
+              // Maps 'first-half' (from Leave) -> 'First Half' (for Attendance Model)
+              const recordHalfType = (isHalfDay && leave.halfDayType)
+                ? (leave.halfDayType === 'first-half' ? 'First Half' : 'Second Half')
+                : undefined;
+
               const newRecord = await AttendanceRecord.create({
                 userId: leave.userId,
                 shiftId: shift._id,
@@ -3392,16 +3831,18 @@ export class DataMigrationService extends BaseService {
                 shiftDay: currentDate,
                 shiftStart: sStart,
                 shiftEnd: sEnd,
-                status: 'leave_swipe',
-                attendanceStatus: [statusTag],
+                status: 'leave_swipe', // Still marked as leave_swipe type
+                attendanceStatus: statuses,
                 swipes: [],
-                totalWorkHours: '0:00:00',
+                shiftHours: shiftHoursStr,
+                totalWorkHours: workHoursStr,
                 breakHours: '0:00:00',
-                actualWorkHours: '0:00:00',
-                shortfallHours: '0:00:00',
+                actualWorkHours: workHoursStr,
+                shortfallHours: shortfallStr,
                 excessHours: '0:00:00',
                 isLateEntry: false,
-                isEarlyExit: false
+                isEarlyExit: false,
+                halfType: recordHalfType
               });
               console.log(`✅ Created NEW attendance for user ${leave.userId} on ${currentDate.toISOString()}:`, JSON.stringify(newRecord.toJSON(), null, 2));
             } else {
@@ -3536,20 +3977,59 @@ export class DataMigrationService extends BaseService {
         }
 
         // Parse and validate dates
-        const shiftStart = row.shiftStart ? new Date(row.shiftStart) : null;
-        const shiftEnd = row.shiftEnd ? new Date(row.shiftEnd) : null;
-        const firstIn = row.firstIn ? new Date(row.firstIn) : null;
-        const lastOut = row.lastOut ? new Date(row.lastOut) : null;
+        let shiftStart = row.shiftStart ? new Date(row.shiftStart) : null;
+        let shiftEnd = row.shiftEnd ? new Date(row.shiftEnd) : null;
+        const shiftDay = this.parseDate(row.shiftDay!);
+        if (!shiftDay) {
+          throw new Error(`Invalid shift day format at row ${row.rowNumber}`);
+        }
 
+        // If shift times not provided, fetch from Shift Master
+        if ((!shiftStart || isNaN(shiftStart.getTime())) || (!shiftEnd || isNaN(shiftEnd.getTime()))) {
+          // Fetch the actual shift details and user country
+          const [shift, user] = await Promise.all([
+            Shift.findById(row.shiftId).select('startTime endTime isOvernightShift').lean(),
+            User.findById(row.userId).select('country').lean()
+          ]);
+
+          if (shift && shift.startTime && shift.endTime) {
+            const country = user?.country || 'IN';
+            const countryOffsets: Record<string, number> = { 'IN': 5.5, 'AE': 4 };
+            const offset = countryOffsets[country] || 5.5;
+
+            const parseTimeWithOffset = (timeStr: string, baseDate: Date, countryOffset: number) => {
+              const [h, m] = timeStr.split(':').map(Number);
+              const d = new Date(baseDate);
+              const totalMinutes = (h * 60) + m - (countryOffset * 60);
+              d.setUTCHours(0, totalMinutes, 0, 0);
+              return d;
+            };
+
+            if (!shiftStart || isNaN(shiftStart.getTime())) {
+              shiftStart = parseTimeWithOffset(shift.startTime, shiftDay, offset);
+            }
+
+            if (!shiftEnd || isNaN(shiftEnd.getTime())) {
+              shiftEnd = parseTimeWithOffset(shift.endTime, shiftDay, offset);
+              if (shift.isOvernightShift) {
+                shiftEnd.setUTCDate(shiftEnd.getUTCDate() + 1);
+              }
+            }
+          } else {
+            throw new Error(`Shift timings not found for Shift ID: ${row.shiftId}`);
+          }
+        }
+
+        // Final validation
         if (!shiftStart || isNaN(shiftStart.getTime())) {
           throw new Error('Invalid shift start time');
         }
         if (!shiftEnd || isNaN(shiftEnd.getTime())) {
           throw new Error('Invalid shift end time');
         }
-        if (shiftEnd <= shiftStart) {
-          throw new Error('Shift end time must be after shift start time');
-        }
+
+        const firstIn = row.firstIn ? new Date(row.firstIn) : null;
+        const lastOut = row.lastOut ? new Date(row.lastOut) : null;
 
         // Check if firstIn and lastOut are provided for automatic calculation
         const hasCheckInOut = firstIn && !isNaN(firstIn.getTime()) && lastOut && !isNaN(lastOut.getTime());
@@ -3596,7 +4076,50 @@ export class DataMigrationService extends BaseService {
           excessHours: string;
         } | null = null;
 
-        if (hasCheckInOut) {
+        // Specialized logic for "Attendance Type" (Easy Entry Mode)
+        let status = row.status || 'complete';
+        let attendanceStatus: string[] = [];
+
+        if (row.attendanceType) {
+          const type = row.attendanceType.toString().trim().toLowerCase();
+          if (type === 'present' || type === 'full day') {
+            calculatedMetrics = {
+              totalWorkHours: '09:00:00',
+              breakHours: '00:00:00',
+              actualWorkHours: '09:00:00',
+              shiftHours: '09:00:00',
+              shortfallHours: '00:00:00',
+              excessHours: '00:00:00'
+            };
+            status = 'complete';
+            attendanceStatus = ['Present'];
+          } else if (type === 'half day' || type === 'half-day') {
+            calculatedMetrics = {
+              totalWorkHours: '04:30:00',
+              breakHours: '00:00:00',
+              actualWorkHours: '04:30:00',
+              shiftHours: '09:00:00',
+              shortfallHours: '04:30:00', // Shortfall reflects half day
+              excessHours: '00:00:00'
+            };
+            status = 'incomplete';
+            attendanceStatus = ['Present']; // Still present
+          } else if (type === 'absent') {
+            calculatedMetrics = {
+              totalWorkHours: '00:00:00',
+              breakHours: '00:00:00',
+              actualWorkHours: '00:00:00',
+              shiftHours: '09:00:00',
+              shortfallHours: '09:00:00',
+              excessHours: '00:00:00'
+            };
+            status = 'complete';
+            attendanceStatus = ['Absent'];
+          }
+        }
+
+        // Fallback to normal calculation if no Attendance Type provided
+        if (!calculatedMetrics && hasCheckInOut) {
           try {
             calculatedMetrics = await this.calculateAttendanceMetrics(
               firstIn!,
@@ -3605,6 +4128,11 @@ export class DataMigrationService extends BaseService {
               shiftEnd
             );
             console.log(`✅ Auto-calculated attendance metrics for row ${row.rowNumber}:`, calculatedMetrics);
+
+            // Auto-tag Present if working > 0 hours and no tag exists
+            if (calculatedMetrics && calculatedMetrics.actualWorkHours !== '00:00:00' && calculatedMetrics.actualWorkHours !== '0:00:00') {
+              if (attendanceStatus.length === 0) attendanceStatus.push('Present');
+            }
           } catch (calcError: any) {
             console.warn(`⚠️ Could not auto-calculate metrics for row ${row.rowNumber}: ${calcError.message}`);
             // Continue with default values if calculation fails
@@ -3640,14 +4168,52 @@ export class DataMigrationService extends BaseService {
           excessHours: adminProvidedExcessHours
             ? row.excessHours
             : (calculatedMetrics?.excessHours || '0:00:00'),
-          status: row.status || 'complete',
+          status: status,
+          attendanceStatus: attendanceStatus, // Add the populated status
           isWithinWindow: row.isWithinWindow !== undefined ? row.isWithinWindow : false,
           isLateEntry: row.isLateEntry !== undefined ? row.isLateEntry : false,
-          isEarlyExit: row.isEarlyExit !== undefined ? row.isEarlyExit : false
+          isEarlyExit: row.isEarlyExit !== undefined ? row.isEarlyExit : false,
+          isWFH: row.isWFH !== undefined ? row.isWFH : false,
+          halfType: row.halfType && (row.halfType.toString().toLowerCase().includes('first')) ? 'First Half' :
+            row.halfType && (row.halfType.toString().toLowerCase().includes('second')) ? 'Second Half' : undefined
         };
 
-        const record = new AttendanceRecord(recordData);
-        await record.save();
+        // Check for existing record to handle updates/merges
+        let record = await AttendanceRecord.findOne({
+          userId: recordData.userId,
+          shiftDay: recordData.shiftDay
+        });
+
+        // Check for approved leaves on this day to handle Half-Day + Leave joins
+        const approvedLeave = await Leave.findOne({
+          userId: recordData.userId,
+          status: 'Approved',
+          startDate: { $lte: recordData.shiftDay },
+          endDate: { $gte: recordData.shiftDay }
+        }).lean();
+
+        const isLeaveHalfDay = approvedLeave && approvedLeave.leaveDuration === 'half-day';
+        const isAttendanceHalfDay = row.attendanceType && (row.attendanceType.toString().toLowerCase().includes('half'));
+
+        // Logic: If it's a Half-Day Leave AND a Half-Day Attendance import, 
+        // the combined status should be 'leave_swipe' to avoid being marked 'incomplete'.
+        if (approvedLeave && (isLeaveHalfDay || isAttendanceHalfDay)) {
+          recordData.status = 'leave_swipe';
+          if (!recordData.attendanceStatus.includes('On-Leave')) {
+            recordData.attendanceStatus.push('On-Leave');
+          }
+        }
+
+        if (record) {
+          // DUPLICATE CHECK: Do NOT overwrite existing database records
+          errors.push(`Row ${row.rowNumber}: Duplicate - Record already exists in database for User ${row.userId} on ${row.shiftDay}`);
+          console.warn(`Skipping duplicate database record for User ${row.userId} on ${row.shiftDay}`);
+          continue;
+        } else {
+          // Create new record
+          record = new AttendanceRecord(recordData);
+          await record.save();
+        }
         created++;
       } catch (error: any) {
         const errorMessage = error.message || 'Unknown error occurred';

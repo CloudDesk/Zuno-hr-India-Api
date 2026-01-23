@@ -25,6 +25,8 @@ export interface IAttendanceRecord extends Document {
   isWithinWindow: boolean;
   isLateEntry: boolean;
   isEarlyExit: boolean;
+  isWFH: boolean;
+  halfType?: 'First Half' | 'Second Half';
   needsRegularization: boolean;
   totalWorkHours: string;     // Total hours between first IN and last OUT
   breakHours: string;         // Automatically calculated break time
@@ -154,6 +156,14 @@ const attendanceRecordSchema = new Schema<IAttendanceRecord>(
     isEarlyExit: {
       type: Boolean,
       default: false,
+    },
+    isWFH: {
+      type: Boolean,
+      default: false,
+    },
+    halfType: {
+      type: String,
+      enum: ['First Half', 'Second Half'],
     },
     needsRegularization: {
       type: Boolean,

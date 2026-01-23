@@ -1387,6 +1387,8 @@ export class BiometricAttendanceService extends BaseService {
         isWithinWindow: record.isWithinWindow,
         isLateEntry: record.isLateEntry,
         isEarlyExit: record.isEarlyExit,
+        isWFH: record.isWFH !== undefined ? record.isWFH : (isWFH || false),
+        halfType: record.halfType || null,
         needsRegularization: record.needsRegularization,
         excessHours: record.excessHours || '00:00:00',
         shortfallHours: record.shortfallHours || '00:00:00',
@@ -1395,8 +1397,6 @@ export class BiometricAttendanceService extends BaseService {
         actualWorkHours: record.actualWorkHours,
         shiftHours: record.shiftHours,
         outOfWindowSwipes: record.outOfWindowSwipes || [],
-        isWFH: isWFH || false  // Add WFH flag
-
       };
 
       // Add the processed record to user's records
@@ -2154,7 +2154,7 @@ export class BiometricAttendanceService extends BaseService {
         userId: { $in: Array.from(allUserIds).map(id => new Types.ObjectId(id)) },
         shiftDay: { $gte: start, $lte: end }
       })
-        .select('_id userId shiftDay status attendanceStatus')
+        .select('_id userId shiftDay status attendanceStatus isWFH halfType')
         .lean();
 
       // Create map: userId -> date -> record
@@ -2400,6 +2400,9 @@ export class BiometricAttendanceService extends BaseService {
             shiftDay: dateStr,
             status: record ? record.status : 'unknown',  // 'unknown' if no record
             attendanceStatus: record ? record.attendanceStatus || [] : [],
+            halfType: record ? record.halfType : null,
+            totalWorkHours: record ? record.totalWorkHours : null,
+            actualWorkHours: record ? record.actualWorkHours : null,
           };
 
           // Add leave information if applicable
@@ -2410,15 +2413,43 @@ export class BiometricAttendanceService extends BaseService {
             attendanceEntry.leaveDuration = leaveDetails.duration;
             attendanceEntry.halfDayType = leaveDetails.halfDayType;
 
-            const typeStr = leaveDetails.type;
-
-            // Add display label for frontend
+            let leaveAbbr = 'Leave';
+            const typeStr = leaveDetails.type; // Ensure typeStr is defined here
             if (typeStr === 'restricted_holiday') {
-              attendanceEntry.displayLabel = 'RH';
+              leaveAbbr = 'RH';
             } else if (typeStr === 'annual_leave' || typeStr?.toLowerCase().includes('annual')) {
-              attendanceEntry.displayLabel = 'AL';
+              leaveAbbr = 'AL';
+            } else if (typeStr === 'sick_leave' || typeStr?.toLowerCase().includes('sick')) {
+              leaveAbbr = 'SL';
+            } else if (typeStr === 'casual_leave' || typeStr?.toLowerCase().includes('casual')) {
+              leaveAbbr = 'CL';
+            } else if (typeStr === 'loss_of_pay' || typeStr?.toLowerCase().includes('lop')) {
+              leaveAbbr = 'LOP';
+            }
+
+            if (leaveDetails.duration === 'half-day') {
+              // Check if there is Present attendance (mirrors Excel logic)
+              const isPresent = record && (
+                record.status === 'complete' ||
+                record.status === 'duplicate_swipes' ||
+                (record.status === 'incomplete' && record.totalWorkHours && parseFloat(record.totalWorkHours) > 2)
+              );
+
+              if (isPresent) {
+                attendanceEntry.displayLabel = leaveDetails.halfDayType === 'first-half' ? `${leaveAbbr}/P` : `P/${leaveAbbr}`;
+              } else {
+                // No work record or not enough hours -> AL/Inc or Inc/AL
+                attendanceEntry.displayLabel = leaveDetails.halfDayType === 'first-half' ? `${leaveAbbr}/Inc` : `Inc/${leaveAbbr}`;
+              }
             } else {
-              attendanceEntry.displayLabel = 'Leave';
+              attendanceEntry.displayLabel = leaveAbbr;
+            }
+          } else if (record && record.halfType) {
+            // Case: Half-Work Only (No Leave Applied)
+            if (record.halfType === 'First Half') {
+              attendanceEntry.displayLabel = 'First Half (P / Inc)';
+            } else if (record.halfType === 'Second Half') {
+              attendanceEntry.displayLabel = 'Second Half (Inc / P)';
             }
           }
 
@@ -2440,9 +2471,9 @@ export class BiometricAttendanceService extends BaseService {
             }
           }
 
-          // Add WFH flag if applicable
+          // Add WFH flag if applicable (checks both approved WFH requests AND record flag)
           const userWfhDates = wfhByUser.get(userId);
-          if (userWfhDates && userWfhDates.has(dateStr)) {
+          if ((userWfhDates && userWfhDates.has(dateStr)) || (record && record.isWFH)) {
             attendanceEntry.isWFH = true;
           }
 
@@ -2539,8 +2570,8 @@ export class BiometricAttendanceService extends BaseService {
         endDate: { $gte: start }
       }).lean();
 
-      // Create map: userId -> date -> leave type
-      const leaveByUserAndDate = new Map<string, Map<string, string>>();
+      // Create map: userId -> date -> leave details object
+      const leaveByUserAndDate = new Map<string, Map<string, { type: string; duration: string; halfDayType?: string }>>();
       leaveRecords.forEach(leave => {
         const userId = leave.userId.toString();
         if (!leaveByUserAndDate.has(userId)) {
@@ -2556,7 +2587,11 @@ export class BiometricAttendanceService extends BaseService {
         const currentDate = new Date(leaveStart);
         while (currentDate <= leaveEnd) {
           const dateStr = currentDate.toISOString().split('T')[0];
-          leaveByUserAndDate.get(userId)!.set(dateStr, leave.leaveType || 'leave');
+          leaveByUserAndDate.get(userId)!.set(dateStr, {
+            type: leave.leaveType || 'leave',
+            duration: leave.leaveDuration || 'full-day',
+            halfDayType: leave.halfDayType
+          });
           currentDate.setUTCDate(currentDate.getUTCDate() + 1);
         }
       });
@@ -2661,9 +2696,9 @@ export class BiometricAttendanceService extends BaseService {
           const cell = dataRow.getCell(colIndex);
           const dateStr = dateRange[dateIndex];
 
-          // Check if this user has WFH on this date
+          // Check if this user has WFH on this date (check both approved requests and record flag)
           const userWfhDates = wfhByUserAndDate.get(user.userId);
-          const isWFH = userWfhDates && userWfhDates.has(dateStr);
+          const isWFH = (userWfhDates && userWfhDates.has(dateStr)) || (att.isWFH === true);
 
           // Check if this user has Leave on this date
           const userLeaveDates = leaveByUserAndDate.get(user.userId);
@@ -2721,24 +2756,37 @@ export class BiometricAttendanceService extends BaseService {
             }
 
             // Handle Half-Day Logic
-            if (duration === 'half-day') {
-              // Check if there is Present attendance
+            const isHalfDay = duration === 'half-day' || !!att.halfType;
+            if (isHalfDay) {
+              // Check if there is Present attendance (Work)
               const isPresent = (att.status === 'complete' || att.status === 'duplicate_swipes' ||
-                (att.status === 'incomplete' && att.totalWorkHours && parseFloat(att.totalWorkHours) > 2));
+                (att.status === 'incomplete' && att.totalWorkHours && parseFloat(att.totalWorkHours) > 2) ||
+                (att.status === 'incomplete' && att.actualWorkHours && parseFloat(att.actualWorkHours) > 2));
+
+              // Determine which half is Leave and which is Work
+              // Priority 1: Use leave record's halfDayType
+              // Priority 2: Use attendance record's halfType (inverted)
+              let leaveHalf = halfDayType; // 'first-half' or 'second-half'
+              if (!leaveHalf && att.halfType) {
+                leaveHalf = att.halfType === 'First Half' ? 'second-half' : 'first-half';
+              }
 
               if (isPresent) {
-                if (halfDayType === 'first-half') {
+                if (leaveHalf === 'first-half') {
                   // First Half Leave, Second Half Present -> AL/P
                   cellValue = `${leaveAbbr}/P`;
                 } else {
                   // Second Half Leave, First Half Present -> P/AL
                   cellValue = `P/${leaveAbbr}`;
                 }
-                // If present, maybe use Black or Mixed color? Keeping Blue for Leave emphasis.
               } else {
-                // Half day leave but no attendance record found (Absent for other half? or just not synced)
-                // Show as 0.5 AL
-                cellValue = `${leaveAbbr} (0.5)`;
+                if (leaveHalf === 'first-half') {
+                  // First Half Leave, Second Half Missing -> AL/Inc
+                  cellValue = `${leaveAbbr}/Inc`;
+                } else {
+                  // Second Half Leave, First Half Missing -> Inc/AL
+                  cellValue = `Inc/${leaveAbbr}`;
+                }
               }
             } else {
               // Full Day Leave
@@ -2806,9 +2854,18 @@ export class BiometricAttendanceService extends BaseService {
                 cellValue = 'Off';
                 fontColor = 'FF808080'; // Gray
               } else {
-                cellValue = 'Incomplete';
+                // Determine label for incomplete/missing checkout
+                let label = 'Incomplete';
+                if (att.status === 'missing_checkout') label = 'Missing Out';
+
+                // If it's a half-day work record (from import/override)
+                if (att.halfType) {
+                  label = `${att.halfType} (Inc)`;
+                }
+
+                cellValue = label;
                 fontColor = 'FFFF8C00'; // Orange
-                // Add WFH indicator for incomplete attendance
+                // Add WFH indicator
                 if (isWFH) {
                   cellValue = `${cellValue} (WFH)`;
                 }
