@@ -233,11 +233,13 @@ export class LeaveService extends BaseService {
   }
 
   /**
-   * Get mandatory holidays for a date range from user's holiday calendar
+   * Get all holidays (mandatory + optional) for a date range from user's holiday calendar
+   * ✅ FIX: Include ALL holidays (not just mandatory) because optional holidays are applied separately
+   * and attendance records may already be marked for those days
    * @param userId - User ID
    * @param startDate - Start date of leave
    * @param endDate - End date of leave
-   * @returns Array of mandatory holiday dates
+   * @returns Array of holiday dates (both mandatory and optional)
    */
   private async getMandatoryHolidays(
     userId: Types.ObjectId,
@@ -264,25 +266,28 @@ export class LeaveService extends BaseService {
       return [];
     }
 
-    // Filter mandatory holidays within the date range
-    const mandatoryHolidays: Date[] = [];
+    // ✅ FIX: Filter ALL holidays (mandatory + optional) within the date range
+    // Optional holidays are applied separately as leaves, so we should exclude them too
+    // to avoid conflicts with attendance records
+    const allHolidays: Date[] = [];
     const startTime = start.getTime();
     const endTime = end.getTime();
 
     for (const holiday of holidayCalendar.holidays) {
-      if (holiday.type === 'mandatory') {
+      // Include both 'mandatory' and 'optional' holidays
+      if (holiday.type === 'mandatory' || holiday.type === 'optional') {
         const holidayDate = new Date(holiday.date);
         holidayDate.setUTCHours(0, 0, 0, 0);
         const holidayTime = holidayDate.getTime();
 
         // Check if holiday falls within the date range
         if (holidayTime >= startTime && holidayTime <= endTime) {
-          mandatoryHolidays.push(holidayDate);
+          allHolidays.push(holidayDate);
         }
       }
     }
 
-    return mandatoryHolidays;
+    return allHolidays;
   }
 
   /**
@@ -1092,14 +1097,16 @@ export class LeaveService extends BaseService {
         ? shiftAssignment.weekendDays
         : [0, 6]; // Default: Sunday (0) and Saturday (6)
 
-      // Get mandatory holidays for the date range (if user has holidayCalendarId)
+      // ✅ FIX: Get ALL holidays (mandatory + optional) for the date range
+      // Optional holidays are applied separately as leaves, so we exclude them too
+      // to avoid conflicts with attendance records
       const mandatoryHolidays = await this.getMandatoryHolidays(
         userIdObj,
         leaveData.startDate,
         leaveData.endDate
       );
 
-      // Calculate working days excluding weekends and mandatory holidays
+      // Calculate working days excluding weekends and all holidays (mandatory + optional)
       const workingDays = this.calculateWorkingDaysExcludingWeekendsAndHolidays(
         leaveData.startDate,
         leaveData.endDate,
@@ -1114,11 +1121,11 @@ export class LeaveService extends BaseService {
           return days[day];
         }).join(', ');
         const holidayCount = mandatoryHolidays.length;
-        const holidayText = holidayCount > 0 ? ` and ${holidayCount} mandatory holiday(s)` : '';
+        const holidayText = holidayCount > 0 ? ` and ${holidayCount} holiday(s)` : '';
         throw new Error(`All days in the requested date range fall on weekends (${weekendNames})${holidayText}. Please select dates that include at least one working day.`);
       }
 
-      // Get excluded dates (weekend dates and mandatory holidays)
+      // Get excluded dates (weekend dates and all holidays - mandatory + optional)
       const { excludedDates, excludedHolidays } = this.getExcludedDatesWithHolidays(
         leaveData.startDate,
         leaveData.endDate,
@@ -1132,7 +1139,7 @@ export class LeaveService extends BaseService {
         leaveData.endDate
       );
 
-      // Update noOfDays to exclude weekends and mandatory holidays
+      // Update noOfDays to exclude weekends and all holidays (mandatory + optional)
       leaveData.noOfDays = workingDays;
 
       // Store weekend and holiday exclusion information for UI display
@@ -1144,8 +1151,8 @@ export class LeaveService extends BaseService {
         actualDays: workingDays
       };
 
-      console.log(`✅ [Weekend & Holiday Exclusion] Calculated ${workingDays} working days (excluding weekends: ${weekendDays.join(', ')} and ${mandatoryHolidays.length} mandatory holiday(s)) for leave from ${leaveData.startDate.toISOString().split('T')[0]} to ${leaveData.endDate.toISOString().split('T')[0]}`);
-      console.log(`📅 [Exclusion] Excluded ${excludedDates.length} date(s) total (${excludedDates.length - excludedHolidays.length} weekend(s) + ${excludedHolidays.length} holiday(s))`);
+      console.log(`✅ [Weekend & Holiday Exclusion] Calculated ${workingDays} working days (excluding weekends: ${weekendDays.join(', ')} and ${mandatoryHolidays.length} holiday(s) - mandatory + optional) for leave from ${leaveData.startDate.toISOString().split('T')[0]} to ${leaveData.endDate.toISOString().split('T')[0]}`);
+      console.log(`📅 [Exclusion] Excluded ${excludedDates.length} date(s) total (${excludedDates.length - excludedHolidays.length} weekend(s) + ${excludedHolidays.length} holiday(s) - mandatory + optional)`);
     }
 
     // VALIDATION: Check leave balance BEFORE creating the leave (for leave types that require balance)
@@ -1620,10 +1627,33 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
       const startDate = new Date(leave.startDate);
       const endDate = new Date(leave.endDate);
 
-      // Create/update attendance records for each day of leave
+      // ✅ FIX: Get excluded dates (weekends and holidays) from weekendExclusion
+      // Only create attendance records for working days, not weekends/holidays
+      const excludedDatesSet = new Set<number>();
+      if (leave.weekendExclusion && leave.weekendExclusion.excludedDates) {
+        // Create a Set of excluded date timestamps for quick lookup
+        leave.weekendExclusion.excludedDates.forEach((excludedDate: Date) => {
+          const date = new Date(excludedDate);
+          date.setUTCHours(0, 0, 0, 0);
+          excludedDatesSet.add(date.getTime());
+        });
+      }
+
+      // Create/update attendance records for each day of leave (excluding weekends and holidays)
       const currentDate = new Date(startDate);
+      currentDate.setUTCHours(0, 0, 0, 0);
 
       while (currentDate <= endDate) {
+        // ✅ FIX: Skip weekends and holidays - only create attendance records for working days
+        const currentDateTimestamp = currentDate.getTime();
+        if (excludedDatesSet.has(currentDateTimestamp)) {
+          // This is a weekend or holiday - skip creating attendance record
+          console.log(`⏭️ [Leave Approval] Skipping excluded date (weekend/holiday): ${currentDate.toISOString().split('T')[0]}`);
+          currentDate.setDate(currentDate.getDate() + 1);
+          currentDate.setUTCHours(0, 0, 0, 0); // Normalize time for consistent comparison
+          continue;
+        }
+
         // Find existing record to check for swipes
         const existingRecord = await AttendanceRecord.findOne({
           userId: leave.userId,
@@ -1725,7 +1755,9 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
           { upsert: true, strict: false }
         );
 
+        // Move to next day and normalize time for consistent comparison
         currentDate.setDate(currentDate.getDate() + 1);
+        currentDate.setUTCHours(0, 0, 0, 0);
       }
     }
 
