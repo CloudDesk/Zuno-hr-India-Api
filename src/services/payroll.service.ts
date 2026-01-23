@@ -1754,6 +1754,7 @@ export class PayrollService extends BaseService {
         // Fetch approved ANNUAL LEAVES, COMP-OFF LEAVES, and RESTRICTED HOLIDAY LEAVES (optional holidays)
         // ✅ FIX: Include restricted_holiday in approvedLeaves to match business requirement
         // Optional holidays taken as leave should be paid, so they're included in approvedLeaves
+        // ✅ FIX: Include leaves that span the entire month (start before month, end after month)
         const leaves = await Leave.find({
             userId: employeeId,  // Use userId field from Leave model
             status: 'Approved',
@@ -1761,13 +1762,150 @@ export class PayrollService extends BaseService {
             $or: [
                 { startDate: { $gte: firstDay, $lte: lastDay } },
                 { endDate: { $gte: firstDay, $lte: lastDay } },
+                {
+                    // Leave spans entire month (starts before month, ends after month)
+                    $and: [
+                        { startDate: { $lte: firstDay } },
+                        { endDate: { $gte: lastDay } },
+                    ],
+                },
             ],
-        }).select('noOfDays leaveType').lean();
+        }).select('noOfDays leaveType startDate endDate leaveDuration halfDayType').lean();
         console.log(leaves, 'leaves fetchApprovedLeaves');
-        // Sum all noOfDays to get total leave days (supports decimals for half-day leaves)
-        const totalLeaveDays = leaves.reduce((sum, leave) => sum + (leave.noOfDays || 0), 0);
-        console.log(totalLeaveDays, `fetchApprovedLeaves - Total: ${totalLeaveDays} days from ${leaves.length} leaves (annual_leave + compOff + restricted_holiday)`);
+        
+        // ✅ FIX: Calculate leave days that fall within the payroll month (not total noOfDays)
+        // When leave spans multiple months, we need to calculate partial days per month
+        const totalLeaveDays = await this.calculateLeaveDaysInMonth(
+            leaves,
+            employeeId,
+            firstDay,
+            lastDay,
+            year,
+            monthNumber
+        );
+        
+        console.log(totalLeaveDays, `fetchApprovedLeaves - Total: ${totalLeaveDays} days from ${leaves.length} leaves (calculated per month, annual_leave + compOff + restricted_holiday)`);
         return totalLeaveDays;
+    }
+
+    // ✅ NEW: Calculate leave days that fall within a specific month
+    // Handles leaves spanning multiple months by calculating partial days per month
+    private async calculateLeaveDaysInMonth(
+        leaves: any[],
+        employeeId: Types.ObjectId,
+        firstDay: Date,
+        lastDay: Date,
+        year: number,
+        monthNumber: number
+    ): Promise<number> {
+        if (leaves.length === 0) return 0;
+
+        // Get user's shift assignment and holiday calendar for the month
+        const [shiftAssignments, user] = await Promise.all([
+            ShiftAssignment.find({
+                userId: employeeId,
+                $or: [
+                    { endDate: { $exists: false }, startDate: { $lte: lastDay } },
+                    { endDate: { $gte: firstDay }, startDate: { $lte: firstDay } },
+                ],
+            }).select('weekendDays startDate endDate').lean(),
+            User.findById(employeeId).select('holidayCalendarHistory').lean(),
+        ]);
+
+        // Get weekend days (from shift assignment or default)
+        const weekendDays = shiftAssignments.length > 0 && shiftAssignments[0].weekendDays?.length > 0
+            ? shiftAssignments[0].weekendDays
+            : [0, 6]; // Default: Sunday and Saturday
+
+        // Get mandatory holidays for the month
+        let mandatoryHolidays: Date[] = [];
+        if (user?.holidayCalendarHistory && user.holidayCalendarHistory.length > 0) {
+            const historyEntry = user.holidayCalendarHistory.find(
+                (entry: any) => entry.year === year && entry.isActive === true
+            );
+            if (historyEntry) {
+                const holidayCalendar = await HolidayCalendar.findById(historyEntry.calendarId)
+                    .select('holidays').lean();
+                if (holidayCalendar?.holidays) {
+                    mandatoryHolidays = holidayCalendar.holidays
+                        .filter((h: any) => {
+                            const holidayDate = new Date(h.date);
+                            return holidayDate.getFullYear() === year &&
+                                holidayDate.getMonth() === monthNumber - 1 &&
+                                h.type === 'mandatory';
+                        })
+                        .map((h: any) => new Date(h.date));
+                }
+            }
+        }
+
+        // Create Set of holiday dates for quick lookup
+        const holidayDatesSet = new Set(
+            mandatoryHolidays.map(holiday => {
+                const d = new Date(holiday);
+                d.setUTCHours(0, 0, 0, 0);
+                return d.getTime();
+            })
+        );
+
+        let totalDays = 0;
+
+        for (const leave of leaves) {
+            // Calculate overlap between leave and month
+            const leaveStart = new Date(leave.startDate);
+            const leaveEnd = new Date(leave.endDate);
+            
+            // Get the overlapping date range
+            const overlapStart = new Date(Math.max(leaveStart.getTime(), firstDay.getTime()));
+            const overlapEnd = new Date(Math.min(leaveEnd.getTime(), lastDay.getTime()));
+
+            // If no overlap, skip
+            if (overlapStart > overlapEnd) continue;
+
+            // Handle half-day leaves
+            if (leave.leaveDuration === 'half-day') {
+                // Half-day leave: each day in the overlap counts as 0.5 (if it's a working day)
+                let workingDays = 0;
+                const currentDate = new Date(overlapStart);
+                currentDate.setUTCHours(0, 0, 0, 0);
+                const endDate = new Date(overlapEnd);
+                endDate.setUTCHours(23, 59, 59, 999);
+
+                while (currentDate <= endDate) {
+                    const dayOfWeek = currentDate.getDay();
+                    const currentTime = currentDate.getTime();
+                    
+                    // Count as 0.5 if it's a working day (not weekend, not holiday)
+                    if (!weekendDays.includes(dayOfWeek) && !holidayDatesSet.has(currentTime)) {
+                        workingDays += 0.5;
+                    }
+                    
+                    currentDate.setDate(currentDate.getDate() + 1);
+                }
+                totalDays += workingDays;
+            } else {
+                // Full-day leave: calculate working days in overlap (excluding weekends and holidays)
+                let workingDays = 0;
+                const currentDate = new Date(overlapStart);
+                currentDate.setUTCHours(0, 0, 0, 0);
+                const endDate = new Date(overlapEnd);
+                endDate.setUTCHours(23, 59, 59, 999);
+
+                while (currentDate <= endDate) {
+                    const dayOfWeek = currentDate.getDay();
+                    const currentTime = currentDate.getTime();
+                    
+                    if (!weekendDays.includes(dayOfWeek) && !holidayDatesSet.has(currentTime)) {
+                        workingDays++;
+                    }
+                    
+                    currentDate.setDate(currentDate.getDate() + 1);
+                }
+                totalDays += workingDays;
+            }
+        }
+
+        return totalDays;
     }
 
     // Retrieves attendance summary for an employee for a specific month.
