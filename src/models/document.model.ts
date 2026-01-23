@@ -226,7 +226,7 @@ const documentSchema = new Schema<IDocument>(
                             value.payslip.monthYear &&
                             value.payslip.month &&
                             value.payslip.year &&
-                            value.payslip.netSalary &&
+                            typeof value.payslip.netSalary === 'number' &&
                             value.payslip.paySummary
                         );
                     }
