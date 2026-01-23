@@ -1267,8 +1267,11 @@ export class PayrollService extends BaseService {
 
         const monthlyGross = salaryAssignment.monthlyGross;
         const salaryStructure = salaryAssignment.salaryStructureId;
-        const payableDays =
-            attendance.presentDays + attendance.weekendDays + attendance.holidayDays + approvedLeaves;
+        // ✅ FIX: Cap payableDays at daysInMonth to prevent overpayment
+        const payableDays = Math.min(
+            daysInMonth,
+            attendance.presentDays + attendance.weekendDays + attendance.holidayDays + approvedLeaves
+        );
         const attendanceAdjustedGross = Math.round((payableDays / daysInMonth) * monthlyGross);
 
         console.log(monthlyGross, ' monthlyGross calculatePayrollRecord');
@@ -1743,17 +1746,18 @@ export class PayrollService extends BaseService {
     }
 
     // Counts approved leaves for an employee within a month.
-    // Only includes annual_leave and compOff (NOT restricted_holiday - already counted in holidayDays)
+    // Includes annual_leave, compOff, and restricted_holiday (optional holidays taken as leave)
+    // NOTE: restricted_holiday is included here because optional holidays are paid leaves when taken
     private async fetchApprovedLeaves(employeeId: Types.ObjectId, year: number, monthNumber: number) {
         const { firstDay, lastDay } = this.getMonthBoundaries(year, monthNumber);
         console.log(firstDay, lastDay, 'firstDay, lastDay fetchApprovedLeaves');
-        // Fetch approved ANNUAL LEAVES and COMP-OFF LEAVES
-        // NOTE: restricted_holiday is EXCLUDED because it's already counted in holidayDays
-        // from getWorkingDaysInMonth() to prevent double-counting in payableDays
+        // Fetch approved ANNUAL LEAVES, COMP-OFF LEAVES, and RESTRICTED HOLIDAY LEAVES (optional holidays)
+        // ✅ FIX: Include restricted_holiday in approvedLeaves to match business requirement
+        // Optional holidays taken as leave should be paid, so they're included in approvedLeaves
         const leaves = await Leave.find({
             userId: employeeId,  // Use userId field from Leave model
             status: 'Approved',
-            leaveType: { $in: ['annual', 'compOff'] }, // Annual leave + Comp-off
+            leaveType: { $in: ['annual', 'compOff', 'restricted_holiday'] }, // Annual leave + Comp-off + Optional holidays
             $or: [
                 { startDate: { $gte: firstDay, $lte: lastDay } },
                 { endDate: { $gte: firstDay, $lte: lastDay } },
@@ -1762,7 +1766,7 @@ export class PayrollService extends BaseService {
         console.log(leaves, 'leaves fetchApprovedLeaves');
         // Sum all noOfDays to get total leave days (supports decimals for half-day leaves)
         const totalLeaveDays = leaves.reduce((sum, leave) => sum + (leave.noOfDays || 0), 0);
-        console.log(totalLeaveDays, `fetchApprovedLeaves - Total: ${totalLeaveDays} days from ${leaves.length} leaves (annual_leave + compOff, restricted holidays counted separately in holidayDays)`);
+        console.log(totalLeaveDays, `fetchApprovedLeaves - Total: ${totalLeaveDays} days from ${leaves.length} leaves (annual_leave + compOff + restricted_holiday)`);
         return totalLeaveDays;
     }
 
@@ -2135,7 +2139,20 @@ export class PayrollService extends BaseService {
                                     },
                                 ],
                             },
-                            1,
+                            // ✅ FIX: Check if half-day leave - if halfType exists AND has 'On-Leave', count as 0.5 instead of 1
+                            {
+                                $cond: [
+                                    {
+                                        $and: [
+                                            { $ne: ['$halfType', null] },
+                                            { $ne: ['$halfType', ''] },
+                                            { $in: ['On-Leave', '$attendanceStatus'] },
+                                        ],
+                                    },
+                                    0.5,  // Half-day present (employee worked half-day, took leave for other half)
+                                    1,    // Full day present
+                                ],
+                            },
                             0,
                         ],
                     },
@@ -2342,28 +2359,13 @@ export class PayrollService extends BaseService {
             // Count mandatory holidays
             const mandatoryHolidayCount = mandatoryHolidays.length;
 
-            // Get APPROVED restricted_holiday leaves for this employee in this month
-            // Note: Restricted holidays are now part of the Leave system (leaveType: 'restricted_holiday')
-            const approvedRestrictedHolidays = await Leave.find({
-                userId: employeeId,
-                leaveType: 'restricted_holiday',
-                status: 'Approved',
-                $or: [
-                    { startDate: { $gte: firstDay, $lte: lastDay } },
-                    { endDate: { $gte: firstDay, $lte: lastDay } },
-                ],
-            }).select('noOfDays').lean();
+            // ✅ FIX: Exclude approved restricted_holiday leaves from holidayDays
+            // Restricted holidays (optional holidays) taken as leave are now counted in approvedLeaves
+            // Only mandatory holidays are counted in holidayDays to prevent double-counting
+            // Total holiday days = mandatory holidays only (approved restricted holidays are in approvedLeaves)
+            holidayDays = mandatoryHolidayCount;
 
-            // Sum all noOfDays to get total restricted holiday days (supports decimals if needed)
-            const approvedRestrictedHolidayDays = approvedRestrictedHolidays.reduce(
-                (sum, leave) => sum + (leave.noOfDays || 0),
-                0
-            );
-
-            // Total holiday days = mandatory + approved restricted holidays
-            holidayDays = mandatoryHolidayCount + Math.round(approvedRestrictedHolidayDays);
-
-            console.log(`Holiday breakdown: ${mandatoryHolidayCount} mandatory + ${approvedRestrictedHolidayDays} approved restricted holidays = ${holidayDays} total`);
+            console.log(`Holiday breakdown: ${mandatoryHolidayCount} mandatory holidays (approved restricted holidays counted in approvedLeaves)`);
         }
 
         console.log(holidayDays, 'holidayDays after holidayCalendarId');
