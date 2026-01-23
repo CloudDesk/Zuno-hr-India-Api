@@ -1101,23 +1101,36 @@ export class DocumentService extends BaseService {
         console.log(payslipDocuments, 'payslipDocuments getPayslipDocumentsForUsers');
 
         // Transform to match legacy format
-        return payslipDocuments.map(doc => ({
-            _id: doc._id,
-            userId: doc.employeeId._id,
-            employeeId: doc.employeeId,
-            status: doc.status,
-            payslipUrl: doc.filePath,
-            accessLevel: doc.accessLevel,
-            isExport: doc.status === 'Sent' || doc.status === 'Exported',
-            monthYear: doc.metadata.payslip?.monthYear,
-            month: doc.metadata.payslip?.month,
-            year: doc.metadata.payslip?.year,
-            netSalary: doc.metadata.payslip?.netSalary,
-            grossSalary: doc.metadata.payslip?.paySummary?.gross,
-            totalDeductions: doc.metadata.payslip?.paySummary?.deductions,
-            reimbursement: doc.metadata.payslip?.paySummary?.reimbursement,
-            bonus: doc.metadata.payslip?.paySummary?.bonus
-        }));
+        return payslipDocuments.map(doc => {
+            // Check if this is a manual upload (payrollId is null)
+            const isManual = doc.metadata.payslip?.payrollId === null || doc.metadata.payslip?.payrollId === undefined;
+
+            // Base response fields (always included)
+            const baseResponse: any = {
+                _id: doc._id,
+                userId: doc.employeeId._id,
+                employeeId: doc.employeeId,
+                status: doc.status,
+                payslipUrl: doc.filePath,
+                accessLevel: doc.accessLevel,
+                isExport: doc.status === 'Sent' || doc.status === 'Exported',
+                monthYear: doc.metadata.payslip?.monthYear,
+                month: doc.metadata.payslip?.month,
+                year: doc.metadata.payslip?.year,
+                isManual: isManual, // Add flag to identify manual uploads
+            };
+
+            // Only include salary fields for generated payslips (not manual uploads)
+            if (!isManual) {
+                baseResponse.netSalary = doc.metadata.payslip?.netSalary;
+                baseResponse.grossSalary = doc.metadata.payslip?.paySummary?.gross;
+                baseResponse.totalDeductions = doc.metadata.payslip?.paySummary?.deductions;
+                baseResponse.reimbursement = doc.metadata.payslip?.paySummary?.reimbursement;
+                baseResponse.bonus = doc.metadata.payslip?.paySummary?.bonus;
+            }
+
+            return baseResponse;
+        });
     }
 
     /**
@@ -1153,6 +1166,9 @@ export class DocumentService extends BaseService {
             const payslipData = doc.metadata.payslip;
             const paySummary = payslipData?.paySummary || {};
 
+            // Check if this is a manual upload (payrollId is null)
+            const isManual = payslipData?.payrollId === null || payslipData?.payrollId === undefined;
+
             if (!payslipData) {
                 return {
                     payslipId: doc._id.toString(),
@@ -1180,30 +1196,54 @@ export class DocumentService extends BaseService {
                 };
             }
 
-            return {
+            // Base response with common fields
+            const baseResponse: any = {
                 payslipId: doc._id.toString(),
                 employeeId: employee._id.toString(),
                 employeeName: employee.name,
                 email: employee.email,
                 month: payslipData.month,
                 year: payslipData.year,
-                basic: paySummary && typeof paySummary === 'object' && 'basic' in paySummary ? Number(paySummary.basic) : 0,
-                hra: paySummary && typeof paySummary === 'object' && 'hra' in paySummary ? Number(paySummary.hra) : 0,
-                da: paySummary && typeof paySummary === 'object' && 'da' in paySummary ? Number(paySummary.da) : 0,
-                otherAllowance: paySummary && typeof paySummary === 'object' && 'otherAllowance' in paySummary ? Number(paySummary.otherAllowance) : 0,
                 monthYear: payslipData.monthYear,
-                epfEmployee: paySummary && typeof paySummary === 'object' && 'epfEmployee' in paySummary ? Number(paySummary.epfEmployee) : 0,
-                professionalTax: paySummary && typeof paySummary === 'object' && 'professionalTax' in paySummary ? Number(paySummary.professionalTax) : 0,
-                incomeTax: paySummary && typeof paySummary === 'object' && 'incomeTax' in paySummary ? Number(paySummary.incomeTax) : 0,
-                overtimePay: paySummary && typeof paySummary === 'object' && 'overtimePay' in paySummary ? Number(paySummary.overtimePay) : 0,
-                grossSalary: paySummary && typeof paySummary === 'object' && 'grossSalary' in paySummary ? Number(paySummary.grossSalary) : 0,
-                netSalary: Number(payslipData.netSalary),
-                ctc: paySummary && typeof paySummary === 'object' && 'ctc' in paySummary ? Number(paySummary.ctc) : 0,
-                totalDeductions: paySummary && typeof paySummary === 'object' && 'totalDeductions' in paySummary ? Number(paySummary.totalDeductions) : 0,
-                reimbursement: paySummary && typeof paySummary === 'object' && 'reimbursement' in paySummary ? Number(paySummary.reimbursement) : 0,
-                bonus: paySummary && typeof paySummary === 'object' && 'bonus' in paySummary ? Number(paySummary.bonus) : 0,
                 payslipUrl: doc.filePath
             };
+
+            // Only include salary fields for generated payslips (not manual uploads)
+            if (!isManual) {
+                baseResponse.basic = paySummary && typeof paySummary === 'object' && 'basic' in paySummary ? Number(paySummary.basic) : 0;
+                baseResponse.hra = paySummary && typeof paySummary === 'object' && 'hra' in paySummary ? Number(paySummary.hra) : 0;
+                baseResponse.da = paySummary && typeof paySummary === 'object' && 'da' in paySummary ? Number(paySummary.da) : 0;
+                baseResponse.otherAllowance = paySummary && typeof paySummary === 'object' && 'otherAllowance' in paySummary ? Number(paySummary.otherAllowance) : 0;
+                baseResponse.epfEmployee = paySummary && typeof paySummary === 'object' && 'epfEmployee' in paySummary ? Number(paySummary.epfEmployee) : 0;
+                baseResponse.professionalTax = paySummary && typeof paySummary === 'object' && 'professionalTax' in paySummary ? Number(paySummary.professionalTax) : 0;
+                baseResponse.incomeTax = paySummary && typeof paySummary === 'object' && 'incomeTax' in paySummary ? Number(paySummary.incomeTax) : 0;
+                baseResponse.overtimePay = paySummary && typeof paySummary === 'object' && 'overtimePay' in paySummary ? Number(paySummary.overtimePay) : 0;
+                baseResponse.grossSalary = paySummary && typeof paySummary === 'object' && 'grossSalary' in paySummary ? Number(paySummary.grossSalary) : 0;
+                baseResponse.netSalary = Number(payslipData.netSalary);
+                baseResponse.ctc = paySummary && typeof paySummary === 'object' && 'ctc' in paySummary ? Number(paySummary.ctc) : 0;
+                baseResponse.totalDeductions = paySummary && typeof paySummary === 'object' && 'totalDeductions' in paySummary ? Number(paySummary.totalDeductions) : 0;
+                baseResponse.reimbursement = paySummary && typeof paySummary === 'object' && 'reimbursement' in paySummary ? Number(paySummary.reimbursement) : 0;
+                baseResponse.bonus = paySummary && typeof paySummary === 'object' && 'bonus' in paySummary ? Number(paySummary.bonus) : 0;
+            } else {
+                // For manual uploads, set all salary fields to 0 (or omit them)
+                // Setting to 0 to maintain response structure compatibility
+                baseResponse.basic = 0;
+                baseResponse.hra = 0;
+                baseResponse.da = 0;
+                baseResponse.otherAllowance = 0;
+                baseResponse.epfEmployee = 0;
+                baseResponse.professionalTax = 0;
+                baseResponse.incomeTax = 0;
+                baseResponse.overtimePay = 0;
+                baseResponse.grossSalary = 0;
+                baseResponse.netSalary = 0;
+                baseResponse.ctc = 0;
+                baseResponse.totalDeductions = 0;
+                baseResponse.reimbursement = 0;
+                baseResponse.bonus = 0;
+            }
+
+            return baseResponse;
         });
 
         console.log(formattedPayslips, "formattedPayslips getEmployeePayslipDocuments");
@@ -2846,7 +2886,7 @@ export class DocumentService extends BaseService {
             uploadedBy: new Types.ObjectId(this.context.user?._id || employeeId),
             version: existingDocument ? existingDocument.version + 1 : 1,
             accessLevel: 'Private' as const,
-            status: 'Generated' as const,
+            status: 'Uploaded' as const, // Manual uploads have status 'Uploaded'
             metadata: {
                 payslip: {
                     payrollId: null, // No payrollId for manually uploaded payslips
