@@ -20,6 +20,24 @@ attendanceStatus: ('Present' | 'Late' | 'On-Time' | 'Early-Exit' | 'Absent' |
 
 ---
 
+## Important Rule: When 'Present' is Added
+
+**`'Present'` is ONLY added to `attendanceStatus` for valid working days when attendance is complete (both IN and OUT swipes exist).**
+
+### ✅ 'Present' IS Added For:
+- **Valid Working Days**: When employee completes both IN and OUT swipes on a regular working day
+- **Regularization Approval**: When regularization is approved for a valid working day
+- **Bulk Upload**: For valid attendance records from file upload
+
+### ❌ 'Present' is NOT Added For:
+- **Holiday Swipes**: Status remains `['Holiday-Swipe']` only, even with both IN and OUT swipes
+- **Leave Dates**: Status remains `['On-Leave']` only
+- **Absent Days**: Status remains `['Absent']` only
+
+**Rationale**: This ensures that holidays and leaves are not counted as "present" working days in payroll and attendance calculations. Holidays and leaves have their own distinct statuses.
+
+---
+
 ## Service-by-Service Verification
 
 ### 1. Biometric Attendance Service (`src/services/biometric-attendance.service.ts`)
@@ -31,11 +49,13 @@ attendanceStatus: ('Present' | 'Late' | 'On-Time' | 'Early-Exit' | 'Absent' |
 - `'holiday_swipe'` - Set manually (line 407)
 
 #### ✅ AttendanceStatus Values Used
-- `['Holiday-Swipe']` - Line 408 (holiday detection)
+- `['Holiday-Swipe']` - Line 408 (holiday detection) - **Note: 'Present' NOT added for holidays**
 - `['Late']` or `['On-Time']` - Line 568 (first swipe)
-- `['Present']` - Line 647 (second swipe)
+- `['Present']` - Line 647 (second swipe) - **Only for valid working days**
 - `['Early-Exit']` - Line 642 (second swipe)
 - `['Out-Of-Window']` - Line 836 (out-of-window swipe)
+
+**Important Rule**: `'Present'` is **only** added for valid working days when both IN and OUT swipes exist. For holiday swipes, even with both swipes, `'Present'` is **NOT** added - only `['Holiday-Swipe']` is maintained.
 
 #### ⚠️ Issues Found
 - **Line 371**: Status not explicitly set during creation (relies on pre-save hook) - **This is correct behavior**
@@ -54,7 +74,9 @@ attendanceStatus: ('Present' | 'Late' | 'On-Time' | 'Early-Exit' | 'Absent' |
 #### ✅ AttendanceStatus Values Used
 - `['Holiday-Swipe']` - Line 1643 (restricted holiday with swipes)
 - `['On-Leave']` - Line 1669 (regular leave or restricted holiday without swipes)
-- `['Absent']` - Line 1709 (leave rejected/cancelled)
+- `['On-Leave', 'Present']` - Line 1688-1700 (half-day leave with swipes)
+- `['Present', 'Absent']` - Line 1764-1768 (half-day leave rejected with swipes - 0.5 LOP)
+- `['Absent']` - Line 1709, 1775 (leave rejected/cancelled)
 
 #### ❌ Issues Found
 
@@ -83,7 +105,22 @@ attendanceStatus: ('Present' | 'Late' | 'On-Time' | 'Early-Exit' | 'Absent' |
 }
 ```
 
-#### ✅ Verification Result: **PASS** (Fixed - `leave_swipe` status now set for regular leaves)
+#### ✅ Half-Day Leave Handling
+
+**Half-Day Leave Approval** (Lines 1683-1707):
+- ✅ `halfType` is set to `'First Half'` or `'Second Half'` (line 1684)
+- ✅ If swipes exist: `attendanceStatus: ['On-Leave', 'Present']` (both statuses for payroll)
+- ✅ If no swipes: `attendanceStatus: ['On-Leave']`
+- ✅ `halfType` is set regardless of whether swipes exist
+
+**Half-Day Leave Rejection** (Lines 1753-1790):
+- ✅ If swipes exist: `attendanceStatus: ['Present', 'Absent']` (0.5 Present + 0.5 LOP)
+- ✅ If no swipes: `attendanceStatus: ['Absent']` (0.5 LOP)
+- ✅ `halfType` is cleared on rejection
+
+**Important Rule**: `halfType` is **ONLY** set for half-day leaves, **NOT** for full-day leaves.
+
+#### ✅ Verification Result: **PASS** (Fixed - `leave_swipe` status now set for regular leaves, half-day leave handling verified)
 
 ---
 
@@ -157,11 +194,60 @@ if (attendance) {
 ### 5. Attendance Override Service (`src/services/attendance-override.service.ts`)
 
 #### ✅ Status Values Used
-- `'overridden'` - Line 182, 259 (override creation/update)
+- `'overridden'` - Line 182, 259 (override creation for Present/Absent/Holiday)
+- `'leave_swipe'` - Line 773 (On-Leave override - special case)
+- `'incomplete'` - Line 881 (Absent override for new record)
 
 #### ✅ AttendanceStatus Values Used
 - Must include `'Override'` - Line 55, 362 (validation)
 - Can include: `'Present'`, `'Absent'`, `'On-Leave'`, `'Holiday-Swipe'` - Line 60
+
+#### Override Behavior: Record Exists vs Doesn't Exist
+
+**When Record EXISTS**:
+- Original values stored in `override` object (lines 115-120)
+- All fields replaced with override values
+- Regularization cleared (lines 278-280)
+- Status set to `'overridden'` (except On-Leave → `'leave_swipe'`)
+
+**When Record Does NOT Exist**:
+- New record created with override data
+- No original values to store
+- Status set to `'overridden'` (except On-Leave → `'leave_swipe'`)
+
+#### Override Status Values by Type
+
+| Override Type | status (New) | status (Existing) | attendanceStatus | Swipes | Work Hours | Notes |
+|--------------|-------------|-------------------|------------------|--------|------------|-------|
+| **Present** | `'overridden'` | `'overridden'` | `['Override', 'Present']` | 2 swipes (shiftStart/shiftEnd) | Full shift | Uses exact shift times |
+| **Absent** | `'incomplete'` | `'overridden'` | `['Override', 'Absent']` | Empty | `'00:00:00'` | Shortfall = full shift |
+| **Holiday-Swipe** | `'overridden'` | `'overridden'` | `['Override', 'Holiday-Swipe']` | Empty | `'00:00:00'` | No shortfall |
+| **On-Leave** | `'leave_swipe'` | `'leave_swipe'` | `['Override', 'On-Leave']` | Empty | `'00:00:00'` | Creates/approves leave |
+
+#### Special Cases
+
+**On-Leave Override** (lines 595-840):
+- Checks for existing leave request
+- If pending → Auto-approves it
+- If none → Creates and approves new leave
+- If no leave balance → Falls back to Absent override
+- Status: `'leave_swipe'` (NOT `'overridden'`)
+
+**Override Update** (lines 337-424):
+- Only updates fields if provided
+- Must include `'Override'` in `attendanceStatus`
+- Adds history entry for each update
+
+**Override Removal** (lines 429-488):
+- Can restore original values if `restoreOriginal === true`
+- Otherwise only removes `'Override'` from `attendanceStatus`
+- History preserved, `isOverridden` set to `false`
+
+#### ⚠️ Important Notes
+- Cannot override if `regularization.status === 'Pending'` (line 200-202)
+- Original swipes are NOT preserved - replaced with override swipes
+- Regularization is cleared when override is applied
+- On-Leave override integrates with leave system (creates/approves leave requests)
 
 #### ✅ Verification Result: **PASS**
 
@@ -279,6 +365,8 @@ if (attendance) {
 | `'Early-Exit'` | Biometric service, Bulk upload | ✅ | ✅ |
 | `'Absent'` | Leave service (rejection) | ✅ | ✅ |
 | `'On-Leave'` | Leave service, Regularization (rejection with leave) | ✅ | ✅ |
+| `'On-Leave', 'Present'` | Leave service (half-day leave with swipes) | ✅ | ✅ |
+| `'Present', 'Absent'` | Leave service (half-day leave rejected with swipes) | ✅ | ✅ |
 | `'Out-Of-Window'` | Biometric service, Bulk upload | ✅ | ✅ |
 | `'Holiday-Swipe'` | Biometric service, Leave service, Optional holiday, Bulk upload | ✅ | ✅ |
 | `'Pending-Regularization'` | Regularization service | ✅ | ✅ |
@@ -377,9 +465,27 @@ attendanceRecord.status = 'regularized';  // More descriptive
 - [x] Data migration service verified
 - [x] Pre-save hook verified
 - [x] **TODO**: Apply fixes for identified issues - **COMPLETED**
+- [x] **'Present' Status Rule**: Documented and verified - **COMPLETED**
 
 ---
 
-**Document Version**: 1.1  
+## 'Present' Status Summary
+
+### When 'Present' IS Added:
+1. ✅ **Normal Second Swipe** (`processSecondSwipe`) - Valid working days only
+2. ✅ **Multiple Swipes** (`processMultipleSwipes`) - Valid working days only
+3. ✅ **Bulk Upload** - Valid attendance records
+4. ✅ **Regularization Approval** - For valid working days
+
+### When 'Present' is NOT Added:
+1. ❌ **Holiday Swipes** - Status remains `['Holiday-Swipe']` only (by design)
+2. ❌ **Leave Dates** - Status remains `['On-Leave']` only (by design)
+3. ❌ **Absent Days** - Status remains `['Absent']` only (by design)
+
+**This ensures holidays and leaves are not counted as "present" working days in payroll calculations.**
+
+---
+
+**Document Version**: 1.2  
 **Last Updated**: 2024  
-**Status**: Verification Complete - All Critical Issues Fixed
+**Status**: Verification Complete - All Critical Issues Fixed - 'Present' Status Rule Documented

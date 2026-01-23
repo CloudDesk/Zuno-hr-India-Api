@@ -647,6 +647,24 @@ export class BiometricAttendanceService extends BaseService {
       record.attendanceStatus.push('Present');
     }
 
+    // Check if this is a half-day leave day - preserve 'On-Leave' status if present
+    // This handles the case where swipes are added AFTER half-day leave approval
+    if (record.halfType && !record.attendanceStatus.includes('On-Leave')) {
+      // Check if there's an approved half-day leave for this date
+      const { Leave } = await import('../models/leave.model');
+      const approvedHalfDayLeave = await Leave.findOne({
+        userId: record.userId,
+        shiftDay: record.shiftDay,
+        status: 'Approved',
+        leaveDuration: 'half-day',
+      });
+      
+      if (approvedHalfDayLeave) {
+        // Preserve 'On-Leave' status for half-day leave
+        record.attendanceStatus.push('On-Leave');
+      }
+    }
+
     // Update regularization flag
     record.needsRegularization =
       record.isLateEntry ||
@@ -740,6 +758,24 @@ export class BiometricAttendanceService extends BaseService {
     }
     if (!record.attendanceStatus.includes('Present')) {
       record.attendanceStatus.push('Present');
+    }
+
+    // Check if this is a half-day leave day - preserve 'On-Leave' status if present
+    // This handles the case where swipes are added AFTER half-day leave approval
+    if (record.halfType && !record.attendanceStatus.includes('On-Leave')) {
+      // Check if there's an approved half-day leave for this date
+      const { Leave } = await import('../models/leave.model');
+      const approvedHalfDayLeave = await Leave.findOne({
+        userId: record.userId,
+        shiftDay: record.shiftDay,
+        status: 'Approved',
+        leaveDuration: 'half-day',
+      });
+      
+      if (approvedHalfDayLeave) {
+        // Preserve 'On-Leave' status for half-day leave
+        record.attendanceStatus.push('On-Leave');
+      }
     }
 
     // Update regularization flag
@@ -1126,6 +1162,8 @@ export class BiometricAttendanceService extends BaseService {
             record.lastOut = lastOutSwipe.timestamp;
           }
         }
+        // Note: For holiday swipes, we do NOT add 'Present' - only 'Holiday-Swipe' status is maintained
+        // 'Present' is only added for valid working days (handled in processSecondSwipe/processMultipleSwipes)
         await record.save();
         return {
           success: true,

@@ -1678,11 +1678,39 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
           }
         } else {
           // All other leave cases (Regular leaves or Restricted Holiday without swipes)
-          updateFields.attendanceStatus = ['On-Leave'];
-
+          
           // India-specific: Handle half-day leave type
           if (leave.leaveDuration === 'half-day' && leave.halfDayType) {
+            // ✅ halfType is SET ONLY for half-day leaves
             updateFields.halfType = leave.halfDayType === 'first-half' ? 'First Half' : 'Second Half';
+            
+            // For half-day leave: Check if employee has swipes (worked the other half)
+            // If swipes exist, add both 'On-Leave' and 'Present' to attendanceStatus
+            if (hasSwipes && existingRecord) {
+              // Employee worked one half and took leave for the other half
+              const currentStatus = existingRecord.attendanceStatus || [];
+              updateFields.attendanceStatus = [...currentStatus];
+              
+              // Add 'On-Leave' if not already present
+              if (!updateFields.attendanceStatus.includes('On-Leave')) {
+                updateFields.attendanceStatus.push('On-Leave');
+              }
+              
+              // Add 'Present' if not already present (employee worked the other half)
+              if (!updateFields.attendanceStatus.includes('Present')) {
+                updateFields.attendanceStatus.push('Present');
+              }
+              
+              // Preserve other statuses like 'Late', 'Early-Exit', etc.
+            } else {
+              // No swipes - full half-day leave only
+              // ✅ halfType is still set (line 1684) even with no swipes
+              updateFields.attendanceStatus = ['On-Leave'];
+            }
+          } else {
+            // Full-day leave
+            // ✅ halfType is NOT set for full-day leaves (only set inside the if block above)
+            updateFields.attendanceStatus = ['On-Leave'];
           }
         }
 
@@ -1713,6 +1741,43 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
         console.log(leave.userId);
         console.log(leave, 'leave updated ==>> ');
 
+        // Find existing attendance record to check for swipes
+        const existingRecord = await AttendanceRecord.findOne({
+          userId: leave.userId,
+          shiftDay: currentDate,
+          leaveRequestId: leave._id,
+        });
+
+        const hasSwipes = existingRecord && existingRecord.swipes && existingRecord.swipes.length > 0;
+        const isHalfDayLeave = leave.leaveDuration === 'half-day';
+
+        let attendanceStatusUpdate: string[];
+
+        if (isHalfDayLeave && hasSwipes) {
+          // Half-day leave rejected but employee has swipes (worked the other half)
+          // Check if employee has leave balance to cover the rejected half-day
+          // For now, if rejected and no balance, it's 0.5 days LOP (Absent)
+          // If has balance, we could potentially auto-apply, but that's complex
+          // So for rejection: If swipes exist, preserve Present status but mark as Absent for the rejected half
+          // This indicates: worked one half, but rejected half = 0.5 LOP
+          const currentStatus = existingRecord.attendanceStatus || [];
+          attendanceStatusUpdate = [...currentStatus];
+          
+          // Remove 'On-Leave' if present
+          attendanceStatusUpdate = attendanceStatusUpdate.filter(s => s !== 'On-Leave');
+          
+          // Add 'Absent' to indicate the rejected half-day (0.5 LOP)
+          if (!attendanceStatusUpdate.includes('Absent')) {
+            attendanceStatusUpdate.push('Absent');
+          }
+          
+          // Keep 'Present' if it exists (employee worked the other half)
+          // This allows payroll to calculate: 0.5 Present + 0.5 Absent (LOP)
+        } else {
+          // Full-day leave rejected or half-day with no swipes
+          attendanceStatusUpdate = ["Absent"];
+        }
+
         // Revert attendance records for the leave period
         let resatten = await AttendanceRecord.findOneAndUpdate(
           {
@@ -1722,10 +1787,11 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
           },
           {
             $set: {
-              // status: 'present',
-              attendanceStatus: ["Absent"],
+              attendanceStatus: attendanceStatusUpdate,
               updatedAt: new Date(),
               updatedBy: updateData.rejectedById || updateData.approvedById,
+              // Clear halfType if it was set
+              ...(isHalfDayLeave ? { halfType: undefined } : {}),
             },
             $unset: {
               leaveRequestId: '',
