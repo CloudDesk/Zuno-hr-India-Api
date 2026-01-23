@@ -900,15 +900,38 @@ export class UserService extends BaseService {
       }
     }
 
-    // ✅ FIX: Handle empty emergencyContact object - convert to undefined
-    if (data.emergencyContact && typeof data.emergencyContact === 'object') {
-      const hasAnyValue = Object.values(data.emergencyContact).some(
-        value => value !== null && value !== undefined && value !== ''
-      );
-      if (!hasAnyValue) {
-        // Empty object - remove it to avoid validation issues
-        delete (data as any).emergencyContact;
-        console.log('🔄 Service: Removed empty emergencyContact object');
+    // ✅ FIX: Handle emergencyContact - validate and transform
+    if (data.emergencyContact !== undefined) {
+      // If emergencyContact is a primitive (string/number), assume it's a mobile number
+      if (typeof data.emergencyContact === 'string' || typeof data.emergencyContact === 'number') {
+        const mobileNo = String(data.emergencyContact).trim();
+        if (mobileNo) {
+          // Transform primitive value to proper object structure
+          (data as any).emergencyContact = {
+            mobileNo: mobileNo
+          };
+          console.log('🔄 Service Create: Converted primitive emergencyContact to object with mobileNo:', mobileNo);
+        } else {
+          // Empty string/number - explicitly set to undefined to remove it
+          (data as any).emergencyContact = undefined;
+          console.log('🔄 Service Create: Set empty primitive emergencyContact to undefined');
+        }
+      }
+      // If emergencyContact is an object, check if it's empty
+      else if (typeof data.emergencyContact === 'object' && data.emergencyContact !== null) {
+        const hasAnyValue = Object.values(data.emergencyContact).some(
+          value => value !== null && value !== undefined && value !== ''
+        );
+        if (!hasAnyValue) {
+          // Empty object - explicitly set to undefined to remove it
+          (data as any).emergencyContact = undefined;
+          console.log('🔄 Service Create: Set empty emergencyContact object to undefined');
+        }
+      }
+      // If emergencyContact is null, set to undefined
+      else if (data.emergencyContact === null) {
+        (data as any).emergencyContact = undefined;
+        console.log('🔄 Service Create: Set null emergencyContact to undefined');
       }
     }
 
@@ -961,6 +984,7 @@ export class UserService extends BaseService {
     console.log('📝 [User Update] Update request received');
     console.log('📦 Update data:', JSON.stringify(data, null, 2));
     console.log('🔍 Active field in update data:', data.active, '(type:', typeof data.active, ')');
+    console.log('🔍 EmergencyContact in update data:', data.emergencyContact, '(type:', typeof data.emergencyContact, ')');
     console.log('🆔 User ID:', id);
 
     const user = await User.findById(id);
@@ -1037,23 +1061,69 @@ export class UserService extends BaseService {
       }
     }
 
-    // ✅ FIX: Handle empty emergencyContact object - convert to undefined
-    if (data.emergencyContact && typeof data.emergencyContact === 'object') {
-      const hasAnyValue = Object.values(data.emergencyContact).some(
-        value => value !== null && value !== undefined && value !== ''
-      );
-      if (!hasAnyValue) {
-        // Empty object - remove it to avoid validation issues
-        delete (data as any).emergencyContact;
-        console.log('🔄 Service Update: Removed empty emergencyContact object');
+    // ✅ FIX: Handle emergencyContact - validate and transform
+    if (data.emergencyContact !== undefined) {
+      // If emergencyContact is a primitive (string/number), assume it's a mobile number
+      if (typeof data.emergencyContact === 'string' || typeof data.emergencyContact === 'number') {
+        const mobileNo = String(data.emergencyContact).trim();
+        if (mobileNo) {
+          // Transform primitive value to proper object structure
+          (data as any).emergencyContact = {
+            mobileNo: mobileNo
+          };
+          console.log('🔄 Service Update: Converted primitive emergencyContact to object with mobileNo:', mobileNo);
+        } else {
+          // Empty string/number - explicitly set to undefined to remove it
+          (data as any).emergencyContact = undefined;
+          console.log('🔄 Service Update: Set empty primitive emergencyContact to undefined');
+        }
+      }
+      // If emergencyContact is an object, check if it's empty
+      else if (typeof data.emergencyContact === 'object' && data.emergencyContact !== null) {
+        const hasAnyValue = Object.values(data.emergencyContact).some(
+          value => value !== null && value !== undefined && value !== ''
+        );
+        if (!hasAnyValue) {
+          // Empty object - explicitly set to undefined to remove it
+          (data as any).emergencyContact = undefined;
+          console.log('🔄 Service Update: Set empty emergencyContact object to undefined');
+        }
+      }
+      // If emergencyContact is null, set to undefined
+      else if (data.emergencyContact === null) {
+        (data as any).emergencyContact = undefined;
+        console.log('🔄 Service Update: Set null emergencyContact to undefined');
+      }
+    }
+
+    // ✅ FIX: Check if existing user has primitive emergencyContact that needs to be cleared
+    // This must happen BEFORE Object.assign to ensure the primitive value is cleared
+    if (user.emergencyContact && (typeof user.emergencyContact === 'string' || typeof user.emergencyContact === 'number')) {
+      console.log('⚠️ Service Update: Existing user has primitive emergencyContact:', user.emergencyContact, '(type:', typeof user.emergencyContact, ')');
+      // If we're clearing it (undefined) or not updating it, explicitly set to undefined
+      if (data.emergencyContact === undefined || (data.emergencyContact && typeof data.emergencyContact === 'object')) {
+        (user as any).emergencyContact = undefined;
+        console.log('🔄 Service Update: Cleared existing primitive emergencyContact from user object');
       }
     }
 
     // Log before assignment
     console.log('🔄 [User Update] Before Object.assign - user.active:', user.active);
     console.log('🔄 [User Update] data.active:', data.active);
+    console.log('🔄 [User Update] Before Object.assign - user.emergencyContact:', user.emergencyContact, '(type:', typeof user.emergencyContact, ')');
+    console.log('🔄 [User Update] Before Object.assign - data.emergencyContact:', data.emergencyContact, '(type:', typeof data.emergencyContact, ')');
 
     Object.assign(user, data);
+
+    console.log('🔄 [User Update] After Object.assign - user.emergencyContact:', user.emergencyContact, '(type:', typeof user.emergencyContact, ')');
+
+    // ✅ FIX: If emergencyContact is undefined and user still has a primitive value, explicitly unset it
+    if (data.emergencyContact === undefined && user.emergencyContact && (typeof user.emergencyContact === 'string' || typeof user.emergencyContact === 'number')) {
+      (user as any).emergencyContact = undefined;
+      // Use Mongoose's markModified to ensure the field is properly unset
+      user.markModified('emergencyContact');
+      console.log('🔄 Service Update: Force cleared primitive emergencyContact after Object.assign');
+    }
 
     // Log after assignment
     console.log('✅ [User Update] After Object.assign - user.active:', user.active);

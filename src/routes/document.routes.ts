@@ -398,6 +398,300 @@ export const documentRoutes = async (
         }
     );
 
+    /**
+     * Admin Upload Payslip - Upload payslip for employee
+     * POST /documents/payslip/admin/upload
+     * Uses same structure as generated payslips (type='Payslip', category='Payroll')
+     */
+    fastify.post(
+        '/payslip/admin/upload',
+        {
+            onRequest: [authenticate],
+        },
+        async (request: FastifyRequest, reply: FastifyReply) => {
+            try {
+                // Parse multipart form data
+                const { body, files } = await parseMultipartForm(request);
+
+                if (!files || files.length === 0) {
+                    return reply.status(400).send({
+                        success: false,
+                        error: 'No file uploaded'
+                    });
+                }
+
+                const file = files[0];
+
+                // Extract form data
+                const { employeeId, month, year, netSalary } = body;
+
+                // Validate required fields
+                if (!employeeId || !month || !year) {
+                    return reply.status(400).send({
+                        success: false,
+                        error: 'Missing required fields: employeeId, month, year'
+                    });
+                }
+
+                // Validate month and year
+                const monthNum = parseInt(month as string);
+                const yearNum = parseInt(year as string);
+
+                if (isNaN(monthNum) || monthNum < 1 || monthNum > 12) {
+                    return reply.status(400).send({
+                        success: false,
+                        error: 'Invalid month. Month must be between 1 and 12.'
+                    });
+                }
+
+                if (isNaN(yearNum) || yearNum < 2000 || yearNum > 2100) {
+                    return reply.status(400).send({
+                        success: false,
+                        error: 'Invalid year. Year must be between 2000 and 2100.'
+                    });
+                }
+
+                // Parse netSalary if provided
+                const netSalaryNum = netSalary ? parseFloat(netSalary as string) : undefined;
+
+                const documentService = request.container!.documentService;
+
+                // Upload payslip document
+                const document = await documentService.adminUploadPayslip(
+                    employeeId as string,
+                    monthNum,
+                    yearNum,
+                    file,
+                    netSalaryNum
+                );
+
+                const employee = await User.findById(employeeId as string);
+
+                return reply.status(200).send({
+                    success: true,
+                    message: 'Payslip uploaded successfully',
+                    data: {
+                        documentId: document._id,
+                        employeeId: employeeId,
+                        employeeName: employee?.name,
+                        month: monthNum,
+                        year: yearNum,
+                        monthYear: `${yearNum}-${monthNum <= 9 ? `0${monthNum}` : monthNum}`,
+                        fileName: document.fileName,
+                        filePath: document.filePath,
+                        status: document.status,
+                        uploadedAt: document.uploadDate
+                    }
+                });
+            } catch (error) {
+                const errorMessage = error instanceof Error ? error.message : String(error);
+                console.error('Error during admin payslip upload:', errorMessage);
+                return reply.status(500).send({
+                    success: false,
+                    error: `Internal server error: ${errorMessage}`
+                });
+            }
+        }
+    );
+
+    /**
+     * Admin Upload Payslips For Year - Upload multiple payslips for a full year in single API
+     * Validates months based on employee's joining date
+     * POST /documents/payslip/admin/upload/year
+     */
+    fastify.post(
+        '/payslip/admin/upload/year',
+        {
+            onRequest: [authenticate],
+        },
+        async (request: FastifyRequest, reply: FastifyReply) => {
+            try {
+                // Parse multipart form data
+                const { body, files } = await parseMultipartForm(request);
+
+                // Extract required fields
+                const { employeeId, year } = body;
+
+                // Pre-validation (fail-fast)
+                if (!employeeId) {
+                    return reply.status(400).send({
+                        success: false,
+                        error: 'Missing required field: employeeId'
+                    });
+                }
+
+                if (!year) {
+                    return reply.status(400).send({
+                        success: false,
+                        error: 'Missing required field: year'
+                    });
+                }
+
+                const yearNum = parseInt(year as string);
+                if (isNaN(yearNum) || yearNum < 2000 || yearNum > 2100) {
+                    return reply.status(400).send({
+                        success: false,
+                        error: 'Invalid year. Year must be between 2000 and 2100.'
+                    });
+                }
+
+                // Validate files exist
+                if (!files || files.length === 0) {
+                    return reply.status(400).send({
+                        success: false,
+                        error: 'No files uploaded. Expected 1-12 files (one per month).'
+                    });
+                }
+
+                // Map files to months
+                // Expected field names: file_01, file_02, ..., file_12
+                const filesMap = new Map<number, { file: any; netSalary?: number }>();
+                const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
+                                   'July', 'August', 'September', 'October', 'November', 'December'];
+
+                for (const file of files) {
+                    // Extract month from fieldname (file_01, file_02, etc.)
+                    const match = file.fieldname.match(/^file_(\d{2})$/);
+                    if (!match) {
+                        return reply.status(400).send({
+                            success: false,
+                            error: `Invalid file field name: ${file.fieldname}. Expected format: file_01, file_02, ..., file_12`
+                        });
+                    }
+
+                    const month = parseInt(match[1]);
+                    if (month < 1 || month > 12) {
+                        return reply.status(400).send({
+                            success: false,
+                            error: `Invalid month number in field name ${file.fieldname}. Month must be 01-12.`
+                        });
+                    }
+
+                    if (filesMap.has(month)) {
+                        return reply.status(400).send({
+                            success: false,
+                            error: `Duplicate file for month ${month} (${monthNames[month - 1]}). Only one file per month allowed.`
+                        });
+                    }
+
+                    // Extract netSalary if provided (netSalary_01, netSalary_02, etc.)
+                    const netSalaryField = `netSalary_${match[1]}`;
+                    const netSalary = body[netSalaryField] 
+                        ? parseFloat(body[netSalaryField] as string) 
+                        : undefined;
+
+                    filesMap.set(month, { file, netSalary });
+                }
+
+                // Validate at least 1 file, max 12 files
+                if (filesMap.size === 0) {
+                    return reply.status(400).send({
+                        success: false,
+                        error: 'No valid files found. Expected files with field names: file_01, file_02, ..., file_12'
+                    });
+                }
+
+                if (filesMap.size > 12) {
+                    return reply.status(400).send({
+                        success: false,
+                        error: `Too many files. Maximum 12 files allowed (one per month). Found: ${filesMap.size}`
+                    });
+                }
+
+                // Get employee for response and validation
+                const employee = await User.findById(employeeId as string);
+                if (!employee) {
+                    return reply.status(404).send({
+                        success: false,
+                        error: `Employee with ID ${employeeId} not found`
+                    });
+                }
+
+                if (!employee.active) {
+                    return reply.status(400).send({
+                        success: false,
+                        error: `Employee ${employee.name} is not active`
+                    });
+                }
+
+                // Validate joining date and calculate valid months
+                if (!employee.joiningDate) {
+                    return reply.status(400).send({
+                        success: false,
+                        error: `Employee ${employee.name} does not have a joining date`
+                    });
+                }
+
+                const joiningDate = new Date(employee.joiningDate);
+                const joiningYear = joiningDate.getFullYear();
+                const joiningMonth = joiningDate.getMonth() + 1; // JavaScript months are 0-based
+
+                // Calculate valid months based on joining date
+                let validMonths: number[] = [];
+                if (yearNum === joiningYear) {
+                    // Same year: can only upload from joining month onwards
+                    validMonths = Array.from({ length: 12 - joiningMonth + 1 }, (_, i) => joiningMonth + i);
+                } else if (yearNum > joiningYear) {
+                    // Future year: can upload all 12 months
+                    validMonths = Array.from({ length: 12 }, (_, i) => i + 1);
+                } else {
+                    // Past year: invalid (employee not joined yet)
+                    return reply.status(400).send({
+                        success: false,
+                        error: `Cannot upload payslips for year ${yearNum}. Employee joined on ${joiningDate.toISOString().split('T')[0]} (year ${joiningYear})`
+                    });
+                }
+
+                // Validate all uploaded months are valid
+                const uploadedMonths = Array.from(filesMap.keys());
+                const invalidMonths = uploadedMonths.filter(month => !validMonths.includes(month));
+
+                if (invalidMonths.length > 0) {
+                    const invalidMonthNames = invalidMonths.map(m => monthNames[m - 1]).join(', ');
+                    const validMonthNames = validMonths.map(m => monthNames[m - 1]).join(', ');
+                    return reply.status(400).send({
+                        success: false,
+                        error: `Cannot upload payslips for months: ${invalidMonthNames}. Employee joined on ${joiningDate.toISOString().split('T')[0]} (${monthNames[joiningMonth - 1]} ${joiningYear}). Valid months for ${yearNum}: ${validMonthNames}`
+                    });
+                }
+
+                // Call service method
+                const documentService = request.container!.documentService;
+                const result = await documentService.adminUploadPayslipsForYear(
+                    employeeId as string,
+                    yearNum,
+                    filesMap
+                );
+
+                // Format response
+                return reply.status(200).send({
+                    success: result.failed === 0,
+                    message: result.failed === 0
+                        ? `All ${result.success} payslips uploaded successfully`
+                        : `${result.success} payslips uploaded, ${result.failed} failed`,
+                    data: {
+                        employeeId: employeeId,
+                        employeeName: employee.name,
+                        year: yearNum,
+                        uploaded: result.success,
+                        failed: result.failed,
+                        total: filesMap.size,
+                        payslips: result.payslips,
+                        errors: result.errors
+                    }
+                });
+
+            } catch (error) {
+                const errorMessage = error instanceof Error ? error.message : String(error);
+                console.error('Error during bulk year payslip upload:', errorMessage);
+                return reply.status(500).send({
+                    success: false,
+                    error: `Internal server error: ${errorMessage}`
+                });
+            }
+        }
+    );
+
     // Get payslip records for specific users
     fastify.post(
         '/payslip/search',

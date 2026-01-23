@@ -16,7 +16,7 @@ export interface IDocument extends DocumentM {
     version: number; // Versioning for document updates
     metadata: {
         payslip?: {
-            payrollId: Types.ObjectId; // Reference to Payroll collection
+            payrollId: Types.ObjectId | null; // Reference to Payroll collection (null for manually uploaded payslips)
             monthYear: string; // e.g., '2025-06'
             month: number; // 1-12
             year: number; // e.g., 2025
