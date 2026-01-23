@@ -318,6 +318,12 @@ export class AttendanceRegularizationService extends BaseService {
                 regularizationId: regularization._id,
             }
 
+            // Set status to pending_regularization if not a special status
+            const specialStatuses = ['holiday_swipe', 'leave_swipe', 'overridden', 'regularized'];
+            if (!specialStatuses.includes(attendance.status)) {
+                attendance.status = 'pending_regularization';
+            }
+
             await attendance.save();
             console.log("3 create Att-Regularization", attendance);
         }
@@ -543,6 +549,12 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
                         attendance.attendanceStatus.push('Pending-Regularization');
                     }
                     attendance.needsRegularization = true;
+                    
+                    // Set status to pending_regularization if not a special status
+                    const specialStatuses = ['holiday_swipe', 'leave_swipe', 'overridden', 'regularized'];
+                    if (!specialStatuses.includes(attendance.status)) {
+                        attendance.status = 'pending_regularization';
+                    }
                 }
 
                 // 4. Validate regularization eligibility

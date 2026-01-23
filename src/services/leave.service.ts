@@ -1667,6 +1667,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
         } else {
           // All other leave cases (Regular leaves or Restricted Holiday without swipes)
           updateFields.attendanceStatus = ['On-Leave'];
+          updateFields.status = 'leave_swipe';
         }
 
         await AttendanceRecord.findOneAndUpdate(
