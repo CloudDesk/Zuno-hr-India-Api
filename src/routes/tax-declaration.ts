@@ -1,8 +1,10 @@
 import { FastifyInstance, } from "fastify";
 import { authenticate } from "../middleware/auth";
-import { ITaxDeclarationCreate, ITaxDeclarationUpdate } from "../services/tax-declaration.service";
+import { ITaxDeclarationCreate, ITaxDeclarationUpdate, IMigrationAdjustmentInput } from "../services/tax-declaration.service";
 import { Types } from "mongoose";
 import { filesUpload } from "../config/multer";
+import * as xlsx from 'xlsx';
+import fs from 'fs';
 
 export async function taxDeclarationRoutes(fastify: FastifyInstance): Promise<void> {
     //get all tax declarations
@@ -248,6 +250,161 @@ export async function taxDeclarationRoutes(fastify: FastifyInstance): Promise<vo
                         failedEmployees: result.failedEmployees,
                         details: result.details
                     }
+                });
+
+            } catch (error: any) {
+                return reply.status(400).send({
+                    success: false,
+                    error: { message: error.message }
+                });
+            }
+        }
+    )
+
+    // Migration Adjustment Upload (Admin only - December 2025)
+
+    // Download Migration Template
+    fastify.get('/migration-adjustment/template',
+        {
+            preHandler: [authenticate]
+        },
+        async (request, reply) => {
+            try {
+                const buffer = await request.container!.taxDeclarationService.generateMigrationTemplate();
+
+                reply.header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+                reply.header('Content-Disposition', 'attachment; filename="migration_adjustment_template.xlsx"');
+
+                return reply.send(buffer);
+            } catch (error: any) {
+                return reply.status(400).send({
+                    success: false,
+                    error: { message: error.message }
+                });
+            }
+        }
+    )
+
+    // Migration Adjustment Upload - PREVIEW (Admin only - December 2025)
+    fastify.post('/migration-adjustment/preview',
+        {
+            onRequest: [authenticate, filesUpload]
+        },
+        async (request, reply) => {
+            try {
+                // 1. Check if file is uploaded
+                const files = (request as any).files;
+
+                console.log('[MIGRATION PREVIEW] Files received:', files);
+                if (files) {
+                    console.log('[MIGRATION PREVIEW] Files type:', typeof files);
+                    console.log('[MIGRATION PREVIEW] Is array:', Array.isArray(files));
+                    if (Array.isArray(files)) {
+                        console.log('[MIGRATION PREVIEW] Files length:', files.length);
+                    }
+                }
+
+                if (!files || !Array.isArray(files) || files.length === 0) {
+                    return reply.status(400).send({
+                        success: false,
+                        error: { message: 'No Excel file uploaded or invalid file format' }
+                    });
+                }
+
+                const file = files[0];
+                console.log('[MIGRATION PREVIEW] Uploaded file details:', {
+                    fieldname: file.fieldname,
+                    originalname: file.originalname,
+                    path: file.path,
+                    size: file.size
+                });
+
+                // 2. Parse Excel file (Read from disk since we use diskStorage)
+                if (!file.path) {
+                    throw new Error('File path not found. Multer might be misconfigured.');
+                }
+
+                if (!fs.existsSync(file.path)) {
+                    throw new Error(`File not found on disk at ${file.path}`);
+                }
+
+                const fileBuffer = fs.readFileSync(file.path);
+                const workbook = xlsx.read(fileBuffer, { type: 'buffer' });
+                const sheetName = workbook.SheetNames[0];
+                const worksheet = workbook.Sheets[sheetName];
+                const jsonData = xlsx.utils.sheet_to_json(worksheet);
+
+                if (!jsonData || jsonData.length === 0) {
+                    return reply.status(400).send({
+                        success: false,
+                        error: { message: 'Excel file is empty or invalid' }
+                    });
+                }
+
+                // 3. Transform to IMigrationAdjustmentInput format
+                const migrationData: IMigrationAdjustmentInput[] = jsonData.map((row: any) => ({
+                    employeeId: row.user,
+                    regime: row.regime?.toUpperCase(), // Normalize case
+                    financialYear: row.FY,
+                    externalTaxPaid: Number(row.tax_paid_amount || 0),
+                    externalTaxPaidMonths: Number(row.tax_paid_months || 0),
+                    newSystemTaxToPay: Number(row.tax_to_be_paid_amount || 0),
+                    newSystemTaxMonths: Number(row.tax_to_be_paid_months || 0)
+                }));
+
+                // 4. Get validation preview
+                const previewResult = await request.container!.taxDeclarationService.previewMigrationAdjustment(migrationData);
+
+                // Clean up the temporary file (standard practice for bulk uploads)
+                try {
+                    fs.unlinkSync(file.path);
+                    console.log('[MIGRATION PREVIEW] Temporary file cleaned up');
+                } catch (cleanupError) {
+                    console.warn('[MIGRATION PREVIEW] Failed to cleanup file:', cleanupError);
+                }
+
+                return reply.status(200).send({
+                    success: true,
+                    data: previewResult,
+                    message: `Parsed ${migrationData.length} rows. Found ${previewResult.summary.validRows} valid rows.`
+                });
+
+            } catch (error: any) {
+                console.error('[MIGRATION PREVIEW ERROR]', error);
+                return reply.status(400).send({
+                    success: false,
+                    error: { message: error.message }
+                });
+            }
+        }
+    )
+
+    // Migration Adjustment Upload - CONFIRM (Admin only - December 2025)
+    fastify.post('/migration-adjustment/confirm',
+        {
+            preHandler: [authenticate]
+        },
+        async (request, reply) => {
+            try {
+                const { validRows } = request.body as { validRows: IMigrationAdjustmentInput[] };
+
+                if (!validRows || validRows.length === 0) {
+                    return reply.status(400).send({
+                        success: false,
+                        error: { message: 'No valid rows provided for confirmation' }
+                    });
+                }
+
+                // Apply migration adjustment to the confirmed rows
+                const result = await request.container!.taxDeclarationService.applyMigrationAdjustment(
+                    validRows,
+                    (request.user as any)._id.toString()
+                );
+
+                return reply.status(200).send({
+                    success: result.success,
+                    message: `Migration completed. Processed: ${result.processed}, Failed: ${result.failed}`,
+                    data: result
                 });
 
             } catch (error: any) {

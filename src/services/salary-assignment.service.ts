@@ -72,6 +72,14 @@ export class SalaryAssignmentService extends BaseService {
             financialYear
         });
         if (taxDeclaration) {
+            // Check for migration adjustment
+            if (taxDeclaration.isMigrationAdjusted) {
+                console.warn(
+                    `[MIGRATION WARNING] Salary assignment created for migration-adjusted employee ${data.employeeId}. ` +
+                    `Annual tax will be recalculated, but monthly deductions will NOT be redistributed.`
+                );
+            }
+
             const taxDeclarationService = new TaxDeclarationService(this.context);
             const taxUpdateData: ITaxDeclarationUpdate = {
                 _id: taxDeclaration._id.toString(),
@@ -165,6 +173,14 @@ export class SalaryAssignmentService extends BaseService {
         });
         console.log(taxDeclaration, "taxDeclaration in update method")
         if (taxDeclaration) {
+            // Check for migration adjustment
+            if (taxDeclaration.isMigrationAdjusted) {
+                console.warn(
+                    `[MIGRATION WARNING] Salary assignment updated for migration-adjusted employee ${data.employeeId}. ` +
+                    `Annual tax will be recalculated, but monthly deductions will NOT be redistributed.`
+                );
+            }
+
             const taxDeclarationService = new TaxDeclarationService(this.context);
             const taxUpdateData: ITaxDeclarationUpdate = {
                 _id: taxDeclaration._id.toString(),

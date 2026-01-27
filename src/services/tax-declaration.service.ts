@@ -8,7 +8,9 @@ import { BaseService } from "./base.service";
 import { RequestContext } from "../types/context";
 import fs from 'fs';
 import path from 'path';
+
 import { Document } from "../models/document.model";
+import * as xlsx from 'xlsx';
 
 export interface ITaxDeclarationCreate {
     employeeId: string;
@@ -113,6 +115,48 @@ export interface ITaxDeclarationUpdate {
     monthlyDeductions: IMonthlyTaxDeduction[];
     salaryAssignments?: { assignmentId: Types.ObjectId; validFrom: Date; validTill: Date; monthlyGross: number; isActive: boolean }[];
 
+}
+
+// Migration Adjustment Interfaces (for HRMS migration - December 2025)
+export interface IMigrationAdjustmentInput {
+    employeeId: string;
+    regime: 'OLD' | 'NEW';
+    financialYear: string;
+    externalTaxPaid: number;
+    externalTaxPaidMonths: number;
+    newSystemTaxToPay: number;
+    newSystemTaxMonths: number;
+}
+
+export interface IMigrationAdjustmentResult {
+    success: boolean;
+    processed: number;
+    failed: number;
+    results: {
+        employeeId: string;
+        status: 'success' | 'failed';
+        message?: string;
+        oldMonthlyPlan?: any[];
+        newMonthlyPlan?: any[];
+    }[];
+}
+
+export interface IMigrationPreviewRow extends IMigrationAdjustmentInput {
+    rowNumber: number;
+    employeeName?: string;
+    systemCalculatedTax?: number;
+    isValid: boolean;
+    errors: string[];
+}
+
+export interface IMigrationPreviewResult {
+    summary: {
+        totalRows: number;
+        validRows: number;
+        invalidRows: number;
+    };
+    validRows: IMigrationPreviewRow[];
+    invalidRows: IMigrationPreviewRow[];
 }
 
 export class TaxDeclarationService extends BaseService {
@@ -389,14 +433,38 @@ export class TaxDeclarationService extends BaseService {
                 data.adjustmentDistribution = 'one_time';
             }
             console.log(data, "10 after update data")
-            const newObj = await this.updateMonthlyDeductionPlan(
-                taxDeclaration.monthlyDeductions,
-                updatedTax.finalTaxWithCess,
-                remainingMonths,
-                data.adjustmentAmount < 0
-            );
-            console.log(newObj, "10 newObj");
-            data.monthlyDeductions = newObj;
+
+            // MIGRATION CHECK: Skip monthly deduction recalculation if migration-adjusted
+            if (!taxDeclaration.isMigrationAdjusted) {
+                // Standard logic: recalculate monthly deductions
+                const newObj = await this.updateMonthlyDeductionPlan(
+                    taxDeclaration.monthlyDeductions,
+                    updatedTax.finalTaxWithCess,
+                    remainingMonths,
+                    data.adjustmentAmount < 0
+                );
+                console.log(newObj, "10 newObj");
+                data.monthlyDeductions = newObj;
+            } else {
+                // Migration override: ONLY update annual tax amounts, NOT monthly plan
+                console.log(
+                    `[MIGRATION OVERRIDE] Skipping monthly deduction recalculation for employee ${employeeId}. ` +
+                    `Migration-adjusted record from ${taxDeclaration.migrationAdjustment?.uploadedAt}`
+                );
+
+                // FORCE Tax Liability to match Migration Value
+                if (taxDeclaration.migrationAdjustment?.totalMigratedTaxLiability) {
+                    const migratedTax = taxDeclaration.migrationAdjustment.totalMigratedTaxLiability;
+
+                    // Override the System Calculated Tax
+                    data.revisedTaxAmount = migratedTax;
+
+                    console.log(`[MIGRATION OVERRIDE] Forcing Annual Tax Liability to ₹${migratedTax}`);
+                }
+
+                // Keep existing monthly deductions from migration adjustment
+                data.monthlyDeductions = taxDeclaration.monthlyDeductions;
+            }
         }
         console.log(previousTaxAmount !== updatedTax.totalTaxAmount, "10.1 after update data")
 
@@ -406,9 +474,14 @@ export class TaxDeclarationService extends BaseService {
             data.excessTaxPaid = Math.abs(data.adjustmentAmount);
         }
         console.log(data, "11 after update data")
-        // 15. Update taxDeclaration object with new data
+
         // 15. Update remaining tax to pay
-        data.remainingTaxToPay = updatedTax.finalTaxWithCess - (taxDeclaration.taxPaid || 0);
+        // MIGRATION CHECK: Ensure we use the correct Revised Amount
+        const finalTaxForCalc = taxDeclaration.isMigrationAdjusted && taxDeclaration.migrationAdjustment?.totalMigratedTaxLiability
+            ? taxDeclaration.migrationAdjustment.totalMigratedTaxLiability
+            : updatedTax.finalTaxWithCess;
+
+        data.remainingTaxToPay = finalTaxForCalc - (taxDeclaration.taxPaid || 0);
 
 
         // 15. Update taxDeclaration object with new data
@@ -721,15 +794,34 @@ export class TaxDeclarationService extends BaseService {
             taxDeclaration.adjustmentDistribution = 'one_time';
         }
 
-        // 8. Update monthly deduction plan
-        const monthlyDeductions = await this.updateMonthlyDeductionPlan(
-            taxDeclaration.monthlyDeductions,
-            initialTaxBreakdown.finalTaxWithCess,
-            remainingMonths,
-            taxDeclaration.adjustmentAmount < 0
-        );
-        console.log(monthlyDeductions, "8 monthlyDeductions after Form12B processing")
-        taxDeclaration.monthlyDeductions = monthlyDeductions;
+        // MIGRATION CHECK: Skip monthly deduction recalculation if migration-adjusted
+        if (!taxDeclaration.isMigrationAdjusted) {
+            // Standard flow: recalculate monthly deductions
+            const monthlyDeductions = await this.updateMonthlyDeductionPlan(
+                taxDeclaration.monthlyDeductions,
+                initialTaxBreakdown.finalTaxWithCess,
+                remainingMonths,
+                taxDeclaration.adjustmentAmount < 0
+            );
+            console.log(monthlyDeductions, "8 monthlyDeductions after Form12B processing")
+            taxDeclaration.monthlyDeductions = monthlyDeductions;
+        } else {
+            // Migration override: Log warning about tax mismatch
+            const excelTaxTotal =
+                taxDeclaration.migrationAdjustment!.externalTaxPaid +
+                taxDeclaration.migrationAdjustment!.newSystemTaxToPay;
+
+            const systemTaxAfterForm12B = initialTaxBreakdown.finalTaxWithCess;
+
+            console.warn(
+                `[FORM12B MIGRATION WARNING] Tax mismatch for ${taxDeclaration.employeeId}. ` +
+                `Excel total: ₹${excelTaxTotal}, System after Form12B: ₹${systemTaxAfterForm12B}. ` +
+                `Monthly deductions will NOT be recalculated.`
+            );
+
+            // Keep existing monthly deductions from migration adjustment
+            console.log("8 Skipping monthly deduction recalculation (migration-adjusted)");
+        }
 
         if (taxDeclaration.remainingTaxToPay < 0) {
             taxDeclaration.excessTaxPaid = Math.abs(taxDeclaration.remainingTaxToPay);
@@ -1420,6 +1512,408 @@ export class TaxDeclarationService extends BaseService {
  
          return monthlyDeductions;
          */
+    }
+
+    // ==================== MIGRATION ADJUSTMENT METHODS ====================
+    // For HRMS Migration - December 2025
+
+    /**
+     * Validate migration adjustment data against system records
+     */
+    private async validateMigrationData(data: IMigrationAdjustmentInput): Promise<void> {
+        const { employeeId, regime, financialYear, externalTaxPaid, externalTaxPaidMonths, newSystemTaxToPay, newSystemTaxMonths } = data;
+
+        // Rule 1: FY Validation
+        const currentFY = getCurrentFinancialYear();
+        if (financialYear !== currentFY) {
+            throw new Error(`Migration upload only allowed for current FY: ${currentFY}. Provided FY: ${financialYear}`);
+        }
+
+        // Rule 2: Month Count Validation
+        if (externalTaxPaidMonths + newSystemTaxMonths !== 12) {
+            throw new Error(
+                `Invalid month distribution for ${employeeId}: ` +
+                `${externalTaxPaidMonths} + ${newSystemTaxMonths} ≠ 12`
+            );
+        }
+
+        // Fetch existing tax declaration
+        const taxDeclaration = await TaxDeclaration.findOne({
+            employeeId: new Types.ObjectId(employeeId),
+            financialYear
+        });
+
+        if (!taxDeclaration) {
+            throw new Error(`Tax declaration not found for ${employeeId} in FY ${financialYear}`);
+        }
+
+        // Rule 3: Regime Validation
+        if (regime !== taxDeclaration.regime.toUpperCase()) {
+            throw new Error(
+                `Regime mismatch for ${employeeId}: ` +
+                `Excel (${regime}) vs System (${taxDeclaration.regime.toUpperCase()})`
+            );
+        }
+
+        // Rule 4: Tax Amount Consistency
+        const calculatedTotalTax = externalTaxPaid + newSystemTaxToPay;
+        const systemCalculatedTax = taxDeclaration.initialTaxBreakdown.finalTaxWithCess;
+        const tolerance = systemCalculatedTax * 0.01; // 1% tolerance
+
+        if (Math.abs(calculatedTotalTax - systemCalculatedTax) > tolerance) {
+            console.warn(
+                `[MIGRATION INFO] Tax mismatch for ${employeeId}: ` +
+                `Excel total (₹${calculatedTotalTax}) differs from System (₹${systemCalculatedTax}). ` +
+                `Using Excel total as the True Final Tax Liability (assuming pre-existing declarations).`
+            );
+        }
+
+        // Rule 5: Remaining Months Validation (Warning only)
+        const currentMonth = new Date().getMonth(); // 0-11
+        const fyStartMonth = 3; // April = 3
+        let actualRemainingMonths;
+
+        if (currentMonth >= fyStartMonth) {
+            actualRemainingMonths = 12 - (currentMonth - fyStartMonth);
+        } else {
+            actualRemainingMonths = 3 - currentMonth;
+        }
+
+        if (newSystemTaxMonths !== actualRemainingMonths) {
+            console.warn(
+                `[MIGRATION WARNING] Employee ${employeeId}: ` +
+                `Excel shows ${newSystemTaxMonths} remaining months, ` +
+                `but system calculates ${actualRemainingMonths}. Using Excel value.`
+            );
+        }
+    }
+
+    /**
+     * Override monthly deductions for remaining months only
+     */
+    private overrideRemainingMonths(
+        monthlyDeductions: IMonthlyTaxDeduction[],
+        newTaxToPay: number,
+        remainingMonths: number
+    ): IMonthlyTaxDeduction[] {
+        const months = ["Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Jan", "Feb", "Mar"];
+
+        // Find starting index for remaining months
+        const startIndex = months.length - remainingMonths;
+
+        // Calculate equal distribution
+        const monthlyAmount = Math.floor(newTaxToPay / remainingMonths);
+        let remainderAmount = newTaxToPay - (monthlyAmount * remainingMonths);
+
+        return monthlyDeductions.map((deduction, index) => {
+            if (index < startIndex) {
+                // Past months: mark as processed with 0 deduction (paid externally)
+                return {
+                    ...deduction,
+                    plannedDeduction: 0,
+                    actualDeduction: 0,
+                    isProcessed: true
+                };
+            } else {
+                // Remaining months: override with new amounts
+                const adjustment = remainderAmount > 0 ? 1 : 0;
+                remainderAmount -= adjustment;
+
+                return {
+                    ...deduction,
+                    plannedDeduction: monthlyAmount + adjustment,
+                    actualDeduction: monthlyAmount + adjustment,
+                    adjustmentAmount: adjustment,
+                    isProcessed: false
+                };
+            }
+        });
+    }
+
+    /**
+     * Apply migration adjustment from Excel upload
+     * This method processes bulk migration data and updates tax declarations
+     */
+    async applyMigrationAdjustment(
+        migrationData: IMigrationAdjustmentInput[],
+        uploadedBy: string
+    ): Promise<IMigrationAdjustmentResult> {
+        const results: IMigrationAdjustmentResult = {
+            success: true,
+            processed: 0,
+            failed: 0,
+            results: []
+        };
+
+        for (const data of migrationData) {
+            try {
+                // 1. Validate all rules
+                await this.validateMigrationData(data);
+
+                // 2. Fetch existing tax declaration
+                const taxDeclaration = await TaxDeclaration.findOne({
+                    employeeId: new Types.ObjectId(data.employeeId),
+                    financialYear: data.financialYear
+                });
+
+                if (!taxDeclaration) {
+                    throw new Error(`Tax declaration not found for ${data.employeeId}`);
+                }
+
+                // 3. Backup original monthly deductions
+                const originalMonthlyDeductions = JSON.parse(
+                    JSON.stringify(taxDeclaration.monthlyDeductions)
+                );
+
+                // 4. Override monthly deductions for remaining months ONLY
+                const newMonthlyDeductions = this.overrideRemainingMonths(
+                    taxDeclaration.monthlyDeductions,
+                    data.newSystemTaxToPay,
+                    data.newSystemTaxMonths
+                );
+
+                // 5. Update tax declaration with migration override
+                const totalMigratedTax = data.externalTaxPaid + data.newSystemTaxToPay;
+
+                taxDeclaration.isMigrationAdjusted = true;
+                taxDeclaration.migrationAdjustment = {
+                    appliedForFY: data.financialYear,
+                    uploadedAt: new Date(),
+                    uploadedBy: new Types.ObjectId(uploadedBy),
+                    externalTaxPaid: data.externalTaxPaid,
+                    externalTaxPaidMonths: data.externalTaxPaidMonths,
+                    newSystemTaxToPay: data.newSystemTaxToPay,
+                    newSystemTaxMonths: data.newSystemTaxMonths,
+                    totalMigratedTaxLiability: totalMigratedTax, // ✅ Store True Tax
+                    originalMonthlyDeductions: originalMonthlyDeductions,
+                    overrideReason: 'HRMS Migration December 2025'
+                };
+
+                // 6. Update taxPaid and Remaining Tax
+                taxDeclaration.taxPaid = data.externalTaxPaid;
+                taxDeclaration.remainingTaxToPay = data.newSystemTaxToPay;
+                taxDeclaration.monthlyDeductions = newMonthlyDeductions;
+
+                // ✅ FORCE Revised Tax Amount to match Excel Total
+                // This ensures Validation/Accounting consistency
+                taxDeclaration.revisedTaxAmount = totalMigratedTax;
+
+                // 7. Save
+                await taxDeclaration.save();
+
+                console.log(`[MIGRATION SUCCESS] Applied migration adjustment for employee ${data.employeeId}`);
+
+                results.processed++;
+                results.results.push({
+                    employeeId: data.employeeId,
+                    status: 'success',
+                    oldMonthlyPlan: originalMonthlyDeductions,
+                    newMonthlyPlan: newMonthlyDeductions
+                });
+
+            } catch (error: any) {
+                console.error(`[MIGRATION FAILED] Employee ${data.employeeId}: ${error.message}`);
+
+                results.failed++;
+                results.results.push({
+                    employeeId: data.employeeId,
+                    status: 'failed',
+                    message: error.message
+                });
+            }
+        }
+
+        results.success = results.failed === 0;
+        console.log(
+            `[MIGRATION SUMMARY] Total: ${migrationData.length}, ` +
+            `Processed: ${results.processed}, Failed: ${results.failed}`
+        );
+
+        return results;
+    }
+
+    /**
+     * Preview migration adjustment from Excel data
+     */
+    async previewMigrationAdjustment(
+        migrationData: IMigrationAdjustmentInput[]
+    ): Promise<IMigrationPreviewResult> {
+        const previewResult: IMigrationPreviewResult = {
+            summary: {
+                totalRows: migrationData.length,
+                validRows: 0,
+                invalidRows: 0
+            },
+            validRows: [],
+            invalidRows: []
+        };
+
+        const seenEmployeeIds = new Set<string>();
+
+        for (let i = 0; i < migrationData.length; i++) {
+            const data = migrationData[i];
+            const rowNumber = i + 2; // +1 for 0-index, +1 for header row
+            const previewRow: IMigrationPreviewRow = {
+                ...data,
+                rowNumber,
+                isValid: true,
+                errors: []
+            };
+
+            try {
+                // 1. Duplicate & ID Format Validation
+                if (seenEmployeeIds.has(data.employeeId)) {
+                    previewRow.errors.push(`Duplicate record in file for employee ${data.employeeId}`);
+                }
+                seenEmployeeIds.add(data.employeeId);
+
+                if (!data.employeeId || !Types.ObjectId.isValid(data.employeeId)) {
+                    throw new Error(`Invalid Employee ID format: ${data.employeeId}. Must be a 24-character hex string.`);
+                }
+
+                // 2. Fetch User and Tax Declaration to get names and verification
+                const user = await User.findOne({ _id: new Types.ObjectId(data.employeeId) }).select('name').lean();
+                if (!user) {
+                    throw new Error(`Employee ID ${data.employeeId} not found in system`);
+                }
+                previewRow.employeeName = user.name;
+
+                const taxDeclaration = await TaxDeclaration.findOne({
+                    employeeId: new Types.ObjectId(data.employeeId),
+                    financialYear: data.financialYear
+                }).lean();
+
+                if (!taxDeclaration) {
+                    throw new Error(`Tax declaration not found for ${data.employeeId} in FY ${data.financialYear}`);
+                }
+
+                previewRow.systemCalculatedTax = taxDeclaration.initialTaxBreakdown.finalTaxWithCess;
+
+                // 2. Run validations (we use the logic from validateMigrationData but collect errors)
+                const currentFY = getCurrentFinancialYear();
+                if (data.financialYear !== currentFY) {
+                    previewRow.errors.push(`FY mismatch: Excel shows ${data.financialYear}, System requires ${currentFY}`);
+                }
+
+                if (data.externalTaxPaidMonths + data.newSystemTaxMonths !== 12) {
+                    previewRow.errors.push(`Invalid month distribution: ${data.externalTaxPaidMonths} + ${data.newSystemTaxMonths} ≠ 12`);
+                }
+
+                if (data.regime.toUpperCase() !== taxDeclaration.regime.toUpperCase()) {
+                    previewRow.errors.push(`Regime mismatch: Excel (${data.regime}) vs System (${taxDeclaration.regime.toUpperCase()})`);
+                }
+
+                if (previewRow.errors.length > 0) {
+                    throw new Error("Validation failed");
+                }
+
+                previewResult.validRows.push(previewRow);
+                previewResult.summary.validRows++;
+
+            } catch (error: any) {
+                previewRow.isValid = false;
+                if (previewRow.errors.length === 0) {
+                    previewRow.errors.push(error.message);
+                }
+                previewResult.invalidRows.push(previewRow);
+                previewResult.summary.invalidRows++;
+            }
+        }
+
+        return previewResult;
+    }
+
+    /**
+     * Generate Excel template for migration adjustment
+     */
+    async generateMigrationTemplate(): Promise<Buffer> {
+        // Sheet 1: Template (Headers Only)
+        const headers = [
+            'user',
+            'regime',
+            'FY',
+            'tax_paid_amount',
+            'tax_paid_months',
+            'tax_to_be_paid_amount', // New System Tax
+            'tax_to_be_paid_months'  // New System Months
+        ];
+
+        // Create empty data array with headers as keys for clarity (though strictly we just need headers)
+        // Using aoa_to_sheet for explicit header control
+        const templateData = [headers];
+        const templateSheet = xlsx.utils.aoa_to_sheet(templateData);
+
+        // Adjust column widths for better readability
+        templateSheet['!cols'] = [
+            { wch: 15 }, // user
+            { wch: 10 }, // regime
+            { wch: 12 }, // FY
+            { wch: 15 }, // tax_paid_amount
+            { wch: 15 }, // tax_paid_months
+            { wch: 20 }, // tax_to_be_paid_amount
+            { wch: 20 }  // tax_to_be_paid_months
+        ];
+
+        // Sheet 2: Reference (User Details & Instructions)
+        // Fetch all active users to populate reference sheet using CORRECT field names from user.model.ts
+        const users = await User.find({ active: true }).select('_id name email').lean();
+
+        // Add instructions to Reference sheet (or a separate Instructions sheet? 
+        // User asked for "sheet 2 - ref with user name and id and each other column expected format value")
+
+        // Let's create a separate "Instructions" sheet or append to Reference.
+        // The requirement says "sheet 2 - ref ... and each other column expected format value"
+        // I'll add instructions as a separate small table in Reference sheet or a 3rd sheet.
+        // Let's stick to 2 sheets as requested: "sheet 1 -- headers", "sheet 2 - ref".
+        // I'll put user list first, then instructions below or to the side. 
+        // Actually, mixing data types in one sheet is messy. 
+        // I will add a 3rd sheet "Instructions" for clarity, or just put it in Reference.
+        // Let's put instructions in "Reference" sheet, starting at column G or H, or just use a separate "Instructions" sheet?
+        // The prompt said "return excel file as response with 2 sheets". I should strictly follow "2 sheets".
+
+        // Let's create a combined Reference sheet.
+        // But `json_to_sheet` creates a table.
+        // Maybe I should create a "Users" sheet and an "Instructions" sheet?
+        // The prompt says "sheet 2 - ref with user name and id AND each other column expected format".
+        // I will interpret this as: Sheet 2 contains User Reference AND Format Instructions.
+
+        // Let's build Sheet 2 manually with AOA to combine tables.
+        const refSheetData: any[][] = [
+            ['COLUMN FORMAT INSTRUCTIONS'],
+            ['Column Name', 'Description', 'Expected Format', 'Example'],
+            ['user', 'Employee ID from system (Matches "User ID" in table below)', 'Text', 'EMP001'],
+            ['regime', 'Tax Regime', 'Text (OLD/NEW)', 'NEW'],
+            ['FY', 'Financial Year', 'Text (YYYY-YYYY)', '2025-2026'],
+            ['tax_paid_amount', 'Tax already paid in previous system (Apr-Dec)', 'Number', '90000'],
+            ['tax_paid_months', 'Number of months tax paid externally', 'Number (1-12)', '9'],
+            ['tax_to_be_paid_amount', 'Tax remaining to be paid in this system (Jan-Mar)', 'Number', '30000'],
+            ['tax_to_be_paid_months', 'Number of months remaining in current FY', 'Number (1-12)', '3'],
+            [], // Row 12
+            [], // Row 13
+            ['ACTIVE USERS REFERENCE (Copy Employee ID below to the "user" column in Template)'], // Row 14
+            ['User ID (Employee ID)', 'Employee Name', 'Email'], // Row 15 (Headers)
+        ];
+
+        users.forEach((u: any) => {
+            // Use u._id as the ID for copying, as requested by the user
+            refSheetData.push([u._id.toString(), u.name, u.email]);
+        });
+
+        const combinedRefSheet = xlsx.utils.aoa_to_sheet(refSheetData);
+
+        // Auto-width for Ref sheet
+        combinedRefSheet['!cols'] = [
+            { wch: 30 }, { wch: 30 }, { wch: 40 }
+        ];
+
+        // Create Workbook
+        const workbook = xlsx.utils.book_new();
+        xlsx.utils.book_append_sheet(workbook, templateSheet, 'Template');
+        xlsx.utils.book_append_sheet(workbook, combinedRefSheet, 'Reference');
+
+        // Generate Buffer
+        const buffer = xlsx.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+        return buffer;
     }
 
 }

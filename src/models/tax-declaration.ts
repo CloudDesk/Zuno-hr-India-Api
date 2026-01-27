@@ -1,4 +1,4 @@
-import { Schema, model, Document } from "mongoose";
+import { Schema, model, Document, Types } from "mongoose";
 interface ISlabwiseTax {
     slab: string;
     amount: number;
@@ -35,6 +35,20 @@ interface IMonthlyTaxDeduction {
     plannedDate: Date;        // When the deduction occurred
     isProcessed: boolean;       // Whether this month's deduction has been processed
 }
+
+// Migration Adjustment Interface (for HRMS migration in December 2025)
+interface IMigrationAdjustment {
+    appliedForFY: string;                      // FY for which migration was applied (e.g., "2025-2026")
+    uploadedAt: Date;                          // When Excel was uploaded
+    uploadedBy: Types.ObjectId;         // Admin who uploaded
+    externalTaxPaid: number;                   // Tax paid in external system (Apr-Dec)
+    externalTaxPaidMonths: number;             // Number of months tax paid externally (e.g., 9)
+    newSystemTaxToPay: number;                 // Tax to be paid in new system (Jan-Mar)
+    newSystemTaxMonths: number;                // Number of months remaining (e.g., 3)
+    totalMigratedTaxLiability: number;         // ✅ True Final Tax (e.g. 1.20L) from Excel
+    originalMonthlyDeductions?: IMonthlyTaxDeduction[]; // Backup of system-calculated plan
+    overrideReason: string;                    // e.g., "HRMS Migration December 2025"
+}
 interface IDeclaration {
     section: string;          // "80C", "80D", etc.
     subSection: string;       // "Life Insurance", "Health Insurance", etc.
@@ -47,7 +61,7 @@ interface IDeclaration {
     status: "pending" | "verified" | "rejected" | "resubmission_requested" | "document_submitted";
     documents: IDocument[];
     reviewHistory: {
-        reviewedBy: Schema.Types.ObjectId;
+        reviewedBy: Types.ObjectId;
         reviewDate: Date;
         status: "verified" | "rejected" | "resubmission_requested";
         comments: string;
@@ -62,7 +76,7 @@ interface IDeclaration {
     };
 }
 export interface ITaxDeclaration extends Document {
-    employeeId: Schema.Types.ObjectId;
+    employeeId: Types.ObjectId;
     financialYear: string;
     regime: "old" | "new";
     declarations: IDeclaration[];
@@ -102,7 +116,7 @@ export interface ITaxDeclaration extends Document {
     poiSubmissionStatus: "not_submitted" | "submitted" | "verified" | "rejected" | "resubmission";
     reviewHistory: [
         {
-            reviewedBy: Schema.Types.ObjectId;
+            reviewedBy: Types.ObjectId;
             reviewDate: Date;
             action: "verified" | "rejected" | "resubmission_requested";
             comments: string;
@@ -110,21 +124,24 @@ export interface ITaxDeclaration extends Document {
     ];
     isLocked: boolean; // True when declaration window is closed
     initialTaxBreakdown: ITaxBreakdown;
-    _id?: Schema.Types.ObjectId;
+    _id?: Types.ObjectId;
     isDeclared: boolean;
     isPOISubmitted: boolean;
     isResubmitted: boolean;   // Whether any declaration DOCS has been resubmitted
-    form12B?: Schema.Types.ObjectId;
-    salaryAssignments:
-    {
-        assignmentId: { type: Schema.Types.ObjectId, ref: 'SalaryAssignment' },
-        validFrom: { type: Date, required: true },
-        validTill: { type: Date },
-        monthlyGross: { type: Number, required: true },
-        isActive: { type: Boolean, default: false }
-    }[],
+    form12B?: Types.ObjectId;
+    salaryAssignments: {
+        assignmentId: Types.ObjectId;
+        validFrom: Date;
+        validTill: Date;
+        monthlyGross: number;
+        isActive: boolean;
+    }[];
 
     isForm12BApplicable: boolean;
+
+    // Migration Adjustment (for HRMS migration - December 2025)
+    isMigrationAdjusted: boolean;              // Flag to identify migration-adjusted records
+    migrationAdjustment?: IMigrationAdjustment; // Migration override data
 
     createdAt?: Date;
     updatedAt?: Date;
@@ -273,7 +290,22 @@ const TaxDeclarationSchema = new Schema<ITaxDeclaration>({
         monthlyGross: { type: Number, required: true },
         isActive: { type: Boolean, default: false }
     }],
-    isForm12BApplicable: { type: Boolean, default: false }
+    isForm12BApplicable: { type: Boolean, default: false },
+
+    // Migration Adjustment (for HRMS migration - December 2025)
+    isMigrationAdjusted: { type: Boolean, default: false },
+    migrationAdjustment: {
+        appliedForFY: { type: String },
+        uploadedAt: { type: Date },
+        uploadedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+        externalTaxPaid: { type: Number, default: 0 },
+        externalTaxPaidMonths: { type: Number, default: 0 },
+        newSystemTaxToPay: { type: Number, default: 0 },
+        newSystemTaxMonths: { type: Number, default: 0 },
+        totalMigratedTaxLiability: { type: Number, default: 0 }, // ✅ Added field to schema
+        originalMonthlyDeductions: [MonthlyTaxDeductionSchema],
+        overrideReason: { type: String }
+    }
 
 },
     {
