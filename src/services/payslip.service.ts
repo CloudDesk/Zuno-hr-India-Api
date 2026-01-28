@@ -528,27 +528,25 @@ export class PayslipService extends BaseService {
     const templateData = {
       // Personal Details
       // Personal Info
-      empName: isUaePayroll ? (sanitizeText(employee.name) || '-') : (employee.name || '-'),
+      empName: sanitizeText(employee.name) || '-',
       empJoinDate: employee.joiningDate ? employee.joiningDate.toISOString().split('T')[0] : 'N/A',
       empRole: employeeDesignation,
       empDes: employeeDesignation || '-',
-      empDept: isUaePayroll ? formatLabel(employee.departmentId) : formatLabel(employee.departmentId),
-      empLocation: isUaePayroll ? formatLabel(employee.location) : formatLabel(employee.location),
+      empDept: formatLabel(employee.departmentId),
+      empLocation: formatLabel(employee.location),
       // Employee No: Use employeeCode (primary) or biometricId (fallback)
-      empNo: isUaePayroll
-        ? (sanitizeText(employee.employeeCode) || sanitizeText(employee.biometricId) || '-')
-        : (employee.employeeCode || employee.biometricId || '-'),
+      empNo: sanitizeText(employee.employeeCode) || sanitizeText(employee.biometricId) || '-',
 
       // Bank & ID Info
       // Fallback: If no active bank found, use the first one available
-      bankName: isUaePayroll ? (sanitizeText(activeBankData?.bankName) || '-') : (activeBankData?.bankName || '-'),
-      bankAccNo: isUaePayroll ? (sanitizeText(activeBankData?.accountNumber) || '-') : (activeBankData?.accountNumber || '-'),
+      bankName: sanitizeText(activeBankData?.bankName) || '-',
+      bankAccNo: sanitizeText(activeBankData?.accountNumber) || '-',
       // PAN: Priority: Document collection > governmentIds > fallback to '-'
-      panNo: govtIds?.panNumber || employee.governmentIds?.pan?.number || '-',
-      // PF No: Priority: Document collection > employee.pfNumber > governmentIds > fallback to '-'
-      pfNo: govtIds?.pfNumber || employee.pfNumber || employee.governmentIds?.pf?.number || '-',
-      // PF UAN: Priority: Document collection > employee.uanNumber > governmentIds > fallback to '-'
-      pfUan: govtIds?.pfUan || employee.uanNumber || employee.governmentIds?.pf?.uan || '-',
+      panNo: sanitizeText(govtIds?.panNumber) || sanitizeText(employee.governmentIds?.pan?.number) || '-',
+      // PF No: Priority: employee.pfNumber > Document collection > governmentIds > fallback to '-'
+      pfNo: sanitizeText(employee.pfNumber) || sanitizeText(govtIds?.pfNumber) || sanitizeText(employee.governmentIds?.pf?.number) || '-',
+      // PF UAN: Priority: employee.uanNumber > Document collection > governmentIds > fallback to '-'
+      pfUan: sanitizeText(employee.uanNumber) || sanitizeText(govtIds?.pfUan) || sanitizeText(employee.governmentIds?.pf?.uan) || '-',
 
       // Payslip Info
       payMonth: this.getMonthName(payroll.month),
@@ -588,24 +586,29 @@ export class PayslipService extends BaseService {
         )
       },
 
-      // Deductions - Only include non-zero values
+      // Deductions - Only include non-zero values (so template rows can be conditional)
       deduction: (() => {
         const deductionObj: any = {
           total: formatCurrency(payroll.totalDeductions || 0, payroll.country)
         };
 
-        // Only include deduction items if value is greater than 0
-        if (payroll.epfEmployee && payroll.epfEmployee > 0) {
-          deductionObj.pf = formatCurrency(payroll.epfEmployee, payroll.country);
+        // Normalize values to numbers and only include if > 0
+        const pfVal = Number(payroll.epfEmployee ?? 0);
+        const lopVal = Number(payroll.leaveDeductions ?? 0);
+        const ptVal = Number(payroll.professionalTax ?? 0);
+        const itVal = Number(payroll.incomeTax ?? 0);
+
+        if (pfVal > 0) {
+          deductionObj.pf = formatCurrency(pfVal, payroll.country);
         }
-        if (payroll.leaveDeductions && payroll.leaveDeductions > 0) {
-          deductionObj.lop = formatCurrency(payroll.leaveDeductions, payroll.country);
+        if (lopVal > 0) {
+          deductionObj.lop = formatCurrency(lopVal, payroll.country);
         }
-        if (payroll.professionalTax && payroll.professionalTax > 0) {
-          deductionObj.pt = formatCurrency(payroll.professionalTax, payroll.country);
+        if (ptVal > 0) {
+          deductionObj.pt = formatCurrency(ptVal, payroll.country);
         }
-        if (payroll.incomeTax && payroll.incomeTax > 0) {
-          deductionObj.it = formatCurrency(payroll.incomeTax, payroll.country);
+        if (itVal > 0) {
+          deductionObj.it = formatCurrency(itVal, payroll.country);
         }
 
         return deductionObj;
@@ -631,7 +634,8 @@ export class PayslipService extends BaseService {
       await this.replacePlaceholdersInDocx(
         // path.join(process.cwd(), 'CD_paySlip.docx'),
         //path.join(process.cwd(), 'CD_payslip_Dubai Zuno.docx'),
-        path.join(process.cwd(), 'CD_paySlip old.docx'),
+        // path.join(process.cwd(), 'CD_paySlip old.docx'),
+        path.join(process.cwd(), 'CD_paySlip_new.docx'),
         outputDocxPath,
         templateData
       );

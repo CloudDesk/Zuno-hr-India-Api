@@ -1626,14 +1626,18 @@ export class DocumentService extends BaseService {
             empRole: employeeDesignation,
             empDept: formatLabel(employee.departmentId),
             empLocation: formatLabel(employee.location),
-            empNo: sanitizeText(employee.biometricId) || '-',
+            // Employee No: Use employeeCode (primary) or biometricId (fallback)
+            empNo: sanitizeText(employee.employeeCode) || sanitizeText(employee.biometricId) || '-',
 
             // Bank & ID Info
             bankName: sanitizeText(activeBankData?.bankName) || '-',
             bankAccNo: sanitizeText(activeBankData?.accountNumber) || '-',
-            panNo: govtIds?.panNumber || '-',
-            pfNo: govtIds?.pfNumber || '-',
-            pfUan: govtIds?.pfUan || '-',
+            // PAN: Priority: Document collection > governmentIds > fallback to '-'
+            panNo: sanitizeText(govtIds?.panNumber) || sanitizeText(employee.governmentIds?.pan?.number) || '-',
+            // PF No: Priority: employee.pfNumber > Document collection > governmentIds > fallback to '-'
+            pfNo: sanitizeText(employee.pfNumber) || sanitizeText(govtIds?.pfNumber) || sanitizeText(employee.governmentIds?.pf?.number) || '-',
+            // PF UAN: Priority: employee.uanNumber > Document collection > governmentIds > fallback to '-'
+            pfUan: sanitizeText(employee.uanNumber) || sanitizeText(govtIds?.pfUan) || sanitizeText(employee.governmentIds?.pf?.uan) || '-',
 
             // Payslip Info
             payMonth: this.getMonthName(payroll.month),
@@ -1715,7 +1719,8 @@ export class DocumentService extends BaseService {
             await this.replacePlaceholdersInDocx(
                 // path.join(process.cwd(), 'CD_paySlip.docx'),
                 //path.join(process.cwd(), 'CD_payslip_Dubai Zuno.docx'),
-                path.join(process.cwd(), 'CD_paySlip old.docx'),
+                // path.join(process.cwd(), 'CD_paySlip old.docx'),
+                path.join(process.cwd(), 'CD_paySlip_new.docx'),
 
                 outputDocxPath,
                 templateData
