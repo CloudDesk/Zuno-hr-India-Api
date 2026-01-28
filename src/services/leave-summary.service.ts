@@ -36,7 +36,8 @@ export class LeaveSummaryService extends BaseService {
           otherUnpaid: { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] },
           maternity: { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] },
           workFromHome: { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] },
-          restricted_holiday: { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] } // Default to 0
+          restricted_holiday: { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] }, // Default to 0
+          editHistory: [] // Initialize editHistory for new documents
         }
       },
       { upsert: true, new: true }
@@ -158,7 +159,8 @@ export class LeaveSummaryService extends BaseService {
         otherUnpaid: { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] },
         maternity: { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] },
         workFromHome: { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] },
-        restricted_holiday: { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] } // Default to 0
+        restricted_holiday: { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] }, // Default to 0
+        editHistory: [] // Initialize editHistory for new documents
       });
       console.log(`✅ [Leave Summary] Created new leave summary for user ${userId}, year ${year}`);
     } else {
@@ -173,8 +175,29 @@ export class LeaveSummaryService extends BaseService {
         summary.restricted_holiday = { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] }; // Default to 0
         summary.markModified('restricted_holiday'); // Mark as modified so Mongoose saves it
       }
+      // Initialize editHistory if it doesn't exist (for backward compatibility)
+      if (summary.editHistory === undefined || summary.editHistory === null) {
+        summary.editHistory = [];
+        summary.markModified('editHistory'); // Mark as modified so Mongoose saves it
+      } else if (Array.isArray(summary.editHistory)) {
+        // Clean up any invalid/incomplete editHistory entries
+        const validHistory = summary.editHistory.filter((entry: any) => {
+          return entry &&
+            entry.editedBy &&
+            entry.editedBy.id &&
+            entry.editedBy.name &&
+            entry.field &&
+            typeof entry.oldValue === 'number' &&
+            typeof entry.newValue === 'number' &&
+            entry.editedAt;
+        });
+        if (validHistory.length !== summary.editHistory.length) {
+          summary.editHistory = validHistory;
+          summary.markModified('editHistory');
+        }
+      }
       // Save if any fields were initialized
-      if (summary.isModified('workFromHome') || summary.isModified('restricted_holiday')) {
+      if (summary.isModified('workFromHome') || summary.isModified('restricted_holiday') || summary.isModified('editHistory')) {
         await summary.save(); // Save to persist the new field
       }
     }
@@ -220,7 +243,8 @@ export class LeaveSummaryService extends BaseService {
       otherUnpaid: formatCategory(summary.otherUnpaid),
       maternity: formatCategory(summary.maternity),
       workFromHome: formatCategory(summary.workFromHome),
-      restricted_holiday: formatCategory(summary.restricted_holiday)
+      restricted_holiday: formatCategory(summary.restricted_holiday),
+      editHistory: summary.editHistory || []
     };
   }
 
@@ -274,32 +298,166 @@ export class LeaveSummaryService extends BaseService {
       summary.maternity?.alloted === 0 &&
       summary.workFromHome?.alloted === 0;
 
+    // Get editor information from context
+    const editorId = this.context.user?._id;
+    const editorName = this.context.user?.name || 'System';
+
+    // Initialize editHistory if it doesn't exist
+    if (!summary.editHistory) {
+      summary.editHistory = [];
+    }
+
+    // Clean up any invalid/incomplete editHistory entries before processing
+    // This handles cases where existing documents have partial/invalid entries
+    if (Array.isArray(summary.editHistory)) {
+      summary.editHistory = summary.editHistory.filter((entry: any) => {
+        // Only keep entries that have all required fields
+        return entry &&
+          entry.editedBy &&
+          entry.editedBy.id &&
+          entry.editedBy.name &&
+          entry.field &&
+          typeof entry.oldValue === 'number' &&
+          typeof entry.newValue === 'number' &&
+          entry.editedAt;
+      });
+    } else {
+      summary.editHistory = [];
+    }
+
+    // Track changes before updating
+    const editHistoryEntries: Array<{
+      editedBy: { id: Types.ObjectId | string; name: string };
+      field: string;
+      oldValue: number;
+      newValue: number;
+      editedAt: Date;
+    }> = [];
+
     // Always update the existing summary (getLeaveSummary ensures it exists)
     {
       // Only update leave types that are explicitly provided in allotments
       // This prevents overwriting other leave types with 0 when updating a single type
       if (allotments.annual !== undefined) {
+        const oldValue = summary.annual?.alloted || 0;
+        const newValue = allotments.annual;
+        if (oldValue !== newValue && editorId) {
+          editHistoryEntries.push({
+            editedBy: {
+              id: typeof editorId === 'string' ? editorId : editorId.toString(),
+              name: editorName
+            },
+            field: 'annual.alloted',
+            oldValue,
+            newValue,
+            editedAt: new Date()
+          });
+        }
         summary.annual.alloted = allotments.annual;
       }
       if (allotments.sick !== undefined) {
+        const oldValue = summary.sick?.alloted || 0;
+        const newValue = allotments.sick;
+        if (oldValue !== newValue && editorId) {
+          editHistoryEntries.push({
+            editedBy: {
+              id: typeof editorId === 'string' ? editorId : editorId.toString(),
+              name: editorName
+            },
+            field: 'sick.alloted',
+            oldValue,
+            newValue,
+            editedAt: new Date()
+          });
+        }
         summary.sick.alloted = allotments.sick;
       }
       if (allotments.otherPaid !== undefined) {
+        const oldValue = summary.otherPaid?.alloted || 0;
+        const newValue = allotments.otherPaid;
+        if (oldValue !== newValue && editorId) {
+          editHistoryEntries.push({
+            editedBy: {
+              id: typeof editorId === 'string' ? editorId : editorId.toString(),
+              name: editorName
+            },
+            field: 'otherPaid.alloted',
+            oldValue,
+            newValue,
+            editedAt: new Date()
+          });
+        }
         summary.otherPaid.alloted = allotments.otherPaid;
       }
       if (allotments.otherUnpaid !== undefined) {
+        const oldValue = summary.otherUnpaid?.alloted || 0;
+        const newValue = allotments.otherUnpaid;
+        if (oldValue !== newValue && editorId) {
+          editHistoryEntries.push({
+            editedBy: {
+              id: typeof editorId === 'string' ? editorId : editorId.toString(),
+              name: editorName
+            },
+            field: 'otherUnpaid.alloted',
+            oldValue,
+            newValue,
+            editedAt: new Date()
+          });
+        }
         summary.otherUnpaid.alloted = allotments.otherUnpaid;
       }
       if (allotments.compOff !== undefined) {
+        const oldValue = summary.compOff?.alloted || 0;
+        const newValue = allotments.compOff;
+        if (oldValue !== newValue && editorId) {
+          editHistoryEntries.push({
+            editedBy: {
+              id: typeof editorId === 'string' ? editorId : editorId.toString(),
+              name: editorName
+            },
+            field: 'compOff.alloted',
+            oldValue,
+            newValue,
+            editedAt: new Date()
+          });
+        }
         summary.compOff.alloted = allotments.compOff;
       }
       if (allotments.maternity !== undefined) {
+        const oldValue = summary.maternity?.alloted || 0;
+        const newValue = allotments.maternity;
+        if (oldValue !== newValue && editorId) {
+          editHistoryEntries.push({
+            editedBy: {
+              id: typeof editorId === 'string' ? editorId : editorId.toString(),
+              name: editorName
+            },
+            field: 'maternity.alloted',
+            oldValue,
+            newValue,
+            editedAt: new Date()
+          });
+        }
         summary.maternity.alloted = allotments.maternity;
       }
       if (allotments.workFromHome !== undefined) {
         // Initialize workFromHome if it doesn't exist (for backward compatibility)
         if (!summary.workFromHome) {
           summary.workFromHome = { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] };
+        }
+        const oldValue = summary.workFromHome?.alloted || 0;
+        const newValue = allotments.workFromHome;
+        if (oldValue !== newValue && editorId) {
+          editHistoryEntries.push({
+            editedBy: {
+              id: typeof editorId === 'string' ? editorId : editorId.toString(),
+              name: editorName
+            },
+            field: 'workFromHome.alloted',
+            oldValue,
+            newValue,
+            editedAt: new Date()
+          });
         }
         summary.workFromHome.alloted = allotments.workFromHome;
       }
@@ -308,7 +466,48 @@ export class LeaveSummaryService extends BaseService {
         if (!summary.restricted_holiday) {
           summary.restricted_holiday = { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] }; // Default to 0
         }
+        const oldValue = summary.restricted_holiday?.alloted || 0;
+        const newValue = allotments.restricted_holiday;
+        if (oldValue !== newValue && editorId) {
+          editHistoryEntries.push({
+            editedBy: {
+              id: typeof editorId === 'string' ? editorId : editorId.toString(),
+              name: editorName
+            },
+            field: 'restricted_holiday.alloted',
+            oldValue,
+            newValue,
+            editedAt: new Date()
+          });
+        }
         summary.restricted_holiday.alloted = allotments.restricted_holiday;
+      }
+
+      // Add edit history entries to the summary
+      if (editHistoryEntries.length > 0 && editorId) {
+        // Convert editorId to ObjectId for storage
+        const editorObjectId = typeof editorId === 'string' ? new Types.ObjectId(editorId) : editorId;
+        
+        // Validate and create history entries with all required fields
+        const historyEntries = editHistoryEntries
+          .filter(entry => entry.field && typeof entry.oldValue === 'number' && typeof entry.newValue === 'number' && entry.editedBy.name)
+          .map(entry => ({
+            editedBy: {
+              id: editorObjectId,
+              name: entry.editedBy.name || 'System'
+            },
+            field: entry.field,
+            oldValue: entry.oldValue,
+            newValue: entry.newValue,
+            editedAt: entry.editedAt || new Date()
+          }));
+        
+        // Only append if we have valid entries
+        if (historyEntries.length > 0) {
+          // Ensure existing editHistory is valid array
+          const existingHistory = Array.isArray(summary.editHistory) ? summary.editHistory : [];
+          summary.editHistory = [...existingHistory, ...historyEntries];
+        }
       }
 
       await summary.save();

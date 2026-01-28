@@ -107,6 +107,25 @@ const getLeaveSummarySchema = {
                 leaveRequests: { type: 'array', items: { type: 'string' } },
               },
             },
+            editHistory: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  editedBy: {
+                    type: 'object',
+                    properties: {
+                      id: { type: 'string' },
+                      name: { type: 'string' },
+                    },
+                  },
+                  field: { type: 'string' },
+                  oldValue: { type: 'number' },
+                  newValue: { type: 'number' },
+                  editedAt: { type: 'string', format: 'date-time' },
+                },
+              },
+            },
           },
         },
       },
@@ -297,6 +316,25 @@ const updateLeaveAllotmentSchema = {
                 remaining: { type: 'number' },
               },
             },
+            editHistory: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  editedBy: {
+                    type: 'object',
+                    properties: {
+                      id: { type: 'string' },
+                      name: { type: 'string' },
+                    },
+                  },
+                  field: { type: 'string' },
+                  oldValue: { type: 'number' },
+                  newValue: { type: 'number' },
+                  editedAt: { type: 'string', format: 'date-time' },
+                },
+              },
+            },
           },
         },
       },
@@ -418,7 +456,7 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
           }
         );
 
-        // Format response to include all leave types including workFromHome
+        // Format response to include all leave types including workFromHome and editHistory
         const formattedResponse = {
           userId: updatedSummary.userId,
           year: updatedSummary.year,
@@ -467,6 +505,7 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
             availed: updatedSummary.restricted_holiday?.availed || 0,
             remaining: updatedSummary.restricted_holiday?.remaining || 0,
           },
+          editHistory: updatedSummary.editHistory || [],
         };
 
         return reply.send({

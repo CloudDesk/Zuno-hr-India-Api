@@ -1,6 +1,7 @@
 
 import { Types } from 'mongoose';
 import { Payslip, User, Payroll, IPayroll, IUser, IPayslip } from '../models';
+import { Document, IDocument } from '../models/document.model';
 import PizZip from "pizzip";
 import Docxtemplater from "docxtemplater";
 import fs from "fs";
@@ -49,6 +50,11 @@ export interface IPayslipQuery {
 // Promisify the libreoffice convert method
 const convertToPdf = promisify(libreoffice.convert);
 
+interface IdentityDocumentResult {
+  panNumber?: string;
+  pfNumber?: string;
+  pfUan?: string;
+}
 
 export class PayslipService extends BaseService {
   protected context: RequestContext;
@@ -368,6 +374,46 @@ export class PayslipService extends BaseService {
       throw error;
     }
   }
+  // Get identity documents from Document collection (same as document.service.ts)
+  private getIdentityDocuments = async (employeeId: string): Promise<IdentityDocumentResult> => {
+    try {
+      if (!Types.ObjectId.isValid(employeeId)) {
+        throw new Error('Invalid employeeId');
+      }
+
+      const docs = await Document.find({
+        employeeId: new Types.ObjectId(employeeId),
+        category: 'Certification',
+        'metadata.certificate.certificateType': 'IdentityProof',
+      }).lean();
+
+      if (!docs || docs.length === 0) {
+        return { panNumber: undefined, pfNumber: undefined, pfUan: undefined };
+      }
+
+      const result: IdentityDocumentResult = {};
+
+      docs.forEach((doc: IDocument) => {
+        if (doc.metadata?.certificate?.idDetails) {
+          const { idType, idNumber, uanNumber } = doc.metadata.certificate.idDetails;
+
+          if (idType === 'PAN' && idNumber) {
+            result.panNumber = idNumber;
+          } else if (idType === 'PF' && idNumber) {
+            result.pfNumber = idNumber;
+            result.pfUan = uanNumber;
+          }
+        }
+      });
+
+      return result;
+    } catch (error) {
+      console.error('Error fetching identity documents:', error);
+      // Return empty result on error, will fallback to employee fields
+      return { panNumber: undefined, pfNumber: undefined, pfUan: undefined };
+    }
+  };
+
   private async generatePayslipPDF(employee: IUser, payroll: IPayroll, payslipId: Types.ObjectId): Promise<string> {
     // Ensure logs include meaningful data
 
@@ -438,7 +484,8 @@ export class PayslipService extends BaseService {
 
     const activeBankData = employee.bankDetails?.find(bank => bank?.isActive);
 
-
+    // Get identity documents from Document collection (with fallback to employee fields)
+    const govtIds = await this.getIdentityDocuments(employee._id.toString());
 
     const isUaePayroll = payroll.country?.toUpperCase() === 'AE';
 
@@ -487,15 +534,21 @@ export class PayslipService extends BaseService {
       empDes: employeeDesignation || '-',
       empDept: isUaePayroll ? formatLabel(employee.departmentId) : formatLabel(employee.departmentId),
       empLocation: isUaePayroll ? formatLabel(employee.location) : formatLabel(employee.location),
-      empNo: isUaePayroll ? (sanitizeText(employee.employeeCode) || '-') : (employee.employeeCode || '-'),
+      // Employee No: Use employeeCode (primary) or biometricId (fallback)
+      empNo: isUaePayroll
+        ? (sanitizeText(employee.employeeCode) || sanitizeText(employee.biometricId) || '-')
+        : (employee.employeeCode || employee.biometricId || '-'),
 
       // Bank & ID Info
       // Fallback: If no active bank found, use the first one available
       bankName: isUaePayroll ? (sanitizeText(activeBankData?.bankName) || '-') : (activeBankData?.bankName || '-'),
       bankAccNo: isUaePayroll ? (sanitizeText(activeBankData?.accountNumber) || '-') : (activeBankData?.accountNumber || '-'),
-      panNo: employee.governmentIds?.pan?.number || '-',
-      pfNo: employee.pfNumber || employee.governmentIds?.pf?.number || '-',
-      pfUan: employee.uanNumber || employee.governmentIds?.pf?.uan || '-',
+      // PAN: Priority: Document collection > governmentIds > fallback to '-'
+      panNo: govtIds?.panNumber || employee.governmentIds?.pan?.number || '-',
+      // PF No: Priority: Document collection > employee.pfNumber > governmentIds > fallback to '-'
+      pfNo: govtIds?.pfNumber || employee.pfNumber || employee.governmentIds?.pf?.number || '-',
+      // PF UAN: Priority: Document collection > employee.uanNumber > governmentIds > fallback to '-'
+      pfUan: govtIds?.pfUan || employee.uanNumber || employee.governmentIds?.pf?.uan || '-',
 
       // Payslip Info
       payMonth: this.getMonthName(payroll.month),
@@ -535,14 +588,28 @@ export class PayslipService extends BaseService {
         )
       },
 
-      // Deductions
-      deduction: {
-        pf: formatCurrency(payroll.epfEmployee || 0, payroll.country),
-        lop: formatCurrency(payroll.leaveDeductions || 0, payroll.country),
-        pt: formatCurrency(payroll.professionalTax || 0, payroll.country),
-        it: formatCurrency(payroll.incomeTax || 0, payroll.country),
-        total: formatCurrency(payroll.totalDeductions || 0, payroll.country)
-      },
+      // Deductions - Only include non-zero values
+      deduction: (() => {
+        const deductionObj: any = {
+          total: formatCurrency(payroll.totalDeductions || 0, payroll.country)
+        };
+
+        // Only include deduction items if value is greater than 0
+        if (payroll.epfEmployee && payroll.epfEmployee > 0) {
+          deductionObj.pf = formatCurrency(payroll.epfEmployee, payroll.country);
+        }
+        if (payroll.leaveDeductions && payroll.leaveDeductions > 0) {
+          deductionObj.lop = formatCurrency(payroll.leaveDeductions, payroll.country);
+        }
+        if (payroll.professionalTax && payroll.professionalTax > 0) {
+          deductionObj.pt = formatCurrency(payroll.professionalTax, payroll.country);
+        }
+        if (payroll.incomeTax && payroll.incomeTax > 0) {
+          deductionObj.it = formatCurrency(payroll.incomeTax, payroll.country);
+        }
+
+        return deductionObj;
+      })(),
 
       // Net Pay
       netPay: formatCurrency(netSalaryValue, payroll.country),

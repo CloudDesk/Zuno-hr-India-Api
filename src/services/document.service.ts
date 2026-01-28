@@ -1669,14 +1669,32 @@ export class DocumentService extends BaseService {
                 )
             },
 
-            // Deductions
-            deduction: {
-                pf: formatCurrency(payroll.epfEmployee || 0, normalizedCountry),
-                lop: formatCurrency(payroll.leaveDeductions || 0, normalizedCountry),
-                pt: formatCurrency(payroll.professionalTax || 0, normalizedCountry),
-                it: formatCurrency(payroll.incomeTax || 0, normalizedCountry),
-                total: formatCurrency(payroll.totalDeductions || 0, normalizedCountry)
-            },
+            // Deductions - Only include non-zero values (so template rows can be conditional)
+            deduction: (() => {
+                const deductionObj: any = {
+                    total: formatCurrency(Number(payroll.totalDeductions || 0), normalizedCountry),
+                };
+
+                const pfVal = Number((payroll as any).epfEmployee ?? 0);
+                const lopVal = Number((payroll as any).leaveDeductions ?? 0);
+                const ptVal = Number((payroll as any).professionalTax ?? 0);
+                const itVal = Number((payroll as any).incomeTax ?? 0);
+
+                if (pfVal > 0) {
+                    deductionObj.pf = formatCurrency(pfVal, normalizedCountry);
+                }
+                if (lopVal > 0) {
+                    deductionObj.lop = formatCurrency(lopVal, normalizedCountry);
+                }
+                if (ptVal > 0) {
+                    deductionObj.pt = formatCurrency(ptVal, normalizedCountry);
+                }
+                if (itVal > 0) {
+                    deductionObj.it = formatCurrency(itVal, normalizedCountry);
+                }
+
+                return deductionObj;
+            })(),
 
             // Net Pay
             netPay: formatCurrency(netSalaryValue, normalizedCountry),
