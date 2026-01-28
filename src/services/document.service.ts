@@ -1737,7 +1737,14 @@ export class DocumentService extends BaseService {
 
     private async replacePlaceholdersInDocx(inputPath: string, outputPath: string, data: any) {
         try {
-            console.log("replacePlaceholdersInDocx", inputPath, outputPath, data);
+            console.log("replacePlaceholdersInDocx", inputPath, outputPath);
+            console.log("Template data keys:", Object.keys(data));
+            
+            // Check if template file exists
+            if (!fs.existsSync(inputPath)) {
+                throw new Error(`Template file not found: ${inputPath}`);
+            }
+
             const content = fs.readFileSync(inputPath, "binary");
             const zip = new PizZip(content);
             const doc = new Docxtemplater(zip, {
@@ -1749,8 +1756,20 @@ export class DocumentService extends BaseService {
 
             const updatedContent = doc.getZip().generate({ type: "nodebuffer" });
             fs.writeFileSync(outputPath, updatedContent);
-        } catch (error) {
+        } catch (error: any) {
             console.error('DOCX Template Rendering Error:', error);
+            
+            // Handle Docxtemplater MultiError
+            if (error.properties && error.properties.errors && Array.isArray(error.properties.errors)) {
+                const errors = error.properties.errors.map((err: any) => ({
+                    name: err.name,
+                    message: err.message,
+                    properties: err.properties
+                }));
+                console.error('Template errors:', JSON.stringify(errors, null, 2));
+                throw new Error(`Template rendering failed: ${errors.map((e: any) => e.message).join('; ')}`);
+            }
+            
             throw error;
         }
     }
