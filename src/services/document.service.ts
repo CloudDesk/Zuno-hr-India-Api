@@ -1699,7 +1699,7 @@ export class DocumentService extends BaseService {
 
                 return deductionObj;
             })(),
-            
+
             // Deductions array for template looping (only non-zero items)
             deductions: (() => {
                 const deductionsArray: any[] = [];
@@ -1766,8 +1766,8 @@ export class DocumentService extends BaseService {
             await this.replacePlaceholdersInDocx(
                 // path.join(process.cwd(), 'CD_paySlip.docx'),
                 //path.join(process.cwd(), 'CD_payslip_Dubai Zuno.docx'),
-                // path.join(process.cwd(), 'CD_paySlip old.docx'),
-                path.join(process.cwd(), 'CD_paySlip_new.docx'),
+                path.join(process.cwd(), 'CD_paySlip old.docx'),
+                // path.join(process.cwd(), 'CD_paySlip_new.docx'),
 
                 outputDocxPath,
                 templateData
@@ -1786,7 +1786,7 @@ export class DocumentService extends BaseService {
         try {
             console.log("replacePlaceholdersInDocx", inputPath, outputPath);
             console.log("Template data keys:", Object.keys(data));
-            
+
             // Check if template file exists
             if (!fs.existsSync(inputPath)) {
                 throw new Error(`Template file not found: ${inputPath}`);
@@ -1808,14 +1808,14 @@ export class DocumentService extends BaseService {
             console.log("Deduction object:", JSON.stringify(data.deduction, null, 2));
             console.log("Deductions array:", JSON.stringify(data.deductions, null, 2));
             console.log("================================");
-            
+
             doc.render(data);
 
             const updatedContent = doc.getZip().generate({ type: "nodebuffer" });
             fs.writeFileSync(outputPath, updatedContent);
         } catch (error: any) {
             console.error('DOCX Template Rendering Error:', error);
-            
+
             // Handle Docxtemplater MultiError
             if (error.properties && error.properties.errors && Array.isArray(error.properties.errors)) {
                 const errors = error.properties.errors.map((err: any) => ({
@@ -1826,7 +1826,7 @@ export class DocumentService extends BaseService {
                 console.error('Template errors:', JSON.stringify(errors, null, 2));
                 throw new Error(`Template rendering failed: ${errors.map((e: any) => e.message).join('; ')}`);
             }
-            
+
             throw error;
         }
     }
