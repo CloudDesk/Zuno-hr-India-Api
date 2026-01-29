@@ -2649,12 +2649,6 @@ export class BiometricAttendanceService extends BaseService {
       // Create map: userId -> holidays by date
       const holidaysByUser = new Map<string, Map<string, { name: string; type: string }>>();
 
-      // Normalize start and end dates for comparison
-      const startDateNormalized = new Date(start);
-      startDateNormalized.setUTCHours(0, 0, 0, 0);
-      const endDateNormalized = new Date(end);
-      endDateNormalized.setUTCHours(23, 59, 59, 999);
-
       data.forEach((user: any) => {
         const userId = user.userId;
         const userCalendar = holidayCalendars.find(cal =>
@@ -2665,29 +2659,13 @@ export class BiometricAttendanceService extends BaseService {
         if (userCalendar && userCalendar.holidays) {
           const holidayMap = new Map<string, { name: string; type: string }>();
           userCalendar.holidays.forEach((holiday: any) => {
-            // Convert holiday date to normalized date string
-            const holidayDate = new Date(holiday.date);
-            holidayDate.setUTCHours(0, 0, 0, 0);
-            const dateStr = holidayDate.toISOString().split('T')[0];
-            
-            // Only add holidays that fall within the date range
-            // Compare dates using getTime() for accurate comparison
-            const holidayTime = holidayDate.getTime();
-            const startTime = startDateNormalized.getTime();
-            const endTime = endDateNormalized.getTime();
-            
-            if (holidayTime >= startTime && holidayTime <= endTime) {
-              holidayMap.set(dateStr, {
-                name: holiday.name,
-                type: holiday.type
-              });
-            }
+            const dateStr = new Date(holiday.date).toISOString().split('T')[0];
+            holidayMap.set(dateStr, {
+              name: holiday.name,
+              type: holiday.type
+            });
           });
-          
-          // Only set the map if it has holidays (to avoid empty maps)
-          if (holidayMap.size > 0) {
-            holidaysByUser.set(userId, holidayMap);
-          }
+          holidaysByUser.set(userId, holidayMap);
         }
       });
 
@@ -2782,60 +2760,17 @@ export class BiometricAttendanceService extends BaseService {
           let bgColor: string | undefined;
 
           // Check if this date is a holiday for this user
-          // Method 1: Use isHoliday flag from attendance data (from getAdminAttendanceView)
-          const isHolidayFromData = att.isHoliday === true;
-          const holidayTypeFromData = att.holidayType; // 'mandatory' or 'optional'
-          const isRestrictedHolidayFromData = att.isRestrictedHoliday === true;
-          
-          // Method 2: Also check the holidaysByUser map (fallback)
           const userHolidays = holidaysByUser.get(user.userId);
           const holiday = userHolidays?.get(dateStr);
           const isApprovedOptionalHoliday = approvedOptionalHolidaysByUser.get(user.userId)?.has(dateStr);
 
           // Determine if we should show holiday status
           let showHoliday = false;
-          
-          // Use holiday from data if available, otherwise use map lookup
-          // IMPORTANT: Ensure we always detect holidays even if one method fails
-          let effectiveHoliday: { type: string; name: string } | undefined;
-          
-          if (isHolidayFromData) {
-            // Primary: Use data from getAdminAttendanceView
-            effectiveHoliday = {
-              type: holidayTypeFromData || 'mandatory',
-              name: holiday?.name || 'Holiday'
-            };
-          } else if (holiday) {
-            // Fallback: Use map lookup if data flag is missing
-            effectiveHoliday = holiday;
-          }
-          
-          // Additional check: If we have a holiday in map but no flag, still use it
-          // This ensures mandatory holidays are always detected
-          if (!effectiveHoliday && holiday) {
-            effectiveHoliday = holiday;
-          }
-          
-          const effectiveIsApprovedOptional = isRestrictedHolidayFromData || isApprovedOptionalHoliday;
 
           // Set status text
-          // PRIORITY 1: Check for holidays FIRST (holidays always show H/RH, even if there's a leave)
-          if (effectiveHoliday) {
-            // Holidays take priority over leaves - always show holiday marker
-            if (effectiveHoliday.type === 'mandatory') {
-              // Mandatory holiday - always show H (uppercase) (even if there's leave or attendance record)
-              cellValue = 'H';
-              fontColor = 'FF800080'; // Purple for holiday
-              showHoliday = true;
-            } else if (effectiveHoliday.type === 'optional' && effectiveIsApprovedOptional) {
-              // Restricted holiday (optional) - only show if approved, display as 'RH'
-              cellValue = 'RH';
-              fontColor = 'FF800080'; // Purple for restricted holiday
-              showHoliday = true;
-            }
-            // If optional holiday not approved, showHoliday remains false
-          } else if (isLeave) {
-            // PRIORITY 2: Check for approved leave (only if not a holiday)
+          // Set status text
+          // PRIORITY 1: Check for approved leave (shows even for future dates)
+          if (isLeave) {
             const typeStr = (leaveDetails as any).type;
             const duration = (leaveDetails as any).duration;
             const halfDayType = (leaveDetails as any).halfDayType;
@@ -2897,6 +2832,20 @@ export class BiometricAttendanceService extends BaseService {
             }
 
             fontColor = leaveColor;
+          } else if (holiday) {
+            // PRIORITY 2: Check for holidays
+            if (holiday.type === 'mandatory') {
+              // Mandatory holiday - always show H
+              cellValue = 'H';
+              fontColor = 'FF800080'; // Purple for holiday
+              showHoliday = true;
+            } else if (holiday.type === 'optional' && isApprovedOptionalHoliday) {
+              // Restricted holiday (optional) - only show if approved
+              cellValue = 'RH';
+              fontColor = 'FF800080'; // Purple for restricted holiday
+              showHoliday = true;
+            }
+            // If optional holiday not approved, showHoliday remains false
           }
 
           if (!isLeave && !showHoliday) {
@@ -2916,8 +2865,8 @@ export class BiometricAttendanceService extends BaseService {
                 cellValue = '-';
                 fontColor = 'FF808080'; // Gray
               }
-            } else if (!att.status || att.status === 'unknown' || !att.attendanceId) {
-              // Past date with no attendance or missing status
+            } else if (att.status === 'unknown' || !att.attendanceId) {
+              // Past date with no attendance
               // Check if it's a weekend with no attendance
               if (att.isWeekend) {
                 cellValue = 'Off';
@@ -2961,35 +2910,11 @@ export class BiometricAttendanceService extends BaseService {
               }
             } else {
               // Past date with other status
-              // Ensure we have a valid status value
-              if (att.status && att.status.trim() !== '') {
-                cellValue = att.status;
-              } else {
-                // Fallback: If status is empty/invalid, treat as absent
-                if (att.isWeekend) {
-                  cellValue = 'Off';
-                  fontColor = 'FF808080'; // Gray for weekend off
-                } else {
-                  cellValue = 'A';  // Abbreviated "Absent"
-                  fontColor = 'FFFF0000'; // Red for absent
-                }
-              }
+              cellValue = att.status;
               // Add WFH indicator for other statuses with attendance
-              if (isWFH && cellValue !== 'A' && cellValue !== 'Off') {
+              if (isWFH) {
                 cellValue = `${cellValue} (WFH)`;
               }
-            }
-          }
-
-          // Final safety check: Ensure past dates always have a value (unless it's today or future)
-          if (!cellValue && cellDate < today && !isLeave && !showHoliday) {
-            // Past date with no value set - default to "A" (Absent) or "Off" (weekend)
-            if (att.isWeekend) {
-              cellValue = 'Off';
-              fontColor = 'FF808080'; // Gray for weekend off
-            } else {
-              cellValue = 'A';  // Abbreviated "Absent"
-              fontColor = 'FFFF0000'; // Red for absent
             }
           }
 

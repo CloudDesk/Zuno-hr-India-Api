@@ -166,9 +166,7 @@ const DeclarationSchema = new Schema<IDeclaration>({
     section: {
         type: String,
         required: true,
-        enum: ["80C", "80D", "80E", "80G", "80TTA", "80GG", "80CCG", "80U", "80CCD2", "80RRB", "80DDB", "80CCD(1)", "80CCD(2)", "10(14)", "24(b)",
-            "80EEA"
-        ]
+        enum: ["10_13A", "80C", "80D", "80DD", "80E", "80G", "80TTA", "80GG", "80CCG", "80U", "80CCD2", "80RRB", "80DDB", "80CCD(1)", "80CCD(2)", "10(14)", "10(13A)", "24(b)", "80EEA"]
     },
     subSection: { type: String, required: true },
     maxLimit: { type: Number, required: true },

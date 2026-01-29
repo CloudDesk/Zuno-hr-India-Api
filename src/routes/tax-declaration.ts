@@ -63,6 +63,23 @@ export async function taxDeclarationRoutes(fastify: FastifyInstance): Promise<vo
             }
         }
     )
+    //get deduction sections (section + subsection config aligned with FE)
+    fastify.get('/sections', { preHandler: [authenticate] },
+        async (request, reply) => {
+            try {
+                const sections = request.container!.taxDeclarationService.getDeductionSections();
+                return reply.send({
+                    success: true,
+                    data: sections,
+                });
+            } catch (error: any) {
+                return reply.status(400).send({
+                    success: false,
+                    error: { message: error.message },
+                });
+            }
+        }
+    )
     //get a tax declaration Current FY and userId
     fastify.get('/user/:userId/current-fy', { preHandler: [authenticate] },
         async (request, reply) => {
