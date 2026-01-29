@@ -11,6 +11,7 @@ import path from 'path';
 
 import { Document } from "../models/document.model";
 import * as xlsx from 'xlsx';
+import { deductionSections, type IDeductionSection } from "../constants/tax-deduction-sections";
 
 export interface ITaxDeclarationCreate {
     employeeId: string;
@@ -200,6 +201,11 @@ export class TaxDeclarationService extends BaseService {
         return { annualGross, salaryAssignments: assignmentsForTaxDeclaration };
     }
 
+    /** Returns deduction sections config (aligned with FE) for tax declaration forms. */
+    getDeductionSections(): IDeductionSection[] {
+        return deductionSections;
+    }
+
     // * user/admin chooses regime Creates a new tax declaration with initial calculations
     async create(data: ITaxDeclarationCreate): Promise<ITaxDeclaration> {
         console.log(data, "0 data")
@@ -363,7 +369,15 @@ export class TaxDeclarationService extends BaseService {
         console.log(plainSlabs, "5 plain slabs for calculation");
 
 
-        // 6. Calculate total declared amount from declarations
+        // 6. Normalize declarations: FE may send subsection -> map to subSection for model
+        if (data.declarations && data.declarations.length > 0) {
+            data.declarations = data.declarations.map((d: any) => ({
+                ...d,
+                subSection: d.subSection ?? d.subsection,
+            }));
+        }
+
+        // Calculate total declared amount from declarations
         let totalDeclaredAmount = 0
         // If declarations array exists and has elements, calculate totalDeclaredAmount
         if (data.declarations && data.declarations.length > 0) {
