@@ -1699,12 +1699,59 @@ export class DocumentService extends BaseService {
 
                 return deductionObj;
             })(),
+            
+            // Deductions array for template looping (only non-zero items)
+            deductions: (() => {
+                const deductionsArray: any[] = [];
+                const pfVal = Number((payroll as any).epfEmployee ?? 0);
+                const lopVal = Number((payroll as any).leaveDeductions ?? 0);
+                const ptVal = Number((payroll as any).professionalTax ?? 0);
+                const itVal = Number((payroll as any).incomeTax ?? 0);
+
+                if (pfVal > 0) {
+                    deductionsArray.push({
+                        label: 'PF',
+                        value: formatCurrency(pfVal, normalizedCountry)
+                    });
+                }
+                if (lopVal > 0) {
+                    deductionsArray.push({
+                        label: 'LOP',
+                        value: formatCurrency(lopVal, normalizedCountry)
+                    });
+                }
+                if (itVal > 0) {
+                    deductionsArray.push({
+                        label: 'Income Tax',
+                        value: formatCurrency(itVal, normalizedCountry)
+                    });
+                }
+                if (ptVal > 0) {
+                    deductionsArray.push({
+                        label: 'Professional Tax',
+                        value: formatCurrency(ptVal, normalizedCountry)
+                    });
+                }
+
+                return deductionsArray;
+            })(),
 
             // Net Pay
             netPay: formatCurrency(netSalaryValue, normalizedCountry),
             netPayWords: netPayWords
         };
 
+        console.log("=== DEDUCTION DEBUG ===");
+        console.log("Payroll deduction values:", {
+            epfEmployee: (payroll as any).epfEmployee,
+            leaveDeductions: (payroll as any).leaveDeductions,
+            professionalTax: (payroll as any).professionalTax,
+            incomeTax: (payroll as any).incomeTax,
+            totalDeductions: payroll.totalDeductions
+        });
+        console.log("Deduction object:", templateData.deduction);
+        console.log("Deduction keys:", Object.keys(templateData.deduction));
+        console.log("======================");
         console.log(templateData, "templateData");
         console.log({
             payrollTravelAllowance: payroll.travelAllowance,
@@ -1750,8 +1797,18 @@ export class DocumentService extends BaseService {
             const doc = new Docxtemplater(zip, {
                 paragraphLoop: true,
                 linebreaks: true,
+                nullGetter: () => {
+                    // Return empty string for missing properties instead of undefined
+                    return '';
+                }
             });
 
+            // Log deduction data before rendering
+            console.log("=== TEMPLATE RENDERING DEBUG ===");
+            console.log("Deduction object:", JSON.stringify(data.deduction, null, 2));
+            console.log("Deductions array:", JSON.stringify(data.deductions, null, 2));
+            console.log("================================");
+            
             doc.render(data);
 
             const updatedContent = doc.getZip().generate({ type: "nodebuffer" });

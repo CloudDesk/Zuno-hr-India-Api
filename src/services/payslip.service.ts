@@ -613,6 +613,42 @@ export class PayslipService extends BaseService {
 
         return deductionObj;
       })(),
+      
+      // Deductions array for template looping (only non-zero items)
+      deductions: (() => {
+        const deductionsArray: any[] = [];
+        const pfVal = Number(payroll.epfEmployee ?? 0);
+        const lopVal = Number(payroll.leaveDeductions ?? 0);
+        const ptVal = Number(payroll.professionalTax ?? 0);
+        const itVal = Number(payroll.incomeTax ?? 0);
+
+        if (pfVal > 0) {
+          deductionsArray.push({
+            label: 'PF',
+            value: formatCurrency(pfVal, payroll.country)
+          });
+        }
+        if (lopVal > 0) {
+          deductionsArray.push({
+            label: 'LOP',
+            value: formatCurrency(lopVal, payroll.country)
+          });
+        }
+        if (itVal > 0) {
+          deductionsArray.push({
+            label: 'Income Tax',
+            value: formatCurrency(itVal, payroll.country)
+          });
+        }
+        if (ptVal > 0) {
+          deductionsArray.push({
+            label: 'Professional Tax',
+            value: formatCurrency(ptVal, payroll.country)
+          });
+        }
+
+        return deductionsArray;
+      })(),
 
       // Net Pay
       netPay: formatCurrency(netSalaryValue, payroll.country),
@@ -626,6 +662,17 @@ export class PayslipService extends BaseService {
       sanitizedAssignedTravelAllowance: assignedTravelAllowanceValue,
       country: payroll.country,
     }, "travel allowance debug");
+    console.log("=== DEDUCTION DEBUG ===");
+    console.log("Payroll deduction values:", {
+      epfEmployee: payroll.epfEmployee,
+      leaveDeductions: payroll.leaveDeductions,
+      professionalTax: payroll.professionalTax,
+      incomeTax: payroll.incomeTax,
+      totalDeductions: payroll.totalDeductions
+    });
+    console.log("Deduction object:", templateData.deduction);
+    console.log("Deduction keys:", Object.keys(templateData.deduction));
+    console.log("======================");
     console.log(templateData, " templateData")
     console.log("earnActual.travelAllowance:", templateData.earnActual.travelAllowance)
     console.log("earnFull.travelAllowance:", templateData.earnFull.travelAllowance)
@@ -685,6 +732,10 @@ export class PayslipService extends BaseService {
       const doc = new Docxtemplater(zip, {
         paragraphLoop: true,
         linebreaks: true,
+        nullGetter: () => {
+          // Return empty string for missing properties instead of undefined
+          return '';
+        }
       });
 
       doc.render(data);
