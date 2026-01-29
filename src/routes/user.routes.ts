@@ -769,6 +769,47 @@ export const userRoutes: RouteHandler = async (
               format: 'date-time',
               description: 'PF join date (optional)'
             },
+            // Employee detail fields (63-70)
+            confirmationDate: {
+              type: 'string',
+              format: 'date-time',
+              description: 'Employee confirmation date'
+            },
+            probationDate: {
+              type: 'string',
+              format: 'date-time',
+              description: 'Probation date'
+            },
+            separationDate: {
+              type: 'string',
+              format: 'date-time',
+              description: 'Employee separation date'
+            },
+            fatherName: {
+              type: 'string',
+              maxLength: 100,
+              description: "Employee's father's name"
+            },
+            maritalStatus: {
+              type: 'string',
+              enum: ['Single', 'Married', 'Divorced', 'Widowed'],
+              description: 'Employee marital status'
+            },
+            spouseName: {
+              type: 'string',
+              maxLength: 100,
+              description: "Employee's spouse name"
+            },
+            noticePeriod: {
+              type: 'number',
+              minimum: 0,
+              description: 'Notice period in days'
+            },
+            personalMailId: {
+              type: 'string',
+              format: 'email',
+              description: "Employee's personal email address"
+            },
             bankDetails: bankDetailsSchema,
             governmentIds: governmentIdsSchema,
             academicDetails: academicDetailsSchema,
