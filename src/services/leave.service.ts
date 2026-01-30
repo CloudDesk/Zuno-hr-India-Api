@@ -246,38 +246,48 @@ export class LeaveService extends BaseService {
     startDate: Date,
     endDate: Date
   ): Promise<Date[]> {
-    // Get user with holidayCalendarId
-    const user = await User.findById(userId).select('holidayCalendarId');
-    if (!user || !user.holidayCalendarId) {
-      // If no holiday calendar assigned, return empty array (skip all holidays)
+    const user = await User.findById(userId).select('holidayCalendarId holidayCalendarHistory').lean();
+    if (!user) {
       return [];
     }
 
     const start = new Date(startDate);
     start.setUTCHours(0, 0, 0, 0);
-
     const end = new Date(endDate);
     end.setUTCHours(23, 59, 59, 999);
-
-    // Get holiday calendar
-    const holidayCalendar = await HolidayCalendar.findById(user.holidayCalendarId);
-    if (!holidayCalendar) {
-      console.warn(`Holiday calendar ${user.holidayCalendarId} not found for user ${userId}`);
-      return [];
-    }
-
-    // Only mandatory holidays block leave application. Optional/restricted holidays allow leave
-    // (e.g. employee can apply annual leave on a restricted holiday).
-    const mandatoryHolidaysList: Date[] = [];
     const startTime = start.getTime();
     const endTime = end.getTime();
 
+    const mandatoryHolidaysList: Date[] = [];
+    const year = new Date(startDate).getFullYear();
+
+    // Resolve calendar: holidayCalendarHistory (year-specific) or holidayCalendarId
+    let calendarId: Types.ObjectId | undefined;
+    const history = (user as any).holidayCalendarHistory;
+    if (history && Array.isArray(history)) {
+      const entry = history.find((e: any) => e.year === year && e.isActive === true);
+      if (entry && entry.calendarId) {
+        calendarId = entry.calendarId;
+      }
+    }
+    if (!calendarId && user.holidayCalendarId) {
+      calendarId = new Types.ObjectId(user.holidayCalendarId);
+    }
+    if (!calendarId) {
+      return [];
+    }
+
+    const holidayCalendar = await HolidayCalendar.findById(calendarId).lean();
+    if (!holidayCalendar || !holidayCalendar.holidays) {
+      return mandatoryHolidaysList;
+    }
+
+    // Only mandatory holidays block leave. Optional/restricted holidays allow leave (e.g. annual leave on Dec 25).
     for (const holiday of holidayCalendar.holidays) {
       if (holiday.type === 'mandatory') {
         const holidayDate = new Date(holiday.date);
         holidayDate.setUTCHours(0, 0, 0, 0);
         const holidayTime = holidayDate.getTime();
-
         if (holidayTime >= startTime && holidayTime <= endTime) {
           mandatoryHolidaysList.push(holidayDate);
         }
