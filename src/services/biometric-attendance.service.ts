@@ -2180,11 +2180,11 @@ export class BiometricAttendanceService extends BaseService {
         ...activeUsers.map(u => u._id.toString())
       ]);
 
-      // Get full user details
+      // Get full user details (include holidayCalendarHistory for year-specific calendars)
       const allUsers = await User.find({
         _id: { $in: Array.from(allUserIds).map(id => new Types.ObjectId(id)) }
       })
-        .select('_id name employeeCode role active holidayCalendarId')
+        .select('_id name employeeCode role active holidayCalendarId holidayCalendarHistory')
         .lean();
 
       // Step 4: Get attendance records (batch query)
@@ -2192,7 +2192,7 @@ export class BiometricAttendanceService extends BaseService {
         userId: { $in: Array.from(allUserIds).map(id => new Types.ObjectId(id)) },
         shiftDay: { $gte: start, $lte: end }
       })
-        .select('_id userId shiftDay status attendanceStatus isWFH halfType')
+        .select('_id userId shiftDay status attendanceStatus isWFH halfType totalWorkHours actualWorkHours')
         .lean();
 
       // Create map: userId -> date -> record
@@ -2232,58 +2232,111 @@ export class BiometricAttendanceService extends BaseService {
         shiftAssignmentsByUser.get(userId)!.push(sa);
       });
 
-      // Step 6: Get holiday calendars (both methods)
+      // Step 6: Get holiday calendars (holidayCalendarId, assignedTo, and holidayCalendarHistory)
       const allUserIdsArray = Array.from(allUserIds).map(id => new Types.ObjectId(id));
 
-      // Method 1: Get calendars via holidayCalendarId
-      const holidayCalendarIds = allUsers
-        .map(u => u.holidayCalendarId)
-        .filter(id => id !== null && id !== undefined)
-        .map(id => new Types.ObjectId(id.toString()));
+      // Years in the date range (for holidayCalendarHistory)
+      const yearsInRange = new Set<number>();
+      const cursorForYears = new Date(start);
+      while (cursorForYears <= end) {
+        yearsInRange.add(cursorForYears.getUTCFullYear());
+        cursorForYears.setUTCDate(cursorForYears.getUTCDate() + 1);
+      }
 
-      // Fetch all relevant calendars
+      // Collect calendar IDs: holidayCalendarId + from holidayCalendarHistory (active, year in range)
+      const holidayCalendarIds = new Set<string>();
+      allUsers.forEach(u => {
+        if (u.holidayCalendarId) {
+          holidayCalendarIds.add(u.holidayCalendarId.toString());
+        }
+        const history = (u as any).holidayCalendarHistory;
+        if (history && Array.isArray(history)) {
+          history.forEach((entry: any) => {
+            if (entry.isActive === true && yearsInRange.has(entry.year) && entry.calendarId) {
+              holidayCalendarIds.add(entry.calendarId.toString());
+            }
+          });
+        }
+      });
+
+      const calendarIdsArray = Array.from(holidayCalendarIds).map(id => new Types.ObjectId(id));
+
+      // Fetch all relevant calendars (by ID and assignedTo)
       const calendarsById = await HolidayCalendar.find({
         $or: [
-          { _id: { $in: holidayCalendarIds } },  // Method 1: Direct reference
-          { assignedTo: { $in: allUserIdsArray } }  // Method 2: User in assignedTo array
+          { _id: { $in: calendarIdsArray } },
+          { assignedTo: { $in: allUserIdsArray } }
         ]
-      }).select('_id holidays assignedTo').lean();
+      }).select('_id holidays assignedTo year').lean();
 
-      // Create map: userId -> holidays (combining both methods)
+      // Create map: userId -> holidays (holidayCalendarId + assignedTo + holidayCalendarHistory per year)
       const holidaysByUser = new Map<string, any[]>();
+
+      const toDateKey = (d: Date | string) => {
+        const date = new Date(d);
+        return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`;
+      };
 
       allUsers.forEach(user => {
         const userId = user._id.toString();
         const userHolidays: any[] = [];
 
-        // Method 1: Check if user has holidayCalendarId
+        // Method 1: holidayCalendarId
         if (user.holidayCalendarId) {
-          const userCalendarId = user.holidayCalendarId.toString();
           const calendar = calendarsById.find(
-            cal => cal._id.toString() === userCalendarId
+            cal => cal._id.toString() === user.holidayCalendarId!.toString()
           );
           if (calendar && calendar.holidays) {
-            userHolidays.push(...calendar.holidays);
+            calendar.holidays.forEach((h: any) => {
+              const dateKey = toDateKey(h.date);
+              if (dateRange.includes(dateKey)) {
+                userHolidays.push(h);
+              }
+            });
           }
         }
 
-        // Method 2: Check if user is in any calendar's assignedTo array
+        // Method 2: assignedTo
         calendarsById.forEach(calendar => {
           if (calendar.assignedTo && calendar.assignedTo.length > 0) {
-            const assignedUserIds = calendar.assignedTo.map(id => id.toString());
-            if (assignedUserIds.includes(userId)) {
-              if (calendar.holidays) {
-                userHolidays.push(...calendar.holidays);
-              }
+            const assignedUserIds = calendar.assignedTo.map((id: any) => id.toString());
+            if (assignedUserIds.includes(userId) && calendar.holidays) {
+              calendar.holidays.forEach((h: any) => {
+                const dateKey = toDateKey(h.date);
+                if (dateRange.includes(dateKey)) {
+                  userHolidays.push(h);
+                }
+              });
             }
           }
         });
+
+        // Method 3: holidayCalendarHistory (year-specific calendar per year in range)
+        const history = (user as any).holidayCalendarHistory;
+        if (history && Array.isArray(history)) {
+          yearsInRange.forEach(year => {
+            const entry = history.find((e: any) => e.year === year && e.isActive === true);
+            if (entry && entry.calendarId) {
+              const calendar = calendarsById.find(
+                cal => cal._id.toString() === entry.calendarId.toString()
+              );
+              if (calendar && calendar.holidays) {
+                calendar.holidays.forEach((h: any) => {
+                  const dateKey = toDateKey(h.date);
+                  if (dateRange.includes(dateKey)) {
+                    userHolidays.push(h);
+                  }
+                });
+              }
+            }
+          });
+        }
 
         // Remove duplicates (same date + name)
         const uniqueHolidays = Array.from(
           new Map(
             userHolidays.map(h => {
-              const dateKey = new Date(h.date).toISOString().split('T')[0];
+              const dateKey = toDateKey(h.date);
               return [`${dateKey}_${h.name}`, h];
             })
           ).values()
@@ -2394,17 +2447,22 @@ export class BiometricAttendanceService extends BaseService {
         return applicable[0];
       };
 
-      // Step 8: Process each user & date
+      // Step 8: Process each user & date – SCENARIO PRIORITY (do not reorder):
+      // 1) Leave (only when NOT mandatory holiday): AL/SL/CL/RH/CO/LOP/ML/OP/OU; half-day: AL/P, P/AL, AL/Inc, Inc/AL.
+      // 2) Half-type work only (no leave, NOT mandatory holiday): First Half / Second Half.
+      // 3) Mandatory holiday: if attendance record exists → record status (e.g. Holiday-Swipe); else → H. Leave never shown.
+      // 4) Optional holiday approved (RH): displayLabel = RH.
+      // Weekend: isWeekend set; leave still evaluated (weekend hides leave in Excel via isLeave = !!leaveDetails && !att.isWeekend).
       const result = allUsers.map(user => {
         const userId = user._id.toString();
         const userAttendance = attendanceByUserAndDate.get(userId) || new Map();
         const userShiftAssignments = shiftAssignmentsByUser.get(userId) || [];
         const userHolidays = holidaysByUser.get(userId) || [];
 
-        // Create map of holidays by date
+        // Create map of holidays by date (use same UTC date key as dateRange)
         const holidaysByDate = new Map<string, any>();
         userHolidays.forEach(holiday => {
-          const dateKey = new Date(holiday.date).toISOString().split('T')[0];
+          const dateKey = toDateKey(holiday.date);
           holidaysByDate.set(dateKey, holiday);
         });
 
@@ -2443,27 +2501,16 @@ export class BiometricAttendanceService extends BaseService {
             actualWorkHours: record ? record.actualWorkHours : null,
           };
 
-          // Add leave information if applicable
+          // Add leave information only if this date is NOT a mandatory holiday (on mandatory holiday show only H)
+          const isMandatoryHolidayDate = holiday && holiday.type === 'mandatory';
           const userLeaves = leaveByUserAndDate.get(userId);
           const leaveDetails = userLeaves?.get(dateStr);
-          if (leaveDetails) {
+          if (leaveDetails && !isMandatoryHolidayDate) {
             attendanceEntry.leaveType = leaveDetails.type;
             attendanceEntry.leaveDuration = leaveDetails.duration;
             attendanceEntry.halfDayType = leaveDetails.halfDayType;
 
-            let leaveAbbr = 'Leave';
-            const typeStr = leaveDetails.type; // Ensure typeStr is defined here
-            if (typeStr === 'restricted_holiday') {
-              leaveAbbr = 'RH';
-            } else if (typeStr === 'annual_leave' || typeStr?.toLowerCase().includes('annual')) {
-              leaveAbbr = 'AL';
-            } else if (typeStr === 'sick_leave' || typeStr?.toLowerCase().includes('sick')) {
-              leaveAbbr = 'SL';
-            } else if (typeStr === 'casual_leave' || typeStr?.toLowerCase().includes('casual')) {
-              leaveAbbr = 'CL';
-            } else if (typeStr === 'loss_of_pay' || typeStr?.toLowerCase().includes('lop')) {
-              leaveAbbr = 'LOP';
-            }
+            const leaveAbbr = this.getLeaveAbbr(leaveDetails.type);
 
             if (leaveDetails.duration === 'half-day') {
               // Check if there is Present attendance (mirrors Excel logic)
@@ -2482,7 +2529,7 @@ export class BiometricAttendanceService extends BaseService {
             } else {
               attendanceEntry.displayLabel = leaveAbbr;
             }
-          } else if (record && record.halfType) {
+          } else if (record && record.halfType && !isMandatoryHolidayDate) {
             // Case: Half-Work Only (No Leave Applied)
             if (record.halfType === 'First Half') {
               attendanceEntry.displayLabel = 'First Half (P / Inc)';
@@ -2500,12 +2547,25 @@ export class BiometricAttendanceService extends BaseService {
           if (holiday) {
             attendanceEntry.isHoliday = true;
             attendanceEntry.holidayType = holiday.type; // 'mandatory' or 'optional'
+            attendanceEntry.holidayName = holiday.name;
 
             // Check if this is an approved restricted holiday (optional holiday that was approved)
             if (holiday.type === 'optional') {
               const userApprovedDates = approvedRestrictedHolidaysByUser.get(userId);
               const isApproved = userApprovedDates && userApprovedDates.has(dateStr);
               attendanceEntry.isRestrictedHoliday = isApproved || false;
+            }
+
+            // On mandatory holiday: if attendance record exists, show that status (e.g. Holiday-Swipe); else show H.
+            if (holiday.type === 'mandatory') {
+              if (record && (record.attendanceStatus?.length || record.status)) {
+                const statusLabel = record.attendanceStatus?.[0] || this.attendanceStatusToLabel(record.status);
+                attendanceEntry.displayLabel = statusLabel || 'H';
+              } else {
+                attendanceEntry.displayLabel = 'H';
+              }
+            } else if (holiday.type === 'optional' && attendanceEntry.isRestrictedHoliday) {
+              attendanceEntry.displayLabel = 'RH';
             }
           }
 
@@ -2634,58 +2694,8 @@ export class BiometricAttendanceService extends BaseService {
         }
       });
 
-      // Fetch Holiday Calendar data for all users
-      const userHolidayCalendarIds = data
-        .map((user: any) => user.holidayCalendarId)
-        .filter((id: any) => id);
-
-      const holidayCalendars = await HolidayCalendar.find({
-        $or: [
-          { _id: { $in: userHolidayCalendarIds } },
-          { assignedTo: { $in: allUserIds } }
-        ]
-      }).lean();
-
-      // Create map: userId -> holidays by date
-      const holidaysByUser = new Map<string, Map<string, { name: string; type: string }>>();
-
-      data.forEach((user: any) => {
-        const userId = user.userId;
-        const userCalendar = holidayCalendars.find(cal =>
-          cal._id.toString() === user.holidayCalendarId?.toString() ||
-          cal.assignedTo?.some((id: any) => id.toString() === userId)
-        );
-
-        if (userCalendar && userCalendar.holidays) {
-          const holidayMap = new Map<string, { name: string; type: string }>();
-          userCalendar.holidays.forEach((holiday: any) => {
-            const dateStr = new Date(holiday.date).toISOString().split('T')[0];
-            holidayMap.set(dateStr, {
-              name: holiday.name,
-              type: holiday.type
-            });
-          });
-          holidaysByUser.set(userId, holidayMap);
-        }
-      });
-
-      // Fetch approved optional holiday requests
-      const optionalHolidayRequests = await OptionalHolidayRequest.find({
-        userId: { $in: allUserIds },
-        status: 'Approved',
-        holidayDate: { $gte: start, $lte: end }
-      }).lean();
-
-      // Create map: userId -> Set of approved optional holiday dates
-      const approvedOptionalHolidaysByUser = new Map<string, Set<string>>();
-      optionalHolidayRequests.forEach(req => {
-        const userId = req.userId.toString();
-        if (!approvedOptionalHolidaysByUser.has(userId)) {
-          approvedOptionalHolidaysByUser.set(userId, new Set());
-        }
-        const dateStr = new Date(req.holidayDate).toISOString().split('T')[0];
-        approvedOptionalHolidaysByUser.get(userId)!.add(dateStr);
-      });
+      // Holiday display uses attendance entry flags from getAdminAttendanceView (att.isHoliday, att.holidayType, att.isRestrictedHoliday)
+      // so no need to re-fetch calendars (user.holidayCalendarId is not in the view response).
 
       // Create Excel workbook
       const workbook = new ExcelJS.Workbook();
@@ -2759,39 +2769,37 @@ export class BiometricAttendanceService extends BaseService {
 
           let bgColor: string | undefined;
 
-          // Check if this date is a holiday for this user
-          const userHolidays = holidaysByUser.get(user.userId);
-          const holiday = userHolidays?.get(dateStr);
-          const isApprovedOptionalHoliday = approvedOptionalHolidaysByUser.get(user.userId)?.has(dateStr);
+          // Holiday status from getAdminAttendanceView (att.isHoliday, att.holidayType, att.isRestrictedHoliday)
+          const isHoliday = att.isHoliday === true;
+          const isMandatoryHoliday = isHoliday && att.holidayType === 'mandatory';
+          const isApprovedRestrictedHoliday = isHoliday && att.holidayType === 'optional' && att.isRestrictedHoliday === true;
 
-          // Determine if we should show holiday status
-          let showHoliday = false;
-
-          // Set status text
-          // Set status text
-          // PRIORITY 1: Check for approved leave (shows even for future dates)
-          if (isLeave) {
+          // EXCEL CELL VALUE – SCENARIO PRIORITY (do not reorder):
+          // 1) Mandatory holiday: record status (e.g. Holiday-Swipe) if record exists, else H.
+          // 2) Approved RH: RH.
+          // 3) Leave (isLeave = !!leaveDetails && !att.isWeekend): AL/SL/CL/RH/CO/LOP/ML/OP/OU; half-day variants.
+          // 4) Today: empty + gray. 5) Future: Off / -. 6) Past no record: Off (weekend) / A (absent).
+          // 7) Past with record: Present/WFH, Incomplete/Missing Out/half-type, or other status (human-readable).
+          // Set status text: on mandatory holiday, if attendance record exists show that status (e.g. Holiday-Swipe); else H
+          if (isMandatoryHoliday) {
+            if (att.attendanceId && (att.attendanceStatus?.length || att.status)) {
+              const statusLabel = att.attendanceStatus?.[0] || this.attendanceStatusToLabel(att.status);
+              cellValue = statusLabel || 'H';
+              fontColor = 'FF800080'; // Purple for holiday-related status
+            } else {
+              cellValue = 'H';
+              fontColor = 'FF800080'; // Purple for mandatory holiday
+            }
+          } else if (isApprovedRestrictedHoliday) {
+            cellValue = 'RH';
+            fontColor = 'FF800080'; // Purple for restricted/optional holiday
+          } else if (isLeave) {
             const typeStr = (leaveDetails as any).type;
             const duration = (leaveDetails as any).duration;
             const halfDayType = (leaveDetails as any).halfDayType;
-            let leaveAbbr = 'Leave';
+            const leaveAbbr = this.getLeaveAbbr(typeStr);
             let leaveColor = 'FF0000FF'; // Blue
-
-            // Determine Abbreviation
-            if (typeStr === 'restricted_holiday') {
-              leaveAbbr = 'RH';
-            } else if (typeStr === 'annual_leave' || typeStr?.toLowerCase().includes('annual')) {
-              leaveAbbr = 'AL';
-            } else if (typeStr === 'sick' || typeStr?.toLowerCase().includes('sick')) {
-              leaveAbbr = 'SL';
-            } else if (typeStr === 'casual' || typeStr?.toLowerCase().includes('casual')) {
-              leaveAbbr = 'CL';
-            } else if (typeStr === 'compOff') {
-              leaveAbbr = 'CO';
-            } else if (typeStr === 'lossOfPay') {
-              leaveAbbr = 'LOP';
-              leaveColor = 'FFFF0000'; // Red for Loss of Pay? Or keep Blue? Usually LOP is warning.
-            }
+            if (leaveAbbr === 'LOP') leaveColor = 'FFFF0000'; // Red for Loss of Pay
 
             // Handle Half-Day Logic
             const isHalfDay = duration === 'half-day' || !!att.halfType;
@@ -2832,23 +2840,9 @@ export class BiometricAttendanceService extends BaseService {
             }
 
             fontColor = leaveColor;
-          } else if (holiday) {
-            // PRIORITY 2: Check for holidays
-            if (holiday.type === 'mandatory') {
-              // Mandatory holiday - always show H
-              cellValue = 'H';
-              fontColor = 'FF800080'; // Purple for holiday
-              showHoliday = true;
-            } else if (holiday.type === 'optional' && isApprovedOptionalHoliday) {
-              // Restricted holiday (optional) - only show if approved
-              cellValue = 'RH';
-              fontColor = 'FF800080'; // Purple for restricted holiday
-              showHoliday = true;
-            }
-            // If optional holiday not approved, showHoliday remains false
           }
 
-          if (!isLeave && !showHoliday) {
+          if (!isMandatoryHoliday && !isApprovedRestrictedHoliday && !isLeave) {
             // Continue with normal logic if not leave or holiday
             if (cellDate.getTime() === today.getTime()) {
               // PRIORITY 3: Check if date is today
@@ -2909,8 +2903,9 @@ export class BiometricAttendanceService extends BaseService {
                 }
               }
             } else {
-              // Past date with other status
-              cellValue = att.status;
+              // Past date with other status (holiday_swipe, regularized, overridden, etc.) – use human-readable label
+              const otherLabel = att.attendanceStatus?.[0] || this.attendanceStatusToLabel(att.status) || att.status || '';
+              cellValue = otherLabel;
               // Add WFH indicator for other statuses with attendance
               if (isWFH) {
                 cellValue = `${cellValue} (WFH)`;
@@ -2979,6 +2974,44 @@ export class BiometricAttendanceService extends BaseService {
   /**
    * Helper method to convert column index to Excel column letter
    */
+  /**
+   * Single source of truth: leave type -> display abbreviation (view + Excel).
+   * Do not change order or remove; add new types at end to avoid affecting existing logic.
+   */
+  private getLeaveAbbr(typeStr: string): string {
+    if (!typeStr) return 'Leave';
+    const s = typeStr.toLowerCase();
+    if (typeStr === 'restricted_holiday') return 'RH';
+    if (typeStr === 'annual_leave' || typeStr === 'annual' || s.includes('annual')) return 'AL';
+    if (typeStr === 'sick_leave' || typeStr === 'sick' || s.includes('sick')) return 'SL';
+    if (typeStr === 'casual_leave' || typeStr === 'casual' || s.includes('casual')) return 'CL';
+    if (typeStr === 'compOff' || s.includes('compoff')) return 'CO';
+    if (typeStr === 'loss_of_pay' || typeStr === 'lossOfPay' || s.includes('lop')) return 'LOP';
+    if (typeStr === 'maternity' || s.includes('maternity')) return 'ML';
+    if (typeStr === 'otherPaid' || s.includes('otherpaid')) return 'OP';
+    if (typeStr === 'otherUnpaid' || s.includes('otherunpaid')) return 'OU';
+    return 'Leave';
+  }
+
+  /**
+   * Map attendance record status to display label (e.g. holiday_swipe -> Holiday-Swipe).
+   */
+  private attendanceStatusToLabel(status: string): string {
+    const map: Record<string, string> = {
+      holiday_swipe: 'Holiday-Swipe',
+      leave_swipe: 'On-Leave',
+      pending_regularization: 'Pending-Regularization',
+      regularized: 'Regularized',
+      overridden: 'Override',
+      complete: 'Present',
+      duplicate_swipes: 'Present',
+      missing_checkout: 'Missing Out',
+      incomplete: 'Incomplete',
+      unknown: 'No Record',
+    };
+    return map[status] || status;
+  }
+
   private getColumnLetter(columnNumber: number): string {
     let columnLetter = '';
     while (columnNumber > 0) {
