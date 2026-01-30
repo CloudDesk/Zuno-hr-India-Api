@@ -239,7 +239,7 @@ export class LeaveService extends BaseService {
    * @param userId - User ID
    * @param startDate - Start date of leave
    * @param endDate - End date of leave
-   * @returns Array of holiday dates (both mandatory and optional)
+   * @returns Array of mandatory holiday dates only (optional/restricted holidays excluded)
    */
   private async getMandatoryHolidays(
     userId: Types.ObjectId,
@@ -266,28 +266,25 @@ export class LeaveService extends BaseService {
       return [];
     }
 
-    // ✅ FIX: Filter ALL holidays (mandatory + optional) within the date range
-    // Optional holidays are applied separately as leaves, so we should exclude them too
-    // to avoid conflicts with attendance records
-    const allHolidays: Date[] = [];
+    // Only mandatory holidays block leave application. Optional/restricted holidays allow leave
+    // (e.g. employee can apply annual leave on a restricted holiday).
+    const mandatoryHolidaysList: Date[] = [];
     const startTime = start.getTime();
     const endTime = end.getTime();
 
     for (const holiday of holidayCalendar.holidays) {
-      // Include both 'mandatory' and 'optional' holidays
-      if (holiday.type === 'mandatory' || holiday.type === 'optional') {
+      if (holiday.type === 'mandatory') {
         const holidayDate = new Date(holiday.date);
         holidayDate.setUTCHours(0, 0, 0, 0);
         const holidayTime = holidayDate.getTime();
 
-        // Check if holiday falls within the date range
         if (holidayTime >= startTime && holidayTime <= endTime) {
-          allHolidays.push(holidayDate);
+          mandatoryHolidaysList.push(holidayDate);
         }
       }
     }
 
-    return allHolidays;
+    return mandatoryHolidaysList;
   }
 
   /**
@@ -1078,7 +1075,9 @@ export class LeaveService extends BaseService {
       }
     }
 
-    // Calculate noOfDays excluding weekends and mandatory holidays for full-day leaves
+    // Calculate noOfDays excluding weekends and mandatory holidays for full-day leaves.
+    // Scenario: optional/restricted holiday → ALLOW leave (e.g. annual leave on Dec 25). Weekend/mandatory → NOT allow (existing).
+    // getMandatoryHolidays returns only type === 'mandatory'; optional holidays are not excluded.
     // Skip calculation for restricted_holiday (already set to 1) and half-day leaves (already set to 0.5)
     if (leaveData.leaveType !== 'restricted_holiday' && leaveData.leaveDuration !== 'half-day') {
       const userIdObj = typeof leaveData.userId === 'string'
@@ -1097,16 +1096,14 @@ export class LeaveService extends BaseService {
         ? shiftAssignment.weekendDays
         : [0, 6]; // Default: Sunday (0) and Saturday (6)
 
-      // ✅ FIX: Get ALL holidays (mandatory + optional) for the date range
-      // Optional holidays are applied separately as leaves, so we exclude them too
-      // to avoid conflicts with attendance records
+      // Get mandatory holidays only; optional/restricted holidays allow leave (e.g. annual leave on restricted holiday)
       const mandatoryHolidays = await this.getMandatoryHolidays(
         userIdObj,
         leaveData.startDate,
         leaveData.endDate
       );
 
-      // Calculate working days excluding weekends and all holidays (mandatory + optional)
+      // Calculate working days excluding weekends and mandatory holidays only
       const workingDays = this.calculateWorkingDaysExcludingWeekendsAndHolidays(
         leaveData.startDate,
         leaveData.endDate,
@@ -1125,7 +1122,7 @@ export class LeaveService extends BaseService {
         throw new Error(`All days in the requested date range fall on weekends (${weekendNames})${holidayText}. Please select dates that include at least one working day.`);
       }
 
-      // Get excluded dates (weekend dates and all holidays - mandatory + optional)
+      // Get excluded dates (weekend dates and mandatory holidays only)
       const { excludedDates, excludedHolidays } = this.getExcludedDatesWithHolidays(
         leaveData.startDate,
         leaveData.endDate,
@@ -1139,7 +1136,7 @@ export class LeaveService extends BaseService {
         leaveData.endDate
       );
 
-      // Update noOfDays to exclude weekends and all holidays (mandatory + optional)
+      // Update noOfDays to exclude weekends and mandatory holidays only
       leaveData.noOfDays = workingDays;
 
       // Store weekend and holiday exclusion information for UI display
@@ -1151,8 +1148,8 @@ export class LeaveService extends BaseService {
         actualDays: workingDays
       };
 
-      console.log(`✅ [Weekend & Holiday Exclusion] Calculated ${workingDays} working days (excluding weekends: ${weekendDays.join(', ')} and ${mandatoryHolidays.length} holiday(s) - mandatory + optional) for leave from ${leaveData.startDate.toISOString().split('T')[0]} to ${leaveData.endDate.toISOString().split('T')[0]}`);
-      console.log(`📅 [Exclusion] Excluded ${excludedDates.length} date(s) total (${excludedDates.length - excludedHolidays.length} weekend(s) + ${excludedHolidays.length} holiday(s) - mandatory + optional)`);
+      console.log(`✅ [Weekend & Holiday Exclusion] Calculated ${workingDays} working days (excluding weekends: ${weekendDays.join(', ')} and ${mandatoryHolidays.length} mandatory holiday(s)) for leave from ${leaveData.startDate.toISOString().split('T')[0]} to ${leaveData.endDate.toISOString().split('T')[0]}`);
+      console.log(`📅 [Exclusion] Excluded ${excludedDates.length} date(s) total (${excludedDates.length - excludedHolidays.length} weekend(s) + ${excludedHolidays.length} mandatory holiday(s))`);
     }
 
     // VALIDATION: Check leave balance BEFORE creating the leave (for leave types that require balance)
