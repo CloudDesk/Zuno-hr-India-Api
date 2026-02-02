@@ -6,8 +6,9 @@ import { generateEmailTemplate } from '../emails/templates';
 
 export class AuthService {
   async login(email: string, password: string) {
-    // Only allow login for active users
-    const user = await User.findOne({ email: email.toLowerCase().trim(), active: true }).select('+password');
+    // Only allow login for users with portal access (payroll-only duplicate-email users cannot log in).
+    // Treat missing/undefined portalAccess as portal (existing users created before field existed).
+    const user = await User.findOne({ email: email.toLowerCase().trim(), active: true, portalAccess: { $ne: false } }).select('+password');
     console.log('User Found', user);
     if (!user) {
       throw new Error('Invalid email or password');
@@ -17,8 +18,8 @@ export class AuthService {
       throw new Error('Account is inactive');
     }
 
-    // Check if user has portal access
-    if (!user.portalAccess) {
+    // Only reject when explicitly no portal access (treat missing/undefined as portal for existing users)
+    if (user.portalAccess === false) {
       throw new Error('User does not have portal access');
     }
 
@@ -46,7 +47,8 @@ export class AuthService {
 
 
   async forgotPassword(email: string) {
-    const user = await User.findOne({ email }).select('+resetToken +resetTokenExpiry');
+    // Treat missing/undefined portalAccess as portal (existing users created before field existed).
+    const user = await User.findOne({ email: email.toLowerCase().trim(), portalAccess: { $ne: false } }).select('+resetToken +resetTokenExpiry');
     if (!user) {
       throw new Error('User not found');
     }

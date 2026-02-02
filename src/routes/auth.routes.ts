@@ -86,7 +86,7 @@ export const authRoutes: RouteHandler = async (fastify: FastifyInstance): Promis
           country: user.country,
           currency: user.currency,
           licenseType: user.licenseType,
-          portalAccess: user.portalAccess
+          portalAccess: user.portalAccess !== false
         } as {
           _id: string;
           email: string;
@@ -132,7 +132,7 @@ export const authRoutes: RouteHandler = async (fastify: FastifyInstance): Promis
               country: user.country,
               currency: user.currency,
               licenseType: user.licenseType,
-              portalAccess: user.portalAccess
+              portalAccess: user.portalAccess !== false
             }
           }
         });

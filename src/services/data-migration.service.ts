@@ -1270,9 +1270,12 @@ export class DataMigrationService extends BaseService {
         { checkinId: { $in: checkinIds } },
         { biometricId: { $in: biometricIds } }
       ]
-    }).select('email employeeCode checkinId biometricId').lean();
+    }).select('email employeeCode checkinId biometricId portalAccess').lean();
 
-    const existingEmails = new Set(existingUsers.map(u => u.email?.toLowerCase()));
+    // Emails of users with portal access (true or missing); duplicate email allowed when row has Portal Access=No
+    const existingEmailsPortalOnly = new Set(
+      existingUsers.filter((u: any) => u.portalAccess !== false).map((u: any) => u.email?.toLowerCase()).filter(Boolean)
+    );
     const existingEmployeeNos = new Set(existingUsers.map(u => u.employeeCode).filter(Boolean));
     const existingCheckinIds = new Set(existingUsers.map(u => u.checkinId).filter(Boolean));
     const existingBiometricIds = new Set(existingUsers.map(u => u.biometricId).filter(Boolean));
@@ -1370,26 +1373,28 @@ export class DataMigrationService extends BaseService {
           });
         } else {
           console.log(`✅ [Email Validation] Row ${row.rowNumber}: Email format is valid: "${trimmedEmail}"`);
-          // Check duplicate in database
-          if (existingEmails.has(row.email.toLowerCase().trim())) {
+          // Duplicate email: only reject when row has Portal Access=Yes and email exists for a portal user. Allow duplicate when Portal Access=No (payroll-only).
+          const hasPortalAccess = row.portalAccess !== undefined ? row.portalAccess : true;
+          if (hasPortalAccess && existingEmailsPortalOnly.has(row.email.toLowerCase().trim())) {
             rowErrors.push({
               rowNumber: row.rowNumber,
               field: 'email',
-              message: 'Email already exists in database',
+              message: 'Email already exists for a user with portal access. Use Portal Access=No for payroll-only employee with same email.',
               severity: 'error'
             });
           }
 
-          // Check duplicate within file
+          // Duplicate within file: same email allowed only if at most one row has Portal Access=Yes (Emp-1 + Emp-2)
           const email = row.email.toLowerCase().trim();
           const duplicateRows = emailMap.get(email);
           if (duplicateRows && duplicateRows.length > 1) {
-            const isFirst = duplicateRows[0] === row.rowNumber;
-            if (!isFirst) {
+            const rowsWithSameEmail = rows.filter((r: any) => duplicateRows.includes(r.rowNumber));
+            const portalAccessTrueCount = rowsWithSameEmail.filter((r: any) => r.portalAccess !== false).length;
+            if (portalAccessTrueCount > 1) {
               rowErrors.push({
                 rowNumber: row.rowNumber,
                 field: 'email',
-                message: `Duplicate email found in row ${duplicateRows[0]}`,
+                message: 'Duplicate email: only one row with this email can have Portal Access=Yes. Use Portal Access=No for payroll-only.',
                 severity: 'error'
               });
             }

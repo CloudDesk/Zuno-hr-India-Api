@@ -722,6 +722,10 @@ export const userRoutes: RouteHandler = async (
               default: true,
               description: 'Whether user has portal access (false for external users)'
             },
+            allowDuplicateEmail: {
+              type: 'boolean',
+              description: 'If true and email already exists: create payroll-only employee (same email, no login). Override attendance and generate payroll for this employee. Otherwise duplicate email is rejected.'
+            },
             // UAE-specific visa details
             visaDetails: {
               type: 'object',
@@ -777,8 +781,8 @@ export const userRoutes: RouteHandler = async (
             },
             probationDate: {
               type: 'string',
-              format: 'date-time',
-              description: 'Probation date'
+              maxLength: 100,
+              description: 'Probation date (e.g. 2025-01-01 or date-time string)'
             },
             separationDate: {
               type: 'string',

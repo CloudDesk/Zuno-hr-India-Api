@@ -111,6 +111,8 @@ interface IUserCreate {
   familyPfNumber?: string;
   pfJoinDate?: Date; // Optional - PF join date
   experienceDetails?: IExperienceDetails[];
+  /** When true and email already exists: allow create as payroll-only (same email, no login). New employee gets portalAccess: false. */
+  allowDuplicateEmail?: boolean;
 }
 
 interface IUserUpdate {
@@ -870,18 +872,32 @@ export class UserService extends BaseService {
       }
     }
 
-    // Validate email uniqueness only for active users
-    // Inactive users can have duplicate emails (for rehired employees)
-    const isActive = data.active !== undefined ? data.active : true; // Default to true
-    if (isActive && data.email) {
-      const existingUser = await User.findOne({
-        email: data.email.toLowerCase().trim(),
-        active: true // Only check against active users
-      });
-      if (existingUser) {
-        throw new Error(`Email "${data.email}" already exists for an active user.`);
+    // Duplicate email (allowDuplicateEmail): (1) duplicate email found + (2) allowDuplicateEmail === true → allow create as payroll-only (portalAccess: false, no login; override attendance + payroll). Otherwise reject duplicate. Scenarios: login=portalAccess true only; forgotPassword=portalAccess true; welcome email=portalAccess true; payroll list=active only; attendance override=by userId; update email=unique among portalAccess true.
+    const allowDuplicateEmail = data.allowDuplicateEmail === true;
+    const emailNorm = data.email?.toLowerCase().trim();
+    if (data.email && emailNorm) {
+      const existingWithEmail = await User.findOne({ email: emailNorm });
+      if (existingWithEmail) {
+        if (allowDuplicateEmail) {
+          // Condition 1 + 2: duplicate email and boolean yes → allow create; new employee = payroll-only (no login), override attendance, generate payroll.
+          (data as any).portalAccess = false;
+          console.log(`[Create] allowDuplicateEmail=true and duplicate email found: creating payroll-only employee (portalAccess=false, no login).`);
+        } else {
+          throw new Error(`Email "${data.email}" already exists. Send allowDuplicateEmail: true to create payroll-only employee with same email (no login, override attendance, generate payroll).`);
+        }
+      } else {
+        // No duplicate: normal employee process. Enforce only one portal user per email.
+        if (!allowDuplicateEmail) {
+          // Treat missing portalAccess as portal (existing users); only one "portal" user per email.
+          const existingPortalUser = await User.findOne({ email: emailNorm, portalAccess: { $ne: false } });
+          if (existingPortalUser) {
+            throw new Error(`Email "${data.email}" already exists for a user with portal access.`);
+          }
+        }
       }
     }
+    // Do not persist allowDuplicateEmail to DB
+    delete (data as any).allowDuplicateEmail;
 
     // ✅ FIX: Handle biometricId to prevent duplicate key error
     // For UAE and India users, don't set biometricId at all (undefined) to avoid sparse index issues
@@ -963,17 +979,24 @@ export class UserService extends BaseService {
     console.log('✅ User instance created:', user._id);
 
     console.log('💾 Saving user to database...');
-    const savedUser = await user.save();
+    let savedUser;
+    try {
+      savedUser = await user.save();
+    } catch (err: any) {
+      if (err.code === 11000 && err.message?.includes('email') && allowDuplicateEmail) {
+        throw new Error('Duplicate email not allowed by database. Run once: npm run db:allow-duplicate-email then restart app to allow payroll-only employee with same email.');
+      }
+      throw err;
+    }
     console.log('✅ User saved successfully:', savedUser._id);
 
-    // Only send welcome email for active users
-    if (savedUser.active) {
+    // Only send welcome email for active users with portal access (payroll-only duplicate-email users do not get login email)
+    if (savedUser.active && savedUser.portalAccess) {
       console.log('📧 Sending welcome email...');
-      //send welcome email with password if it's the default password
       await this.sendWelcomeEmail(savedUser, plainPassword);
       console.log('✅ Welcome email sent');
     } else {
-      console.log('⏭️ Skipping welcome email for inactive user');
+      console.log('⏭️ Skipping welcome email for inactive or payroll-only user');
     }
 
     console.log('🎉 User creation completed successfully');
@@ -1025,18 +1048,17 @@ export class UserService extends BaseService {
       console.log(`🔄 [User Update] Updating active field from ${user.active} to ${data.active}`);
     }
 
-    // Validate email uniqueness only for active users
-    // Inactive users can have duplicate emails (for rehired employees)
-    // Use the new active value from data if provided, otherwise use current user's active status
-    const willBeActive = data.active !== undefined ? data.active : user.active;
-    if (willBeActive && data.email && data.email.toLowerCase().trim() !== user.email.toLowerCase().trim()) {
-      const existingUser = await User.findOne({
+    // Validate email uniqueness when user has portal access. Payroll-only (portalAccess: false) can share email.
+    const willHavePortalAccess = data.portalAccess !== undefined ? data.portalAccess : user.portalAccess;
+    if (willHavePortalAccess && data.email && data.email.toLowerCase().trim() !== user.email.toLowerCase().trim()) {
+      // Treat missing portalAccess as portal (existing users); only one "portal" user per email.
+      const existingPortalUser = await User.findOne({
         email: data.email.toLowerCase().trim(),
-        active: true, // Only check against active users
-        _id: { $ne: id } // Exclude current user
+        portalAccess: { $ne: false },
+        _id: { $ne: id }
       });
-      if (existingUser) {
-        throw new Error(`Email "${data.email}" already exists for an active user.`);
+      if (existingPortalUser) {
+        throw new Error(`Email "${data.email}" already exists for a user with portal access.`);
       }
     }
 

@@ -1,6 +1,7 @@
 import { BaseService } from './base.service';
 import { RequestContext } from '../types/context';
 import { AttendanceRecord, IAttendanceRecord } from '../models/attendance-record.model';
+import { AttendanceRegularization } from '../models/attendance-regularization.model';
 import { User } from '../models/user.model';
 import { Types } from 'mongoose';
 
@@ -196,8 +197,12 @@ export class AttendanceOverrideService extends BaseService {
         // Mongoose will create it with defaults, but we'll unset it after save
       });
     } else {
-      // 9. Check if regularization is pending
-      if (record.regularization?.status === 'Pending') {
+      // 9. Check if regularization is pending (use collection as source of truth; embedded field can be stale)
+      const pendingReg = await AttendanceRegularization.findOne({
+        attendanceId: record._id,
+        status: 'Pending',
+      });
+      if (pendingReg) {
         throw new Error('Cannot override attendance with pending regularization');
       }
 

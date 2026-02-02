@@ -130,11 +130,11 @@ export const authenticate = async (
         throw new Error(`User not found or inactive for phone: ${normalizedPhone}`);
       }
 
-      if (!user.portalAccess) {
+      if (user.portalAccess === false) {
         throw new Error("User does not have portal access");
       }
 
-      // Create user context
+      // Create user context (treat missing portalAccess as portal for existing users)
       const userContext = {
         _id: user._id,
         email: user.email,
@@ -145,7 +145,7 @@ export const authenticate = async (
         country: user.country,
         currency: user.currency,
         licenseType: user.licenseType,
-        portalAccess: user.portalAccess,
+        portalAccess: (user.portalAccess as boolean | undefined) !== false,
       };
 
       request.user = userContext;
@@ -218,7 +218,7 @@ export const authenticate = async (
       }
 
       // Check if user has portal access
-      if (!decoded.portalAccess) {
+      if (decoded.portalAccess === false) {
         throw new Error("User does not have portal access");
       }
 

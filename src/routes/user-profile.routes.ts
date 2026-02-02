@@ -93,7 +93,7 @@ export const userProfileRoutes: RouteHandler = async (fastify: FastifyInstance):
               country: user.country,
               currency: user.currency,
               licenseType: user.licenseType,
-              portalAccess: user.portalAccess,
+              portalAccess: user.portalAccess !== false,
               joiningDate: new Date().toISOString() // This would come from the actual user data
             },
             countryConfig: {

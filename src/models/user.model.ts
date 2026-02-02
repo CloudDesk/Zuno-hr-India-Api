@@ -183,10 +183,10 @@ const userSchema = new Schema<IUser>(
     email: {
       type: String,
       required: true,
-      unique: true,
       trim: true,
       lowercase: true,
       maxlength: 100,
+      // Duplicate email allowed when allowDuplicateEmail=true (payroll-only, portalAccess: false). Uniqueness only when portalAccess: true (partial index below).
     },
     currentShiftAssignmentData: {
       type: {
@@ -642,7 +642,11 @@ const userSchema = new Schema<IUser>(
 );
 
 // Indexes for efficient queries
-userSchema.index({ email: 1 }, { unique: true });
+// Email unique only when portalAccess: true (one login per email). Same email allowed when allowDuplicateEmail=true (portalAccess: false).
+userSchema.index(
+  { email: 1 },
+  { unique: true, partialFilterExpression: { portalAccess: true } }
+);
 userSchema.index({ employeeCode: 1 }, { unique: true });
 userSchema.index({ checkinId: 1 }, { unique: true, sparse: true });
 userSchema.index({ biometricId: 1 }, { unique: true, sparse: true });
