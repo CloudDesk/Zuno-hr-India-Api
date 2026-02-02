@@ -269,7 +269,7 @@ export class DataMigrationService extends BaseService {
       28: { required: true, note: 'Required field. Must be IN or AE' },
       29: { required: false, note: 'INR for IN, AED for AE (auto-set if not provided)' },
       30: { required: false, note: 'employee or external, defaults to employee' },
-      31: { required: false, note: 'Yes/No, defaults to Yes' },
+      31: { required: false, note: 'Yes/No, defaults to Yes. For same email in two rows: only one Yes; put Portal Access=Yes row above Portal Access=No row.' },
       32: { required: false, note: 'Required for AE users: Standard Employment Visa, Domestic Worker Visa, or Green Visa' },
       33: { required: false, note: 'Required for AE users, must be future date, format: YYYY-MM-DD' },
       34: { required: false, note: 'Yes/No, defaults to Yes' },
@@ -1397,6 +1397,21 @@ export class DataMigrationService extends BaseService {
                 message: 'Duplicate email: only one row with this email can have Portal Access=Yes. Use Portal Access=No for payroll-only.',
                 severity: 'error'
               });
+            }
+            // When same email has one Portal=Yes and one Portal=No, the Portal=Yes row must appear first so insert order creates portal user before payroll-only
+            if (portalAccessTrueCount === 1) {
+              const firstRowNumber = Math.min(...rowsWithSameEmail.map((r: any) => r.rowNumber));
+              const firstRow = rowsWithSameEmail.find((r: any) => r.rowNumber === firstRowNumber);
+              const hasPortalNoFirst = firstRow && firstRow.portalAccess === false;
+              const thisRowIsPortalYes = row.portalAccess !== false;
+              if (hasPortalNoFirst && thisRowIsPortalYes && row.rowNumber !== firstRowNumber) {
+                rowErrors.push({
+                  rowNumber: row.rowNumber,
+                  field: 'email',
+                  message: 'Duplicate email: the row with Portal Access=Yes must appear before the row with Portal Access=No (same email). Put the portal user row first.',
+                  severity: 'error'
+                });
+              }
             }
           }
         }
@@ -3099,6 +3114,8 @@ export class DataMigrationService extends BaseService {
           currency: row.currency || (row.country?.trim() === 'AE' ? CONSTANTS.DEFAULT_CURRENCY_AED : CONSTANTS.DEFAULT_CURRENCY_INR),
           licenseType: row.licenseType || CONSTANTS.DEFAULT_LICENSE_TYPE,
           portalAccess: row.portalAccess !== undefined ? row.portalAccess : true,
+          // When Portal Access=No, allow creating payroll-only user with same email (duplicate user allow)
+          allowDuplicateEmail: row.portalAccess === false,
           client: row.client?.trim() || undefined,
           // Required fields for user creation - use empty strings as per UserService interface
           upcomingShiftAssignment: '',
