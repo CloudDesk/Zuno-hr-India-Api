@@ -105,6 +105,7 @@ interface IUserCreate {
     isActive?: boolean; // Only relevant when visa details are provided
   };
   client?: string;
+  isConsultancy?: boolean; // Flag for consultancy staff (no PF, 1% TDS)
   // PF (Provident Fund) related fields - individual fields (not in governmentIds)
   pfNumber?: string;
   uanNumber?: string;
@@ -170,6 +171,7 @@ interface IUserUpdate {
     isActive?: boolean; // Only relevant when visa details are provided
   };
   client?: string;
+  isConsultancy?: boolean; // Flag for consultancy staff (no PF, 1% TDS)
   // PF (Provident Fund) related fields - individual fields (not in governmentIds)
   pfNumber?: string;
   uanNumber?: string;

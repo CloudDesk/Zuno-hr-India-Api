@@ -73,6 +73,7 @@ interface PayrollRecord {
     esiEmployer: number;
     professionalTax: number;
     incomeTax: number;
+    tdsDeduction: number; // 1% TDS for consultancy staff
     totalDeductions: number;
     additionalDeduction: number;
     overtimeHours: number;
@@ -776,6 +777,7 @@ export class PayrollService extends BaseService {
             { header: 'PF', key: 'pf', width: 12 },
             { header: 'INCOME TAX', key: 'incomeTax', width: 15 },
             { header: 'Professional Tax', key: 'professionalTax', width: 18 },
+            { header: 'TDS Amount', key: 'tdsAmount', width: 15 },
             { header: 'TOTAL DEDUCTIONS', key: 'totalDeductions', width: 20 },
             { header: 'NET PAY', key: 'netPay', width: 15 },
         ];
@@ -794,17 +796,16 @@ export class PayrollService extends BaseService {
             year: 'numeric',
             hour: '2-digit',
             minute: '2-digit',
-            second: '2-digit',
             hour12: true
         });
         const row1 = worksheet.getRow(1);
-        const createdOnCell = row1.getCell(17); // Last column (Q)
+        const createdOnCell = row1.getCell(18); // Last column (R)
         createdOnCell.value = `Created On: ${createdOn}`;
         createdOnCell.alignment = { horizontal: 'right' };
         createdOnCell.font = { size: 10, italic: true };
 
         // 2. Main Title (Row 2, Centered)
-        worksheet.mergeCells('A2:Q2');
+        worksheet.mergeCells('A2:R2');
         const titleCell = worksheet.getCell('A2');
         titleCell.value = `Salary Statement For The Month Of ${monthName} ${year}`;
         titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
@@ -844,6 +845,7 @@ export class PayrollService extends BaseService {
             pf: 0,
             incomeTax: 0,
             professionalTax: 0,
+            tdsAmount: 0,
             totalDeductions: 0,
             netPay: 0
         };
@@ -871,6 +873,7 @@ export class PayrollService extends BaseService {
                 pf: record.epfEmployee || 0,
                 incomeTax: record.incomeTax || 0,
                 professionalTax: record.professionalTax || 0,
+                tdsAmount: record.tdsDeduction || 0,
                 totalDeductions: record.totalDeductions || 0,
                 netPay: record.netSalary || 0
             };
@@ -898,6 +901,7 @@ export class PayrollService extends BaseService {
             grandTotals.pf += rowData.pf;
             grandTotals.incomeTax += rowData.incomeTax;
             grandTotals.professionalTax += rowData.professionalTax;
+            grandTotals.tdsAmount += rowData.tdsAmount;
             grandTotals.totalDeductions += rowData.totalDeductions;
             grandTotals.netPay += rowData.netPay;
 
@@ -925,6 +929,7 @@ export class PayrollService extends BaseService {
             pf: grandTotals.pf,
             incomeTax: grandTotals.incomeTax,
             professionalTax: grandTotals.professionalTax,
+            tdsAmount: grandTotals.tdsAmount,
             totalDeductions: grandTotals.totalDeductions,
             netPay: grandTotals.netPay
         });
@@ -1638,7 +1643,8 @@ export class PayrollService extends BaseService {
             payableDays,
             daysInMonth,
             monthlyGross,
-            employee.country || 'IN' // Pass employee's country, default to 'IN'
+            employee.country || 'IN', // Pass employee's country, default to 'IN'
+            employee.isConsultancy || false // Pass consultancy flag
         );
         console.log(resolvedDeductions, 'resolvedDeductions calculatePayrollRecord');
         const totalDeductions = resolvedDeductions.totalDeductions + additionalDeduction;
@@ -1652,6 +1658,7 @@ export class PayrollService extends BaseService {
             resolvedDeductions.epfEmployee -
             resolvedDeductions.incomeTax -
             resolvedDeductions.professionalTax -
+            (resolvedDeductions.tdsDeduction || 0) -
             additionalDeduction +
             totalOT
         );
@@ -1703,6 +1710,7 @@ export class PayrollService extends BaseService {
             esiEmployer: resolvedDeductions.esiEmployer,
             professionalTax: resolvedDeductions.professionalTax,
             incomeTax: resolvedDeductions.incomeTax,
+            tdsDeduction: resolvedDeductions.tdsDeduction,
             totalDeductions,
             additionalDeduction,
             leaveDeductions: resolvedDeductions.leaveDeductions,
@@ -1740,7 +1748,8 @@ export class PayrollService extends BaseService {
         payableDays: number,//total payable days in month exclude the absents
         daysInMonth: number,//total days in month
         monthlyGross: number, //monthly gross salary
-        employeeCountry: string = 'IN' // Default to India for backward compatibility
+        employeeCountry: string = 'IN', // Default to India for backward compatibility
+        isConsultancy: boolean = false // Flag for consultancy staff
     ) {
         console.log(salaryStructure, approvedLeaves, 'calculateDeductions');
         console.log(`Processing deductions for employee country: ${employeeCountry}`);
@@ -1763,6 +1772,7 @@ export class PayrollService extends BaseService {
                 esiEmployer: 0,
                 professionalTax: 0,
                 incomeTax: 0, // Will be 0 if no tax declaration exists
+                tdsDeduction: 0, // No TDS for UAE employees
                 totalDeductions: leaveDeductionAmount,
                 leaveDeductions: leaveDeductionAmount,
             };
@@ -1770,52 +1780,61 @@ export class PayrollService extends BaseService {
 
         // India employee calculations (existing logic)
         console.log('India employee detected - applying statutory deductions');
+        console.log(`Consultancy staff: ${isConsultancy}`);
 
         // Validate salary structure for country-specific requirements
         this.validateSalaryStructureForCountry(salaryStructure, employeeCountry, employeeId);
 
         // EPF - Corrected calculation
-        // When Basic >= ₹15,000, cap EPF at 12% of ₹15,000 = ₹1,800 (not 15000/12 = ₹1,250)
-        const epfEmployee =
-            (salaryStructure.statutoryDeductions.epf.employeeContribution / 100) * (basic + da);
-        const epfEmployer =
-            (salaryStructure.statutoryDeductions.epf.employerContribution / 100) * (basic + da);
+        // Consultancy staff: No PF deduction
+        let finalEpfEmployee = 0;
+        let finalEpfEmployer = 0;
 
-        // Calculate max EPF contribution (12% of ₹15,000 ceiling)
-        const maxEpfContribution =
-            (salaryStructure.statutoryDeductions.epf.employeeContribution / 100) *
-            salaryStructure.statutoryDeductions.epf.maxLimit;
+        if (!isConsultancy) {
+            // When Basic >= ₹15,000, cap EPF at 12% of ₹15,000 = ₹1,800 (not 15000/12 = ₹1,250)
+            const epfEmployee =
+                (salaryStructure.statutoryDeductions.epf.employeeContribution / 100) * (basic + da);
+            const epfEmployer =
+                (salaryStructure.statutoryDeductions.epf.employerContribution / 100) * (basic + da);
 
-        // Apply ceiling if basic >= maxLimit
-        const finalEpfEmployee = Math.round(
-            basic >= salaryStructure.statutoryDeductions.epf.maxLimit
-                ? maxEpfContribution  // 12% × ₹15,000 = ₹1,800
-                : epfEmployee
-        );
+            // Calculate max EPF contribution (12% of ₹15,000 ceiling)
+            const maxEpfContribution =
+                (salaryStructure.statutoryDeductions.epf.employeeContribution / 100) *
+                salaryStructure.statutoryDeductions.epf.maxLimit;
 
-        // Employer contribution should also be capped (EPF compliance)
-        const finalEpfEmployer = Math.round(
-            basic >= salaryStructure.statutoryDeductions.epf.maxLimit
-                ? maxEpfContribution  // 12% × ₹15,000 = ₹1,800
-                : epfEmployer
-        );
+            // Apply ceiling if basic >= maxLimit
+            finalEpfEmployee = Math.round(
+                basic >= salaryStructure.statutoryDeductions.epf.maxLimit
+                    ? maxEpfContribution  // 12% × ₹15,000 = ₹1,800
+                    : epfEmployee
+            );
 
-        /*
-            CORRECTED EPF CALCULATION:
-            Example: Basic = ₹18,030
-            - epfEmployee = (12/100) * 18030 = ₹2,163.60
-            - maxEpfContribution = (12/100) * 15000 = ₹1,800
-            - Since 18030 >= 15000: finalEpfEmployee = ₹1,800 ✓
-            
-            Example: Basic = ₹8,000
-            - epfEmployee = (12/100) * 8000 = ₹960
-            - Since 8000 < 15000: finalEpfEmployee = ₹960 ✓
-        */
-        console.log(epfEmployee, 'epfEmployee');
-        console.log(epfEmployer, 'epfEmployer');
-        console.log(maxEpfContribution, 'maxEpfContribution');
-        console.log(finalEpfEmployee, 'finalEpfEmployee');
-        console.log(finalEpfEmployer, 'finalEpfEmployer');
+            // Employer contribution should also be capped (EPF compliance)
+            finalEpfEmployer = Math.round(
+                basic >= salaryStructure.statutoryDeductions.epf.maxLimit
+                    ? maxEpfContribution  // 12% × ₹15,000 = ₹1,800
+                    : epfEmployer
+            );
+
+            /*
+                CORRECTED EPF CALCULATION:
+                Example: Basic = ₹18,030
+                - epfEmployee = (12/100) * 18030 = ₹2,163.60
+                - maxEpfContribution = (12/100) * 15000 = ₹1,800
+                - Since 18030 >= 15000: finalEpfEmployee = ₹1,800 ✓
+                
+                Example: Basic = ₹8,000
+                - epfEmployee = (12/100) * 8000 = ₹960
+                - Since 8000 < 15000: finalEpfEmployee = ₹960 ✓
+            */
+            console.log(epfEmployee, 'epfEmployee');
+            console.log(epfEmployer, 'epfEmployer');
+            console.log(maxEpfContribution, 'maxEpfContribution');
+            console.log(finalEpfEmployee, 'finalEpfEmployee');
+            console.log(finalEpfEmployer, 'finalEpfEmployer');
+        } else {
+            console.log('Consultancy staff - No PF deduction');
+        }
 
         // ESI
         const esiLimit = salaryStructure.statutoryDeductions.esi.applicabilityLimit;
@@ -1837,10 +1856,23 @@ export class PayrollService extends BaseService {
             monthNumber,
         ));
         console.log(professionalTax, 'professionalTax');
-        // Income Tax
-        const incomeTax = Math.round(await this.calculateIncomeTax(employeeId, monthName, monthNumber, year));
-        console.log(incomeTax, 'incomeTaxfinal');
+
+        // Income Tax / TDS Deduction
+        // Consultancy staff: 1% TDS deduction instead of income tax
+        let incomeTax = 0;
+        let tdsDeduction = 0;
+
+        if (isConsultancy) {
+            // 1% TDS on monthly gross for consultancy staff
+            tdsDeduction = Math.round((1 / 100) * monthlyGross);
+            console.log(`Consultancy TDS (1% of ${monthlyGross}): ${tdsDeduction}`);
+        } else {
+            // Regular income tax for non-consultancy staff
+            incomeTax = Math.round(await this.calculateIncomeTax(employeeId, monthName, monthNumber, year));
+            console.log(incomeTax, 'incomeTaxfinal');
+        }
         console.log('employeeIdemployeeId', employeeId);
+
         // Leave Deductions
         const { absentDays } = attendance;
         console.log(absentDays, 'absentDays', "", attendance, 'attendance');
@@ -1860,7 +1892,7 @@ export class PayrollService extends BaseService {
         const leaveDeductionAmount = Math.round(unpaidLeaveDays > 0 ? unpaidLeaveRatio * monthlyGross : 0);
         console.log(leaveDeductionAmount, 'leaveDeductionAmount');
 
-        const totalDeductions = Math.round(finalEpfEmployee + professionalTax + incomeTax + leaveDeductionAmount);
+        const totalDeductions = Math.round(finalEpfEmployee + professionalTax + incomeTax + tdsDeduction + leaveDeductionAmount);
         // const totalDeductions =
         // finalEpfEmployee + esiEmployee + professionalTax + incomeTax + leaveDeductionAmount;
         console.log(totalDeductions, 'totalDeductionsfinal');
@@ -1872,6 +1904,7 @@ export class PayrollService extends BaseService {
             esiEmployer,
             professionalTax,
             incomeTax,
+            tdsDeduction,
             totalDeductions,
             leaveDeductions: leaveDeductionAmount,
         };

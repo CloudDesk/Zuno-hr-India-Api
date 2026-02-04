@@ -31,6 +31,7 @@ export interface IPayroll extends Document {
     esiEmployer: number;
     professionalTax: number;
     incomeTax: number;
+    tdsDeduction: number; // 1% TDS for consultancy staff
     totalDeductions: number;
     additionalDeduction: number;
     // Additional Pay Components
@@ -95,6 +96,7 @@ const PayrollSchema = new Schema<IPayroll>(
         esiEmployer: { type: Number, required: true, default: 0 },
         professionalTax: { type: Number, required: true, default: 0 },
         incomeTax: { type: Number, required: true, default: 0 },
+        tdsDeduction: { type: Number, required: true, default: 0 },
         totalDeductions: { type: Number, required: true, default: 0 },
         additionalDeduction: { type: Number, required: true, default: 0 },
         overtimeHours: { type: Number, default: 0 },
@@ -130,9 +132,9 @@ const PayrollSchema = new Schema<IPayroll>(
             changedBy: { type: Schema.Types.ObjectId, ref: 'User', required: true }
         }],
         utrNumber: { type: String }, // New field for UTR number
-        country: { 
-            type: String, 
-            required: true, 
+        country: {
+            type: String,
+            required: true,
             enum: ['AE', 'IN'],
             description: 'Country code for payroll processing'
         },
@@ -158,7 +160,7 @@ PayrollSchema.pre<IPayroll>('save', async function (next) {
             const monetaryFields = [
                 'assigned.basic', 'assigned.hra', 'assigned.da', 'assigned.otherAllowance', 'assigned.travelAllowance', 'assigned.airTicketAllowance', 'assigned.medicalAllowance', 'assigned.reimbursementAllowance',
                 'monthlyGross', 'basic', 'hra', 'da', 'otherAllowance', 'travelAllowance', 'airTicketAllowance', 'medicalAllowance', 'reimbursementAllowance', 'epfEmployee', 'epfEmployer',
-                'esiEmployee', 'esiEmployer', 'professionalTax', 'incomeTax', 'totalDeductions', 'additionalDeduction', 'overtimePay',
+                'esiEmployee', 'esiEmployer', 'professionalTax', 'incomeTax', 'tdsDeduction', 'totalDeductions', 'additionalDeduction', 'overtimePay',
                 'leaveDeductions', 'reimbursement', 'bonus', 'netSalary', 'ctc',
             ];
             monetaryFields.forEach((field) => {

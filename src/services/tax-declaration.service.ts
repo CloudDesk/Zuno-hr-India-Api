@@ -234,10 +234,16 @@ export class TaxDeclarationService extends BaseService {
         //calculate the user Joining Date and allow make isForm12BApplicable value
         //fetch the user
 
-        const user: IUser = await User.findById(employeeId).select('name joiningDate');
+        const user: IUser = await User.findById(employeeId).select('name joiningDate isConsultancy');
         if (!user) {
             throw new Error('User not found');
         }
+
+        // Prevent tax declaration creation for consultancy staff
+        if (user.isConsultancy) {
+            throw new Error('Tax declaration cannot be created for consultancy staff. Consultancy users have 1% TDS deduction instead of income tax.');
+        }
+
         console.log(user, "getUser")
         const [fyStartYear, fyEndYear] = financialYear.split('-').map(Number);
         const fyStartDate = new Date(`${fyStartYear}-04-01T00:00:00.000Z`);
