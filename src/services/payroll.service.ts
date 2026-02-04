@@ -13,6 +13,7 @@ import {
 import { TaxDeclaration } from '../models/tax-declaration';
 import { PayrollStatus, } from './payroll-status.service';
 import XLSX from "xlsx";
+import ExcelJS from 'exceljs';
 import { unlink } from 'fs/promises';
 import { BaseService } from './base.service';
 import { RequestContext } from '../types/context';
@@ -733,6 +734,242 @@ export class PayrollService extends BaseService {
         console.log(payrollRecords, 'payrollRecords getPayrollRecordsForUsers');
 
         return payrollRecords;
+    }
+
+    async generateSalaryStatement(month: number, year: number) {
+        // Fetch payroll data with user details
+        const payrollRecords = await Payroll.find({
+            month,
+            year,
+            status: { $nin: [PayrollStatus.Cancelled] }
+        })
+            .populate('employeeId')
+            .lean();
+
+        if (!payrollRecords.length) {
+            throw new Error(`No payroll records found for ${month}/${year}`);
+        }
+
+        const workbook = new ExcelJS.Workbook();
+        const worksheet = workbook.addWorksheet('Salary Statement');
+
+        const monthNames = [
+            'January', 'February', 'March', 'April', 'May', 'June',
+            'July', 'August', 'September', 'October', 'November', 'December'
+        ];
+        const monthName = monthNames[month - 1];
+
+        // Define column structure first (without auto-generating headers yet)
+        const columnDefinitions = [
+            { header: 'Employee No', key: 'employeeNo', width: 15 },
+            { header: 'Name', key: 'name', width: 25 },
+            { header: 'Join Date', key: 'joinDate', width: 18 },
+            { header: 'Left?', key: 'left', width: 10 },
+            { header: 'Status', key: 'status', width: 15 },
+            { header: 'DAYS IN MONTH', key: 'daysInMonth', width: 15 },
+            { header: 'EMP EFFECTIVE WORKDAYS', key: 'effectiveWorkdays', width: 25 },
+            { header: 'BASIC', key: 'basic', width: 12 },
+            { header: 'HRA', key: 'hra', width: 12 },
+            { header: 'CONSULTANCY FEES', key: 'consultancyFees', width: 20 },
+            { header: 'OTHER ALLOWANCE', key: 'otherAllowance', width: 20 },
+            { header: 'GROSS', key: 'gross', width: 15 },
+            { header: 'PF', key: 'pf', width: 12 },
+            { header: 'INCOME TAX', key: 'incomeTax', width: 15 },
+            { header: 'Professional Tax', key: 'professionalTax', width: 18 },
+            { header: 'TOTAL DEDUCTIONS', key: 'totalDeductions', width: 20 },
+            { header: 'NET PAY', key: 'netPay', width: 15 },
+        ];
+
+        // Set column keys and widths
+        worksheet.columns = columnDefinitions.map(col => ({ key: col.key, width: col.width }));
+
+        // Remove the default headers that ExcelJS might have added at the top
+        worksheet.getRow(1).values = [];
+
+        // 1. Created On (Row 1, Top Right)
+        const createdOn = new Date().toLocaleString('en-IN', {
+            timeZone: 'Asia/Kolkata',
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: true
+        });
+        const row1 = worksheet.getRow(1);
+        const createdOnCell = row1.getCell(17); // Last column (Q)
+        createdOnCell.value = `Created On: ${createdOn}`;
+        createdOnCell.alignment = { horizontal: 'right' };
+        createdOnCell.font = { size: 10, italic: true };
+
+        // 2. Main Title (Row 2, Centered)
+        worksheet.mergeCells('A2:Q2');
+        const titleCell = worksheet.getCell('A2');
+        titleCell.value = `Salary Statement For The Month Of ${monthName} ${year}`;
+        titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+        titleCell.font = { bold: true, size: 16 };
+        worksheet.getRow(2).height = 30;
+
+        // 3. Table Headers (Row 3)
+        const headerRow = worksheet.getRow(3);
+        columnDefinitions.forEach((col, index) => {
+            const cell = headerRow.getCell(index + 1);
+            cell.value = col.header;
+            cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+            cell.fill = {
+                type: 'pattern',
+                pattern: 'solid',
+                fgColor: { argb: 'FF000000' } // Black header as per modern look or Blue as before
+            };
+            cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+            cell.border = {
+                top: { style: 'thin' },
+                left: { style: 'thin' },
+                bottom: { style: 'thin' },
+                right: { style: 'thin' }
+            };
+        });
+        headerRow.height = 25;
+
+        // 4. Data Rows
+        let grandTotals = {
+            daysInMonth: 0,
+            effectiveWorkdays: 0,
+            basic: 0,
+            hra: 0,
+            consultancyFees: 0,
+            otherAllowance: 0,
+            gross: 0,
+            pf: 0,
+            incomeTax: 0,
+            professionalTax: 0,
+            totalDeductions: 0,
+            netPay: 0
+        };
+
+        let positiveNetPayTotal = 0;
+        let negativeNetPayTotal = 0;
+
+        payrollRecords.forEach((record: any) => {
+            const user = record.employeeId;
+            if (!user) return;
+
+            const rowData = {
+                employeeNo: user.employeeCode || '',
+                name: user.name || '',
+                joinDate: user.joiningDate ? new Date(user.joiningDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '',
+                left: user.active === false ? 'Yes' : 'No',
+                status: user.employmentStatus || '',
+                daysInMonth: record.totalDaysInMonth || 0,
+                effectiveWorkdays: record.payableDays || 0,
+                basic: record.basic || 0,
+                hra: record.hra || 0,
+                consultancyFees: record.da || 0,
+                otherAllowance: record.otherAllowance || 0,
+                gross: record.monthlyGross || 0,
+                pf: record.epfEmployee || 0,
+                incomeTax: record.incomeTax || 0,
+                professionalTax: record.professionalTax || 0,
+                totalDeductions: record.totalDeductions || 0,
+                netPay: record.netSalary || 0
+            };
+
+            const row = worksheet.addRow(rowData);
+
+            // Conditional formatting for NET PAY
+            const netPayCell = row.getCell('netPay');
+            if (record.netSalary < 0) {
+                netPayCell.font = { color: { argb: 'FFFF0000' }, bold: true }; // Red
+                negativeNetPayTotal += record.netSalary;
+            } else if (record.netSalary > 0) {
+                netPayCell.font = { color: { argb: 'FF00B050' }, bold: true }; // Green
+                positiveNetPayTotal += record.netSalary;
+            }
+
+            // Accumulate totals
+            grandTotals.daysInMonth += rowData.daysInMonth;
+            grandTotals.effectiveWorkdays += rowData.effectiveWorkdays;
+            grandTotals.basic += rowData.basic;
+            grandTotals.hra += rowData.hra;
+            grandTotals.consultancyFees += rowData.consultancyFees;
+            grandTotals.otherAllowance += rowData.otherAllowance;
+            grandTotals.gross += rowData.gross;
+            grandTotals.pf += rowData.pf;
+            grandTotals.incomeTax += rowData.incomeTax;
+            grandTotals.professionalTax += rowData.professionalTax;
+            grandTotals.totalDeductions += rowData.totalDeductions;
+            grandTotals.netPay += rowData.netPay;
+
+            // Borders for data rows
+            row.eachCell((cell) => {
+                cell.border = {
+                    top: { style: 'thin' },
+                    left: { style: 'thin' },
+                    bottom: { style: 'thin' },
+                    right: { style: 'thin' }
+                };
+            });
+        });
+
+        // 5. Grand Total Row
+        const totalRow = worksheet.addRow({
+            status: 'Grand Total',
+            daysInMonth: grandTotals.daysInMonth,
+            effectiveWorkdays: grandTotals.effectiveWorkdays,
+            basic: grandTotals.basic,
+            hra: grandTotals.hra,
+            consultancyFees: grandTotals.consultancyFees,
+            otherAllowance: grandTotals.otherAllowance,
+            gross: grandTotals.gross,
+            pf: grandTotals.pf,
+            incomeTax: grandTotals.incomeTax,
+            professionalTax: grandTotals.professionalTax,
+            totalDeductions: grandTotals.totalDeductions,
+            netPay: grandTotals.netPay
+        });
+
+        totalRow.font = { bold: true };
+        totalRow.eachCell((cell) => {
+            cell.fill = {
+                type: 'pattern',
+                pattern: 'solid',
+                fgColor: { argb: 'FFF2F2F2' } // Light gray background
+            };
+            cell.border = {
+                top: { style: 'thin' },
+                left: { style: 'thin' },
+                bottom: { style: 'thin' },
+                right: { style: 'thin' }
+            };
+        });
+
+        // 6. Split Positive/Negative Rows (only if negative values exist)
+        if (negativeNetPayTotal < 0) {
+            // Positive Total Row
+            const posTotalRow = worksheet.addRow({
+                status: 'Total Positive Net Pay',
+                netPay: positiveNetPayTotal
+            });
+            posTotalRow.font = { bold: true };
+            posTotalRow.getCell('netPay').font = { color: { argb: 'FF00B050' }, bold: true };
+            posTotalRow.eachCell((cell) => {
+                cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+            });
+
+            // Negative Total Row
+            const negTotalRow = worksheet.addRow({
+                status: 'Total Negative Net Pay',
+                netPay: negativeNetPayTotal
+            });
+            negTotalRow.font = { bold: true };
+            negTotalRow.getCell('netPay').font = { color: { argb: 'FFFF0000' }, bold: true };
+            negTotalRow.eachCell((cell) => {
+                cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+            });
+        }
+
+        return workbook;
     }
 
     async importPayrollPayments(
@@ -1772,7 +2009,7 @@ export class PayrollService extends BaseService {
             ],
         }).select('noOfDays leaveType startDate endDate leaveDuration halfDayType').lean();
         console.log(leaves, 'leaves fetchApprovedLeaves');
-        
+
         // ✅ FIX: Calculate leave days that fall within the payroll month (not total noOfDays)
         // When leave spans multiple months, we need to calculate partial days per month
         const totalLeaveDays = await this.calculateLeaveDaysInMonth(
@@ -1783,7 +2020,7 @@ export class PayrollService extends BaseService {
             year,
             monthNumber
         );
-        
+
         console.log(totalLeaveDays, `fetchApprovedLeaves - Total: ${totalLeaveDays} days from ${leaves.length} leaves (calculated per month, annual_leave + compOff + restricted_holiday)`);
         return totalLeaveDays;
     }
@@ -1854,7 +2091,7 @@ export class PayrollService extends BaseService {
             // Calculate overlap between leave and month
             const leaveStart = new Date(leave.startDate);
             const leaveEnd = new Date(leave.endDate);
-            
+
             // Get the overlapping date range
             const overlapStart = new Date(Math.max(leaveStart.getTime(), firstDay.getTime()));
             const overlapEnd = new Date(Math.min(leaveEnd.getTime(), lastDay.getTime()));
@@ -1874,12 +2111,12 @@ export class PayrollService extends BaseService {
                 while (currentDate <= endDate) {
                     const dayOfWeek = currentDate.getDay();
                     const currentTime = currentDate.getTime();
-                    
+
                     // Count as 0.5 if it's a working day (not weekend, not holiday)
                     if (!weekendDays.includes(dayOfWeek) && !holidayDatesSet.has(currentTime)) {
                         workingDays += 0.5;
                     }
-                    
+
                     currentDate.setDate(currentDate.getDate() + 1);
                 }
                 totalDays += workingDays;
@@ -1894,11 +2131,11 @@ export class PayrollService extends BaseService {
                 while (currentDate <= endDate) {
                     const dayOfWeek = currentDate.getDay();
                     const currentTime = currentDate.getTime();
-                    
+
                     if (!weekendDays.includes(dayOfWeek) && !holidayDatesSet.has(currentTime)) {
                         workingDays++;
                     }
-                    
+
                     currentDate.setDate(currentDate.getDate() + 1);
                 }
                 totalDays += workingDays;
