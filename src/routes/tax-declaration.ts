@@ -11,11 +11,21 @@ export async function taxDeclarationRoutes(fastify: FastifyInstance): Promise<vo
     fastify.get('/', { preHandler: [authenticate] },
         async (request, reply) => {
             console.log(request.query, "request salary structre");
-            const { page, limit, search } = request.query as { page?: number; limit?: number; search?: string };
-            console.log(page, limit, search, "*****")
+            const { page, limit, search, financialYear } = request.query as {
+                page?: number;
+                limit?: number;
+                search?: string;
+                financialYear?: string;
+            };
+            console.log(page, limit, search, financialYear, "*****")
 
             try {
-                const result = await request.container!.taxDeclarationService.findAll({ page, limit, search });
+                const result = await request.container!.taxDeclarationService.findAll({
+                    page,
+                    limit,
+                    search,
+                    financialYear
+                });
                 return reply.send({
                     success: true,
                     data: result.taxDeclarations,
