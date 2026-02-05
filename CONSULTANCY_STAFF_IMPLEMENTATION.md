@@ -113,12 +113,16 @@ Updated to accept `isConsultancy` parameter and implement consultancy-specific l
 
 **For Consultancy Staff (`isConsultancy = true`):**
 - ✅ **No PF Deduction**: `epfEmployee = 0`, `epfEmployer = 0`
+- ✅ **No ESI Deduction**: `esiEmployee = 0`, `esiEmployer = 0`
+- ✅ **No Professional Tax**: `professionalTax = 0`
 - ✅ **No Income Tax**: `incomeTax = 0`
 - ✅ **1% TDS Deduction**: `tdsDeduction = 1% of monthlyGross`
 - ✅ Total deductions include TDS instead of income tax
 
 **For Regular Staff (`isConsultancy = false`):**
 - ✅ Normal PF calculation (with ₹15,000 ceiling)
+- ✅ Normal ESI calculation
+- ✅ Normal Professional Tax calculation
 - ✅ Normal Income Tax calculation
 - ✅ `tdsDeduction = 0`
 

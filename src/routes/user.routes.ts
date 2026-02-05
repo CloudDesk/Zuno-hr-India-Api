@@ -219,6 +219,7 @@ const userResponseSchema = {
     visaDetails: visaDetailsSchema,
     client: { type: 'string' },
     isConsultancy: { type: 'boolean' },
+    isIntern: { type: 'boolean' },
     // Employee detail fields (63-70)
     confirmationDate: { type: 'string', format: 'date-time' },
     probationDate: { type: 'string', format: 'date-time' },
@@ -757,6 +758,10 @@ export const userRoutes: RouteHandler = async (
               type: 'boolean',
               description: 'Flag for consultancy staff (no PF, 1% TDS)'
             },
+            isIntern: {
+              type: 'boolean',
+              description: 'Flag for intern employees (no PF, no tax, no professional tax)'
+            },
             // PF (Provident Fund) related fields - individual fields
             pfNumber: {
               type: 'string',
@@ -994,6 +999,10 @@ export const userRoutes: RouteHandler = async (
             isConsultancy: {
               type: 'boolean',
               description: 'Flag for consultancy staff (no PF, 1% TDS)'
+            },
+            isIntern: {
+              type: 'boolean',
+              description: 'Flag for intern employees (no PF, no tax, no professional tax)'
             },
             // PF (Provident Fund) related fields - individual fields
             pfNumber: {

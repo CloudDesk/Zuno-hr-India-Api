@@ -106,6 +106,7 @@ interface IUserCreate {
   };
   client?: string;
   isConsultancy?: boolean; // Flag for consultancy staff (no PF, 1% TDS)
+  isIntern?: boolean; // Flag for intern employees (no PF, no tax, no professional tax)
   // PF (Provident Fund) related fields - individual fields (not in governmentIds)
   pfNumber?: string;
   uanNumber?: string;
@@ -172,6 +173,7 @@ interface IUserUpdate {
   };
   client?: string;
   isConsultancy?: boolean; // Flag for consultancy staff (no PF, 1% TDS)
+  isIntern?: boolean; // Flag for intern employees (no PF, no tax, no professional tax)
   // PF (Provident Fund) related fields - individual fields (not in governmentIds)
   pfNumber?: string;
   uanNumber?: string;

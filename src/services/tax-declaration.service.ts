@@ -234,7 +234,7 @@ export class TaxDeclarationService extends BaseService {
         //calculate the user Joining Date and allow make isForm12BApplicable value
         //fetch the user
 
-        const user: IUser = await User.findById(employeeId).select('name joiningDate isConsultancy');
+        const user: IUser = await User.findById(employeeId).select('name joiningDate isConsultancy isIntern');
         if (!user) {
             throw new Error('User not found');
         }
@@ -242,6 +242,11 @@ export class TaxDeclarationService extends BaseService {
         // Prevent tax declaration creation for consultancy staff
         if (user.isConsultancy) {
             throw new Error('Tax declaration cannot be created for consultancy staff. Consultancy users have 1% TDS deduction instead of income tax.');
+        }
+
+        // Prevent tax declaration creation for interns
+        if (user.isIntern) {
+            throw new Error('Tax declaration cannot be created for intern employees. Interns have no tax deductions.');
         }
 
         console.log(user, "getUser")

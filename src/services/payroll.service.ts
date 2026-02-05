@@ -1644,7 +1644,8 @@ export class PayrollService extends BaseService {
             daysInMonth,
             monthlyGross,
             employee.country || 'IN', // Pass employee's country, default to 'IN'
-            employee.isConsultancy || false // Pass consultancy flag
+            employee.isConsultancy || false, // Pass consultancy flag
+            employee.isIntern || false // Pass intern flag
         );
         console.log(resolvedDeductions, 'resolvedDeductions calculatePayrollRecord');
         const totalDeductions = resolvedDeductions.totalDeductions + additionalDeduction;
@@ -1749,7 +1750,8 @@ export class PayrollService extends BaseService {
         daysInMonth: number,//total days in month
         monthlyGross: number, //monthly gross salary
         employeeCountry: string = 'IN', // Default to India for backward compatibility
-        isConsultancy: boolean = false // Flag for consultancy staff
+        isConsultancy: boolean = false, // Flag for consultancy staff
+        isIntern: boolean = false // Flag for intern employees
     ) {
         console.log(salaryStructure, approvedLeaves, 'calculateDeductions');
         console.log(`Processing deductions for employee country: ${employeeCountry}`);
@@ -1787,10 +1789,11 @@ export class PayrollService extends BaseService {
 
         // EPF - Corrected calculation
         // Consultancy staff: No PF deduction
+        // Intern: No PF deduction
         let finalEpfEmployee = 0;
         let finalEpfEmployer = 0;
 
-        if (!isConsultancy) {
+        if (!isConsultancy && !isIntern) {
             // When Basic >= ₹15,000, cap EPF at 12% of ₹15,000 = ₹1,800 (not 15000/12 = ₹1,250)
             const epfEmployee =
                 (salaryStructure.statutoryDeductions.epf.employeeContribution / 100) * (basic + da);
@@ -1832,33 +1835,57 @@ export class PayrollService extends BaseService {
             console.log(maxEpfContribution, 'maxEpfContribution');
             console.log(finalEpfEmployee, 'finalEpfEmployee');
             console.log(finalEpfEmployer, 'finalEpfEmployer');
-        } else {
+        } else if (isConsultancy) {
             console.log('Consultancy staff - No PF deduction');
+        } else if (isIntern) {
+            console.log('Intern - No PF deduction');
         }
 
         // ESI
-        const esiLimit = salaryStructure.statutoryDeductions.esi.applicabilityLimit;
-        const esiEmployee = Math.round(
-            grossSalary <= esiLimit
-                ? (salaryStructure.statutoryDeductions.esi.employeeContribution / 100) * grossSalary
-                : 0);
-        const esiEmployer = Math.round(
-            grossSalary <= esiLimit
-                ? (salaryStructure.statutoryDeductions.esi.employerContribution / 100) * grossSalary
-                : 0);
-        console.log(esiLimit, 'esiLimit');
-        console.log(esiEmployee, 'esiEmployee');
-        console.log(esiEmployer, 'esoEmployer');
+        // Consultancy staff: No ESI
+        // Intern: No ESI
+        let esiEmployee = 0;
+        let esiEmployer = 0;
+
+        if (!isConsultancy && !isIntern) {
+            const esiLimit = salaryStructure.statutoryDeductions.esi.applicabilityLimit;
+            esiEmployee = Math.round(
+                grossSalary <= esiLimit
+                    ? (salaryStructure.statutoryDeductions.esi.employeeContribution / 100) * grossSalary
+                    : 0);
+            esiEmployer = Math.round(
+                grossSalary <= esiLimit
+                    ? (salaryStructure.statutoryDeductions.esi.employerContribution / 100) * grossSalary
+                    : 0);
+            console.log(esiLimit, 'esiLimit');
+            console.log(esiEmployee, 'esiEmployee');
+            console.log(esiEmployer, 'esoEmployer');
+        } else if (isConsultancy) {
+            console.log('Consultancy staff - No ESI deduction');
+        } else if (isIntern) {
+            console.log('Intern - No ESI deduction');
+        }
+
         // Professional Tax
-        const professionalTax = Math.round(this.calculateProfessionalTax(
-            monthlyGross,
-            salaryStructure.statutoryDeductions.professionalTax,
-            monthNumber,
-        ));
+        // Consultancy staff: No Professional Tax
+        // Intern: No Professional Tax
+        let professionalTax = 0;
+        if (!isConsultancy && !isIntern) {
+            professionalTax = Math.round(this.calculateProfessionalTax(
+                monthlyGross,
+                salaryStructure.statutoryDeductions.professionalTax,
+                monthNumber,
+            ));
+        } else if (isConsultancy) {
+            console.log('Consultancy staff - No Professional Tax');
+        } else if (isIntern) {
+            console.log('Intern - No Professional Tax');
+        }
         console.log(professionalTax, 'professionalTax');
 
         // Income Tax / TDS Deduction
         // Consultancy staff: 1% TDS deduction instead of income tax
+        // Intern: No income tax, No TDS
         let incomeTax = 0;
         let tdsDeduction = 0;
 
@@ -1866,6 +1893,9 @@ export class PayrollService extends BaseService {
             // 1% TDS on monthly gross for consultancy staff
             tdsDeduction = Math.round((1 / 100) * monthlyGross);
             console.log(`Consultancy TDS (1% of ${monthlyGross}): ${tdsDeduction}`);
+        } else if (isIntern) {
+            // Intern: No income tax, No TDS
+            console.log('Intern - No Income Tax, No TDS');
         } else {
             // Regular income tax for non-consultancy staff
             incomeTax = Math.round(await this.calculateIncomeTax(employeeId, monthName, monthNumber, year));
