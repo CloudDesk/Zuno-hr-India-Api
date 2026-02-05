@@ -310,6 +310,14 @@ export const userRoutes: RouteHandler = async (
               type: 'boolean',
               description: 'Filter by portal access'
             },
+            isConsultancy: {
+              type: 'boolean',
+              description: 'Filter by consultancy staff status'
+            },
+            isIntern: {
+              type: 'boolean',
+              description: 'Filter by intern status'
+            },
             // Sorting
             sort: {
               type: 'string',
@@ -392,6 +400,8 @@ export const userRoutes: RouteHandler = async (
           country?: string;
           licenseType?: string;
           portalAccess?: boolean;
+          isConsultancy?: boolean;
+          isIntern?: boolean;
           sort?: string;
           sortOrder?: 'asc' | 'desc';
           select?: string;
