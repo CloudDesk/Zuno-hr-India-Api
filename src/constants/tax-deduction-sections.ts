@@ -28,6 +28,7 @@ export const TAX_DEDUCTION_SECTION_IDS = [
   "80E",
   "80GG",
   "80CCD2",
+  "income_loss_house_property",
 ] as const;
 
 /** Tax deduction sections - single source of truth for BE; FE can sync from GET /sections. */
@@ -48,12 +49,42 @@ export const deductionSections: IDeductionSection[] = [
     maxLimit: 150000,
     limitType: "section",
     subsections: [
-      { id: "life_insurance", name: "Life Insurance Premium", maxLimit: null, note: "" },
-      { id: "epf", name: "Employee Provident Fund (EPF)", maxLimit: null, note: "" },
-      { id: "housing_loan_principal", name: "Housing Loan Principal", maxLimit: null, note: "" },
-      { id: "national_savings_certificate", name: "National Savings Certificate", maxLimit: null, note: "" },
-      { id: "80CCC", name: "Premium paid for Pension (80CCC)", maxLimit: null, note: "" },
-      { id: "80CCD1", name: "National Pension System (80CCD1)", maxLimit: null, note: "" },
+      {
+        id: "life_insurance",
+        name: "Life Insurance Premium",
+        maxLimit: null,
+        note: "",
+      },
+      {
+        id: "epf",
+        name: "Employee Provident Fund (EPF)",
+        maxLimit: null,
+        note: "",
+      },
+      {
+        id: "housing_loan_principal",
+        name: "Housing Loan Principal",
+        maxLimit: null,
+        note: "",
+      },
+      {
+        id: "national_savings_certificate",
+        name: "National Savings Certificate",
+        maxLimit: null,
+        note: "",
+      },
+      {
+        id: "80CCC",
+        name: "Premium paid for Pension (80CCC)",
+        maxLimit: null,
+        note: "",
+      },
+      {
+        id: "80CCD1",
+        name: "National Pension System (80CCD1)",
+        maxLimit: null,
+        note: "",
+      },
     ],
   },
   {
@@ -94,8 +125,16 @@ export const deductionSections: IDeductionSection[] = [
     maxLimit: 125000,
     limitType: "subsection",
     subsections: [
-      { id: "formal_disability", name: "Standard Disability (40% or more)", maxLimit: 75000 },
-      { id: "severe_disability", name: "Severe Disability (80% or more)", maxLimit: 125000 },
+      {
+        id: "formal_disability",
+        name: "Standard Disability (40% or more)",
+        maxLimit: 75000,
+      },
+      {
+        id: "severe_disability",
+        name: "Severe Disability (80% or more)",
+        maxLimit: 125000,
+      },
     ],
   },
   {
@@ -121,7 +160,26 @@ export const deductionSections: IDeductionSection[] = [
     limitType: "dynamic",
     maxLimit: null,
     subsections: [
-      { id: "employer_nps", name: "Employer's NPS Contribution", maxLimit: 0 },
+      {
+        id: "employer_nps",
+        name: "Employer's NPS Contribution",
+        maxLimit: 0,
+      },
+    ],
+  },
+  {
+    id: "income_loss_house_property",
+    title: "Income/Loss from House Property",
+    description: "Interest on Housing Loan (Self-occupied property)",
+    maxLimit: 200000,
+    limitType: "subsection",
+    subsections: [
+      {
+        id: "house_property_details",
+        name: "Net Income/Loss from House Property",
+        maxLimit: 200000, // Max deduction limit for Loss. Income has no limit but acts as negative deduction.
+        note: "Select 'Loss' for deduction, 'Income' to add to taxable income"
+      }
     ],
   },
 ];

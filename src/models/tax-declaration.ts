@@ -59,7 +59,15 @@ interface IDeclaration {
     declaredAmount: number;
     verifiedAmount: number;
     status: "pending" | "verified" | "rejected" | "resubmission_requested" | "document_submitted";
+    type?: "income" | "loss";
+
     documents: IDocument[];
+    rentDetails?: {
+        month: string;
+        amount: number;
+        landlordName?: string;
+        landlordPan?: string;
+    }[];
     reviewHistory: {
         reviewedBy: Types.ObjectId;
         reviewDate: Date;
@@ -161,12 +169,20 @@ const MonthlyTaxDeductionSchema = new Schema<IMonthlyTaxDeduction>({
     plannedDate: { type: Date },
     isProcessed: { type: Boolean, default: false }
 });
+
+const RentDetailSchema = new Schema({
+    month: { type: String, required: true },
+    amount: { type: Number, required: true },
+    landlordName: { type: String },
+    landlordPan: { type: String }
+}, { _id: false });
+
 const DeclarationSchema = new Schema<IDeclaration>({
 
     section: {
         type: String,
         required: true,
-        enum: ["10_13A", "80C", "80D", "80DD", "80E", "80G", "80TTA", "80GG", "80CCG", "80U", "80CCD2", "80RRB", "80DDB", "80CCD(1)", "80CCD(2)", "10(14)", "10(13A)", "24(b)", "80EEA"]
+        enum: ["10_13A", "80C", "80D", "80DD", "80E", "80G", "80TTA", "80GG", "80CCG", "80U", "80CCD2", "80RRB", "80DDB", "80CCD(1)", "80CCD(2)", "10(14)", "10(13A)", "24(b)", "80EEA", "income_loss_house_property"]
     },
     subSection: { type: String, required: true },
     maxLimit: { type: Number, required: true },
@@ -184,6 +200,11 @@ const DeclarationSchema = new Schema<IDeclaration>({
         enum: ["pending", "verified", "rejected", "resubmission_requested", "document_submitted"],
         default: "pending"
     },
+    type: {
+        type: String,
+        enum: ["income", "loss"]
+    },
+    rentDetails: [RentDetailSchema],
     documents: [DocumentSchema],
     reviewHistory: [{
         reviewedBy: { type: Schema.Types.ObjectId, ref: 'User' },

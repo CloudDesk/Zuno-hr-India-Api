@@ -28,11 +28,19 @@ export interface IDocument {
 export interface IDeclaration {
     section: string;
     subsection: string;
+    subSection?: string;
     maxLimit: number;
     declaredAmount: number;
     verifiedAmount: number;
     status: "pending" | "verified" | "rejected" | "resubmission_requested" | "document_submitted";
     documents?: IDocument[];
+    rentDetails?: {
+        month: string;
+        amount: number;
+        landlordName?: string;
+        landlordPan?: string;
+    }[];
+    type?: "income" | "loss";
     _id?: Types.ObjectId;
 }
 
@@ -276,8 +284,7 @@ export class TaxDeclarationService extends BaseService {
         const initialTax = await this.calculateIncomeTax(
             annualGross,
             regime,
-            0, // No declarations yet
-            0, // No verified amounts yet
+            0, // No investments yet
             taxSlab.standardDeduction,
             plainSlabs,
             taxSlab.cessRate
@@ -393,9 +400,17 @@ export class TaxDeclarationService extends BaseService {
         // If declarations array exists and has elements, calculate totalDeclaredAmount
         if (data.declarations && data.declarations.length > 0) {
             totalDeclaredAmount = data.declarations.reduce((sum, declaration) => {
-                // Ensure declaredAmount is a number, default to 0 if undefined or invalid
                 const amount = Number(declaration.declaredAmount) || 0;
-                return sum + amount;
+                if (declaration.section === 'income_loss_house_property') {
+                    if (declaration.type === 'income') {
+                        return sum - amount;
+                    } else {
+                        const cappedLoss = declaration.maxLimit ? Math.min(amount, declaration.maxLimit) : Math.min(amount, 200000);
+                        return sum + cappedLoss;
+                    }
+                }
+                const cappedAmount = (declaration.maxLimit && declaration.maxLimit > 0) ? Math.min(amount, declaration.maxLimit) : amount;
+                return sum + cappedAmount;
             }, 0);
             data.totalDeclaredAmount = totalDeclaredAmount;
             data.isDeclared = true;
@@ -414,7 +429,6 @@ export class TaxDeclarationService extends BaseService {
             annualGross,
             regime,
             totalDeclaredAmount,
-            taxDeclaration.totalVerifiedAmount || 0,
             taxSlab.standardDeduction,
             plainSlabs,
             taxSlab.cessRate
@@ -579,36 +593,22 @@ export class TaxDeclarationService extends BaseService {
                 declaration.lastUpdated = new Date(); // Update last modified timestamp
                 declaration.status = 'document_submitted';
 
+                const body = request.body || {};
+                const specificLandlordName = body[`${section}_${subSection}_landlordName`];
+                const specificLandlordPan = body[`${section}_${subSection}_landlordPan`];
+
+                if (declaration.rentDetails && declaration.rentDetails.length > 0) {
+                    const landlordName = specificLandlordName || ((section === '10_13A' || section === '80GG') && subSection === 'rent_paid' ? body.landlordName : undefined);
+                    const landlordPan = specificLandlordPan || ((section === '10_13A' || section === '80GG') && subSection === 'rent_paid' ? body.landlordPan : undefined);
+
+                    if (landlordName || landlordPan) {
+                        declaration.rentDetails.forEach((detail: any) => {
+                            if (landlordName) detail.landlordName = landlordName;
+                            if (landlordPan) detail.landlordPan = landlordPan;
+                        });
+                    }
+                }
             }
-            /*
-                const [section, ...subSectionParts] = file.fieldname.split('_');
-                const subSection = subSectionParts.join('_');
-                const fileUrl = `http://${request.headers.host}/${file.filename}`;
-    
-                console.log(section, subSection, "2.1 section, subsection ")
-                console.log(fileUrl, "2.2 fileUrl")
-    
-                // 3. Find the matching declaration
-                const declaration = taxDeclaration.declarations.find(
-                    (decl) => decl.section === section && decl.subSection === subSection
-                );
-                console.log(declaration, "3 declaration")
-                if (declaration) {
-                    // 4. Mark all existing documents as not latest
-                    declaration.documents.forEach(doc => doc.isLatestVersion = false);
-                    console.log(declaration, "1 declaration")
-                    // 4.1 Add new document entry
-                    declaration.documents.push({
-                        documentName: file.originalname,
-                        documentPath: fileUrl,
-                        uploadDate: new Date(),
-                        isLatestVersion: true
-                    });
-                    // 6. Update declaration status
-                    declaration.lastUpdated = new Date(); // Update last modified timestamp
-                    declaration.status = 'document_submitted';
-                  
-                }  */
         });
         console.log(taxDeclaration, "6 taxDeclaration");
         // 7. Update POI submission status
@@ -1086,8 +1086,7 @@ export class TaxDeclarationService extends BaseService {
     private async calculateIncomeTax(
         annualGross: number,
         regime: 'old' | 'new',
-        declaredInvestments: number = 0,
-        verifiedInvestments: number = 0,
+        investments: number = 0,
         standardDeduction: number = 50000,
         taxSlabs: { fromAmount: number; toAmount: number | null; taxRate: number }[],
         cessRate: number = 4
@@ -1095,15 +1094,12 @@ export class TaxDeclarationService extends BaseService {
         console.log("Input parameters:");
         console.log("annualGross:", annualGross);
         console.log("regime:", regime);
-        console.log("declaredInvestments:", declaredInvestments);
-        console.log("verifiedInvestments:", verifiedInvestments);
+        console.log("investments:", investments);
         console.log("standardDeduction:", standardDeduction);
         console.log("taxSlabs:", taxSlabs);
 
         // Calculate taxable income based on regime
-        const useInvestments = regime === 'old'
-            ? (verifiedInvestments > 0 ? verifiedInvestments : declaredInvestments)
-            : 0;
+        const useInvestments = regime === 'old' ? investments : 0;
         console.log("useInvestments:", useInvestments);
 
         const taxableIncome = annualGross - standardDeduction - useInvestments;
@@ -1223,13 +1219,24 @@ export class TaxDeclarationService extends BaseService {
         // Calculate total verified amount
         const totalVerifiedAmount = declarations
             .filter(d => d.status === "verified")
-            .reduce((sum, d) => sum + d.verifiedAmount, 0);
+            .reduce((sum, d) => {
+                const amount = d.verifiedAmount || 0;
+                if (d.section === 'income_loss_house_property') {
+                    if (d.type === 'income') {
+                        return sum - amount;
+                    } else {
+                        const cappedLoss = d.maxLimit ? Math.min(amount, d.maxLimit) : Math.min(amount, 200000);
+                        return sum + cappedLoss;
+                    }
+                }
+                const cappedAmount = (d.maxLimit && d.maxLimit > 0) ? Math.min(amount, d.maxLimit) : amount;
+                return sum + cappedAmount;
+            }, 0);
 
         // Calculate tax with rebate and marginal relief
         const taxBreakdown = await this.calculateIncomeTax(
             annualGross,
             regime,
-            taxDeclaration.totalDeclaredAmount,
             totalVerifiedAmount,
             standardDeduction,
             plainSlabs,
