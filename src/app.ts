@@ -62,8 +62,6 @@ declare module 'fastify' {
 export async function createApp(): Promise<FastifyInstance> {
   // Connect to MongoDB
   await connectDB();
-  console.log(config.corsOrigins, "corsOrginins")
-
   const app = fastify({
     logger: true,
   });
@@ -140,7 +138,6 @@ export async function createApp(): Promise<FastifyInstance> {
     staticCSP: true
   });
 
-  console.log(join(parentDir, "/uploads"), "join(parentDir, /uploads) in app.ts");
   app.register(fastifyStatic, {
     root: join(parentDir, "/uploads"),
   });

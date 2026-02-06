@@ -238,14 +238,14 @@ export class PayrollService extends BaseService {
     }
 
     private static stateTransitions: Record<PayrollStatus, PayrollStatus[]> = {
-        [PayrollStatus.Draft]: [PayrollStatus.PendingApproval, PayrollStatus.Cancelled],
-        [PayrollStatus.PendingApproval]: [PayrollStatus.InPayment, PayrollStatus.Cancelled],
+        [PayrollStatus.Draft]: [PayrollStatus.PendingApproval, PayrollStatus.Cancelled, PayrollStatus.Hold],
+        [PayrollStatus.PendingApproval]: [PayrollStatus.InPayment, PayrollStatus.Cancelled, PayrollStatus.Hold],
         [PayrollStatus.InPayment]: [PayrollStatus.Completed, PayrollStatus.Failed],
         [PayrollStatus.Completed]: [],
         [PayrollStatus.Failed]: [PayrollStatus.Completed, PayrollStatus.Failed],
         [PayrollStatus.RetryPending]: [PayrollStatus.InPayment, PayrollStatus.Cancelled],
         [PayrollStatus.Cancelled]: [],
-        // [PayrollStatus.Hold]: [PayrollStatus.Draft, PayrollStatus.PendingApproval, PayrollStatus.InPayment]
+        [PayrollStatus.Hold]: [PayrollStatus.Draft, PayrollStatus.PendingApproval, PayrollStatus.InPayment, PayrollStatus.Completed], // Can release from hold or complete via FNF
     };
 
     private static maxRetries = 3;
@@ -1772,7 +1772,7 @@ export class PayrollService extends BaseService {
             ],
         }).select('noOfDays leaveType startDate endDate leaveDuration halfDayType').lean();
         console.log(leaves, 'leaves fetchApprovedLeaves');
-        
+
         // ✅ FIX: Calculate leave days that fall within the payroll month (not total noOfDays)
         // When leave spans multiple months, we need to calculate partial days per month
         const totalLeaveDays = await this.calculateLeaveDaysInMonth(
@@ -1783,7 +1783,7 @@ export class PayrollService extends BaseService {
             year,
             monthNumber
         );
-        
+
         console.log(totalLeaveDays, `fetchApprovedLeaves - Total: ${totalLeaveDays} days from ${leaves.length} leaves (calculated per month, annual_leave + compOff + restricted_holiday)`);
         return totalLeaveDays;
     }
@@ -1854,7 +1854,7 @@ export class PayrollService extends BaseService {
             // Calculate overlap between leave and month
             const leaveStart = new Date(leave.startDate);
             const leaveEnd = new Date(leave.endDate);
-            
+
             // Get the overlapping date range
             const overlapStart = new Date(Math.max(leaveStart.getTime(), firstDay.getTime()));
             const overlapEnd = new Date(Math.min(leaveEnd.getTime(), lastDay.getTime()));
@@ -1874,12 +1874,12 @@ export class PayrollService extends BaseService {
                 while (currentDate <= endDate) {
                     const dayOfWeek = currentDate.getDay();
                     const currentTime = currentDate.getTime();
-                    
+
                     // Count as 0.5 if it's a working day (not weekend, not holiday)
                     if (!weekendDays.includes(dayOfWeek) && !holidayDatesSet.has(currentTime)) {
                         workingDays += 0.5;
                     }
-                    
+
                     currentDate.setDate(currentDate.getDate() + 1);
                 }
                 totalDays += workingDays;
@@ -1894,11 +1894,11 @@ export class PayrollService extends BaseService {
                 while (currentDate <= endDate) {
                     const dayOfWeek = currentDate.getDay();
                     const currentTime = currentDate.getTime();
-                    
+
                     if (!weekendDays.includes(dayOfWeek) && !holidayDatesSet.has(currentTime)) {
                         workingDays++;
                     }
-                    
+
                     currentDate.setDate(currentDate.getDate() + 1);
                 }
                 totalDays += workingDays;

@@ -52,7 +52,7 @@ export interface IPayroll extends Document {
     LOPDays: number;
     payableDays: number;
     processedAt: Date;
-    status: 'Draft' | 'PendingApproval' | 'InPayment' | 'Completed' | 'Failed' | 'RetryPending' | 'Cancelled';
+    status: 'Draft' | 'PendingApproval' | 'InPayment' | 'Completed' | 'Failed' | 'RetryPending' | 'Cancelled' | 'Hold';
     approvedBy?: Types.ObjectId;
     approvalDate?: Date;
     paymentConfirmedAt?: Date;
@@ -114,7 +114,7 @@ const PayrollSchema = new Schema<IPayroll>(
         processedAt: { type: Date, default: Date.now },
         status: {
             type: String,
-            enum: ['Draft', 'PendingApproval', 'InPayment', 'Completed', 'Failed', 'RetryPending', 'Cancelled'],
+            enum: ['Draft', 'PendingApproval', 'InPayment', 'Completed', 'Failed', 'RetryPending', 'Cancelled', 'Hold'],
             default: 'Draft',
         },
         approvedBy: { type: Schema.Types.ObjectId, ref: 'User', required: false }, // Changed ref to 'User' for consistency
@@ -130,9 +130,9 @@ const PayrollSchema = new Schema<IPayroll>(
             changedBy: { type: Schema.Types.ObjectId, ref: 'User', required: true }
         }],
         utrNumber: { type: String }, // New field for UTR number
-        country: { 
-            type: String, 
-            required: true, 
+        country: {
+            type: String,
+            required: true,
             enum: ['AE', 'IN'],
             description: 'Country code for payroll processing'
         },
@@ -193,4 +193,5 @@ Payroll Status Workflow
     - Failed: Payment fails in the external system (e.g., bank issues, incorrect account details).
     - RetryPending: Failed payment with resolved issues (e.g., updated bank details), queued for retry.
     - Cancelled: Payroll is explicitly cancelled by admin during PendingApproval or manually terminated.
+    - Hold: Payroll is on hold (not paid yet), typically for resigned employees pending final settlement.
 */

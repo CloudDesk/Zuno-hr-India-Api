@@ -325,7 +325,6 @@ curl -X GET "https://your-api-url/documents/admin/uploads?page=1&limit=10" \
 
 ### **Similar to:**
 - Zoho People - Document Management
-- GreytHR - Employee Documents
 - Bayzat - Document Storage
 - Keka - File Repository
 

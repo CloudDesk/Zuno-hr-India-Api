@@ -25,7 +25,7 @@ enum PayrollStatus {
     Failed = "Failed",
     RetryPending = "RetryPending",
     Cancelled = "Cancelled",
-    // Hold = "Hold"
+    Hold = "Hold"
 }
 interface PayrollSummaryRequest {
     month: number;
@@ -181,7 +181,7 @@ export const payrollRoutes: RouteHandler = async (fastify: FastifyInstance): Pro
                             items: {
                                 type: 'string',
                                 enum: ['Draft', 'PendingApproval', 'InPayment',
-                                    'Completed', 'Failed', 'RetryPending', 'Cancelled']
+                                    'Completed', 'Failed', 'RetryPending', 'Cancelled', 'Hold']
                             },
                             description: 'Optional array of payroll statuses to filter by'
                         },
@@ -216,7 +216,8 @@ export const payrollRoutes: RouteHandler = async (fastify: FastifyInstance): Pro
                                             Completed: { type: 'number' },
                                             Failed: { type: 'number' },
                                             RetryPending: { type: 'number' },
-                                            Cancelled: { type: 'number' }
+                                            Cancelled: { type: 'number' },
+                                            Hold: { type: 'number' }
                                         }
                                     },
                                     failedRecords: {
@@ -336,12 +337,15 @@ export const payrollRoutes: RouteHandler = async (fastify: FastifyInstance): Pro
                                             type: 'string',
                                             enum: [
                                                 'Draft',
-                                                'Pending Approval',
+                                                'PendingApproval',
                                                 'Processing',
                                                 'Processed',
+                                                'InPayment',
                                                 'Completed',
                                                 'Failed',
-                                                'Cancelled'
+                                                'RetryPending',
+                                                'Cancelled',
+                                                'Hold'
                                             ]
                                         },
                                         paymentConfirmedAt: { type: 'string', format: 'date-time', description: 'Timestamp when payment was confirmed' },
@@ -412,7 +416,7 @@ export const payrollRoutes: RouteHandler = async (fastify: FastifyInstance): Pro
                                 'Failed',
                                 'RetryPending',
                                 'Cancelled',
-                                // 'Hold'
+                                'Hold'
                             ]
                         },
                         failureReason: { type: 'string', description: 'Reason for failure (required for Failed status)' },
@@ -576,7 +580,7 @@ export const payrollRoutes: RouteHandler = async (fastify: FastifyInstance): Pro
                                     id: { type: 'string' },
                                     status: {
                                         type: 'string',
-                                        enum: ['Draft', 'PendingApproval', 'InPayment', 'Completed', 'Failed', 'RetryPending', 'Cancelled']
+                                        enum: ['Draft', 'PendingApproval', 'InPayment', 'Completed', 'Failed', 'RetryPending', 'Cancelled', 'Hold']
                                     },
                                     utrNumber: { type: 'string' },
                                     failureReason: { type: 'string' }

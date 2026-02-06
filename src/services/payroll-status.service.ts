@@ -8,7 +8,8 @@ export enum PayrollStatus {
     Completed = "Completed",
     Failed = "Failed",
     RetryPending = "RetryPending",
-    Cancelled = "Cancelled"
+    Cancelled = "Cancelled",
+    Hold = "Hold" // ⭐ NEW: Payroll on hold (not paid yet)
 }
 
 interface PayrollRecord {
@@ -54,7 +55,8 @@ export class PayrollStatusManager {
         [PayrollStatus.Completed]: [], // No further transitions allowed
         [PayrollStatus.Failed]: [PayrollStatus.RetryPending, PayrollStatus.Cancelled],
         [PayrollStatus.RetryPending]: [PayrollStatus.InPayment, PayrollStatus.Cancelled],
-        [PayrollStatus.Cancelled]: [] // No further transitions allowed
+        [PayrollStatus.Cancelled]: [], // No further transitions allowed
+        [PayrollStatus.Hold]: [PayrollStatus.Draft, PayrollStatus.PendingApproval, PayrollStatus.InPayment, PayrollStatus.Completed]
     };
 
 
@@ -137,7 +139,8 @@ class PayrollStatusService {
                     [PayrollStatus.Completed]: 0,
                     [PayrollStatus.Failed]: 0,
                     [PayrollStatus.RetryPending]: 0,
-                    [PayrollStatus.Cancelled]: 0
+                    [PayrollStatus.Cancelled]: 0,
+                    [PayrollStatus.Hold]: 0
                 },
                 totalRecords: 0
             };
@@ -153,7 +156,8 @@ class PayrollStatusService {
             [PayrollStatus.Completed]: 0,
             [PayrollStatus.Failed]: 0,
             [PayrollStatus.RetryPending]: 0,
-            [PayrollStatus.Cancelled]: 0
+            [PayrollStatus.Cancelled]: 0,
+            [PayrollStatus.Hold]: 0
         });
 
         const statuses = payrollRecords.map((record: any) => record.status);

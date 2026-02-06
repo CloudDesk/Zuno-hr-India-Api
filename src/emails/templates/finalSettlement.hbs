@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Final Settlement Letter</title>
+    <style>
+        body { font-family: 'Helvetica', 'Arial', sans-serif; line-height: 1.6; color: #333; }
+        .container { max-width: 800px; margin: 0 auto; padding: 40px; }
+        .header { text-align: center; margin-bottom: 40px; }
+        .logo { max-width: 150px; margin-bottom: 20px; }
+        .company-name { font-size: 24px; font-weight: bold; color: #2c3e50; }
+        .address { font-size: 14px; color: #7f8c8d; }
+        .title { text-align: center; font-size: 22px; font-weight: bold; margin-bottom: 30px; text-decoration: underline; }
+        .content { margin-bottom: 30px; }
+        .table-container { margin-bottom: 30px; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+        th, td { padding: 10px; border: 1px solid #ddd; text-align: left; }
+        th { background-color: #f8f9fa; font-weight: bold; }
+        .total-row { font-weight: bold; background-color: #f1f1f1; }
+        .footer { margin-top: 50px; border-top: 1px solid #eee; padding-top: 20px; font-size: 12px; text-align: center; color: #999; }
+        .signature-section { margin-top: 50px; display: flex; justify-content: space-between; }
+        .signature-box { width: 200px; text-align: center; border-top: 1px solid #333; padding-top: 10px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <!-- <img src="{{logoUrl}}" alt="Company Logo" class="logo"> -->
+            <div class="company-name">{{companyName}}</div>
+            <div class="address">{{companyAddress}}</div>
+        </div>
+
+        <div class="title">FULL AND FINAL SETTLEMENT STATEMENT</div>
+
+        <div class="content">
+            <p><strong>Date:</strong> {{settlementDate}}</p>
+            <p><strong>Name:</strong> {{employeeName}} ({{employeeCode}})</p>
+            <p><strong>Designation:</strong> {{designation}}</p>
+            <p><strong>Department:</strong> {{department}}</p>
+            <p><strong>Date of Joining:</strong> {{joiningDate}}</p>
+            <p><strong>Last Working Day:</strong> {{leavingDate}}</p>
+        </div>
+
+        <div class="table-container">
+            <h3>Earnings</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Description</th>
+                        <th>Amount ({{currency}})</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{#each earnings}}
+                    <tr>
+                        <td>{{description}}</td>
+                        <td style="text-align: right;">{{amount}}</td>
+                    </tr>
+                    {{/each}}
+                    <tr class="total-row">
+                        <td>Total Earnings (A)</td>
+                        <td style="text-align: right;">{{totalEarnings}}</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="table-container">
+            <h3>Deductions</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Description</th>
+                        <th>Amount ({{currency}})</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{#each deductions}}
+                    <tr>
+                        <td>{{description}}</td>
+                        <td style="text-align: right;">{{amount}}</td>
+                    </tr>
+                    {{/each}}
+                    <tr class="total-row">
+                        <td>Total Deductions (B)</td>
+                        <td style="text-align: right;">{{totalDeductions}}</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="content" style="background-color: #f9f9f9; padding: 20px; border-radius: 5px;">
+            <h3>Net Payable Calculation</h3>
+            <p style="font-size: 18px;"><strong>Net Payable Amount (A - B): {{currency}} {{netPayable}}</strong></p>
+            <p><strong>Amount in Words:</strong> {{netPayableWords}}</p>
+        </div>
+
+        <div class="content">
+            <p>This is to certify that the full and final settlement for <strong>{{employeeName}}</strong> has been processed as per the details above.</p>
+        </div>
+
+        <div class="signature-section">
+            <div class="signature-box">
+                <p>Employee Signature</p>
+            </div>
+            <div class="signature-box">
+                <p>Authorized Signatory</p>
+                <p>{{companyName}}</p>
+            </div>
+        </div>
+
+        <div class="footer">
+            <p>This is a computer-generated document.</p>
+        </div>
+    </div>
+</body>
+</html>

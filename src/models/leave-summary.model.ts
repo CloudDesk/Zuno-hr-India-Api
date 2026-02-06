@@ -30,7 +30,7 @@ export interface ILeaveSummary extends Document {
   maternity: ILeaveCategoryDetail;
   workFromHome: ILeaveCategoryDetail;
   restricted_holiday: ILeaveCategoryDetail;
-  editHistory?: IEditHistory[];
+  editHistory: IEditHistory[];
   createdAt: Date;
   updatedAt: Date;
 }
