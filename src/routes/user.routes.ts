@@ -218,6 +218,8 @@ const userResponseSchema = {
     // UAE-specific visa details
     visaDetails: visaDetailsSchema,
     client: { type: 'string' },
+    isConsultancy: { type: 'boolean' },
+    isIntern: { type: 'boolean' },
     // Employee detail fields (63-70)
     confirmationDate: { type: 'string', format: 'date-time' },
     probationDate: { type: 'string', format: 'date-time' },
@@ -308,6 +310,14 @@ export const userRoutes: RouteHandler = async (
               type: 'boolean',
               description: 'Filter by portal access'
             },
+            isConsultancy: {
+              type: 'boolean',
+              description: 'Filter by consultancy staff status'
+            },
+            isIntern: {
+              type: 'boolean',
+              description: 'Filter by intern status'
+            },
             // Sorting
             sort: {
               type: 'string',
@@ -390,6 +400,8 @@ export const userRoutes: RouteHandler = async (
           country?: string;
           licenseType?: string;
           portalAccess?: boolean;
+          isConsultancy?: boolean;
+          isIntern?: boolean;
           sort?: string;
           sortOrder?: 'asc' | 'desc';
           select?: string;
@@ -752,6 +764,14 @@ export const userRoutes: RouteHandler = async (
               maxLength: 100,
               description: 'Client name or identifier for employee assignment'
             },
+            isConsultancy: {
+              type: 'boolean',
+              description: 'Flag for consultancy staff (no PF, 1% TDS)'
+            },
+            isIntern: {
+              type: 'boolean',
+              description: 'Flag for intern employees (no PF, no tax, no professional tax)'
+            },
             // PF (Provident Fund) related fields - individual fields
             pfNumber: {
               type: 'string',
@@ -985,6 +1005,14 @@ export const userRoutes: RouteHandler = async (
               type: 'string',
               maxLength: 100,
               description: 'Client name or identifier for employee assignment'
+            },
+            isConsultancy: {
+              type: 'boolean',
+              description: 'Flag for consultancy staff (no PF, 1% TDS)'
+            },
+            isIntern: {
+              type: 'boolean',
+              description: 'Flag for intern employees (no PF, no tax, no professional tax)'
             },
             // PF (Provident Fund) related fields - individual fields
             pfNumber: {

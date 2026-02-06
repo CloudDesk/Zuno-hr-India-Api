@@ -164,6 +164,12 @@ export interface IUser extends Document {
   // Client field for employee assignment
   client?: string;
 
+  // Consultancy staff flag - for special tax and PF treatment
+  isConsultancy?: boolean;
+
+  // Intern flag - for special payroll treatment (no PF, no tax, no professional tax)
+  isIntern?: boolean;
+
   // PF (Provident Fund) related fields - individual fields (not in governmentIds)
   pfNumber?: string;
   uanNumber?: string;
@@ -608,6 +614,18 @@ const userSchema = new Schema<IUser>(
       maxlength: 100,
       description: 'Client name or identifier for employee assignment'
     },
+    // Consultancy staff flag - for special tax and PF treatment
+    isConsultancy: {
+      type: Boolean,
+      default: false,
+      description: 'Flag to identify consultancy staff (no PF, 1% TDS deduction)'
+    },
+    // Intern flag - for special payroll treatment
+    isIntern: {
+      type: Boolean,
+      default: false,
+      description: 'Flag to identify intern employees (no PF, no tax, no professional tax)'
+    },
     // PF (Provident Fund) related fields - individual fields (not in governmentIds)
     pfNumber: {
       type: String,
@@ -658,6 +676,8 @@ userSchema.index({ country: 1 });
 userSchema.index({ licenseType: 1 });
 userSchema.index({ portalAccess: 1 });
 userSchema.index({ client: 1 });
+userSchema.index({ isConsultancy: 1 });
+userSchema.index({ isIntern: 1 });
 
 // Hash password before saving
 userSchema.pre('save', async function (next) {

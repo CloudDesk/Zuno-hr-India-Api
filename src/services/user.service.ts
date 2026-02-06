@@ -105,6 +105,8 @@ interface IUserCreate {
     isActive?: boolean; // Only relevant when visa details are provided
   };
   client?: string;
+  isConsultancy?: boolean; // Flag for consultancy staff (no PF, 1% TDS)
+  isIntern?: boolean; // Flag for intern employees (no PF, no tax, no professional tax)
   // PF (Provident Fund) related fields - individual fields (not in governmentIds)
   pfNumber?: string;
   uanNumber?: string;
@@ -170,6 +172,8 @@ interface IUserUpdate {
     isActive?: boolean; // Only relevant when visa details are provided
   };
   client?: string;
+  isConsultancy?: boolean; // Flag for consultancy staff (no PF, 1% TDS)
+  isIntern?: boolean; // Flag for intern employees (no PF, no tax, no professional tax)
   // PF (Provident Fund) related fields - individual fields (not in governmentIds)
   pfNumber?: string;
   uanNumber?: string;
@@ -230,6 +234,8 @@ export class UserService extends BaseService {
     country?: string;
     licenseType?: string;
     portalAccess?: boolean;
+    isConsultancy?: boolean;
+    isIntern?: boolean;
     sort?: string;
     sortOrder?: 'asc' | 'desc';
     select?: string;
@@ -249,6 +255,8 @@ export class UserService extends BaseService {
       country,
       licenseType,
       portalAccess,
+      isConsultancy,
+      isIntern,
       sort = 'name',
       sortOrder = 'asc',
       select
@@ -382,12 +390,20 @@ export class UserService extends BaseService {
       filter.portalAccess = portalAccess;
     }
 
+    if (typeof isConsultancy === 'boolean') {
+      filter.isConsultancy = isConsultancy;
+    }
+
+    if (typeof isIntern === 'boolean') {
+      filter.isIntern = isIntern;
+    }
+
     // Build sort object
     const sortObj: any = {};
     sortObj[sort] = sortOrder === 'desc' ? -1 : 1;
 
     // Build select string
-    const selectFields = select || 'name email role specificRole departmentId active joiningDate managerId managerName employeeCode checkinId biometricId location phone emergencyContact address bloodGroup upcomingShiftAssignmentData currentShiftAssignmentData upcomingShiftAssignment currentShiftAssignment dateOfBirth holidayCalendarId holidayCalendarHistory weekendId createdAt updatedAt country currency licenseType portalAccess visaDetails';
+    const selectFields = select || 'name email role specificRole departmentId active joiningDate managerId managerName employeeCode checkinId biometricId location phone emergencyContact address bloodGroup upcomingShiftAssignmentData currentShiftAssignmentData upcomingShiftAssignment currentShiftAssignment dateOfBirth holidayCalendarId holidayCalendarHistory weekendId createdAt updatedAt country currency licenseType portalAccess visaDetails isConsultancy isIntern';
 
     console.log('Unified getUsers query:', { filter, page, limit, sort: sortObj, select: selectFields });
 

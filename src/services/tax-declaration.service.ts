@@ -234,10 +234,21 @@ export class TaxDeclarationService extends BaseService {
         //calculate the user Joining Date and allow make isForm12BApplicable value
         //fetch the user
 
-        const user: IUser = await User.findById(employeeId).select('name joiningDate');
+        const user: IUser = await User.findById(employeeId).select('name joiningDate isConsultancy isIntern');
         if (!user) {
             throw new Error('User not found');
         }
+
+        // Prevent tax declaration creation for consultancy staff
+        if (user.isConsultancy) {
+            throw new Error('Tax declaration cannot be created for consultancy staff. Consultancy users have 1% TDS deduction instead of income tax.');
+        }
+
+        // Prevent tax declaration creation for interns
+        if (user.isIntern) {
+            throw new Error('Tax declaration cannot be created for intern employees. Interns have no tax deductions.');
+        }
+
         console.log(user, "getUser")
         const [fyStartYear, fyEndYear] = financialYear.split('-').map(Number);
         const fyStartDate = new Date(`${fyStartYear}-04-01T00:00:00.000Z`);
@@ -1003,18 +1014,25 @@ export class TaxDeclarationService extends BaseService {
         };
     }
 
-    async findAll(query: { page?: number; limit?: number; search?: string }):
+    async findAll(query: { page?: number; limit?: number; search?: string; financialYear?: string }):
         Promise<{
             taxDeclarations: ITaxDeclaration[],
             meta: { page: number, limit: number, total: number, totalPages: number }
         }> {
-        const { page = 1, limit = 10, search } = query;
+        const { page = 1, limit = 10, search, financialYear } = query;
         const skip = (page - 1) * limit;
         console.log(query, "query")
-        console.log(page, limit, search, "*****")
+        console.log(page, limit, search, financialYear, "*****")
         const filter: any = {};
+
+        // Filter by regime (search)
         if (search) {
             filter.regime = { $regex: search, $options: 'i' }; // Case-insensitive search
+        }
+
+        // Filter by financial year
+        if (financialYear) {
+            filter.financialYear = financialYear;
         }
 
         const [taxDeclarations, total] = await Promise.all([

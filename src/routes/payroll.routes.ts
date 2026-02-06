@@ -647,6 +647,46 @@ export const payrollRoutes: RouteHandler = async (fastify: FastifyInstance): Pro
         }
     )
 
+    fastify.get(
+        '/salary-statement',
+        {
+            onRequest: [authenticate],
+            schema: {
+                querystring: {
+                    type: 'object',
+                    required: ['month', 'year'],
+                    properties: {
+                        month: { type: 'number', minimum: 1, maximum: 12 },
+                        year: { type: 'number', minimum: 2024, maximum: 2100 },
+                    },
+                },
+            },
+        },
+        async (request: FastifyRequest<{ Querystring: { month: number; year: number } }>, reply) => {
+            try {
+                const { month, year } = request.query;
+                const workbook = await request.container!.payrollService.generateSalaryStatement(month, year);
+
+                const buffer = await workbook.xlsx.writeBuffer();
+
+                const monthNames = [
+                    'January', 'February', 'March', 'April', 'May', 'June',
+                    'July', 'August', 'September', 'October', 'November', 'December'
+                ];
+                const fileName = `Salary_Statement_${monthNames[month - 1]}_${year}.xlsx`;
+
+                reply.header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+                reply.header('Content-Disposition', `attachment; filename=${fileName}`);
+                return reply.send(buffer);
+            } catch (error: any) {
+                return reply.status(400).send({
+                    success: false,
+                    error: { message: error.message },
+                });
+            }
+        }
+    );
+
     fastify.get('/deduction-summary', async (request, reply) => {
         try {
             const query = request.query as DeductionQuery;

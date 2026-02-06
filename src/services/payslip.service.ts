@@ -597,6 +597,7 @@ export class PayslipService extends BaseService {
         const lopVal = Number(payroll.leaveDeductions ?? 0);
         const ptVal = Number(payroll.professionalTax ?? 0);
         const itVal = Number(payroll.incomeTax ?? 0);
+        const tdsVal = Number(payroll.tdsDeduction ?? 0);
 
         if (pfVal > 0) {
           deductionObj.pf = formatCurrency(pfVal, payroll.country);
@@ -610,6 +611,9 @@ export class PayslipService extends BaseService {
         if (itVal > 0) {
           deductionObj.it = formatCurrency(itVal, payroll.country);
         }
+        if (tdsVal > 0) {
+          deductionObj.tds = formatCurrency(tdsVal, payroll.country);
+        }
 
         return deductionObj;
       })(),
@@ -621,6 +625,7 @@ export class PayslipService extends BaseService {
         const lopVal = Number(payroll.leaveDeductions ?? 0);
         const ptVal = Number(payroll.professionalTax ?? 0);
         const itVal = Number(payroll.incomeTax ?? 0);
+        const tdsVal = Number(payroll.tdsDeduction ?? 0);
 
         if (pfVal > 0) {
           deductionsArray.push({
@@ -646,6 +651,12 @@ export class PayslipService extends BaseService {
             value: formatCurrency(ptVal, payroll.country)
           });
         }
+        if (tdsVal > 0) {
+          deductionsArray.push({
+            label: 'TDS (1%)',
+            value: formatCurrency(tdsVal, payroll.country)
+          });
+        }
 
         return deductionsArray;
       })(),
@@ -668,6 +679,7 @@ export class PayslipService extends BaseService {
       leaveDeductions: payroll.leaveDeductions,
       professionalTax: payroll.professionalTax,
       incomeTax: payroll.incomeTax,
+      tdsDeduction: payroll.tdsDeduction,
       totalDeductions: payroll.totalDeductions
     });
     console.log("Deduction object:", templateData.deduction);
