@@ -86,12 +86,12 @@ export async function generateFNFLetter(settlement: IFinalSettlement, employee: 
     const currencyWord = (employee.country === 'AE' || employee.country === 'United Arab Emirates') ? 'Dirhams' : 'Rupees';
 
     // ✅ Calculate component-wise breakdown from unpaid months
-    const unpaidBasic = settlement.unpaidMonths.reduce((sum, m) => sum + (m.components?.basic || 0), 0);
-    const unpaidHRA = settlement.unpaidMonths.reduce((sum, m) => sum + (m.components?.hra || 0), 0);
-    const unpaidConveyance = settlement.unpaidMonths.reduce((sum, m) => sum + (m.components?.conveyance || 0), 0);
-    const unpaidSpecialAllowance = settlement.unpaidMonths.reduce((sum, m) => sum + (m.components?.specialAllowance || 0), 0);
-    const unpaidOtherAllowances = settlement.unpaidMonths.reduce((sum, m) => sum + (m.components?.otherAllowances || 0), 0);
-    const totalLOPAmount = settlement.unpaidMonths.reduce((sum, m) => sum + (m.lopAmount || 0), 0);
+    // ✅ Calculate component-wise breakdown from unpaid months
+    const unpaidBasic = settlement.unpaidMonths.reduce((sum: number, m: any) => sum + (m.components?.basic || 0), 0);
+    const unpaidHRA = settlement.unpaidMonths.reduce((sum: number, m: any) => sum + (m.components?.hra || 0), 0);
+    const unpaidConveyance = settlement.unpaidMonths.reduce((sum: number, m: any) => sum + (m.components?.conveyance || 0), 0);
+    const unpaidOtherAllowances = settlement.unpaidMonths.reduce((sum: number, m: any) => sum + (m.components?.otherAllowances || 0), 0);
+    const totalLOPAmount = settlement.unpaidMonths.reduce((sum: number, m: any) => sum + (m.lopAmount || 0), 0);
 
     // Prepare template data matching the user's PDF image structure
     const templateData = {
@@ -109,13 +109,13 @@ export async function generateFNFLetter(settlement: IFinalSettlement, employee: 
         noticeAdjustable: settlement.excessInNotice < 0 ? Math.abs(settlement.excessInNotice) : null, // Shortfall
 
         // Days Calculation
-        plDays: (settlement.leaveBalance?.reduce((sum, l) => sum + (l.encashDays || 0), 0) || 0) > 0
-            ? settlement.leaveBalance?.reduce((sum, l) => sum + (l.encashDays || 0), 0)
+        plDays: (settlement.leaveBalance?.reduce((sum: number, l: any) => sum + (l.encashDays || 0), 0) || 0) > 0
+            ? settlement.leaveBalance?.reduce((sum: number, l: any) => sum + (l.encashDays || 0), 0)
             : null,
-        salaryDays: settlement.unpaidMonths.reduce((sum, m) => sum + m.daysWorked, 0),
-        monthDays: settlement.unpaidMonths.reduce((sum, m) => sum + (m.totalDays || 0), 0) || 30,
-        lopDays: settlement.unpaidMonths.reduce((sum, m) => sum + m.lopDays, 0) > 0
-            ? settlement.unpaidMonths.reduce((sum, m) => sum + m.lopDays, 0)
+        salaryDays: settlement.unpaidMonths.reduce((sum: number, m: any) => sum + m.daysWorked, 0),
+        monthDays: settlement.unpaidMonths.reduce((sum: number, m: any) => sum + (m.totalDays || 0), 0) || 30,
+        lopDays: settlement.unpaidMonths.reduce((sum: number, m: any) => sum + m.lopDays, 0) > 0
+            ? settlement.unpaidMonths.reduce((sum: number, m: any) => sum + m.lopDays, 0)
             : null,
         effectiveWorkdays: settlement.totalDaysWorked,
 
@@ -192,7 +192,6 @@ export async function generateFNFLetter(settlement: IFinalSettlement, employee: 
             unpaidHRA > 0 ? { label: 'HRA', amount: formatCurrency(unpaidHRA, 'IN') } : null,
             settlement.finalCalculation.holdSalaries > 0 ? { label: 'HOLD SALARY', amount: formatCurrency(settlement.finalCalculation.holdSalaries, 'IN') } : null,
             unpaidConveyance > 0 ? { label: 'CONVEYANCE', amount: formatCurrency(unpaidConveyance, 'IN') } : null,
-            unpaidSpecialAllowance > 0 ? { label: 'SPECIAL ALLOWANCE', amount: formatCurrency(unpaidSpecialAllowance, 'IN') } : null,
             unpaidOtherAllowances > 0 ? { label: 'OTHER ALLOWANCE', amount: formatCurrency(unpaidOtherAllowances, 'IN') } : null,
             settlement.finalCalculation.leaveEncashment > 0 ? { label: 'Leave Encashment', amount: formatCurrency(settlement.finalCalculation.leaveEncashment, 'IN') } : null,
             settlement.finalCalculation.reimbursements !== 0 ? { label: 'Reimbursements', amount: formatCurrency(settlement.finalCalculation.reimbursements, 'IN') } : null,
@@ -208,8 +207,8 @@ export async function generateFNFLetter(settlement: IFinalSettlement, employee: 
             settlement.finalCalculation.noticePeriodRecovery > 0 ? { label: 'NOTICE PERIOD RECOVERY', amount: formatCurrency(settlement.finalCalculation.noticePeriodRecovery, 'IN') } : null,
             totalLOPAmount > 0 ? { label: 'LOP DEDUCTION', amount: formatCurrency(totalLOPAmount, 'IN') } : null,
             ...(settlement.otherDeductions || [])
-                .filter(d => (d.amount || 0) > 0)
-                .map(d => ({
+                .filter((d: any) => (d.amount || 0) > 0)
+                .map((d: any) => ({
                     label: d.description.toUpperCase(),
                     amount: formatCurrency(d.amount, 'IN')
                 }))

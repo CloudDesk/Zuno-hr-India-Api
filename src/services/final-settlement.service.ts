@@ -1427,6 +1427,9 @@ export async function calculateFinalSettlement(
         const monthlyGross = salaryAssignment?.monthlyGross || 0;
         const structure = salaryAssignment?.salaryStructureId || {};
 
+        // Fetch User needed for Country check inside loop
+        const employee = await User.findById(data.employeeId);
+
         // Helper: PT Calculation (Cloned for recalculation logic)
         const calculatePT = (grossSalary: number, monthNumber: number) => {
             const ptConfig = structure?.statutoryDeductions?.professionalTax;
@@ -1480,33 +1483,35 @@ export async function calculateFinalSettlement(
                 const proratedBasic = (fullB / daysInMonth) * payableDays;
                 const proratedDA = (fullD / daysInMonth) * payableDays;
                 const proratedHRA = (fullH / daysInMonth) * payableDays;
-                const proratedConveyance = (fullT / daysInMonth) * payableDays;
+                // 1. Calculate Allowances (Payroll naming convention)
+                const proratedTravelAllowance = (fullT / daysInMonth) * payableDays;
                 const proratedOtherAllowances = (fullOtherAllowances / daysInMonth) * payableDays;
 
-                const proratedGross = proratedBasic + proratedDA + proratedHRA + proratedConveyance + proratedOtherAllowances;
+                const pg = (monthlyGross / daysInMonth) * payableDays;
 
-                // Note: If (proratedGross !== monthlySalary) due to rounding/residual, add difference to Other Allowance
-                const finalGross = proratedGross;
+                // 2. Balancing Figure (Merged into Other Allowance per user request)
+                // Instead of a separate "Special Allowance", we add the rounding difference to Other Allowance
+                const balancing = pg - (proratedBasic + proratedDA + proratedHRA + proratedTravelAllowance + proratedOtherAllowances);
 
                 const lopAmount = (monthlyGross / daysInMonth) * lopDays;
                 const ptAmount = Math.round(calculatePT(monthlyGross, month.month));
                 const pfAmount = calculatePF(proratedBasic, proratedDA);
-                // const itAmount = await calculateIncomeTax(month.month, month.year); // Income tax calculation is complex and usually done externally or based on provided data
+                // const itAmount = await calculateIncomeTax(month.month, month.year); 
                 const esiAmount = calculateESI();
 
                 month.components = {
                     basic: Math.round(proratedBasic + proratedDA),
                     hra: Math.round(proratedHRA),
-                    conveyance: Math.round(proratedConveyance),
-                    specialAllowance: 0,
-                    otherAllowances: Math.round(proratedOtherAllowances),
-                    gross: Math.round(finalGross)
+                    travelAllowance: Math.round(proratedTravelAllowance),
+                    specialAllowance: 0, // Not used, balancing moved to Other Allowance
+                    otherAllowances: Math.round(proratedOtherAllowances + balancing), // Merged here
+                    gross: Math.round(pg)
                 };
 
                 month.lopAmount = Math.round(lopAmount);
 
                 // 2. Recalculate Statutory
-                month.salary = Math.round(finalGross);
+                month.salary = Math.round(pg);
                 month.professionalTax = ptAmount;
                 month.providentFund = pfAmount;
                 month.esi = esiAmount;
@@ -1569,7 +1574,7 @@ export async function calculateFinalSettlement(
         const incomeTax = filteredUnpaidMonths.reduce((sum: number, m: any) => sum + (m.incomeTax || 0), 0) || 0;
 
         // Fetch User to check Joining Date for Gratuity
-        const employee = await User.findById(data.employeeId);
+        // const employee = await User.findById(data.employeeId); // Already fetched above
         const joiningDate = employee?.joiningDate;
         const leavingDate = data.leavingDate || (data as any).resignationDetails?.lwd;
 
