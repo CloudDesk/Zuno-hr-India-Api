@@ -98,37 +98,46 @@ export async function generateFNFLetter(settlement: IFinalSettlement, employee: 
         // Header / Employee Details
         empNo: settlement.employeeCode,
         empName: settlement.employeeName,
-        empDept: (employee as any).departmentId?.name || (employee as any).department || 'N/A',
-        empDesig: (employee as any).designation || (employee as any).role || 'N/A',
+        empDept: (employee as any).department || (employee as any).departmentId?.name || '',
+        empDesig: (employee as any).designation || (employee as any).designationId?.name || (employee as any).role || '',
         empLocation: (employee as any).location || 'Chennai',
         joiningDate: formatDate((employee as any).joiningDate),
         resignDate: formatDate(settlement.resignationSubmittedOn),
         leavingDate: formatDate(settlement.leavingDate),
 
-        noticePeriod: settlement.noticePeriodDays > 0 ? settlement.noticePeriodDays : null,
-        noticeAdjustable: settlement.excessInNotice < 0 ? Math.abs(settlement.excessInNotice) : null, // Shortfall
+        // ✅ FIX: Show 0 instead of null for numeric fields
+        noticePeriod: settlement.noticePeriodDays || 0,
+        noticeAdjustable: settlement.excessInNotice < 0 ? Math.abs(settlement.excessInNotice) : 0,
 
-        // Days Calculation
-        plDays: (settlement.leaveBalance?.reduce((sum: number, l: any) => sum + (l.encashDays || 0), 0) || 0) > 0
-            ? settlement.leaveBalance?.reduce((sum: number, l: any) => sum + (l.encashDays || 0), 0)
-            : null,
-        salaryDays: settlement.unpaidMonths.reduce((sum: number, m: any) => sum + m.daysWorked, 0),
-        monthDays: settlement.unpaidMonths.reduce((sum: number, m: any) => sum + (m.totalDays || 0), 0) || 30,
-        lopDays: settlement.unpaidMonths.reduce((sum: number, m: any) => sum + m.lopDays, 0) > 0
-            ? settlement.unpaidMonths.reduce((sum: number, m: any) => sum + m.lopDays, 0)
-            : null,
-        effectiveWorkdays: settlement.totalDaysWorked,
+        // Days Calculation - SUM holdPayrolls AND unpaidMonths
+        plDays: settlement.leaveBalance?.reduce((sum: number, l: any) => sum + (l.encashDays || 0), 0) || 0,
+        salaryDays: (settlement.unpaidMonths.reduce((sum: number, m: any) => sum + (m.daysWorked || 0), 0)) +
+            (settlement.holdPayrolls?.reduce((sum: number, h: any) => sum + (h.daysWorked || 0), 0) || 0),
+        monthDays: (settlement.unpaidMonths.reduce((sum: number, m: any) => sum + (m.totalDays || 0), 0)) +
+            (settlement.holdPayrolls?.reduce((sum: number, h: any) => sum + (h.totalDays || 0), 0) || 30),
+        lopDays: (settlement.unpaidMonths.reduce((sum: number, m: any) => sum + (m.lopDays || 0), 0)) +
+            (settlement.holdPayrolls?.reduce((sum: number, h: any) => sum + (h.lopDays || 0), 0) || 0),
 
-        // ✅ INCOME / EARNINGS (Payslip Style)
+        // ✅ Effective workdays = SUM of daysWorked from BOTH unpaidMonths AND holdPayrolls
+        effectiveWorkdays: (settlement.unpaidMonths.reduce((sum: number, m: any) => sum + (m.daysWorked || 0), 0)) +
+            (settlement.holdPayrolls?.reduce((sum: number, h: any) => sum + (h.daysWorked || 0), 0) || 0),
+
+        // ✅ INCOME / EARNINGS (Payslip Style - Only add properties if value > 0)
         income: (() => {
             const iObj: any = {
-                // ✅ MOVED INSIDE INCOME SCOPE (User Request: Support {#income}{#unpaidBasic}...{/income})
-                unpaidBasic: unpaidBasic > 0 ? formatCurrency(unpaidBasic, 'IN') : null,
-                unpaidHRA: unpaidHRA > 0 ? formatCurrency(unpaidHRA, 'IN') : null,
-                unpaidOtherAllowance: unpaidOtherAllowances > 0 ? formatCurrency(unpaidOtherAllowances, 'IN') : null,
                 total: formatCurrency(settlement.finalCalculation.totalPayable, 'IN')
             };
 
+            // Only add properties if value > 0 (prevents empty rows in template)
+            if (unpaidBasic > 0) {
+                iObj.unpaidBasic = formatCurrency(unpaidBasic, 'IN');
+            }
+            if (unpaidHRA > 0) {
+                iObj.unpaidHRA = formatCurrency(unpaidHRA, 'IN');
+            }
+            if (unpaidOtherAllowances > 0) {
+                iObj.unpaidOtherAllowance = formatCurrency(unpaidOtherAllowances, 'IN');
+            }
             if (settlement.finalCalculation.holdSalaries > 0) {
                 iObj.holdSalary = formatCurrency(settlement.finalCalculation.holdSalaries, 'IN');
             }
@@ -145,28 +154,11 @@ export async function generateFNFLetter(settlement: IFinalSettlement, employee: 
             return iObj;
         })(),
 
-        // Keeping flat variables for backward compatibility and matching your screenshot
-        // Keeping flat variables for backward compatibility and matching your screenshot
-        // ✅ USER REQUEST: Hide value (return null) if 0
-        unpaidBasic: unpaidBasic > 0 ? formatCurrency(unpaidBasic, 'IN') : null,
-        unpaidHRA: unpaidHRA > 0 ? formatCurrency(unpaidHRA, 'IN') : null,
-        unpaidOtherAllowance: unpaidOtherAllowances > 0 ? formatCurrency(unpaidOtherAllowances, 'IN') : null,
-        holdSalary: settlement.finalCalculation.holdSalaries > 0 ? formatCurrency(settlement.finalCalculation.holdSalaries, 'IN') : null,
-        leaveEncashment: settlement.finalCalculation.leaveEncashment > 0 ? formatCurrency(settlement.finalCalculation.leaveEncashment, 'IN') : null,
-        reimbursements: settlement.finalCalculation.reimbursements > 0 ? formatCurrency(settlement.finalCalculation.reimbursements, 'IN') : null,
+        // Totals (always show)
         totalIncome: formatCurrency(settlement.finalCalculation.totalPayable, 'IN'),
-
-        // ✅ Flat Deduction Variables (Matches your screenshot exactly)
-        pf: (settlement.finalCalculation as any).providentFund > 0 ? formatCurrency((settlement.finalCalculation as any).providentFund, 'IN') : null,
-        pt: settlement.finalCalculation.professionalTax > 0 ? formatCurrency(settlement.finalCalculation.professionalTax, 'IN') : null,
-        it: (settlement.finalCalculation as any).incomeTax > 0 ? formatCurrency((settlement.finalCalculation as any).incomeTax, 'IN') : null,
-        incomeTax: (settlement.finalCalculation as any).incomeTax > 0 ? formatCurrency((settlement.finalCalculation as any).incomeTax, 'IN') : null,
-        noticeRecovery: settlement.finalCalculation.noticePeriodRecovery > 0 ? formatCurrency(settlement.finalCalculation.noticePeriodRecovery, 'IN') : null,
-        lopDeduction: totalLOPAmount > 0 ? formatCurrency(totalLOPAmount, 'IN') : null,
-        otherDeductions: settlement.finalCalculation.otherDeductions > 0 ? formatCurrency(settlement.finalCalculation.otherDeductions, 'IN') : null,
         totalDeductions: formatCurrency(settlement.finalCalculation.totalDeductions, 'IN'),
 
-        // ✅ DEDUCTIONS Object (Matches your screenshot exactly)
+        // ✅ DEDUCTIONS Object (Only add properties if value > 0)
         deduction: (() => {
             const dObj: any = {
                 total: formatCurrency(settlement.finalCalculation.totalDeductions, 'IN')
@@ -214,6 +206,31 @@ export async function generateFNFLetter(settlement: IFinalSettlement, employee: 
                 }))
         ].filter(i => i !== null),
     };
+
+    // 🔍 DEBUG: Console log template data
+    console.log("=== PDF TEMPLATE DATA ===");
+    console.log("Employee Info:", {
+        empNo: templateData.empNo,
+        empName: templateData.empName,
+        empDept: templateData.empDept,
+        empDesig: templateData.empDesig,
+        empLocation: templateData.empLocation,
+        joiningDate: templateData.joiningDate,
+        resignDate: templateData.resignDate,
+        leavingDate: templateData.leavingDate
+    });
+    console.log("Notice Period:", {
+        noticePeriod: templateData.noticePeriod,
+        noticeAdjustable: templateData.noticeAdjustable
+    });
+    console.log("Days Calculation:", {
+        plDays: templateData.plDays,
+        salaryDays: templateData.salaryDays,
+        monthDays: templateData.monthDays,
+        lopDays: templateData.lopDays,
+        effectiveWorkdays: templateData.effectiveWorkdays
+    });
+    console.log("========================");
 
     try {
         console.log("=== START FNF PDF GENERATION ===");

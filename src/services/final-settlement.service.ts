@@ -432,10 +432,26 @@ export async function initializeFinalSettlement(
             return reply.code(404).send({ success: false, error: 'Employee not found' });
         }
 
-        // Get salary assignment with structure
+        // ✅ VALIDATION: Check salary assignment exists and is active
         const salaryAssignment: any = await SalaryAssignment.findOne({
             employeeId: new Types.ObjectId(employeeId)
         }).sort({ effectiveFrom: -1 }).populate('salaryStructureId');
+
+        // Block if no salary assignment found
+        if (!salaryAssignment) {
+            return reply.code(400).send({
+                success: false,
+                error: 'No salary assignment found for this employee. Please assign a salary structure before processing final settlement.'
+            });
+        }
+
+        // Block if salary assignment is not active (using isActive field)
+        if (!salaryAssignment.isActive) {
+            return reply.code(400).send({
+                success: false,
+                error: `Salary assignment is not active. Please activate the salary assignment before processing final settlement.`
+            });
+        }
 
         const monthlyGross = salaryAssignment?.monthlyGross || 0;
 
@@ -524,6 +540,19 @@ export async function initializeFinalSettlement(
         } else {
             encashPerDay = monthlyGross / 30;
         }
+
+        // 🔍 DEBUG: Log leave encashment calculation
+        console.log("=== INITIALIZE - LEAVE ENCASHMENT CALCULATION ===");
+        console.log("Monthly Gross:", monthlyGross);
+        console.log("Basic %:", structure?.fixedEarnings?.basicPercentage ?? 0);
+        console.log("DA %:", Number(structure?.fixedEarnings?.daPercentage) || 0);
+        console.log("Calculated Basic:", monthlyGross * ((structure?.fixedEarnings?.basicPercentage ?? 0) / 100));
+        console.log("Calculated DA:", structure?.fixedEarnings?.daPercentage ? (monthlyGross * ((structure?.fixedEarnings?.basicPercentage ?? 0) / 100)) * ((Number(structure?.fixedEarnings?.daPercentage) || 0) / 100) : 0);
+        console.log("Per Day Rate:", encashPerDay);
+        console.log("Rounded Per Day Rate:", Math.round(encashPerDay));
+        console.log("Leave Balance:", alBalance);
+        console.log("Encash Amount:", Math.round(alBalance * encashPerDay));
+        console.log("=================================================");
 
         const leaveBalance = [
             {
@@ -673,13 +702,12 @@ function packSettlement(settlement: any, data: any) {
         }
     });
 
-    // 2. Map Flat Notice Fields to Nested Object
-    if (!settlement.noticePay) settlement.noticePay = {};
-    if (data.noticeRequired !== undefined) settlement.noticePay.noticeRequired = data.noticeRequired;
-    if (data.noticePeriodDays !== undefined) settlement.noticePay.noticePeriodDays = data.noticePeriodDays;
-    if (data.daysServed !== undefined) settlement.noticePay.daysServed = data.daysServed;
-    if (data.excessInNotice !== undefined) settlement.noticePay.excessInNotice = data.excessInNotice;
-    if (data.noticePeriodRecovery !== undefined) settlement.noticePay.noticePeriodRecovery = data.noticePeriodRecovery;
+    // 2. Map Flat Notice Fields (Direct to Root Level - Schema uses flat fields, not nested)
+    if (data.noticeRequired !== undefined) settlement.noticeRequired = data.noticeRequired;
+    if (data.noticePeriodDays !== undefined) settlement.noticePeriodDays = data.noticePeriodDays;
+    if (data.daysServed !== undefined) settlement.daysServed = data.daysServed;
+    if (data.excessInNotice !== undefined) settlement.excessInNotice = data.excessInNotice;
+    if (data.noticePeriodRecovery !== undefined) settlement.noticePeriodRecovery = data.noticePeriodRecovery;
 
     // 3. Map Summary Fields to finalCalculation Object
     if (!settlement.finalCalculation) settlement.finalCalculation = {};
@@ -880,6 +908,15 @@ export async function saveFinalSettlement(
             } else {
                 safePerDayRate = monthlyGross / 30;
             }
+
+            // 🔍 DEBUG: Log leave encashment recalculation
+            console.log("=== SAVE - LEAVE ENCASHMENT RECALCULATION ===");
+            console.log("Monthly Gross:", monthlyGross);
+            console.log("Basic %:", basicPerc);
+            console.log("DA %:", daPerc);
+            console.log("Safe Per Day Rate:", safePerDayRate);
+            console.log("Rounded Per Day Rate:", Math.round(safePerDayRate));
+            console.log("==============================================");
 
             for (const l of data.leaveBalance) {
                 // Force backend rate
@@ -1257,10 +1294,16 @@ export async function confirmFinalSettlement(
                 }
             }
 
-            // 2.5 Update user status
+            // 2.5 Update user status and mark as inactive
+            // When final settlement is confirmed, employee should be marked as inactive
             await User.updateOne(
                 { _id: new Types.ObjectId(employeeId) },
-                { $set: { finalSettlementDone: true } },
+                {
+                    $set: {
+                        finalSettlementDone: true,
+                        active: false  // ✅ Mark employee as inactive on settlement confirmation
+                    }
+                },
                 { session }
             );
 
