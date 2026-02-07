@@ -928,9 +928,9 @@ export async function saveFinalSettlement(
 
         // Aggregate Totals
         const holdSalaries = holdPayrolls.reduce((sum: number, p: any) => sum + (p.netSalary || 0), 0) || 0;
-        const totalReimbursements = data.reimbursements?.reduce((sum: number, r: any) => sum + (r.amount || 0), 0) || 0;
-        const totalAdditions = data.otherAdditions?.reduce((sum: number, a: any) => sum + (a.amount || 0), 0) || 0;
-        const totalDeductions = data.otherDeductions?.reduce((sum: number, d: any) => sum + (d.amount || 0), 0) || 0;
+        const totalReimbursements = data.reimbursements?.reduce((sum: number, r: any) => sum + (Number(r.amount) || 0), 0) || 0;
+        const totalAdditions = data.otherAdditions?.reduce((sum: number, a: any) => sum + (Number(a.amount) || 0), 0) || 0;
+        const totalDeductions = data.otherDeductions?.reduce((sum: number, d: any) => sum + (Number(d.amount) || 0), 0) || 0;
 
         const pt = unpaidMonths.reduce((sum: number, m: any) => sum + (m.professionalTax || 0), 0) || 0;
         const pf = unpaidMonths.reduce((sum: number, m: any) => sum + (m.providentFund || 0), 0) || 0;
@@ -953,6 +953,9 @@ export async function saveFinalSettlement(
             totalHoldAmount: holdSalaries,
             totalUnpaidSalary: totalUnpaid,
             totalLeaveEncashment: totalLeaveAmt,
+            totalReimbursements: totalReimbursements,
+            totalOtherAdditions: totalAdditions, // Maps to data.totalOtherAdditions in packSettlement
+            totalOtherDeductions: totalDeductions,
             professionalTax: pt,
             providentFund: pf,
             esi: esi,
