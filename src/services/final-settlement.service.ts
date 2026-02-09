@@ -42,6 +42,7 @@ async function calculateUnpaidGaps(
     let totalProvidentFund = 0;
     let totalIncomeTax = 0;
     let totalESI = 0;
+    let totalLOPAmount = 0; // Track total LOP
 
     // Find last PAID payroll (status = Completed)
     const lastPaidPayroll = await Payroll.findOne({
@@ -320,6 +321,7 @@ async function calculateUnpaidGaps(
             totalProvidentFund += pfAmount;
             totalIncomeTax += itAmount;
             totalESI += esiAmount;
+            totalLOPAmount += Math.round(lopAmount);
         }
 
         incrementMonth();
@@ -332,7 +334,8 @@ async function calculateUnpaidGaps(
         totalProfessionalTax,
         totalProvidentFund,
         totalIncomeTax,
-        totalESI
+        totalESI,
+        totalLOPAmount // Return for Final Calc
     };
 }
 
@@ -640,10 +643,11 @@ export async function initializeFinalSettlement(
                 incomeTax: Math.round(totalIncomeTax),
                 providentFund: Math.round(totalProvidentFund),
                 esi: Math.round(totalESI),
+                lopAmount: Math.round(unpaidCalculation.totalLOPAmount || 0), // ✅ Added LOP amount
                 otherDeductions: 0,
-                totalDeductions: Math.round(noticePeriodRecovery + totalProfessionalTax + totalIncomeTax + totalProvidentFund + totalESI),
-                netAmount: Math.round((totalHoldAmount + totalUnpaidSalary + leaveBalance[0].encashAmount + gratuityAmount) - (noticePeriodRecovery + totalProfessionalTax + totalIncomeTax + totalProvidentFund + totalESI)),
-                isNegative: ((totalHoldAmount + totalUnpaidSalary + leaveBalance[0].encashAmount + gratuityAmount) - (noticePeriodRecovery + totalProfessionalTax + totalIncomeTax + totalProvidentFund + totalESI)) < 0
+                totalDeductions: Math.round(noticePeriodRecovery + totalProfessionalTax + totalIncomeTax + totalProvidentFund + totalESI + (unpaidCalculation.totalLOPAmount || 0)),
+                netAmount: Math.round((totalHoldAmount + totalUnpaidSalary + leaveBalance[0].encashAmount + gratuityAmount) - (noticePeriodRecovery + totalProfessionalTax + totalIncomeTax + totalProvidentFund + totalESI + (unpaidCalculation.totalLOPAmount || 0))),
+                isNegative: ((totalHoldAmount + totalUnpaidSalary + leaveBalance[0].encashAmount + gratuityAmount) - (noticePeriodRecovery + totalProfessionalTax + totalIncomeTax + totalProvidentFund + totalESI + (unpaidCalculation.totalLOPAmount || 0))) < 0
             }
         };
 
@@ -660,6 +664,7 @@ export async function initializeFinalSettlement(
             professionalTax: initialData.finalCalculation.professionalTax,
             incomeTax: initialData.finalCalculation.incomeTax,
             gratuity: initialData.finalCalculation.gratuity,
+            lopAmount: initialData.finalCalculation.lopAmount, // ✅ Added for easy access
             ...initialData
         };
 
@@ -693,7 +698,9 @@ function packSettlement(settlement: any, data: any) {
         'reimbursements', 'totalReimbursements',
         'otherDeductions', 'totalOtherDeductions',
         'otherAdditions', 'totalOtherAdditions',
-        'status', 'mode', 'pdfUrl'
+        'status', 'mode', 'pdfUrl',
+        // ✅ Add missing notice fields
+        'noticeRequired', 'daysServed', 'noticePeriodRecovery', 'excessInNotice', 'noticePeriodDays'
     ];
 
     rootFields.forEach(field => {
@@ -738,6 +745,7 @@ function packSettlement(settlement: any, data: any) {
     if (data.providentFund !== undefined) calc.providentFund = Math.round(data.providentFund);
     if (data.esi !== undefined) calc.esi = Math.round(data.esi);
     if (data.incomeTax !== undefined) calc.incomeTax = Math.round(data.incomeTax);
+    if (data.lopAmount !== undefined) calc.lopAmount = Math.round(data.lopAmount);
 
     const dAmt = data.totalOtherDeductions !== undefined ? data.totalOtherDeductions : data.otherDeductions;
     if (dAmt !== undefined) calc.otherDeductions = Math.round(dAmt);
@@ -852,8 +860,8 @@ export async function saveFinalSettlement(
         for (const m of unpaidMonths) {
             const daysInMonth = m.totalDays || 30;
             const payableDays = m.daysWorked || 0;
+
             if (daysInMonth > 0) {
-                // components (Full sync with Calculate route)
                 const bP = (structure.fixedEarnings?.basicPercentage ?? 0) / 100;
                 const dP = (structure.fixedEarnings?.daPercentage ?? 0) / 100;
                 const hP = (structure.fixedEarnings?.hraPercentage ?? 0) / 100;
@@ -936,6 +944,7 @@ export async function saveFinalSettlement(
         const pf = unpaidMonths.reduce((sum: number, m: any) => sum + (m.providentFund || 0), 0) || 0;
         const esi = unpaidMonths.reduce((sum: number, m: any) => sum + (m.esi || 0), 0) || 0;
         const it = unpaidMonths.reduce((sum: number, m: any) => sum + (m.incomeTax || 0), 0) || 0;
+        const totalLOPAmount = unpaidMonths.reduce((sum: number, m: any) => sum + (m.lopAmount || 0), 0) || 0; // ✅ Sum LOP
 
         // Notice Recovery
         let noticeRecovery = data.noticePay?.noticePeriodRecovery ?? data.noticePeriodRecovery;
@@ -944,10 +953,26 @@ export async function saveFinalSettlement(
         }
 
         const totalPayable = Math.round(holdSalaries + totalUnpaid + totalLeaveAmt + totalReimbursements + totalAdditions + gratuity);
-        const allDeductions = Math.round((noticeRecovery || 0) + totalDeductions + pt + pf + esi + it);
+        // ✅ Include LOP Amount in Total Deductions
+        const allDeductions = Math.round((noticeRecovery || 0) + totalDeductions + pt + pf + esi + it + totalLOPAmount);
         const netAmount = totalPayable - allDeductions;
 
+
+        // ✅ FIX: Explicitly save Notice Period Metadata in Save Draft
+        if (data.daysServed !== undefined) settlement.daysServed = data.daysServed;
+        if (data.noticeRequired !== undefined) settlement.noticeRequired = data.noticeRequired;
+        if (data.noticePeriodDays !== undefined) settlement.noticePeriodDays = data.noticePeriodDays;
+        if (data.excessInNotice !== undefined) settlement.excessInNotice = data.excessInNotice;
+
+        // Ensure notice recovery matches calculation or override
+        if (data.finalCalculation?.noticePeriodRecovery !== undefined) {
+            settlement.noticePeriodRecovery = data.finalCalculation.noticePeriodRecovery;
+        } else if (data.noticePeriodRecovery !== undefined) {
+            settlement.noticePeriodRecovery = data.noticePeriodRecovery;
+        }
+
         // 3. Pack recalculated and original data into Mongoose structure
+        // packSettlement helper now includes these fields in whitelist
         const enrichedData = {
             ...data,
             totalHoldAmount: holdSalaries,
@@ -961,6 +986,7 @@ export async function saveFinalSettlement(
             esi: esi,
             incomeTax: it,
             gratuity: gratuity,
+            lopAmount: totalLOPAmount, // ✅ Added LOP amount
             noticePeriodRecovery: noticeRecovery,
             totalPayable,
             totalDeductions: allDeductions,
@@ -988,6 +1014,7 @@ export async function saveFinalSettlement(
             professionalTax: pt,
             incomeTax: it,
             gratuity: gratuity,
+            lopAmount: totalLOPAmount, // ✅ Added for consistency
 
             // Full document
             data: settlement
@@ -1165,7 +1192,23 @@ export async function confirmFinalSettlement(
         // but we verify status again inside the transaction.
         let pdfUrl = '';
         try {
-            pdfUrl = await generateFNFLetter(draft, employee);
+            // ✅ FIX: Merge body data into draft for PDF generation (so PDF has latest values)
+            const pdfData = {
+                ...draft.toObject(),
+                ...(bodyData.daysServed !== undefined && { daysServed: bodyData.daysServed }),
+                ...(bodyData.noticeRequired !== undefined && { noticeRequired: bodyData.noticeRequired }),
+                ...(bodyData.noticePeriodDays !== undefined && { noticePeriodDays: bodyData.noticePeriodDays }),
+                ...(bodyData.excessInNotice !== undefined && { excessInNotice: bodyData.excessInNotice }),
+                ...(bodyData.noticePeriodRecovery !== undefined && { noticePeriodRecovery: bodyData.noticePeriodRecovery }),
+                // ✅ FIX: Also merge complex arrays if provided, as PDF helper recalculates summaries from them
+                ...(bodyData.unpaidMonths && { unpaidMonths: bodyData.unpaidMonths }),
+                ...(bodyData.holdPayrolls && { holdPayrolls: bodyData.holdPayrolls }),
+                ...(bodyData.leaveBalance && { leaveBalance: bodyData.leaveBalance }),
+                // Ensure finalCalculation is updated if provided
+                ...(bodyData.finalCalculation && { finalCalculation: { ...draft.finalCalculation, ...bodyData.finalCalculation } })
+            };
+
+            pdfUrl = await generateFNFLetter(pdfData, employee);
             if (!pdfUrl || !pdfUrl.startsWith('http')) throw new Error('Invalid PDF URL generated');
         } catch (pdfErr: any) {
             request.log.error(pdfErr, 'FNF PDF generation failed');
@@ -1242,6 +1285,21 @@ export async function confirmFinalSettlement(
                 });
 
                 bodyData.totalLeaveEncashment = bodyData.leaveBalance.reduce((sum: number, l: any) => sum + l.encashAmount, 0);
+            }
+
+
+            // ✅ FIX: Explicitly save Notice Period Metadata
+            // packSettlement might miss these root fields if they are not structured exactly right in bodyData
+            if (bodyData.daysServed !== undefined) settlement.daysServed = bodyData.daysServed;
+            if (bodyData.noticeRequired !== undefined) settlement.noticeRequired = bodyData.noticeRequired;
+            if (bodyData.noticePeriodDays !== undefined) settlement.noticePeriodDays = bodyData.noticePeriodDays;
+            if (bodyData.excessInNotice !== undefined) settlement.excessInNotice = bodyData.excessInNotice;
+
+            // Ensure notice recovery matches calculation
+            if (bodyData.finalCalculation?.noticePeriodRecovery !== undefined) {
+                settlement.noticePeriodRecovery = bodyData.finalCalculation.noticePeriodRecovery;
+            } else if (bodyData.noticePeriodRecovery !== undefined) {
+                settlement.noticePeriodRecovery = bodyData.noticePeriodRecovery;
             }
 
             // Use packSettlement helper for consistent structure mapping
@@ -1459,8 +1517,10 @@ export async function calculateFinalSettlement(
             employeeId: employeeIdObj
         });
 
+
         // Payable components (using filtered data)
         const totalHoldAmount = holdPayrollsDb.reduce((sum: number, p: any) => sum + (p.netSalary || 0), 0) || 0;
+
 
         // RECICULATION LOGIC: Recalculate unpaid salaries locally to ensure Zero-Logic from frontend
         let totalUnpaidSalary = 0;
@@ -1473,8 +1533,10 @@ export async function calculateFinalSettlement(
         const monthlyGross = salaryAssignment?.monthlyGross || 0;
         const structure = salaryAssignment?.salaryStructureId || {};
 
+
         // Fetch User needed for Country check inside loop
         const employee = await User.findById(data.employeeId);
+
 
         // Helper: PT Calculation (Cloned for recalculation logic)
         const calculatePT = (grossSalary: number, monthNumber: number) => {
@@ -1568,6 +1630,11 @@ export async function calculateFinalSettlement(
             }
         }
 
+
+
+
+
+
         // RECALCULATION LOGIC: Recalculate leave encashment amounts based on SAFE perDayRate
         let totalLeaveEncashment = 0;
         if (data.leaveBalance) {
@@ -1618,6 +1685,7 @@ export async function calculateFinalSettlement(
         const providentFund = filteredUnpaidMonths.reduce((sum: number, m: any) => sum + (m.providentFund || 0), 0) || 0;
         const esi = filteredUnpaidMonths.reduce((sum: number, m: any) => sum + (m.esi || 0), 0) || 0;
         const incomeTax = filteredUnpaidMonths.reduce((sum: number, m: any) => sum + (m.incomeTax || 0), 0) || 0;
+        const totalLOPAmount = filteredUnpaidMonths.reduce((sum: number, m: any) => sum + (m.lopAmount || 0), 0) || 0; // ✅ Sum LOP
 
         // Fetch User to check Joining Date for Gratuity
         // const employee = await User.findById(data.employeeId); // Already fetched above
@@ -1640,7 +1708,8 @@ export async function calculateFinalSettlement(
         }
 
         const totalPayable = totalHoldAmount + totalUnpaidSalary + totalLeaveEncashment + totalReimbursements + totalOtherAdditions + gratuity;
-        const totalDeductions = noticeRecovery + totalOtherDeductions + professionalTax + providentFund + esi + incomeTax;
+        // ✅ Include LOP Amount in Total Deductions
+        const totalDeductions = noticeRecovery + totalOtherDeductions + professionalTax + providentFund + esi + incomeTax + totalLOPAmount;
         const netAmount = totalPayable - totalDeductions;
 
         const calculation = {
@@ -1656,13 +1725,12 @@ export async function calculateFinalSettlement(
             incomeTax: Math.round(incomeTax),
             providentFund: Math.round(providentFund),
             esi: Math.round(esi),
+            lopAmount: Math.round(totalLOPAmount), // ✅ Added for consistency with other statutory deductions
             otherDeductions: Math.round(totalOtherDeductions),
             totalDeductions: Math.round(totalDeductions),
             netAmount: Math.round(netAmount),
             isNegative: netAmount < 0
         };
-
-        // ✅ FIX #2: Return flattened structure (root-level summary fields)
         return reply.send({
             success: true,
 
@@ -1678,6 +1746,7 @@ export async function calculateFinalSettlement(
             professionalTax: calculation.professionalTax,
             incomeTax: calculation.incomeTax,
             gratuity: calculation.gratuity,
+            lopAmount: calculation.lopAmount, // ✅ Added for consistency
 
             // Nested details (for tables)
             workDays: {

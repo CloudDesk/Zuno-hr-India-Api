@@ -282,6 +282,7 @@ const finalSettlementSchema = new Schema<IFinalSettlement>(
             incomeTax: { type: Number, default: 0 }, // ✅ Added TDS
             providentFund: { type: Number, default: 0 }, // ✅ Added
             esi: { type: Number, default: 0 },            // ✅ Added
+            lopAmount: { type: Number, default: 0 },      // ✅ Added for consistency
             otherDeductions: { type: Number, default: 0 },
             totalDeductions: { type: Number, default: 0 },
 

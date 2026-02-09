@@ -1,5 +1,3 @@
-import { IFinalSettlement } from '../models/final-settlement.model';
-
 import { uploadFileToGCP } from '../utilis/gcpStorage';
 import fs from 'fs';
 import { promises as fsPromises } from 'fs';
@@ -34,7 +32,7 @@ async function convertDocxToPDF(docxPath: string, pdfPath: string): Promise<void
 /**
  * Generate FNF Letter PDF
  */
-export async function generateFNFLetter(settlement: IFinalSettlement, employee: any): Promise<string> {
+export async function generateFNFLetter(settlement: any, employee: any): Promise<string> {
     const fnfDir = path.join(process.cwd(), 'uploads');
 
     if (!fs.existsSync("uploads")) {
@@ -158,7 +156,7 @@ export async function generateFNFLetter(settlement: IFinalSettlement, employee: 
         totalIncome: formatCurrency(settlement.finalCalculation.totalPayable, 'IN'),
         totalDeductions: formatCurrency(settlement.finalCalculation.totalDeductions, 'IN'),
 
-        // ✅ DEDUCTIONS Object (Only add properties if value > 0)
+        // ✅ DEDUCTIONS Object (Only add properties if value > 0) - matches template placeholders
         deduction: (() => {
             const dObj: any = {
                 total: formatCurrency(settlement.finalCalculation.totalDeductions, 'IN')
@@ -167,8 +165,8 @@ export async function generateFNFLetter(settlement: IFinalSettlement, employee: 
             if ((settlement.finalCalculation as any).providentFund > 0) dObj.pf = formatCurrency((settlement.finalCalculation as any).providentFund, 'IN');
             if (settlement.finalCalculation.professionalTax > 0) dObj.pt = formatCurrency(settlement.finalCalculation.professionalTax, 'IN');
             if ((settlement.finalCalculation as any).incomeTax > 0) dObj.it = formatCurrency((settlement.finalCalculation as any).incomeTax, 'IN');
+            if (totalLOPAmount > 0) dObj.lopDeduction = formatCurrency(totalLOPAmount, 'IN'); // ✅ Matches template {#lopDeduction}
             if (settlement.finalCalculation.noticePeriodRecovery > 0) dObj.noticeRecovery = formatCurrency(settlement.finalCalculation.noticePeriodRecovery, 'IN');
-            if (totalLOPAmount > 0) dObj.lopDeduction = formatCurrency(totalLOPAmount, 'IN');
             if (settlement.finalCalculation.otherDeductions > 0) dObj.otherDeduction = formatCurrency(settlement.finalCalculation.otherDeductions, 'IN');
 
             return dObj;
@@ -178,33 +176,103 @@ export async function generateFNFLetter(settlement: IFinalSettlement, employee: 
         netPay: formatCurrency(netAmount, 'IN'),
         netPayWords: `${currencyWord} ${netPayWords} Only`,
 
-        // Earnings list breakdown
-        earningsList: [
-            unpaidBasic > 0 ? { label: 'BASIC', amount: formatCurrency(unpaidBasic, 'IN') } : null,
-            unpaidHRA > 0 ? { label: 'HRA', amount: formatCurrency(unpaidHRA, 'IN') } : null,
-            settlement.finalCalculation.holdSalaries > 0 ? { label: 'HOLD SALARY', amount: formatCurrency(settlement.finalCalculation.holdSalaries, 'IN') } : null,
-            unpaidConveyance > 0 ? { label: 'CONVEYANCE', amount: formatCurrency(unpaidConveyance, 'IN') } : null,
-            unpaidOtherAllowances > 0 ? { label: 'OTHER ALLOWANCE', amount: formatCurrency(unpaidOtherAllowances, 'IN') } : null,
-            settlement.finalCalculation.leaveEncashment > 0 ? { label: 'Leave Encashment', amount: formatCurrency(settlement.finalCalculation.leaveEncashment, 'IN') } : null,
-            settlement.finalCalculation.reimbursements !== 0 ? { label: 'Reimbursements', amount: formatCurrency(settlement.finalCalculation.reimbursements, 'IN') } : null,
-            settlement.finalCalculation.otherAdditions > 0 ? { label: 'Other Additions', amount: formatCurrency(settlement.finalCalculation.otherAdditions, 'IN') } : null,
-            (settlement.finalCalculation as any).gratuity > 0 ? { label: 'Gratuity', amount: formatCurrency((settlement.finalCalculation as any).gratuity, 'IN') } : null,
-        ].filter(i => i !== null),
+        // Earnings list breakdown (only non-zero items) - matches payslip format
+        earningsList: (() => {
+            const earningsArray: any[] = [];
 
-        deductionsList: [
-            (settlement.finalCalculation as any).providentFund > 0 ? { label: 'PF', amount: formatCurrency((settlement.finalCalculation as any).providentFund, 'IN') } : null,
-            settlement.finalCalculation.professionalTax > 0 ? { label: 'PROF TAX', amount: formatCurrency(settlement.finalCalculation.professionalTax, 'IN') } : null,
-            (settlement.finalCalculation as any).incomeTax > 0 ? { label: 'INCOME TAX (TDS)', amount: formatCurrency((settlement.finalCalculation as any).incomeTax, 'IN') } : null,
-            (settlement.finalCalculation as any).esi > 0 ? { label: 'ESI', amount: formatCurrency((settlement.finalCalculation as any).esi, 'IN') } : null,
-            settlement.finalCalculation.noticePeriodRecovery > 0 ? { label: 'NOTICE PERIOD RECOVERY', amount: formatCurrency(settlement.finalCalculation.noticePeriodRecovery, 'IN') } : null,
-            totalLOPAmount > 0 ? { label: 'LOP DEDUCTION', amount: formatCurrency(totalLOPAmount, 'IN') } : null,
-            ...(settlement.otherDeductions || [])
-                .filter((d: any) => (d.amount || 0) > 0)
-                .map((d: any) => ({
-                    label: d.description.toUpperCase(),
-                    amount: formatCurrency(d.amount, 'IN')
-                }))
-        ].filter(i => i !== null),
+            if (unpaidBasic > 0) {
+                earningsArray.push({ label: 'BASIC', amount: formatCurrency(unpaidBasic, 'IN') });
+            }
+            if (unpaidHRA > 0) {
+                earningsArray.push({ label: 'HRA', amount: formatCurrency(unpaidHRA, 'IN') });
+            }
+            if (settlement.finalCalculation.holdSalaries > 0) {
+                earningsArray.push({ label: 'HOLD SALARY', amount: formatCurrency(settlement.finalCalculation.holdSalaries, 'IN') });
+            }
+            if (unpaidConveyance > 0) {
+                earningsArray.push({ label: 'CONVEYANCE', amount: formatCurrency(unpaidConveyance, 'IN') });
+            }
+            if (unpaidOtherAllowances > 0) {
+                earningsArray.push({ label: 'OTHER ALLOWANCE', amount: formatCurrency(unpaidOtherAllowances, 'IN') });
+            }
+            if (settlement.finalCalculation.leaveEncashment > 0) {
+                earningsArray.push({ label: 'Leave Encashment', amount: formatCurrency(settlement.finalCalculation.leaveEncashment, 'IN') });
+            }
+            if (settlement.finalCalculation.reimbursements !== 0) {
+                earningsArray.push({ label: 'Reimbursements', amount: formatCurrency(settlement.finalCalculation.reimbursements, 'IN') });
+            }
+            if (settlement.finalCalculation.otherAdditions > 0) {
+                earningsArray.push({ label: 'Other Additions', amount: formatCurrency(settlement.finalCalculation.otherAdditions, 'IN') });
+            }
+            if ((settlement.finalCalculation as any).gratuity > 0) {
+                earningsArray.push({ label: 'Gratuity', amount: formatCurrency((settlement.finalCalculation as any).gratuity, 'IN') });
+            }
+
+            return earningsArray;
+        })(),
+
+        // Deductions array for template looping (only non-zero items) - matches payslip format
+        deductionsList: (() => {
+            const deductionsArray: any[] = [];
+
+            const pfVal = Number((settlement.finalCalculation as any).providentFund ?? 0);
+            const ptVal = Number(settlement.finalCalculation.professionalTax ?? 0);
+            const itVal = Number((settlement.finalCalculation as any).incomeTax ?? 0);
+            const esiVal = Number((settlement.finalCalculation as any).esi ?? 0);
+            const noticeVal = Number(settlement.finalCalculation.noticePeriodRecovery ?? 0);
+            const lopVal = Number(totalLOPAmount ?? 0);
+
+            if (pfVal > 0) {
+                deductionsArray.push({
+                    label: 'PF',
+                    amount: formatCurrency(pfVal, 'IN')
+                });
+            }
+            if (lopVal > 0) {
+                deductionsArray.push({
+                    label: 'LOP',
+                    amount: formatCurrency(lopVal, 'IN')
+                });
+            }
+            if (itVal > 0) {
+                deductionsArray.push({
+                    label: 'Income Tax',
+                    amount: formatCurrency(itVal, 'IN')
+                });
+            }
+            if (ptVal > 0) {
+                deductionsArray.push({
+                    label: 'Professional Tax',
+                    amount: formatCurrency(ptVal, 'IN')
+                });
+            }
+            if (esiVal > 0) {
+                deductionsArray.push({
+                    label: 'ESI',
+                    amount: formatCurrency(esiVal, 'IN')
+                });
+            }
+            if (noticeVal > 0) {
+                deductionsArray.push({
+                    label: 'Notice Period Recovery',
+                    amount: formatCurrency(noticeVal, 'IN')
+                });
+            }
+
+            // Add other deductions
+            if (settlement.otherDeductions && settlement.otherDeductions.length > 0) {
+                settlement.otherDeductions
+                    .filter((d: any) => (d.amount || 0) > 0)
+                    .forEach((d: any) => {
+                        deductionsArray.push({
+                            label: d.description.toUpperCase(),
+                            amount: formatCurrency(d.amount, 'IN')
+                        });
+                    });
+            }
+
+            return deductionsArray;
+        })(),
     };
 
     // 🔍 DEBUG: Console log template data
