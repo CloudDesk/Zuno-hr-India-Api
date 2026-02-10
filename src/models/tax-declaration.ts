@@ -18,7 +18,7 @@ interface ITaxBreakdown {
     taxWithCess: number; // Tax before Form12B TDS deduction
     form12bTDSAmount?: number; // TDS from Form12B
     finalTaxWithCess: number; // Final tax after rebate/relief, cess and Form 12B TDS
-    pfDeduction?: number; // Annual PF deduction
+    ptDeduction?: number; // Annual PF deduction
 
 }
 interface IDocument {
@@ -96,7 +96,7 @@ export interface ITaxDeclaration extends Document {
     totalVerifiedAmount: number;
     totalDeclinedAmount: number;        // Track declined amounts separately
     standardDeduction: number;
-    pfDeduction: number;                // Annual PF (Provident Fund) deduction
+    ptDeduction: number;                // Annual PF (Provident Fund) deduction
     initialTaxCalculated: boolean;      // Track if initial tax was calculated
 
     // Tax amounts
@@ -242,7 +242,7 @@ const TaxDeclarationSchema = new Schema<ITaxDeclaration>({
     totalVerifiedAmount: { type: Number, default: 0 },
     totalDeclinedAmount: { type: Number, default: 0 },
     standardDeduction: { type: Number, required: true },
-    pfDeduction: { type: Number, default: 0 },
+    ptDeduction: { type: Number, default: 0 },
     initialTaxCalculated: { type: Boolean, default: false },
 
     // Tax amounts
@@ -305,7 +305,7 @@ const TaxDeclarationSchema = new Schema<ITaxDeclaration>({
         taxWithCess: { type: Number, default: 0 }, // Tax before Form12B TDS deduction
         form12bTDSAmount: { type: Number, default: 0 }, // TDS amount from Form 12B, if applicable
         finalTaxWithCess: { type: Number, default: 0 }, // Final tax after rebate/relief , cess and Form 12B TDS
-        pfDeduction: { type: Number, default: 0 } // Annual PF deduction
+        ptDeduction: { type: Number, default: 0 } // Annual Professional Tax deduction
     },
     isDeclared: { type: Boolean, default: false },
     isPOISubmitted: { type: Boolean, default: false },

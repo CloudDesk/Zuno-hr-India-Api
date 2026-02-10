@@ -65,7 +65,7 @@ export interface ITaxBreakdown {
     taxWithCess: number; // Tax before Form12B TDS deduction
     form12bTDSAmount?: number;
     finalTaxWithCess: number;
-    pfDeduction?: number; // Annual PF deduction
+    ptDeduction?: number; // Annual Professional Tax deduction
 }
 export interface IForm12BInput {
     form12bId: string;
@@ -94,7 +94,7 @@ export interface ITaxDeclarationUpdate {
     totalDeclaredAmount: number;
     totalVerifiedAmount: number;
     standardDeduction: number;
-    pfDeduction: number;
+    ptDeduction: number;
     calculatedTaxAmount: number;
     revisedTaxAmount: number;
     taxPaid: number;
@@ -215,14 +215,14 @@ export class TaxDeclarationService extends BaseService {
     }
 
     /**
-     * Calculate annual PF (Provident Fund) deduction for the employee
-     * PF is calculated as 12% of Basic salary, capped at ₹1800 per installment
+     * Calculate annual PT (Professional Tax) deduction for the employee
+     * PT is calculated based on salary slabs from the salary structure
      * Payment frequency is based on professionalTax.term:
      * - "monthly" = 12 times per year
      * - "half_yearly" = 2 times per year
      * - "yearly" = 1 time per year
      */
-    private async calculateAnnualPFDeduction(employeeId: string, financialYear: string): Promise<number> {
+    private async calculateAnnualPTDeduction(employeeId: string, financialYear: string): Promise<number> {
         const [fyStartYear, fyEndYear] = financialYear.split('-').map(Number);
         const fyStartDate = new Date(`${fyStartYear}-04-01T00:00:00.000Z`);
         const fyEndDate = new Date(`${fyEndYear}-03-31T23:59:59.999Z`);
@@ -237,13 +237,13 @@ export class TaxDeclarationService extends BaseService {
             return 0;
         }
 
-        let totalAnnualPF = 0;
+        let totalAnnualPT = 0;
 
         for (const assignment of salaryAssignments) {
             const salaryStructure = assignment.salaryStructureId as any;
             
             if (!salaryStructure || salaryStructure.country !== 'IN') {
-                // PF is only applicable for Indian employees
+                // PT is only applicable for Indian employees
                 continue;
             }
 
@@ -252,38 +252,55 @@ export class TaxDeclarationService extends BaseService {
             const endDate = new Date(Math.min(assignment.effectiveTo.getTime(), fyEndDate.getTime()));
             const months = (endDate.getFullYear() - startDate.getFullYear()) * 12 + (endDate.getMonth() - startDate.getMonth()) + 1;
 
-            // Calculate monthly basic salary (basic is a percentage of gross)
+            // Get monthly gross salary
             const monthlyGross = Number(assignment.monthlyGross);
-            const basicPercentage = Number(salaryStructure.fixedEarnings?.basicPercentage || 0);
-            const monthlyBasic = (monthlyGross * basicPercentage) / 100;
 
-            // Calculate PF per installment: 12% of basic, capped at ₹1800
-            const pfPercentage = Number(salaryStructure.statutoryDeductions?.epf?.employeeContribution || 12);
-            const PF_INSTALLMENT_CAP = 1800; // Statutory limit per installment
-            const pfPerInstallment = Math.min((monthlyBasic * pfPercentage) / 100, PF_INSTALLMENT_CAP);
+            // Find the applicable PT slab based on monthly gross
+            const ptSlabs = salaryStructure.statutoryDeductions?.professionalTax?.slabs || [];
+            let ptPerInstallment = 0;
 
-            // Determine PF payment frequency based on professionalTax term
-            const term = salaryStructure.statutoryDeductions?.professionalTax?.term || 'monthly';
-            let pfFrequency = 12; // Default to monthly (12 times per year)
-            
-            if (term === 'half_yearly') {
-                pfFrequency = 2; // Paid 2 times per year
-            } else if (term === 'yearly') {
-                pfFrequency = 1; // Paid 1 time per year
-            } else if (term === 'monthly') {
-                pfFrequency = 12; // Paid 12 times per year
+            for (const slab of ptSlabs) {
+                const fromAmount = Number(slab.fromAmount);
+                const toAmount = slab.toAmount ? Number(slab.toAmount) : null;
+                const taxAmount = Number(slab.taxAmount || 0);
+
+                if (toAmount === null || toAmount === undefined) {
+                    // Highest slab (no upper limit)
+                    if (monthlyGross >= fromAmount) {
+                        ptPerInstallment = taxAmount;
+                        break;
+                    }
+                } else {
+                    // Check if monthly gross falls within this slab
+                    if (monthlyGross >= fromAmount && monthlyGross <= toAmount) {
+                        ptPerInstallment = taxAmount;
+                        break;
+                    }
+                }
             }
 
-            // Calculate PF for this assignment based on the frequency
+            // Determine PT payment frequency based on professionalTax term
+            const term = salaryStructure.statutoryDeductions?.professionalTax?.term || 'monthly';
+            let ptFrequency = 12; // Default to monthly (12 times per year)
+            
+            if (term === 'half_yearly') {
+                ptFrequency = 2; // Paid 2 times per year
+            } else if (term === 'yearly') {
+                ptFrequency = 1; // Paid 1 time per year
+            } else if (term === 'monthly') {
+                ptFrequency = 12; // Paid 12 times per year
+            }
+
+            // Calculate PT for this assignment based on the frequency
             // For partial year assignments, prorate the frequency
             const activePeriodRatio = months / 12;
-            const effectiveFrequency = Math.round(pfFrequency * activePeriodRatio);
-            const assignmentPF = pfPerInstallment * effectiveFrequency;
+            const effectiveFrequency = Math.round(ptFrequency * activePeriodRatio);
+            const assignmentPT = ptPerInstallment * effectiveFrequency;
 
-            totalAnnualPF += assignmentPF;
+            totalAnnualPT += assignmentPT;
         }
 
-        return Math.round(totalAnnualPF);
+        return Math.round(totalAnnualPT);
     }
 
     /** Returns deduction sections config (aligned with FE) for tax declaration forms. */
@@ -349,9 +366,11 @@ export class TaxDeclarationService extends BaseService {
         // const annualGross = (Number(salaryAssignment?.monthlyGross) ?? 0) * 12;
         console.log(annualGross, "3.1 annualGross");
 
-        // 3.2 Calculate annual PF deduction
-        const pfDeduction = await this.calculateAnnualPFDeduction(employeeId, financialYear);
-        console.log(pfDeduction, "3.2 pfDeduction");
+        // 3.2 Calculate annual PT (Professional Tax) deduction - ONLY for old regime
+        const ptDeduction = regime === 'old' 
+            ? await this.calculateAnnualPTDeduction(employeeId, financialYear)
+            : 0;
+        console.log(ptDeduction, "3.2 ptDeduction (only for old regime)");
 
         // 4. Convert tax slabs to plain objects for calculation
         const plainSlabs = taxSlab.slabs.map(slab => ({
@@ -369,7 +388,7 @@ export class TaxDeclarationService extends BaseService {
             taxSlab.standardDeduction,
             plainSlabs,
             taxSlab.cessRate,
-            pfDeduction
+            ptDeduction
         );
         console.log(initialTax, "5 initialTax");
         // 6. Create monthly deduction plan based on FY months
@@ -385,7 +404,7 @@ export class TaxDeclarationService extends BaseService {
             financialYear,
             regime,
             standardDeduction: taxSlab.standardDeduction,
-            pfDeduction,
+            ptDeduction,
             declarations: [],
             totalDeclaredAmount: 0,
             totalVerifiedAmount: 0,
@@ -465,10 +484,12 @@ export class TaxDeclarationService extends BaseService {
  */
         const { annualGross, salaryAssignments } = await this.calculateAnnualGross(employeeId, financialYear);
 
-        // 4.2 Calculate annual PF deduction
-        const pfDeduction = await this.calculateAnnualPFDeduction(employeeId, financialYear);
-        console.log(pfDeduction, "4.2 pfDeduction");
-        taxDeclaration.pfDeduction = pfDeduction;
+        // 4.2 Calculate annual PT (Professional Tax) deduction - ONLY for old regime
+        const ptDeduction = regime === 'old'
+            ? await this.calculateAnnualPTDeduction(employeeId, financialYear)
+            : 0;
+        console.log(ptDeduction, "4.2 ptDeduction (only for old regime)");
+        taxDeclaration.ptDeduction = ptDeduction;
 
         // 5. Convert tax slabs to plain objects for calculation
         const plainSlabs = taxSlab.slabs.map(slab => ({
@@ -532,7 +553,7 @@ export class TaxDeclarationService extends BaseService {
             taxSlab.standardDeduction,
             plainSlabs,
             taxSlab.cessRate,
-            pfDeduction
+            ptDeduction
         );
         console.log(updatedTax, "8 updatedTax");
 
@@ -1261,21 +1282,21 @@ export class TaxDeclarationService extends BaseService {
         standardDeduction: number = 50000,
         taxSlabs: { fromAmount: number; toAmount: number | null; taxRate: number }[],
         cessRate: number = 4,
-        pfDeduction: number = 0
+        ptDeduction: number = 0
     ): Promise<ITaxBreakdown> {
         console.log("Input parameters:");
         console.log("annualGross:", annualGross);
         console.log("regime:", regime);
         console.log("investments:", investments);
         console.log("standardDeduction:", standardDeduction);
-        console.log("pfDeduction:", pfDeduction);
+        console.log("ptDeduction:", ptDeduction);
         console.log("taxSlabs:", taxSlabs);
 
         // Calculate taxable income based on regime
         const useInvestments = regime === 'old' ? investments : 0;
         console.log("useInvestments:", useInvestments);
 
-        const taxableIncome = annualGross - standardDeduction - pfDeduction - useInvestments;
+        const taxableIncome = annualGross - standardDeduction - ptDeduction - useInvestments;
         console.log("calculatedTaxableIncome:", taxableIncome);
 
         // Early return if no taxable income
@@ -1294,7 +1315,7 @@ export class TaxDeclarationService extends BaseService {
                 taxWithCess: 0,
                 finalTaxWithCess: 0,
                 form12bTDSAmount: 0,
-                pfDeduction
+                ptDeduction
             };
         }
 
@@ -1360,7 +1381,7 @@ export class TaxDeclarationService extends BaseService {
             taxWithCess,
             finalTaxWithCess: taxWithCess,
             form12bTDSAmount: 0,
-            pfDeduction
+            ptDeduction
         };
 
         console.log("Final result:", JSON.stringify(result, null, 2));
@@ -1370,7 +1391,7 @@ export class TaxDeclarationService extends BaseService {
 
     //recalculate tax when Admin verify declaration amount
     private async recalculateTax(taxDeclaration: ITaxDeclarationUpdate): Promise<ITaxBreakdown & { totalVerifiedAmount: number }> {
-        const { financialYear, regime, annualGross, standardDeduction, pfDeduction, declarations } = taxDeclaration;
+        const { financialYear, regime, annualGross, standardDeduction, ptDeduction, declarations } = taxDeclaration;
 
         // 1. Get current FY tax slab
         const taxSlab = await TaxSlab.findOne({
@@ -1417,7 +1438,7 @@ export class TaxDeclarationService extends BaseService {
             standardDeduction,
             plainSlabs,
             taxSlab.cessRate,
-            pfDeduction || 0
+            ptDeduction || 0
         );
 
         return { ...taxBreakdown, totalVerifiedAmount };
@@ -1693,13 +1714,18 @@ export class TaxDeclarationService extends BaseService {
             remainingAmount -= adjustment;
             month.plannedDeduction = newPlannedDeduction + adjustment;
 
-            // Preserve actualDeduction (only update if explicitly needed, e.g., first update)
-            if (month.actualDeduction === 0) {
+            // Store the old actualDeduction to calculate the adjustment
+            const oldActualDeduction = month.actualDeduction;
+
+            // Update actualDeduction for unprocessed months to match new plan
+            if (!month.isProcessed) {
                 month.actualDeduction = month.plannedDeduction;
             }
 
-            // Calculate adjustmentAmount as actualDeduction - plannedDeduction
-            month.adjustmentAmount = month.actualDeduction - month.plannedDeduction;
+            // Calculate adjustmentAmount as the change from old plan
+            // For unprocessed months: newActualDeduction - oldActualDeduction
+            // For processed months: 0 (no change)
+            month.adjustmentAmount = month.actualDeduction - oldActualDeduction;
 
             // Ensure plannedDate is set
             month.plannedDate = month.plannedDate || new Date();
