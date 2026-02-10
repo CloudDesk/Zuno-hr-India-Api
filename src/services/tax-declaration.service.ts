@@ -2160,7 +2160,7 @@ export class TaxDeclarationService extends BaseService {
 
     // Initialize tax history for migration (e.g., in January)
     // Divides total Yearly Tax by 12, back-fills past months, and locks them as processed.
-    async initializeMigrationTax(id: Types.ObjectId, uptoMonth: string = "Jan"): Promise<ITaxDeclaration> {
+    async initializeMigrationTax(id: Types.ObjectId, uptoMonth: string = "Jan", uploadedBy?: Types.ObjectId): Promise<ITaxDeclaration> {
         const taxDeclaration = await TaxDeclaration.findById(id);
         if (!taxDeclaration) throw new Error('Tax Declaration not found');
 
@@ -2168,16 +2168,31 @@ export class TaxDeclarationService extends BaseService {
         const uptoIndex = monthOrder.indexOf(uptoMonth);
         if (uptoIndex === -1) throw new Error('Invalid month provided for migration initialization');
 
-        // 1. Determine total yearly tax baseline
-        // Use revisedTaxAmount if available, else calculatedTaxAmount
-        const totalYearlyTax = taxDeclaration.revisedTaxAmount || taxDeclaration.calculatedTaxAmount;
+        // 0. Recalculate PT deduction based on regime (only for old regime)
+        const ptDeduction = taxDeclaration.regime === 'old' 
+            ? await this.calculateAnnualPTDeduction(taxDeclaration.employeeId.toString(), taxDeclaration.financialYear)
+            : 0;
+        taxDeclaration.ptDeduction = ptDeduction;
+
+        // 1. Recalculate tax with latest logic (including PT deduction) before initializing migration
+        const recalculatedBreakdown = await this.recalculateTax(taxDeclaration.toObject() as ITaxDeclarationUpdate);
+        taxDeclaration.initialTaxBreakdown = recalculatedBreakdown;
+        taxDeclaration.calculatedTaxAmount = recalculatedBreakdown.finalTaxWithCess;
+        
+        // Reset revisedTaxAmount to match recalculated tax for fresh migration
+        taxDeclaration.revisedTaxAmount = recalculatedBreakdown.finalTaxWithCess;
+        taxDeclaration.previousTaxAmount = recalculatedBreakdown.finalTaxWithCess;
+
+        // 2. Determine total yearly tax baseline
+        // Use the recalculated tax amount
+        const totalYearlyTax = taxDeclaration.calculatedTaxAmount;
         if (!totalYearlyTax) throw new Error('No tax calculation found to initialize migration');
 
-        // 2. Calculate even monthly split
+        // 3. Calculate even monthly split
         const monthlyShare = Math.floor(totalYearlyTax / 12);
         let accumulatedHistoryPaid = 0;
 
-        // 3. Update monthly records
+        // 4. Update monthly records
         taxDeclaration.monthlyDeductions.forEach((m) => {
             const mIndex = monthOrder.indexOf(m.month);
 
@@ -2197,7 +2212,7 @@ export class TaxDeclarationService extends BaseService {
             }
         });
 
-        // 4. Handle rounding difference on the last month (March)
+        // 5. Handle rounding difference on the last month (March)
         const roundDiff = totalYearlyTax - (monthlyShare * 12);
         const marchRecord = taxDeclaration.monthlyDeductions.find(m => m.month === 'Mar');
         if (marchRecord) {
@@ -2205,13 +2220,38 @@ export class TaxDeclarationService extends BaseService {
             marchRecord.actualDeduction += roundDiff;
         }
 
-        // 5. Update summary fields and set Audit Flag
+        // 6. Update summary fields and set Audit Flag
         taxDeclaration.taxPaid = accumulatedHistoryPaid;
         taxDeclaration.remainingTaxToPay = totalYearlyTax - accumulatedHistoryPaid;
         taxDeclaration.isMigrationInitialized = true; // NEW Flag
         taxDeclaration.initialTaxCalculated = true;
 
-        // 6. Reset summary flags for a clean 'Source of Truth'
+        // 7. Populate migrationAdjustment fields
+        const processedMonths = uptoIndex + 1; // Months from Apr to uptoMonth (inclusive)
+        const remainingMonths = 12 - processedMonths;
+        
+        taxDeclaration.migrationAdjustment = {
+            appliedForFY: taxDeclaration.financialYear,
+            uploadedAt: new Date(),
+            uploadedBy: uploadedBy || taxDeclaration.migrationAdjustment?.uploadedBy, // Use current user or keep existing
+            externalTaxPaid: accumulatedHistoryPaid,
+            externalTaxPaidMonths: processedMonths,
+            newSystemTaxToPay: totalYearlyTax - accumulatedHistoryPaid,
+            newSystemTaxMonths: remainingMonths,
+            totalMigratedTaxLiability: totalYearlyTax,
+            originalMonthlyDeductions: taxDeclaration.monthlyDeductions.map(m => ({
+                month: m.month,
+                financialYear: m.financialYear,
+                plannedDeduction: m.plannedDeduction,
+                actualDeduction: m.actualDeduction,
+                adjustmentAmount: m.adjustmentAmount,
+                plannedDate: m.plannedDate,
+                isProcessed: m.isProcessed
+            })),
+            overrideReason: `Migration initialized up to ${uptoMonth} for FY ${taxDeclaration.financialYear}`
+        };
+
+        // 8. Reset summary flags for a clean 'Source of Truth'
         taxDeclaration.excessTaxPaid = 0;
         taxDeclaration.noFurtherTaxDeduction = false;
         taxDeclaration.taxAdjustmentRequired = false;

@@ -42,7 +42,7 @@ interface IMonthlyTaxDeduction {
 interface IMigrationAdjustment {
     appliedForFY: string;                      // FY for which migration was applied (e.g., "2025-2026")
     uploadedAt: Date;                          // When Excel was uploaded
-    uploadedBy: Types.ObjectId;         // Admin who uploaded
+    uploadedBy?: Types.ObjectId;         // Admin who uploaded (optional)
     externalTaxPaid: number;                   // Tax paid in external system (Apr-Dec)
     externalTaxPaidMonths: number;             // Number of months tax paid externally (e.g., 9)
     newSystemTaxToPay: number;                 // Tax to be paid in new system (Jan-Mar)

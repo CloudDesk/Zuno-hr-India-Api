@@ -461,7 +461,8 @@ export async function taxDeclarationRoutes(fastify: FastifyInstance): Promise<vo
 
                 const result = await request.container!.taxDeclarationService.initializeMigrationTax(
                     new Types.ObjectId(id),
-                    uptoMonth || "Jan"
+                    uptoMonth || "Jan",
+                    request.user?._id ? new Types.ObjectId(request.user._id) : undefined
                 );
 
                 return reply.send({
