@@ -18,6 +18,7 @@ interface ITaxBreakdown {
     taxWithCess: number; // Tax before Form12B TDS deduction
     form12bTDSAmount?: number; // TDS from Form12B
     finalTaxWithCess: number; // Final tax after rebate/relief, cess and Form 12B TDS
+    pfDeduction?: number; // Annual PF deduction
 
 }
 interface IDocument {
@@ -95,6 +96,7 @@ export interface ITaxDeclaration extends Document {
     totalVerifiedAmount: number;
     totalDeclinedAmount: number;        // Track declined amounts separately
     standardDeduction: number;
+    pfDeduction: number;                // Annual PF (Provident Fund) deduction
     initialTaxCalculated: boolean;      // Track if initial tax was calculated
 
     // Tax amounts
@@ -107,7 +109,7 @@ export interface ITaxDeclaration extends Document {
     // Adjustment tracking
     taxAdjustmentRequired: boolean;
     adjustmentAmount: number;       // Positive for additional tax, negative for refund
-    adjustmentReason: "declarations_declined" | "declarations_approved" | "salary_revision" | "revised_declaration" | "form12b_tds_adjustment" | "migration_initialization" | "other";
+    adjustmentReason: "declarations_declined" | "declarations_approved" | "salary_revision" | "revised_declaration" | "form12b_tds_adjustment" | "migration_initialization" | "missing_proof_rejection" | "other";
     monthlyAdjustment: number;      // Adjustment amount per remaining month
     remainingMonths: number;        // Number of months left for adjustment
     lastAdjustmentDate: Date;       // When adjustment was last calculated
@@ -127,7 +129,7 @@ export interface ITaxDeclaration extends Document {
         {
             reviewedBy: Types.ObjectId;
             reviewDate: Date;
-            action: "verified" | "rejected" | "resubmission_requested";
+            action: "verified" | "rejected" | "resubmission_requested" | "document_submitted";
             comments: string;
         }
     ];
@@ -150,7 +152,9 @@ export interface ITaxDeclaration extends Document {
 
     // Migration Adjustment (for HRMS migration - December 2025)
     isMigrationAdjusted: boolean;              // Flag to identify migration-adjusted records
+    isMigrationInitialized: boolean;           // NEW: Flag for one-time initialization
     migrationAdjustment?: IMigrationAdjustment; // Migration override data
+    isSubmissionsEnabled: boolean;             // NEW: Toggle to lock user declarations
 
     createdAt?: Date;
     updatedAt?: Date;
@@ -238,6 +242,7 @@ const TaxDeclarationSchema = new Schema<ITaxDeclaration>({
     totalVerifiedAmount: { type: Number, default: 0 },
     totalDeclinedAmount: { type: Number, default: 0 },
     standardDeduction: { type: Number, required: true },
+    pfDeduction: { type: Number, default: 0 },
     initialTaxCalculated: { type: Boolean, default: false },
 
     // Tax amounts
@@ -253,7 +258,7 @@ const TaxDeclarationSchema = new Schema<ITaxDeclaration>({
     monthlyAdjustment: { type: Number, default: 0 },
     remainingMonths: { type: Number, default: 0 },
     lastAdjustmentDate: { type: Date },
-    adjustmentReason: { type: String, enum: ["declarations_declined", "declarations_approved", "revised_declaration", "salary_revision", "form12b_tds_adjustment", "migration_initialization", "other"] },
+    adjustmentReason: { type: String, enum: ["declarations_declined", "declarations_approved", "revised_declaration", "salary_revision", "form12b_tds_adjustment", "migration_initialization", "missing_proof_rejection", "other"] },
     adjustmentDistribution: { type: String, enum: ["equal", "prorated", "one_time"], default: "equal" },
 
     // For handling mid-year declarations and adjustments
@@ -279,6 +284,7 @@ const TaxDeclarationSchema = new Schema<ITaxDeclaration>({
         },
     ],
     isLocked: { type: Boolean, default: false },
+    isSubmissionsEnabled: { type: Boolean, default: false },
     initialTaxBreakdown: {
         taxAmount: { type: Number, default: 0 }, // SBT
         slabwiseTax: [
@@ -298,7 +304,8 @@ const TaxDeclarationSchema = new Schema<ITaxDeclaration>({
         isMarginalReliefApplicable: { type: Boolean, default: false }, // Flag for marginal relief eligibility
         taxWithCess: { type: Number, default: 0 }, // Tax before Form12B TDS deduction
         form12bTDSAmount: { type: Number, default: 0 }, // TDS amount from Form 12B, if applicable
-        finalTaxWithCess: { type: Number, default: 0 } // Final tax after rebate/relief , cess and Form 12B TDS
+        finalTaxWithCess: { type: Number, default: 0 }, // Final tax after rebate/relief , cess and Form 12B TDS
+        pfDeduction: { type: Number, default: 0 } // Annual PF deduction
     },
     isDeclared: { type: Boolean, default: false },
     isPOISubmitted: { type: Boolean, default: false },
@@ -315,6 +322,7 @@ const TaxDeclarationSchema = new Schema<ITaxDeclaration>({
 
     // Migration Adjustment (for HRMS migration - December 2025)
     isMigrationAdjusted: { type: Boolean, default: false },
+    isMigrationInitialized: { type: Boolean, default: false },
     migrationAdjustment: {
         appliedForFY: { type: String },
         uploadedAt: { type: Date },

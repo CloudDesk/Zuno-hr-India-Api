@@ -11,11 +11,14 @@ export async function taxDeclarationRoutes(fastify: FastifyInstance): Promise<vo
     fastify.get('/', { preHandler: [authenticate] },
         async (request, reply) => {
             console.log(request.query, "request salary structre");
-            const { page, limit, search, financialYear } = request.query as {
+            const { page, limit, search, financialYear, isSubmissionsEnabled, isMigrationAdjusted, isMigrationInitialized } = request.query as {
                 page?: number;
                 limit?: number;
                 search?: string;
                 financialYear?: string;
+                isSubmissionsEnabled?: boolean;
+                isMigrationAdjusted?: boolean;
+                isMigrationInitialized?: boolean;
             };
             console.log(page, limit, search, financialYear, "*****")
 
@@ -24,7 +27,10 @@ export async function taxDeclarationRoutes(fastify: FastifyInstance): Promise<vo
                     page,
                     limit,
                     search,
-                    financialYear
+                    financialYear,
+                    isSubmissionsEnabled,
+                    isMigrationAdjusted,
+                    isMigrationInitialized
                 });
                 return reply.send({
                     success: true,
@@ -461,6 +467,53 @@ export async function taxDeclarationRoutes(fastify: FastifyInstance): Promise<vo
                 return reply.send({
                     success: true,
                     message: `Tax successfully even-split and locked upto ${uptoMonth || "Jan"}`,
+                    data: result
+                });
+            } catch (error: any) {
+                return reply.status(400).send({
+                    success: false,
+                    error: { message: error.message }
+                });
+            }
+        }
+    )
+
+    // Toggle Submissions Window
+    fastify.post<{ Params: { id: string }, Body: { enabled: boolean } }>('/:id/toggle-submissions',
+        {
+            preHandler: [authenticate]
+        },
+        async (request, reply) => {
+            try {
+                const { id } = request.params;
+                const { enabled } = request.body;
+                const result = await request.container!.taxDeclarationService.toggleSubmissions(new Types.ObjectId(id), enabled);
+                return reply.send({
+                    success: true,
+                    message: `Submissions ${enabled ? 'enabled' : 'disabled'} for user`,
+                    data: result
+                });
+            } catch (error: any) {
+                return reply.status(400).send({
+                    success: false,
+                    error: { message: error.message }
+                });
+            }
+        }
+    )
+
+    // Mass Reject Unverified Proofs (Deadline reached)
+    fastify.post<{ Params: { id: string } }>('/:id/bulk-reject-proofs',
+        {
+            preHandler: [authenticate]
+        },
+        async (request, reply) => {
+            try {
+                const { id } = request.params;
+                const result = await request.container!.taxDeclarationService.bulkRejectMissingProofs(new Types.ObjectId(id));
+                return reply.send({
+                    success: true,
+                    message: "All unverified declarations have been rejected by the system.",
                     data: result
                 });
             } catch (error: any) {

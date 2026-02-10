@@ -65,6 +65,7 @@ export interface ITaxBreakdown {
     taxWithCess: number; // Tax before Form12B TDS deduction
     form12bTDSAmount?: number;
     finalTaxWithCess: number;
+    pfDeduction?: number; // Annual PF deduction
 }
 export interface IForm12BInput {
     form12bId: string;
@@ -93,6 +94,7 @@ export interface ITaxDeclarationUpdate {
     totalDeclaredAmount: number;
     totalVerifiedAmount: number;
     standardDeduction: number;
+    pfDeduction: number;
     calculatedTaxAmount: number;
     revisedTaxAmount: number;
     taxPaid: number;
@@ -124,7 +126,9 @@ export interface ITaxDeclarationUpdate {
     remainingTaxToPay: number;
     monthlyDeductions: IMonthlyTaxDeduction[];
     salaryAssignments?: { assignmentId: Types.ObjectId; validFrom: Date; validTill: Date; monthlyGross: number; isActive: boolean }[];
-
+    isSubmissionsEnabled?: boolean;
+    isMigrationAdjusted?: boolean;
+    isMigrationInitialized?: boolean;
 }
 
 // Migration Adjustment Interfaces (for HRMS migration - December 2025)
@@ -210,6 +214,78 @@ export class TaxDeclarationService extends BaseService {
         return { annualGross, salaryAssignments: assignmentsForTaxDeclaration };
     }
 
+    /**
+     * Calculate annual PF (Provident Fund) deduction for the employee
+     * PF is calculated as 12% of Basic salary, capped at ₹1800 per installment
+     * Payment frequency is based on professionalTax.term:
+     * - "monthly" = 12 times per year
+     * - "half_yearly" = 2 times per year
+     * - "yearly" = 1 time per year
+     */
+    private async calculateAnnualPFDeduction(employeeId: string, financialYear: string): Promise<number> {
+        const [fyStartYear, fyEndYear] = financialYear.split('-').map(Number);
+        const fyStartDate = new Date(`${fyStartYear}-04-01T00:00:00.000Z`);
+        const fyEndDate = new Date(`${fyEndYear}-03-31T23:59:59.999Z`);
+
+        const salaryAssignments = await SalaryAssignment.find({
+            employeeId,
+            effectiveFrom: { $lte: fyEndDate },
+            effectiveTo: { $gte: fyStartDate }
+        }).populate('salaryStructureId').sort('effectiveFrom');
+
+        if (!salaryAssignments.length) {
+            return 0;
+        }
+
+        let totalAnnualPF = 0;
+
+        for (const assignment of salaryAssignments) {
+            const salaryStructure = assignment.salaryStructureId as any;
+            
+            if (!salaryStructure || salaryStructure.country !== 'IN') {
+                // PF is only applicable for Indian employees
+                continue;
+            }
+
+            // Calculate the number of months this assignment is active in the FY
+            const startDate = new Date(Math.max(assignment.effectiveFrom.getTime(), fyStartDate.getTime()));
+            const endDate = new Date(Math.min(assignment.effectiveTo.getTime(), fyEndDate.getTime()));
+            const months = (endDate.getFullYear() - startDate.getFullYear()) * 12 + (endDate.getMonth() - startDate.getMonth()) + 1;
+
+            // Calculate monthly basic salary (basic is a percentage of gross)
+            const monthlyGross = Number(assignment.monthlyGross);
+            const basicPercentage = Number(salaryStructure.fixedEarnings?.basicPercentage || 0);
+            const monthlyBasic = (monthlyGross * basicPercentage) / 100;
+
+            // Calculate PF per installment: 12% of basic, capped at ₹1800
+            const pfPercentage = Number(salaryStructure.statutoryDeductions?.epf?.employeeContribution || 12);
+            const PF_INSTALLMENT_CAP = 1800; // Statutory limit per installment
+            const pfPerInstallment = Math.min((monthlyBasic * pfPercentage) / 100, PF_INSTALLMENT_CAP);
+
+            // Determine PF payment frequency based on professionalTax term
+            const term = salaryStructure.statutoryDeductions?.professionalTax?.term || 'monthly';
+            let pfFrequency = 12; // Default to monthly (12 times per year)
+            
+            if (term === 'half_yearly') {
+                pfFrequency = 2; // Paid 2 times per year
+            } else if (term === 'yearly') {
+                pfFrequency = 1; // Paid 1 time per year
+            } else if (term === 'monthly') {
+                pfFrequency = 12; // Paid 12 times per year
+            }
+
+            // Calculate PF for this assignment based on the frequency
+            // For partial year assignments, prorate the frequency
+            const activePeriodRatio = months / 12;
+            const effectiveFrequency = Math.round(pfFrequency * activePeriodRatio);
+            const assignmentPF = pfPerInstallment * effectiveFrequency;
+
+            totalAnnualPF += assignmentPF;
+        }
+
+        return Math.round(totalAnnualPF);
+    }
+
     /** Returns deduction sections config (aligned with FE) for tax declaration forms. */
     getDeductionSections(): IDeductionSection[] {
         return deductionSections;
@@ -273,6 +349,10 @@ export class TaxDeclarationService extends BaseService {
         // const annualGross = (Number(salaryAssignment?.monthlyGross) ?? 0) * 12;
         console.log(annualGross, "3.1 annualGross");
 
+        // 3.2 Calculate annual PF deduction
+        const pfDeduction = await this.calculateAnnualPFDeduction(employeeId, financialYear);
+        console.log(pfDeduction, "3.2 pfDeduction");
+
         // 4. Convert tax slabs to plain objects for calculation
         const plainSlabs = taxSlab.slabs.map(slab => ({
             fromAmount: Number(slab.fromAmount),
@@ -288,7 +368,8 @@ export class TaxDeclarationService extends BaseService {
             0, // No investments yet
             taxSlab.standardDeduction,
             plainSlabs,
-            taxSlab.cessRate
+            taxSlab.cessRate,
+            pfDeduction
         );
         console.log(initialTax, "5 initialTax");
         // 6. Create monthly deduction plan based on FY months
@@ -304,6 +385,7 @@ export class TaxDeclarationService extends BaseService {
             financialYear,
             regime,
             standardDeduction: taxSlab.standardDeduction,
+            pfDeduction,
             declarations: [],
             totalDeclaredAmount: 0,
             totalVerifiedAmount: 0,
@@ -346,6 +428,11 @@ export class TaxDeclarationService extends BaseService {
         if (!taxDeclaration) {
             throw new Error('Tax Declaration not found');
         }
+
+        // NEW: Check if submissions are locked for users
+        if (!taxDeclaration.isSubmissionsEnabled && this.context.user?.role !== "admin") {
+            throw new Error("Tax declaration submission is currently locked by the administrator.");
+        }
         console.log(taxDeclaration, "1 taxDeclaration get")
         const { employeeId, regime, financialYear } = data;
         // 2. Get current FY tax slab
@@ -378,6 +465,10 @@ export class TaxDeclarationService extends BaseService {
  */
         const { annualGross, salaryAssignments } = await this.calculateAnnualGross(employeeId, financialYear);
 
+        // 4.2 Calculate annual PF deduction
+        const pfDeduction = await this.calculateAnnualPFDeduction(employeeId, financialYear);
+        console.log(pfDeduction, "4.2 pfDeduction");
+        taxDeclaration.pfDeduction = pfDeduction;
 
         // 5. Convert tax slabs to plain objects for calculation
         const plainSlabs = taxSlab.slabs.map(slab => ({
@@ -440,7 +531,8 @@ export class TaxDeclarationService extends BaseService {
             totalDeclaredAmount,
             taxSlab.standardDeduction,
             plainSlabs,
-            taxSlab.cessRate
+            taxSlab.cessRate,
+            pfDeduction
         );
         console.log(updatedTax, "8 updatedTax");
 
@@ -543,6 +635,11 @@ export class TaxDeclarationService extends BaseService {
         const taxDeclaration = await TaxDeclaration.findById(id);
         if (!taxDeclaration) {
             throw new Error('Tax Declaration not found');
+        }
+
+        // NEW: Check if submissions are locked for users
+        if (!taxDeclaration.isSubmissionsEnabled && this.context.user?.role !== "admin") {
+            throw new Error("Document submission is currently locked by the administrator.");
         }
 
         // 2. Get user info using employeeId
@@ -1073,12 +1170,12 @@ export class TaxDeclarationService extends BaseService {
         };
     }
 
-    async findAll(query: { page?: number; limit?: number; search?: string; financialYear?: string }):
+    async findAll(query: { page?: number; limit?: number; search?: string; financialYear?: string; isSubmissionsEnabled?: boolean; isMigrationAdjusted?: boolean; isMigrationInitialized?: boolean }):
         Promise<{
             taxDeclarations: ITaxDeclaration[],
             meta: { page: number, limit: number, total: number, totalPages: number }
         }> {
-        const { page = 1, limit = 10, search, financialYear } = query;
+        const { page = 1, limit = 10, search, financialYear, isSubmissionsEnabled, isMigrationAdjusted, isMigrationInitialized } = query;
         const skip = (page - 1) * limit;
         console.log(query, "query")
         console.log(page, limit, search, financialYear, "*****")
@@ -1092,6 +1189,21 @@ export class TaxDeclarationService extends BaseService {
         // Filter by financial year
         if (financialYear) {
             filter.financialYear = financialYear;
+        }
+
+        // Filter by submission status
+        if (typeof isSubmissionsEnabled !== 'undefined') {
+            filter.isSubmissionsEnabled = isSubmissionsEnabled;
+        }
+
+        // Filter by migration status
+        if (typeof isMigrationAdjusted !== 'undefined') {
+            filter.isMigrationAdjusted = isMigrationAdjusted;
+        }
+
+        // Filter by migration initialization status
+        if (typeof isMigrationInitialized !== 'undefined') {
+            filter.isMigrationInitialized = isMigrationInitialized;
         }
 
         const [taxDeclarations, total] = await Promise.all([
@@ -1148,20 +1260,22 @@ export class TaxDeclarationService extends BaseService {
         investments: number = 0,
         standardDeduction: number = 50000,
         taxSlabs: { fromAmount: number; toAmount: number | null; taxRate: number }[],
-        cessRate: number = 4
+        cessRate: number = 4,
+        pfDeduction: number = 0
     ): Promise<ITaxBreakdown> {
         console.log("Input parameters:");
         console.log("annualGross:", annualGross);
         console.log("regime:", regime);
         console.log("investments:", investments);
         console.log("standardDeduction:", standardDeduction);
+        console.log("pfDeduction:", pfDeduction);
         console.log("taxSlabs:", taxSlabs);
 
         // Calculate taxable income based on regime
         const useInvestments = regime === 'old' ? investments : 0;
         console.log("useInvestments:", useInvestments);
 
-        const taxableIncome = annualGross - standardDeduction - useInvestments;
+        const taxableIncome = annualGross - standardDeduction - pfDeduction - useInvestments;
         console.log("calculatedTaxableIncome:", taxableIncome);
 
         // Early return if no taxable income
@@ -1179,7 +1293,8 @@ export class TaxDeclarationService extends BaseService {
                 isMarginalReliefApplicable: false,
                 taxWithCess: 0,
                 finalTaxWithCess: 0,
-                form12bTDSAmount: 0
+                form12bTDSAmount: 0,
+                pfDeduction
             };
         }
 
@@ -1244,7 +1359,8 @@ export class TaxDeclarationService extends BaseService {
             isMarginalReliefApplicable,
             taxWithCess,
             finalTaxWithCess: taxWithCess,
-            form12bTDSAmount: 0
+            form12bTDSAmount: 0,
+            pfDeduction
         };
 
         console.log("Final result:", JSON.stringify(result, null, 2));
@@ -1254,7 +1370,7 @@ export class TaxDeclarationService extends BaseService {
 
     //recalculate tax when Admin verify declaration amount
     private async recalculateTax(taxDeclaration: ITaxDeclarationUpdate): Promise<ITaxBreakdown & { totalVerifiedAmount: number }> {
-        const { financialYear, regime, annualGross, standardDeduction, declarations } = taxDeclaration;
+        const { financialYear, regime, annualGross, standardDeduction, pfDeduction, declarations } = taxDeclaration;
 
         // 1. Get current FY tax slab
         const taxSlab = await TaxSlab.findOne({
@@ -1300,7 +1416,8 @@ export class TaxDeclarationService extends BaseService {
             totalVerifiedAmount,
             standardDeduction,
             plainSlabs,
-            taxSlab.cessRate
+            taxSlab.cessRate,
+            pfDeduction || 0
         );
 
         return { ...taxBreakdown, totalVerifiedAmount };
@@ -2065,7 +2182,7 @@ export class TaxDeclarationService extends BaseService {
         // 5. Update summary fields and set Audit Flag
         taxDeclaration.taxPaid = accumulatedHistoryPaid;
         taxDeclaration.remainingTaxToPay = totalYearlyTax - accumulatedHistoryPaid;
-        taxDeclaration.isMigrationAdjusted = true; // Confirmation Flag
+        taxDeclaration.isMigrationInitialized = true; // NEW Flag
         taxDeclaration.initialTaxCalculated = true;
 
         // 6. Reset summary flags for a clean 'Source of Truth'
@@ -2079,6 +2196,74 @@ export class TaxDeclarationService extends BaseService {
         console.log(`[MIGRATION INIT] Employee ${taxDeclaration.employeeId}: Total Tax ${totalYearlyTax}, Paid upto ${uptoMonth}: ${accumulatedHistoryPaid}`);
 
         // Note: Mongoose automatically increments __v on save
+        return await taxDeclaration.save();
+    }
+
+    // Toggle user submission access
+    async toggleSubmissions(id: Types.ObjectId, enabled: boolean): Promise<ITaxDeclaration> {
+        const taxDeclaration = await TaxDeclaration.findById(id);
+        if (!taxDeclaration) throw new Error("Tax Declaration not found");
+
+        taxDeclaration.isSubmissionsEnabled = enabled;
+        return await taxDeclaration.save();
+    }
+
+    // Mass Reject Declarations without proper proof
+    async bulkRejectMissingProofs(id: Types.ObjectId): Promise<ITaxDeclaration> {
+        const taxDeclaration = await TaxDeclaration.findById(id);
+        if (!taxDeclaration) throw new Error("Tax Declaration not found");
+
+        const previousTaxAmount = taxDeclaration.revisedTaxAmount || taxDeclaration.calculatedTaxAmount;
+        let totalDeclinedAmount = taxDeclaration.totalDeclinedAmount || 0;
+        let rejectedCount = 0;
+
+        taxDeclaration.declarations.forEach(d => {
+            // Target any section that is not verified or already rejected
+            if (d.status !== "verified" && d.status !== "rejected") {
+                d.status = "rejected";
+                d.verifiedAmount = 0;
+                totalDeclinedAmount += Math.abs(d.declaredAmount || 0);
+                rejectedCount++;
+
+                d.reviewHistory.push({
+                    reviewedBy: new Types.ObjectId(this.context.user?._id),
+                    reviewDate: new Date(),
+                    status: "rejected" as any,
+                    comments: "System Rejection: Missing or insufficient proof submitted before the deadline."
+                });
+            }
+        });
+
+        if (rejectedCount === 0) return taxDeclaration;
+
+        taxDeclaration.totalDeclinedAmount = totalDeclinedAmount;
+        taxDeclaration.poiSubmissionStatus = "rejected";
+
+        // Recalculate tax with new rejections
+        const res = await this.recalculateTax(taxDeclaration.toObject() as any);
+
+        taxDeclaration.revisedTaxAmount = res.finalTaxWithCess;
+        taxDeclaration.totalVerifiedAmount = res.totalVerifiedAmount;
+        taxDeclaration.initialTaxBreakdown = res;
+
+        // Spread the tax increase over remaining months
+        if (previousTaxAmount !== res.finalTaxWithCess) {
+            taxDeclaration.taxAdjustmentRequired = true;
+            taxDeclaration.adjustmentAmount = res.finalTaxWithCess - previousTaxAmount;
+            taxDeclaration.adjustmentReason = "missing_proof_rejection";
+            taxDeclaration.lastAdjustmentDate = new Date();
+
+            const remainingMonths = this.calculateRemainingMonthsInFY(taxDeclaration.financialYear);
+            taxDeclaration.remainingMonths = remainingMonths;
+
+            taxDeclaration.monthlyDeductions = await this.updateMonthlyDeductionPlan(
+                taxDeclaration.monthlyDeductions,
+                res.finalTaxWithCess,
+                remainingMonths,
+                taxDeclaration.adjustmentAmount < 0
+            );
+        }
+
         return await taxDeclaration.save();
     }
 }
