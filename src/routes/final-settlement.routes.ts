@@ -16,14 +16,15 @@ export default async function finalSettlementRoutes(fastify: FastifyInstance) {
     fastify.get('/final-settlement', {
         onRequest: [authenticate],
         schema: {
-            description: 'Get all final settlements with pagination',
+            description: 'Get all final settlements with pagination and search',
             tags: ['Final Settlement'],
             querystring: {
                 type: 'object',
                 properties: {
                     page: { type: 'number', default: 1 },
                     limit: { type: 'number', default: 10 },
-                    status: { type: 'string', enum: ['Draft', 'Confirmed'] }
+                    status: { type: 'string', enum: ['Draft', 'Confirmed'] },
+                    search: { type: 'string', description: 'Search by employee name, code, or status' } // ✅ Updated
                 }
             }
         }

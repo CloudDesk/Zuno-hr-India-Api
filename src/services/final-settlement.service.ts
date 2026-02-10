@@ -1028,7 +1028,7 @@ export async function saveFinalSettlement(
 
 /**
  * Get All Final Settlements (List with Pagination)
- * GET /final-settlement?page=1&limit=10&status=Draft
+ * GET /final-settlement?page=1&limit=10&status=Draft&search=query
  */
 export async function getAllFinalSettlements(
     request: FastifyRequest<{
@@ -1036,6 +1036,7 @@ export async function getAllFinalSettlements(
             page?: number;
             limit?: number;
             status?: 'Draft' | 'Confirmed';
+            search?: string;
         };
     }>,
     reply: FastifyReply
@@ -1046,11 +1047,21 @@ export async function getAllFinalSettlements(
         const page = Math.max(1, Number(rawPage) || 1);
         const limit = Math.min(100, Math.max(1, Number(rawLimit) || 10));
         const status = request.query.status;
+        const search = request.query.search?.trim();
 
         // Build query
         const query: any = {};
         if (status === 'Draft' || status === 'Confirmed') {
             query.status = status;
+        }
+
+        // Add search filter (search by employee name, code, or status)
+        if (search) {
+            query.$or = [
+                { employeeName: { $regex: search, $options: 'i' } },
+                { employeeCode: { $regex: search, $options: 'i' } },
+                { status: { $regex: search, $options: 'i' } } // ✅ Added status to search
+            ];
         }
 
         // Calculate pagination
