@@ -25,6 +25,7 @@ interface IDocument {
     documentPath: string;
     uploadDate: Date;
     isLatestVersion: boolean;
+    documentType?: string;
 }
 interface IMonthlyTaxDeduction {
     month: string;              // e.g., "Apr", "May", etc.
@@ -106,7 +107,7 @@ export interface ITaxDeclaration extends Document {
     // Adjustment tracking
     taxAdjustmentRequired: boolean;
     adjustmentAmount: number;       // Positive for additional tax, negative for refund
-    adjustmentReason: "declarations_declined" | "declarations_approved" | "salary_revision" | "revised_declaration" | "form12b_tds_adjustment" | "other";
+    adjustmentReason: "declarations_declined" | "declarations_approved" | "salary_revision" | "revised_declaration" | "form12b_tds_adjustment" | "migration_initialization" | "other";
     monthlyAdjustment: number;      // Adjustment amount per remaining month
     remainingMonths: number;        // Number of months left for adjustment
     lastAdjustmentDate: Date;       // When adjustment was last calculated
@@ -158,7 +159,8 @@ const DocumentSchema = new Schema<IDocument>({
     documentName: { type: String, required: true },
     documentPath: { type: String, required: true },
     uploadDate: { type: Date, default: Date.now },
-    isLatestVersion: { type: Boolean, default: true }
+    isLatestVersion: { type: Boolean, default: true },
+    documentType: { type: String }
 });
 const MonthlyTaxDeductionSchema = new Schema<IMonthlyTaxDeduction>({
     month: { type: String, required: true },
@@ -204,7 +206,7 @@ const DeclarationSchema = new Schema<IDeclaration>({
         type: String,
         enum: ["income", "loss"]
     },
-    rentDetails: [RentDetailSchema],
+    rentDetails: { type: [RentDetailSchema], default: undefined },
     documents: [DocumentSchema],
     reviewHistory: [{
         reviewedBy: { type: Schema.Types.ObjectId, ref: 'User' },
@@ -251,7 +253,7 @@ const TaxDeclarationSchema = new Schema<ITaxDeclaration>({
     monthlyAdjustment: { type: Number, default: 0 },
     remainingMonths: { type: Number, default: 0 },
     lastAdjustmentDate: { type: Date },
-    adjustmentReason: { type: String, enum: ["declarations_declined", "declarations_approved", "revised_declaration", "salary_revision", "form12b_tds_adjustment", "other"] },
+    adjustmentReason: { type: String, enum: ["declarations_declined", "declarations_approved", "revised_declaration", "salary_revision", "form12b_tds_adjustment", "migration_initialization", "other"] },
     adjustmentDistribution: { type: String, enum: ["equal", "prorated", "one_time"], default: "equal" },
 
     // For handling mid-year declarations and adjustments

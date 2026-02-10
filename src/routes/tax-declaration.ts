@@ -442,4 +442,33 @@ export async function taxDeclarationRoutes(fastify: FastifyInstance): Promise<vo
             }
         }
     )
+
+    // Initialize Migration Tax (Even split across 12 months, lock upto Jan)
+    fastify.post<{ Params: { id: string }, Body: { uptoMonth?: string } }>('/:id/initialize-migration',
+        {
+            preHandler: [authenticate]
+        },
+        async (request, reply) => {
+            try {
+                const { id } = request.params;
+                const { uptoMonth } = request.body || {};
+
+                const result = await request.container!.taxDeclarationService.initializeMigrationTax(
+                    new Types.ObjectId(id),
+                    uptoMonth || "Jan"
+                );
+
+                return reply.send({
+                    success: true,
+                    message: `Tax successfully even-split and locked upto ${uptoMonth || "Jan"}`,
+                    data: result
+                });
+            } catch (error: any) {
+                return reply.status(400).send({
+                    success: false,
+                    error: { message: error.message }
+                });
+            }
+        }
+    )
 }

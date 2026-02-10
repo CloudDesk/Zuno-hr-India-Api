@@ -11,7 +11,7 @@ import path from 'path';
 
 import { Document } from "../models/document.model";
 import * as xlsx from 'xlsx';
-import { deductionSections, type IDeductionSection } from "../constants/tax-deduction-sections";
+import { deductionSections, TAX_DEDUCTION_SECTION_IDS, type IDeductionSection } from "../constants/tax-deduction-sections";
 
 export interface ITaxDeclarationCreate {
     employeeId: string;
@@ -21,8 +21,9 @@ export interface ITaxDeclarationCreate {
 export interface IDocument {
     documentName: string;
     documentPath: string;
-    uploadData: string;
+    uploadDate: Date;
     isLatestVersion: boolean;
+    documentType?: string;
 }
 
 export interface IDeclaration {
@@ -389,10 +390,17 @@ export class TaxDeclarationService extends BaseService {
 
         // 6. Normalize declarations: FE may send subsection -> map to subSection for model
         if (data.declarations && data.declarations.length > 0) {
-            data.declarations = data.declarations.map((d: any) => ({
-                ...d,
-                subSection: d.subSection ?? d.subsection,
-            }));
+            data.declarations = data.declarations.map((d: any) => {
+                const normalized = {
+                    ...d,
+                    subSection: d.subSection ?? d.subsection,
+                };
+                // Remove rentDetails if not an HRA section
+                if (normalized.section !== '10_13A') {
+                    delete normalized.rentDetails;
+                }
+                return normalized;
+            });
         }
 
         // Calculate total declared amount from declarations
@@ -402,10 +410,11 @@ export class TaxDeclarationService extends BaseService {
             totalDeclaredAmount = data.declarations.reduce((sum, declaration) => {
                 const amount = Number(declaration.declaredAmount) || 0;
                 if (declaration.section === 'income_loss_house_property') {
+                    const absAmount = Math.abs(amount);
                     if (declaration.type === 'income') {
-                        return sum - amount;
+                        return sum - absAmount;
                     } else {
-                        const cappedLoss = declaration.maxLimit ? Math.min(amount, declaration.maxLimit) : Math.min(amount, 200000);
+                        const cappedLoss = declaration.maxLimit ? Math.min(absAmount, declaration.maxLimit) : Math.min(absAmount, 200000);
                         return sum + cappedLoss;
                     }
                 }
@@ -547,21 +556,50 @@ export class TaxDeclarationService extends BaseService {
 
         console.log("*******")
         console.log(request.file)
-        console.log('********');
-        console.log(request.files);
-        console.log("*********")
+        const files = request.files;
+        const body = request.body || {};
 
-        let files = request.files;
+        // HRA validation for > 1,00,000
+        const hraDecl = taxDeclaration.declarations.find(d => d.section === "10_13A" && d.subSection === "rent_paid");
+        if (hraDecl && hraDecl.declaredAmount > 100000) {
+            const isHraUpdate = files.some((f: any) => f.fieldname.startsWith("10_13A_rent_paid"));
+            if (isHraUpdate) {
+                const landlordName = body?.["10_13A_rent_paid_landlordName"] || body?.["landlordName"];
+                const landlordPan = body?.["10_13A_rent_paid_landlordPan"] || body?.["landlordPan"];
+                const panDoc = files.find((f: any) => f.fieldname === "10_13A_rent_paid_landlordPanDoc");
+
+                if (!landlordName) throw new Error("Landlord name is required for HRA declaration above ₹1,00,000");
+                if (!landlordPan) throw new Error("Landlord PAN is required for HRA declaration above ₹1,00,000");
+                if (!panDoc) throw new Error("Landlord PAN document copy is required for HRA declaration above ₹1,00,000");
+            }
+        }
 
         console.log(taxDeclaration, "1 taxDeclaration")
         console.log(files, "1.1 files ")
 
         // 2. Process each uploaded file
         files.forEach((file: any) => {
-            const [section, ...subSectionParts] = file.fieldname.split('_');
-            const subSection = subSectionParts.join('_');
+            const fieldname = file.fieldname;
+            let section = "";
+            let subSection = "";
+
+            // Correctly parse section and subsection by checking against known section IDs
+            for (const sId of TAX_DEDUCTION_SECTION_IDS) {
+                if (fieldname.startsWith(sId + "_")) {
+                    section = sId;
+                    subSection = fieldname.substring(sId.length + 1);
+                    break;
+                }
+            }
+
+            // Fallback to split if no matching section ID found (though unlikely with current constants)
+            if (!section) {
+                const parts = fieldname.split('_');
+                section = parts[0];
+                subSection = parts.slice(1).join('_');
+            }
+
             const timestamp = Date.now();
-            // const ext = path.extname(file.originalname);
             const newFileName = `Tax_Dec_${section}_${subSection}_${userCleanName}_${timestamp}`;
             const uploadDir = path.dirname(file.path);
             const newFilePath = path.join(uploadDir, newFileName);
@@ -571,35 +609,49 @@ export class TaxDeclarationService extends BaseService {
 
             const fileUrl = `http://${request.headers.host}/${newFileName}`;
 
-            console.log(section, subSection, "2.1 section, subsection ")
-            console.log(fileUrl, "2.2 fileUrl")
-            // 3. Find the matching declaration
+            console.log(section, subSection, "2.1 section, subsection identified")
+
+            // 3. Find the matching declaration 
+            // Sub-fields like _landlordPanDoc are matched to the parent subsection (e.g. rent_paid)
             const declaration = taxDeclaration.declarations.find(
-                (decl) => decl.section === section && decl.subSection === subSection
+                (decl) => decl.section === section &&
+                    (decl.subSection === subSection || subSection.startsWith(decl.subSection + '_'))
             );
-            console.log(declaration, "3 declaration")
+
             if (declaration) {
-                // 4. Mark all existing documents as not latest
-                declaration.documents.forEach(doc => doc.isLatestVersion = false);
-                console.log(declaration, "1 declaration")
+                // Determine document type
+                let documentType = "standard";
+                if (subSection.endsWith("_landlordPanDoc")) {
+                    documentType = "landlord_pan_doc";
+                }
+
+                // 4. Mark all existing documents of the same type as not latest
+                declaration.documents.forEach(doc => {
+                    if (doc.documentType === documentType || (!doc.documentType && documentType === "standard")) {
+                        doc.isLatestVersion = false;
+                    }
+                });
+
                 // 4.1 Add new document entry
                 declaration.documents.push({
                     documentName: file.originalname,
                     documentPath: fileUrl,
                     uploadDate: new Date(),
-                    isLatestVersion: true
+                    isLatestVersion: true,
+                    documentType
                 });
+
                 // 6. Update declaration status
-                declaration.lastUpdated = new Date(); // Update last modified timestamp
+                declaration.lastUpdated = new Date();
                 declaration.status = 'document_submitted';
 
                 const body = request.body || {};
-                const specificLandlordName = body[`${section}_${subSection}_landlordName`];
-                const specificLandlordPan = body[`${section}_${subSection}_landlordPan`];
+                const specificLandlordName = body[`${section}_${subSection.split('_')[0]}_landlordName`] || body[`${section}_landlordName`];
+                const specificLandlordPan = body[`${section}_${subSection.split('_')[0]}_landlordPan`] || body[`${section}_landlordPan`];
 
                 if (declaration.rentDetails && declaration.rentDetails.length > 0) {
-                    const landlordName = specificLandlordName || ((section === '10_13A' || section === '80GG') && subSection === 'rent_paid' ? body.landlordName : undefined);
-                    const landlordPan = specificLandlordPan || ((section === '10_13A' || section === '80GG') && subSection === 'rent_paid' ? body.landlordPan : undefined);
+                    const landlordName = specificLandlordName || ((section === '10_13A' || section === '80GG') ? (body.landlordName || body[`${section}_rent_paid_landlordName`]) : undefined);
+                    const landlordPan = specificLandlordPan || ((section === '10_13A' || section === '80GG') ? (body.landlordPan || body[`${section}_rent_paid_landlordPan`]) : undefined);
 
                     if (landlordName || landlordPan) {
                         declaration.rentDetails.forEach((detail: any) => {
@@ -648,8 +700,7 @@ export class TaxDeclarationService extends BaseService {
             }
         }
         // 3. Process declined declarations with resubmission logic
-
-        let totalDeclinedAmount = taxDeclaration.totalDeclinedAmount || 0;
+        let totalDeclinedAmount = 0;
 
         for (const subSection of declinedList) {
             const declaration = taxDeclaration.declarations.find(d => d.subSection === subSection);
@@ -663,7 +714,7 @@ export class TaxDeclarationService extends BaseService {
                     taxDeclaration.poiSubmissionStatus = 'rejected';
                     declaration.resubmissionInfo.resubmissionAllowed = false;
                     declaration.resubmissionInfo.rejectionCount += 1;
-                    totalDeclinedAmount += declaration.declaredAmount || 0;
+                    totalDeclinedAmount += Math.abs(declaration.declaredAmount || 0);
                 } else {
                     // First rejection, allow resubmission
                     declaration.status = "resubmission_requested";
@@ -681,7 +732,7 @@ export class TaxDeclarationService extends BaseService {
                     // Update document status
                     taxDeclaration.poiSubmissionStatus = 'resubmission';
                     taxDeclaration.isResubmitted = true;
-                    totalDeclinedAmount += declaration.declaredAmount || 0;
+                    totalDeclinedAmount += Math.abs(declaration.declaredAmount || 0);
                 }
 
                 // Add review history
@@ -693,6 +744,14 @@ export class TaxDeclarationService extends BaseService {
                 });
             }
         }
+
+        // Add previously declined items to the tally
+        taxDeclaration.declarations.forEach(d => {
+            if ((d.status === "rejected" || d.status === "resubmission_requested") &&
+                !declinedList.includes(d.subSection)) {
+                totalDeclinedAmount += Math.abs(d.declaredAmount || 0);
+            }
+        });
 
 
         // 5. Update total declined amount
@@ -1222,10 +1281,11 @@ export class TaxDeclarationService extends BaseService {
             .reduce((sum, d) => {
                 const amount = d.verifiedAmount || 0;
                 if (d.section === 'income_loss_house_property') {
+                    const absAmount = Math.abs(amount);
                     if (d.type === 'income') {
-                        return sum - amount;
+                        return sum - absAmount;
                     } else {
-                        const cappedLoss = d.maxLimit ? Math.min(amount, d.maxLimit) : Math.min(amount, 200000);
+                        const cappedLoss = d.maxLimit ? Math.min(absAmount, d.maxLimit) : Math.min(absAmount, 200000);
                         return sum + cappedLoss;
                     }
                 }
@@ -1955,6 +2015,72 @@ export class TaxDeclarationService extends BaseService {
         return buffer;
     }
 
+    // Initialize tax history for migration (e.g., in January)
+    // Divides total Yearly Tax by 12, back-fills past months, and locks them as processed.
+    async initializeMigrationTax(id: Types.ObjectId, uptoMonth: string = "Jan"): Promise<ITaxDeclaration> {
+        const taxDeclaration = await TaxDeclaration.findById(id);
+        if (!taxDeclaration) throw new Error('Tax Declaration not found');
+
+        const monthOrder = ["Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Jan", "Feb", "Mar"];
+        const uptoIndex = monthOrder.indexOf(uptoMonth);
+        if (uptoIndex === -1) throw new Error('Invalid month provided for migration initialization');
+
+        // 1. Determine total yearly tax baseline
+        // Use revisedTaxAmount if available, else calculatedTaxAmount
+        const totalYearlyTax = taxDeclaration.revisedTaxAmount || taxDeclaration.calculatedTaxAmount;
+        if (!totalYearlyTax) throw new Error('No tax calculation found to initialize migration');
+
+        // 2. Calculate even monthly split
+        const monthlyShare = Math.floor(totalYearlyTax / 12);
+        let accumulatedHistoryPaid = 0;
+
+        // 3. Update monthly records
+        taxDeclaration.monthlyDeductions.forEach((m) => {
+            const mIndex = monthOrder.indexOf(m.month);
+
+            // Set even split for all months initially
+            m.plannedDeduction = monthlyShare;
+            m.actualDeduction = monthlyShare;
+            m.adjustmentAmount = 0;
+
+            // Lock past months
+            if (mIndex <= uptoIndex) {
+                m.isProcessed = true;
+                m.plannedDate = m.plannedDate || new Date();
+                accumulatedHistoryPaid += monthlyShare;
+            } else {
+                // Keep future months open
+                m.isProcessed = false;
+            }
+        });
+
+        // 4. Handle rounding difference on the last month (March)
+        const roundDiff = totalYearlyTax - (monthlyShare * 12);
+        const marchRecord = taxDeclaration.monthlyDeductions.find(m => m.month === 'Mar');
+        if (marchRecord) {
+            marchRecord.plannedDeduction += roundDiff;
+            marchRecord.actualDeduction += roundDiff;
+        }
+
+        // 5. Update summary fields and set Audit Flag
+        taxDeclaration.taxPaid = accumulatedHistoryPaid;
+        taxDeclaration.remainingTaxToPay = totalYearlyTax - accumulatedHistoryPaid;
+        taxDeclaration.isMigrationAdjusted = true; // Confirmation Flag
+        taxDeclaration.initialTaxCalculated = true;
+
+        // 6. Reset summary flags for a clean 'Source of Truth'
+        taxDeclaration.excessTaxPaid = 0;
+        taxDeclaration.noFurtherTaxDeduction = false;
+        taxDeclaration.taxAdjustmentRequired = false;
+        taxDeclaration.adjustmentAmount = 0;
+        taxDeclaration.monthlyAdjustment = 0;
+        taxDeclaration.adjustmentReason = "migration_initialization";
+
+        console.log(`[MIGRATION INIT] Employee ${taxDeclaration.employeeId}: Total Tax ${totalYearlyTax}, Paid upto ${uptoMonth}: ${accumulatedHistoryPaid}`);
+
+        // Note: Mongoose automatically increments __v on save
+        return await taxDeclaration.save();
+    }
 }
 
 // export const taxDeclarationService = new TaxDeclarationService();
