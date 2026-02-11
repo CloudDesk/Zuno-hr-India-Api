@@ -2168,31 +2168,24 @@ export class TaxDeclarationService extends BaseService {
         const uptoIndex = monthOrder.indexOf(uptoMonth);
         if (uptoIndex === -1) throw new Error('Invalid month provided for migration initialization');
 
-        // 0. Recalculate PT deduction based on regime (only for old regime)
-        const ptDeduction = taxDeclaration.regime === 'old' 
-            ? await this.calculateAnnualPTDeduction(taxDeclaration.employeeId.toString(), taxDeclaration.financialYear)
-            : 0;
-        taxDeclaration.ptDeduction = ptDeduction;
+        // 0. Only update PT deduction if not already set
+        if (!taxDeclaration.ptDeduction || taxDeclaration.ptDeduction === 0) {
+            const ptDeduction = taxDeclaration.regime === 'old' 
+                ? await this.calculateAnnualPTDeduction(taxDeclaration.employeeId.toString(), taxDeclaration.financialYear)
+                : 0;
+            taxDeclaration.ptDeduction = ptDeduction;
+        }
 
-        // 1. Recalculate tax with latest logic (including PT deduction) before initializing migration
-        const recalculatedBreakdown = await this.recalculateTax(taxDeclaration.toObject() as ITaxDeclarationUpdate);
-        taxDeclaration.initialTaxBreakdown = recalculatedBreakdown;
-        taxDeclaration.calculatedTaxAmount = recalculatedBreakdown.finalTaxWithCess;
-        
-        // Reset revisedTaxAmount to match recalculated tax for fresh migration
-        taxDeclaration.revisedTaxAmount = recalculatedBreakdown.finalTaxWithCess;
-        taxDeclaration.previousTaxAmount = recalculatedBreakdown.finalTaxWithCess;
-
-        // 2. Determine total yearly tax baseline
-        // Use the recalculated tax amount
-        const totalYearlyTax = taxDeclaration.calculatedTaxAmount;
+        // 1. Determine total yearly tax baseline from existing tax calculation
+        // Use revisedTaxAmount if available (includes declarations), else calculatedTaxAmount
+        const totalYearlyTax = taxDeclaration.revisedTaxAmount || taxDeclaration.calculatedTaxAmount;
         if (!totalYearlyTax) throw new Error('No tax calculation found to initialize migration');
 
-        // 3. Calculate even monthly split
+        // 2. Calculate even monthly split
         const monthlyShare = Math.floor(totalYearlyTax / 12);
         let accumulatedHistoryPaid = 0;
 
-        // 4. Update monthly records
+        // 3. Update monthly records
         taxDeclaration.monthlyDeductions.forEach((m) => {
             const mIndex = monthOrder.indexOf(m.month);
 
@@ -2212,7 +2205,7 @@ export class TaxDeclarationService extends BaseService {
             }
         });
 
-        // 5. Handle rounding difference on the last month (March)
+        // 4. Handle rounding difference on the last month (March)
         const roundDiff = totalYearlyTax - (monthlyShare * 12);
         const marchRecord = taxDeclaration.monthlyDeductions.find(m => m.month === 'Mar');
         if (marchRecord) {
@@ -2220,13 +2213,13 @@ export class TaxDeclarationService extends BaseService {
             marchRecord.actualDeduction += roundDiff;
         }
 
-        // 6. Update summary fields and set Audit Flag
+        // 5. Update summary fields and set Audit Flag
         taxDeclaration.taxPaid = accumulatedHistoryPaid;
         taxDeclaration.remainingTaxToPay = totalYearlyTax - accumulatedHistoryPaid;
         taxDeclaration.isMigrationInitialized = true; // NEW Flag
         taxDeclaration.initialTaxCalculated = true;
 
-        // 7. Populate migrationAdjustment fields
+        // 6. Populate migrationAdjustment fields
         const processedMonths = uptoIndex + 1; // Months from Apr to uptoMonth (inclusive)
         const remainingMonths = 12 - processedMonths;
         
@@ -2251,7 +2244,7 @@ export class TaxDeclarationService extends BaseService {
             overrideReason: `Migration initialized up to ${uptoMonth} for FY ${taxDeclaration.financialYear}`
         };
 
-        // 8. Reset summary flags for a clean 'Source of Truth'
+        // 7. Reset summary flags for a clean 'Source of Truth'
         taxDeclaration.excessTaxPaid = 0;
         taxDeclaration.noFurtherTaxDeduction = false;
         taxDeclaration.taxAdjustmentRequired = false;
