@@ -40,6 +40,7 @@ export interface IPayroll extends Document {
     leaveDeductions: number;
     reimbursement: number;
     bonus: number;
+    holdSalary?: number; // ✅ NEW: Hold Salary field
     // Final Payroll Calculations
     netSalary: number;
     ctc: number;
@@ -105,6 +106,7 @@ const PayrollSchema = new Schema<IPayroll>(
         leaveDeductions: { type: Number, default: 0 },
         reimbursement: { type: Number, default: 0 },
         bonus: { type: Number, default: 0 },
+        holdSalary: { type: Number, default: 0 }, // ✅ Explicit Hold Salary field
         netSalary: { type: Number, required: true },
         ctc: { type: Number, required: true },
         monthYear: { type: String, required: true },

@@ -564,6 +564,9 @@ export class PayslipService extends BaseService {
         other: formatCurrency(otherAllowanceValue, payroll.country),
         travelAllowance: formatCurrency(travelAllowanceValue, payroll.country), // ✅ Travel Allowance with sanitization
         reimbursement: formatCurrency(reimbursementValue, payroll.country),
+        ...((payroll.holdSalary && payroll.holdSalary > 0) && {
+          holdSalary: formatCurrency(payroll.holdSalary, payroll.country)
+        }), // ✅ NEW: Hold Salary (Only if > 0)
         airTicketAllowance: formatCurrency(sanitizeAmount(payroll.airTicketAllowance), payroll.country), // ✅ NEW: Air Ticket Allowance
         medicalAllowance: formatCurrency(sanitizeAmount(payroll.medicalAllowance), payroll.country), // ✅ NEW: Medical Allowance
         total: formatCurrency(totalEarnings, payroll.country)
@@ -574,6 +577,9 @@ export class PayslipService extends BaseService {
         other: formatCurrency(assignedOtherAllowanceValue, payroll.country),
         travelAllowance: formatCurrency(assignedTravelAllowanceValue, payroll.country), // ✅ Travel Allowance with sanitization
         reimbursement: formatCurrency(assignedReimbursementValue, payroll.country),
+        ...((payroll.holdSalary && payroll.holdSalary > 0) && {
+          holdSalary: formatCurrency(payroll.holdSalary, payroll.country)
+        }), // ✅ NEW: Hold Salary (Only if > 0)
         airTicketAllowance: formatCurrency(sanitizeAmount(payroll.assigned?.airTicketAllowance), payroll.country), // ✅ Annual (for display/reference only)
         medicalAllowance: formatCurrency(sanitizeAmount(payroll.assigned?.medicalAllowance), payroll.country), // ✅ Annual (for display/reference only)
         total: formatCurrency(

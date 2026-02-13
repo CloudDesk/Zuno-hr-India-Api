@@ -1585,7 +1585,22 @@ export async function confirmFinalSettlement(
 
             // 2.4 Mark Income Tax as processed for unpaid months
             // This prevents double-deduction if employee is rehired or payroll is corrected
-            for (const month of settlement.unpaidMonths) {
+
+            // Calculate Total Hold Salary (Net) to add to the main F&F Payslip
+            const totalHoldNet = (settlement.holdPayrolls && settlement.holdPayrolls.length > 0)
+                ? settlement.holdPayrolls.reduce((sum: number, p: any) => sum + (p.netSalary || 0), 0)
+                : 0;
+
+            // Sort unpaid months to ensure we identify the Last Month (LWD Month)
+            const sortedUnpaidMonths = [...settlement.unpaidMonths].sort((a, b) => {
+                if (a.year !== b.year) return a.year - b.year;
+                return a.month - b.month;
+            });
+
+            for (let i = 0; i < sortedUnpaidMonths.length; i++) {
+                const month = sortedUnpaidMonths[i];
+                const isLastMonth = i === sortedUnpaidMonths.length - 1;
+
                 // ✅ AUTO-GENERATE PAYSLIP LOGIC
                 // Create or Update a standard Payroll record for this settled month
                 const monthName = MONTH_NAMES[month.month - 1];
@@ -1660,6 +1675,13 @@ export async function confirmFinalSettlement(
                         (structure.fixedEarnings.otherAllowancePercentage / 100) * monthlyGross
                     );
                 }
+                // ✅ ADD HOLD SALARY TO REIMBURSEMENT (Only for Last Month)
+                const holdSalaryAddition = isLastMonth ? totalHoldNet : 0;
+                // Accumulate to existing reimbursement if any
+                const existingReimbursement = (month as any).reimbursement || 0; // Use manual entry if present, else 0
+
+                const finalReimburseVal = existingReimbursement;
+
 
                 // Calculate total deductions (matching Payroll Service)
                 const totalDeductions = Math.round(
@@ -1676,9 +1698,10 @@ export async function confirmFinalSettlement(
                     month.providentFund -
                     month.incomeTax -
                     month.professionalTax -
-                    month.esi
+                    month.esi +
+                    finalReimburseVal // Add Reimbursement
+                    // holdSalaryAddition  // ❌ REMOVED: Prevent double counting. Hold payrolls are released separately.
                 );
-
                 // Calculate CTC based on country (matching Payroll Service)
                 let ctc: number;
                 if (isUAE) {
@@ -1696,6 +1719,13 @@ export async function confirmFinalSettlement(
                         month.esi // esiEmployer
                     );
                 }
+
+                // Prepare proper values for Assigned (Full Column) vs Actual
+                // ✅ FNF SPECIAL: Use 'periodGross' (Worked + LOP) for Assigned Values
+                // This ensures "Full" column shows the Max Salary for the Period (e.g. 1-14 Feb),
+                // while "Actual" column shows what was earned (deducting LOP).
+                const periodDays = (month.daysWorked || 0) + (month.lopDays || 0);
+                const periodGross = Math.round((periodDays / month.totalDays) * monthlyGross);
 
                 // Prepare payload matching Payroll Service structure
                 const payrollPayload = {
@@ -1740,20 +1770,25 @@ export async function confirmFinalSettlement(
                     // Additional fields
                     overtimeHours: 0,
                     overtimePay: 0,
-                    reimbursement: 0,
+                    reimbursement: finalReimburseVal,
+                    holdSalary: holdSalaryAddition, // ✅ Store Hold Salary explicitly
                     bonus: 0,
 
                     // Assigned values (matching Payroll Service)
                     assigned: {
-                        basic: assignedBasic,
-                        hra: assignedHra,
-                        da: assignedDa,
-                        otherAllowance: assignedOtherAllowance,
-                        travelAllowance: travelAllowanceForAssigned,
+                        basic: Math.round((structure.fixedEarnings.basicPercentage / 100) * periodGross),
+                        hra: Math.round((structure.fixedEarnings.hraPercentage / 100) * periodGross),
+                        da: Math.round((structure.fixedEarnings.daPercentage / 100) * periodGross),
+                        otherAllowance: Math.round(
+                            (structure.fixedEarnings.otherAllowancePercentage / 100) * periodGross
+                        ),
+                        travelAllowance: Math.round(
+                            ((structure.fixedEarnings.travelAllowancePercentage ?? 0) / 100) * periodGross
+                        ),
                         airTicketAllowance: isUAE ? (salaryAssignment.airTicketAllowance || 0) : 0,
                         medicalAllowance: isUAE ? (salaryAssignment.medicalAllowance || 0) : 0,
                         reimbursementAllowance: Math.round(
-                            ((structure.fixedEarnings.reimbursementPercentage ?? 0) / 100) * monthlyGross
+                            ((structure.fixedEarnings.reimbursementPercentage ?? 0) / 100) * periodGross
                         )
                     },
 
