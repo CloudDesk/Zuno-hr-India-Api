@@ -547,19 +547,15 @@ export async function initializeFinalSettlement(
         // ✅ FIX: Filter HOLD payrolls to only include those relevant to the gap
         // AND exclude the LWD month itself so it gets calculated freshly with the specific day cutoff.
         const filteredHoldPayrolls = holdPayrolls.filter(p => {
-            const payrollDate = new Date(p.year, p.month - 1, 1);
-
             // Check if this is exactly the LWD month
             const isLWDMonth = p.year === leavingDate.getFullYear() && p.month === (leavingDate.getMonth() + 1);
 
             // If it's the LWD month, exclude it from Hold list (so it's calc'd fresh in Unpaid Gaps)
             if (isLWDMonth) return false;
 
-            // Include if it's AFTER the resignation date (start of res month) AND on or before leaving date
-            // OR if it's simply "on hold" and hasn't been paid yet (legacy check)
-            const resMonthStart = new Date(resignationDate.getFullYear(), resignationDate.getMonth(), 1);
-
-            return payrollDate >= resMonthStart && payrollDate <= leavingDate;
+            // ✅ FIX: Include ALL Hold Payrolls for settlement (Legacy Dues)
+            // Just exclude the LWD month because it will be calculated fresh as an "Unpaid Gap".
+            return !isLWDMonth;
         });
 
         // Get leave summary for the year of leaving
