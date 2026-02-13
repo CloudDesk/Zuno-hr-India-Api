@@ -1597,15 +1597,18 @@ export async function confirmFinalSettlement(
                     hra: month.components.hra,
                     da: 0,
                     otherAllowance: month.components.otherAllowances,
-                    travelAllowance: month.components.conveyance,
+                    travelAllowance: (month.components as any).travelAllowance || month.components.conveyance || 0, // ✅ Fix key and Fallback
 
                     professionalTax: month.professionalTax,
                     incomeTax: month.incomeTax,
                     epfEmployee: month.providentFund,
+                    epfEmployer: month.providentFund, // ✅ Assuming Equal Match for FNF
                     esiEmployee: month.esi,
+                    esiEmployer: 0, // ✅ Per user request (Simplified)
                     totalDeductions: Math.round(month.professionalTax + month.incomeTax + month.providentFund + month.esi + (month.lopAmount || 0)),
 
                     netSalary: month.salary - (month.professionalTax + month.incomeTax + month.providentFund + month.esi),
+                    ctc: month.salary + month.providentFund, // ✅ Added CTC (Values + Employer PF)
 
                     totalDaysInMonth: month.totalDays,
                     presentDays: month.presentDays,
@@ -1951,7 +1954,7 @@ export async function calculateFinalSettlement(
                 month.components = {
                     basic: Math.round(proratedBasic + proratedDA),
                     hra: Math.round(proratedHRA),
-                    travelAllowance: Math.round(proratedTravelAllowance),
+                    conveyance: Math.round(proratedTravelAllowance), // ✅ Using 'conveyance' to match Schema
                     specialAllowance: 0, // Not used, balancing moved to Other Allowance
                     otherAllowances: Math.round(proratedOtherAllowances + balancing), // Merged here
                     gross: Math.round(pg)
