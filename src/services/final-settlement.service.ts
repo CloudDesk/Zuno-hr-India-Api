@@ -544,11 +544,10 @@ export async function initializeFinalSettlement(
 
         // ✅ FIX: Filter HOLD payrolls to only include those relevant to the gap
         // AND exclude the LWD month itself so it gets calculated freshly with the specific day cutoff.
+        // ✅ FIX: Filter HOLD payrolls to only include those relevant to the gap
+        // AND exclude the LWD month itself so it gets calculated freshly with the specific day cutoff.
         const filteredHoldPayrolls = holdPayrolls.filter(p => {
             const payrollDate = new Date(p.year, p.month - 1, 1);
-            const lastPaidDate = lastPaidPayroll
-                ? new Date(lastPaidPayroll.year, lastPaidPayroll.month - 1, 1)
-                : new Date(0);
 
             // Check if this is exactly the LWD month
             const isLWDMonth = p.year === leavingDate.getFullYear() && p.month === (leavingDate.getMonth() + 1);
@@ -556,7 +555,11 @@ export async function initializeFinalSettlement(
             // If it's the LWD month, exclude it from Hold list (so it's calc'd fresh in Unpaid Gaps)
             if (isLWDMonth) return false;
 
-            return payrollDate > lastPaidDate && payrollDate <= leavingDate;
+            // Include if it's AFTER the resignation date (start of res month) AND on or before leaving date
+            // OR if it's simply "on hold" and hasn't been paid yet (legacy check)
+            const resMonthStart = new Date(resignationDate.getFullYear(), resignationDate.getMonth(), 1);
+
+            return payrollDate >= resMonthStart && payrollDate <= leavingDate;
         });
 
         // Get leave summary for the year of leaving
@@ -1561,23 +1564,24 @@ export async function confirmFinalSettlement(
             await settlement.save({ session });
 
             // 2.3 Release hold payrolls
-            // Per requirement: Hold payrolls should REMAIN 'Hold' in the payroll system.
-            // The amounts are paid out via Final Settlement, but the original payroll record status 
-            // is preserving history. (User request: "hold month is not change complelete")
-            /* 
-            await Payroll.updateMany(
-                { employeeId: new Types.ObjectId(employeeId), status: 'Hold' },
-                {
-                    $set: {
-                        status: 'Completed',
-                        paymentConfirmedAt: new Date(),
-                        payslipReleaseDate: new Date(),
-                        processedAt: new Date()
-                    }
-                },
-                { session }
-            );
-            */
+            // Update the status of all associated hold payrolls to 'Completed'
+            if (settlement.holdPayrolls && settlement.holdPayrolls.length > 0) {
+                const holdPayrollIds = settlement.holdPayrolls.map((p: any) => p.payrollId);
+                await Payroll.updateMany(
+                    { _id: { $in: holdPayrollIds } },
+                    {
+                        $set: {
+                            status: 'Completed',
+                            paymentConfirmedAt: new Date(),
+                            payslipReleaseDate: new Date(),
+                            processedAt: new Date(),
+                            isFinalSettlement: true // Optional: Mark as part of FNF
+                        }
+                    },
+                    { session }
+                );
+                request.log.info(`Released ${holdPayrollIds.length} hold payrolls for FNF`);
+            }
 
             // 2.4 Mark Income Tax as processed for unpaid months
             // This prevents double-deduction if employee is rehired or payroll is corrected

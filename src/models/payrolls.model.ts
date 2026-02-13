@@ -63,6 +63,7 @@ export interface IPayroll extends Document {
     statusHistory?: Array<{ status: string; timestamp: Date; reason?: string; changedBy: Types.ObjectId }>;
     utrNumber?: string; // New field for UTR number in Completed status
     country: string; // 'AE' | 'IN' - Country code for payroll processing
+    isFinalSettlement?: boolean; // ✅ Flag for FNF generated records
     _id?: Types.ObjectId;
 }
 
@@ -138,6 +139,7 @@ const PayrollSchema = new Schema<IPayroll>(
             enum: ['AE', 'IN'],
             description: 'Country code for payroll processing'
         },
+        isFinalSettlement: { type: Boolean, default: false }, // ✅ Flag for FNF generated records
     },
     { timestamps: true },
 );
@@ -146,43 +148,45 @@ PayrollSchema.index({ employeeId: 1, monthYear: 1, month: 1, year: 1 }, { unique
 
 PayrollSchema.pre<IPayroll>('save', async function (next) {
     if (this.isNew) {
-        try {
-            const existingPayroll = await Payroll.findOne({
-                employeeId: this.employeeId,
-                monthYear: this.monthYear,
-                month: this.month,
-                year: this.year,
-            });
+        const existingPayroll = await Payroll.findOne({
+            employeeId: this.employeeId,
+            monthYear: this.monthYear,
+            month: this.month,
+            year: this.year,
+        });
 
-            if (existingPayroll) {
-                return next(new Error('Payroll entry for this employee and period already exists.'));
-            }
-            const monetaryFields = [
-                'assigned.basic', 'assigned.hra', 'assigned.da', 'assigned.otherAllowance', 'assigned.travelAllowance', 'assigned.airTicketAllowance', 'assigned.medicalAllowance', 'assigned.reimbursementAllowance',
-                'monthlyGross', 'basic', 'hra', 'da', 'otherAllowance', 'travelAllowance', 'airTicketAllowance', 'medicalAllowance', 'reimbursementAllowance', 'epfEmployee', 'epfEmployer',
-                'esiEmployee', 'esiEmployer', 'professionalTax', 'incomeTax', 'tdsDeduction', 'totalDeductions', 'additionalDeduction', 'overtimePay',
-                'leaveDeductions', 'reimbursement', 'bonus', 'netSalary', 'ctc',
-            ];
-            monetaryFields.forEach((field) => {
-                const value = this.get(field);
-                if (typeof value === 'number') {
-                    this.set(field, Math.round(value));
-                }
-            });
-            // Ensure non-monetary fields are integers (already handled in logic, but reinforcing here)
-            const integerFields = ['totalDaysInMonth', 'presentDays', 'LOPDays', 'payableDays', 'overtimeHours'];
-            integerFields.forEach((field) => {
-                const value = this.get(field);
-                if (typeof value === 'number') {
-                    this.set(field, Math.floor(value)); // Ensure no decimals
-                }
-            });
-        } catch (err: any) {
-            return next(err);
+        if (existingPayroll) {
+            return next(new Error('Payroll entry for this employee and period already exists.'));
         }
     }
+
+    // Ensure monetary fields are rounded
+    const monetaryFields = [
+        'assigned.basic', 'assigned.hra', 'assigned.da', 'assigned.otherAllowance', 'assigned.travelAllowance', 'assigned.airTicketAllowance', 'assigned.medicalAllowance', 'assigned.reimbursementAllowance',
+        'monthlyGross', 'basic', 'hra', 'da', 'otherAllowance', 'travelAllowance', 'airTicketAllowance', 'medicalAllowance', 'reimbursementAllowance', 'epfEmployee', 'epfEmployer',
+        'esiEmployee', 'esiEmployer', 'professionalTax', 'incomeTax', 'tdsDeduction', 'totalDeductions', 'additionalDeduction', 'overtimePay',
+        'leaveDeductions', 'reimbursement', 'bonus', 'netSalary', 'ctc',
+    ];
+
+    monetaryFields.forEach((field) => {
+        const value = this.get(field);
+        if (typeof value === 'number') {
+            this.set(field, Math.round(value));
+        }
+    });
+
+    // Ensure non-monetary fields are integers (already handled in logic, but reinforcing here)
+    const integerFields = ['totalDaysInMonth', 'presentDays', 'LOPDays', 'payableDays', 'overtimeHours'];
+    integerFields.forEach((field) => {
+        const value = this.get(field);
+        if (typeof value === 'number') {
+            this.set(field, Math.floor(value)); // Ensure no decimals
+        }
+    });
+
     next();
 });
+
 
 export const Payroll = model<IPayroll>('Payroll', PayrollSchema);
 
