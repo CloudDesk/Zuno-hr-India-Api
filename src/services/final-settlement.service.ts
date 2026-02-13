@@ -33,7 +33,8 @@ async function calculateUnpaidGaps(
     leavingDate: Date,
     monthlyGross: number,
     salaryAssignment: any,
-    holdPayrolls: any[]
+    holdPayrolls: any[],
+    resignationDate?: Date // ✅ Added Resignation Date argument
 ) {
     const unpaidMonths = [];
     let totalUnpaidSalary = 0;
@@ -68,16 +69,36 @@ async function calculateUnpaidGaps(
         }
     };
 
-    const calculatePT = (grossSalary: number, monthNumber: number) => {
+    const calculatePT = (grossSalary: number, monthNumber: number, isLWD: boolean) => {
         const ptConfig = salaryAssignment?.salaryStructureId?.statutoryDeductions?.professionalTax;
         if (!ptConfig?.slabs?.length) return 0;
         const { term, slabs } = ptConfig;
+
+        let shouldDeduct = false;
         const applicableMonths: Record<string, number[]> = {
-            half_yearly: [2, 8],
+            half_yearly: [2, 8], // Standard: Feb & Aug
             yearly: [4],
             monthly: Array.from({ length: 12 }, (_, i) => i + 1),
         };
-        if (!applicableMonths[term]?.includes(monthNumber)) return 0;
+
+        // 1. Standard Deduction Check
+        if (applicableMonths[term]?.includes(monthNumber)) {
+            shouldDeduct = true;
+        }
+        // 2. FNF Special Rule (Catch-up for Half-Yearly)
+        // If employee leaves BEFORE the deduction month (Aug or Feb), they are still liable for that half-year.
+        else if (term === 'half_yearly' && isLWD) {
+            // First Half (Apr-Sept): Deduct normally in Aug (8).
+            // If leaving in Apr(4), May(5), Jun(6), Jul(7), force deduction.
+            if ([4, 5, 6, 7].includes(monthNumber)) shouldDeduct = true;
+
+            // Second Half (Oct-Mar): Deduct normally in Feb (2).
+            // If leaving in Oct(10), Nov(11), Dec(12), Jan(1), force deduction.
+            if ([10, 11, 12, 1].includes(monthNumber)) shouldDeduct = true;
+        }
+
+        if (!shouldDeduct) return 0;
+
         for (const slab of slabs) {
             if (grossSalary >= slab.fromAmount && (!slab.toAmount || grossSalary <= slab.toAmount)) {
                 return Number(slab.taxAmount) || 0;
@@ -119,18 +140,29 @@ async function calculateUnpaidGaps(
 
     // Calculation Loop
     // Determine start month
+    let startDate: Date;
     if (lastPaidPayroll) {
-        currentMonth = lastPaidPayroll.month + 1;
-        currentYear = lastPaidPayroll.year;
-        if (currentMonth > 12) {
-            currentMonth = 1;
-            currentYear++;
-        }
+        // Default: Start from Next Month of Last Paid
+        startDate = new Date(lastPaidPayroll.year, lastPaidPayroll.month, 1); // Month is 0-indexed in Date, but LastPaid.month is 1-indexed. So (year, month) is effectively month+1.
+        // ex: Paid Jan (1). Date(Y, 1, 1) = Feb 1. Correct.
     } else {
-        const joinDate = employee.joiningDate || new Date();
-        currentMonth = joinDate.getMonth() + 1;
-        currentYear = joinDate.getFullYear();
+        startDate = employee.joiningDate || new Date();
     }
+
+    // ✅ Requirement: "resignation date to last working date , in between unpaid months only okay"
+    // If resignation date is provided, and it is later than the calculated start date, push the start date forward.
+    // However, usually we can't skip unpaid months between Last Paid and Resignation. 
+    // But if strictly requested:
+    if (resignationDate) {
+        // Align to the first of the resignation month to ensure the full month is considered if applicable
+        const resMonthStart = new Date(resignationDate.getFullYear(), resignationDate.getMonth(), 1);
+        if (resMonthStart > startDate) {
+            startDate = resMonthStart;
+        }
+    }
+
+    currentMonth = startDate.getMonth() + 1;
+    currentYear = startDate.getFullYear();
 
     const holdMonthSet = new Set(
         holdPayrolls.map(p => `${p.year}-${p.month}`)
@@ -197,9 +229,10 @@ async function calculateUnpaidGaps(
                 }
             }
 
-            // Calculate Weekends
+            // Calculate Weekends (Only up to LWD)
             let weekendDaysInMonth = 0;
-            for (let i = 1; i <= maxDays; i++) {
+            const employmentDaysForWeekend = isLWDMonth ? lwdDate.getDate() : daysInMonth;
+            for (let i = 1; i <= employmentDaysForWeekend; i++) {
                 const d = new Date(currentYear, currentMonth - 1, i);
                 const dateStr = `${currentYear}-${String(currentMonth).padStart(2, '0')}-${String(i).padStart(2, '0')}`;
                 if (mandatoryHolidayDateStrs.includes(dateStr)) continue;
@@ -247,8 +280,19 @@ async function calculateUnpaidGaps(
             }
 
             let payableDays = presentDays + weekendDays + holidayDays + leaveDays;
-            if (payableDays > maxDays) payableDays = maxDays;
-            lopDays = Math.max(0, maxDays - payableDays);
+
+            // ✅ LOP Calculation Logic (Updated):
+            // LOP should ONLY be calculated for days within the employment period (1st to LWD or End of Month).
+            // Days AFTER the LWD are NOT LOP; they are simply non-payable, non-employment days.
+
+            const employmentDays = isLWDMonth ? lwdDate.getDate() : daysInMonth;
+
+            // Cap payableDays at employmentDays (just in case)
+            if (payableDays > employmentDays) payableDays = employmentDays;
+
+            // LOP = Employment Days - Payable Days
+            // Ensure we don't return negative LOP
+            lopDays = Math.max(0, employmentDays - payableDays);
 
             // ✅ GUARD 2: Skip if no payable days (CRITICAL - Prevents overpayment)
             if (payableDays <= 0) {
@@ -283,7 +327,7 @@ async function calculateUnpaidGaps(
             const finalGross = proratedGross;
 
             const lopAmount = (monthlyGross / daysInMonth) * lopDays;
-            const ptAmount = Math.round(calculatePT(monthlyGross, currentMonth));
+            const ptAmount = Math.round(calculatePT(monthlyGross, currentMonth, isLWDMonth));
             const pfAmount = calculatePF(proratedBasic, proratedDA);
             const itAmount = await calculateIncomeTax(currentMonth, currentYear);
             const esiAmount = calculateESI();
@@ -379,9 +423,27 @@ async function calculateNoticeData(
     }
 
     const excessInNotice = daysServed - noticePeriodDays;
-    const noticePeriodRecovery = excessInNotice < 0
-        ? Math.abs(excessInNotice) * monthlyGross / 30
-        : 0;
+
+    let noticePeriodRecovery = 0;
+
+    // ✅ Updated Calculation: Annual Days Logic (Day-wise based on month)
+    // If shortfall exists, calculate recovery based on ACTUAL days in the specific months of the shortfall
+    if (excessInNotice < 0) {
+        const shortfallDays = Math.abs(excessInNotice);
+        let currentDate = new Date(leavingDate);
+        currentDate.setDate(currentDate.getDate() + 1); // Start recovery from the day AFTER leaving
+
+        for (let i = 0; i < shortfallDays; i++) {
+            const year = currentDate.getFullYear();
+            const month = currentDate.getMonth(); // 0 = Jan, 1 = Feb
+            const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+            noticePeriodRecovery += monthlyGross / daysInMonth;
+
+            // Move to next day
+            currentDate.setDate(currentDate.getDate() + 1);
+        }
+    }
 
     return { daysServed, excessInNotice, noticePeriodRecovery };
 }
@@ -480,12 +542,20 @@ export async function initializeFinalSettlement(
             status: 'Hold'
         }).sort({ year: 1, month: 1 });
 
-        // ✅ FIX: Filter HOLD payrolls to only include those relevant to the gap (between last paid month and LWD)
+        // ✅ FIX: Filter HOLD payrolls to only include those relevant to the gap
+        // AND exclude the LWD month itself so it gets calculated freshly with the specific day cutoff.
         const filteredHoldPayrolls = holdPayrolls.filter(p => {
             const payrollDate = new Date(p.year, p.month - 1, 1);
             const lastPaidDate = lastPaidPayroll
                 ? new Date(lastPaidPayroll.year, lastPaidPayroll.month - 1, 1)
                 : new Date(0);
+
+            // Check if this is exactly the LWD month
+            const isLWDMonth = p.year === leavingDate.getFullYear() && p.month === (leavingDate.getMonth() + 1);
+
+            // If it's the LWD month, exclude it from Hold list (so it's calc'd fresh in Unpaid Gaps)
+            if (isLWDMonth) return false;
+
             return payrollDate > lastPaidDate && payrollDate <= leavingDate;
         });
 
@@ -530,18 +600,24 @@ export async function initializeFinalSettlement(
             ? new Date(lastPaidPayroll.year, lastPaidPayroll.month - 1, 1)
             : new Date();
 
-        // ✅ Step 5: Leave Encashment on (Basic + DA)
+        // ✅ Step 5: Leave Encashment on (Basic Salary Only)
+        // One Day Basic = Basic Salary / Actual Days in Month
         const alBalance = leaveSummary?.annual?.remaining || 0;
         let encashPerDay = 0;
+
+        // Get actual days in the relevant month (leaving month)
+        const encashDate = leavingDate instanceof Date ? leavingDate : new Date(leavingDate);
+        const daysInEncashMonth = new Date(encashDate.getFullYear(), encashDate.getMonth() + 1, 0).getDate();
+
         const structure = salaryAssignment?.salaryStructureId;
         if (structure) {
             const basicPerc = structure.fixedEarnings?.basicPercentage ?? 0;
-            const daPerc = Number(structure.fixedEarnings?.daPercentage) || 0;
+            // Removed DA from calculation as per requirement
             const basic = monthlyGross * (basicPerc / 100);
-            const da = daPerc === 0 ? 0 : basic * (daPerc / 100);
-            encashPerDay = (basic + da) / 30;
+            encashPerDay = basic / daysInEncashMonth;
         } else {
-            encashPerDay = monthlyGross / 30;
+            // Fallback if no structure (should rarely happen)
+            encashPerDay = monthlyGross / daysInEncashMonth;
         }
 
         // 🔍 DEBUG: Log leave encashment calculation
@@ -575,7 +651,8 @@ export async function initializeFinalSettlement(
             leavingDate,
             monthlyGross,
             salaryAssignment,
-            filteredHoldPayrolls // Use filtered list
+            filteredHoldPayrolls, // Use filtered (which is now ALL) list
+            resignationDate // ✅ Pass resignation date
         );
 
         const {
@@ -603,10 +680,10 @@ export async function initializeFinalSettlement(
 
             // Step 3: Notice Pay
             noticeRequired: noticePeriodDays > 0,
-            noticePeriodDays,
-            daysServed,
-            excessInNotice,
-            noticePeriodRecovery: Math.round(noticePeriodRecovery),
+            noticePeriodDays: noticePeriodDays > 0 ? noticePeriodDays : 0,
+            daysServed: noticePeriodDays > 0 ? daysServed : 0,
+            excessInNotice: noticePeriodDays > 0 ? excessInNotice : 0,
+            noticePeriodRecovery: Math.round(noticePeriodDays > 0 ? noticePeriodRecovery : 0),
 
             // Step 4: Work Days
             lastPaidMonth,
@@ -698,7 +775,7 @@ function packSettlement(settlement: any, data: any) {
         'reimbursements', 'totalReimbursements',
         'otherDeductions', 'totalOtherDeductions',
         'otherAdditions', 'totalOtherAdditions',
-        'status', 'mode', 'pdfUrl',
+        'status', 'mode', 'pdfUrl', 'remarks',
         // ✅ Add missing notice fields
         'noticeRequired', 'daysServed', 'noticePeriodRecovery', 'excessInNotice', 'noticePeriodDays'
     ];
@@ -893,7 +970,35 @@ export async function saveFinalSettlement(
                 };
 
                 m.salary = Math.round(pg);
-                m.professionalTax = Math.round(calculatePT(monthlyGross, m.month));
+
+                // Standard PT Calculation
+                let ptAmount = Math.round(calculatePT(monthlyGross, m.month));
+
+                // ✅ NEW LOGIC: Check for Mid-Term Exit PT Liability (H1/H2 Catch-up)
+                // If employee leaves in Apr-Jul (H1) or Oct-Jan (H2), they owe the tax 
+                // that would normally be deducted in Aug or Feb.
+                const lDate = leavingDate ? new Date(leavingDate) : new Date();
+                const isLeavingMonth = m.year === lDate.getFullYear() && m.month === (lDate.getMonth() + 1);
+
+                if (isLeavingMonth) {
+                    const mNum = m.month;
+                    // H1 Catch-up: Leaving in Apr(4), May(5), Jun(6), Jul(7) -> Owe H1 tax (Simulate Aug deduction)
+                    const h1Catchup = [4, 5, 6, 7].includes(mNum);
+                    // H2 Catch-up: Leaving in Oct(10), Nov(11), Dec(12), Jan(1) -> Owe H2 tax (Simulate Feb deduction)
+                    const h2Catchup = [10, 11, 12, 1].includes(mNum);
+
+                    if (h1Catchup || h2Catchup) {
+                        const deductionMonth = h1Catchup ? 8 : 2;
+                        const forcedPT = Math.round(calculatePT(monthlyGross, deductionMonth));
+
+                        // Apply forced PT if standard calc didn't trigger (which it won't for these months)
+                        if (ptAmount === 0 && forcedPT > 0) {
+                            ptAmount = forcedPT;
+                        }
+                    }
+                }
+
+                m.professionalTax = ptAmount;
                 m.providentFund = Math.round(calculatePF(pb, pd));
                 m.esi = Math.round(calculateESI());
 
@@ -905,23 +1010,26 @@ export async function saveFinalSettlement(
         let totalLeaveAmt = 0;
         if (data.leaveBalance) {
             // SECURITY FIX: Calculate rate from structure (Basic + DA) / 30
+            // SECURITY FIX: Calculate rate from structure (Basic Only) / DaysInMonth
             let safePerDayRate = 0;
             const basicPerc = structure.fixedEarnings?.basicPercentage ?? 0;
-            const daPerc = Number(structure.fixedEarnings?.daPercentage) || 0;
+
+            // Re-calculate days in month for consistency
+            const encashDate = leavingDate ? new Date(leavingDate) : new Date();
+            const daysInEncashMonth = new Date(encashDate.getFullYear(), encashDate.getMonth() + 1, 0).getDate();
 
             if (basicPerc > 0) {
                 const basic = monthlyGross * (basicPerc / 100);
-                const da = daPerc === 0 ? 0 : basic * (daPerc / 100);
-                safePerDayRate = (basic + da) / 30;
+                safePerDayRate = basic / daysInEncashMonth;
             } else {
-                safePerDayRate = monthlyGross / 30;
+                safePerDayRate = monthlyGross / daysInEncashMonth;
             }
 
             // 🔍 DEBUG: Log leave encashment recalculation
             console.log("=== SAVE - LEAVE ENCASHMENT RECALCULATION ===");
             console.log("Monthly Gross:", monthlyGross);
             console.log("Basic %:", basicPerc);
-            console.log("DA %:", daPerc);
+            // console.log("DA %:", daPerc);
             console.log("Safe Per Day Rate:", safePerDayRate);
             console.log("Rounded Per Day Rate:", Math.round(safePerDayRate));
             console.log("==============================================");
@@ -948,8 +1056,50 @@ export async function saveFinalSettlement(
 
         // Notice Recovery
         let noticeRecovery = data.noticePay?.noticePeriodRecovery ?? data.noticePeriodRecovery;
-        if (noticeRecovery === undefined && data.excessInNotice < 0) {
-            noticeRecovery = Math.round(Math.abs(data.excessInNotice) * monthlyGross / 30);
+
+        // ✅ FIX: Use precise day-by-day calculation helper
+        if (data.noticeRequired === false) {
+            noticeRecovery = 0;
+        } else {
+            // Recalculate if not provided or if likely a reset (0) with actual shortfall
+            const shouldRecalculate = noticeRecovery === undefined || (noticeRecovery === 0 && (data.excessInNotice || 0) < 0);
+
+            if (shouldRecalculate) {
+                // Determine notice days - check root, then nested, then fallback to employee default
+                let noticeDays = data.noticePeriodDays;
+                if (noticeDays === undefined && (data as any).noticePay?.noticePeriodDays !== undefined) {
+                    noticeDays = (data as any).noticePay.noticePeriodDays;
+                }
+
+                // If notice days still unknown, try to use existing settlement or employee default
+                if (noticeDays === undefined) {
+                    // This creates a circular dependency if we strictly rely on input. 
+                    // But typically save is called with full state. 
+                    // Fallback to simplistic if we really can't find notice days? 
+                    // No, try to use initialized default from prior fetch.
+                    // For now, assume 0 if missing to avoid blocking save.
+                    noticeDays = 0;
+                }
+
+                if (leavingDate && data.resignationSubmittedOn && monthlyGross > 0) {
+                    // Re-use the helper for consistency with initialize
+                    const noticeData = await calculateNoticeData(
+                        effectiveEmployeeId.toString(),
+                        new Date(data.resignationSubmittedOn),
+                        new Date(leavingDate),
+                        Number(noticeDays),
+                        monthlyGross
+                    );
+
+                    // Only override if we really needed to recalculate
+                    if (noticeData.excessInNotice < 0) {
+                        noticeRecovery = Math.round(noticeData.noticePeriodRecovery);
+                    }
+                } else if ((data.excessInNotice || 0) < 0) {
+                    // Fallback to simplistic if dates are missing but shortfall exists (Legacy fallback)
+                    noticeRecovery = Math.round(Math.abs(data.excessInNotice || 0) * monthlyGross / 30);
+                }
+            }
         }
 
         const totalPayable = Math.round(holdSalaries + totalUnpaid + totalLeaveAmt + totalReimbursements + totalAdditions + gratuity);
@@ -958,11 +1108,28 @@ export async function saveFinalSettlement(
         const netAmount = totalPayable - allDeductions;
 
 
-        // ✅ FIX: Explicitly save Notice Period Metadata in Save Draft
-        if (data.daysServed !== undefined) settlement.daysServed = data.daysServed;
-        if (data.noticeRequired !== undefined) settlement.noticeRequired = data.noticeRequired;
-        if (data.noticePeriodDays !== undefined) settlement.noticePeriodDays = data.noticePeriodDays;
-        if (data.excessInNotice !== undefined) settlement.excessInNotice = data.excessInNotice;
+        // Sanitize Notice Period Data if Notice is NOT Required
+        if (data.noticeRequired === false) {
+            data.daysServed = 0;
+            data.noticePeriodDays = 0;
+            data.excessInNotice = 0;
+            data.noticePeriodRecovery = 0;
+            if (data.finalCalculation) {
+                data.finalCalculation.noticePeriodRecovery = 0;
+            }
+
+            // Explicitly set on settlement too, to be safe
+            settlement.noticeRequired = false;
+            settlement.daysServed = 0;
+            settlement.noticePeriodDays = 0;
+            settlement.excessInNotice = 0;
+            settlement.noticePeriodRecovery = 0;
+        } else {
+            if (data.daysServed !== undefined) settlement.daysServed = data.daysServed;
+            if (data.noticeRequired !== undefined) settlement.noticeRequired = data.noticeRequired;
+            if (data.noticePeriodDays !== undefined) settlement.noticePeriodDays = data.noticePeriodDays;
+            if (data.excessInNotice !== undefined) settlement.excessInNotice = data.excessInNotice;
+        }
 
         // Ensure notice recovery matches calculation or override
         if (data.finalCalculation?.noticePeriodRecovery !== undefined) {
@@ -1049,33 +1216,85 @@ export async function getAllFinalSettlements(
         const status = request.query.status;
         const search = request.query.search?.trim();
 
-        // Build query
-        const query: any = {};
-        if (status === 'Draft' || status === 'Confirmed') {
-            query.status = status;
-        }
-
-        // Add search filter (search by employee name, code, or status)
-        if (search) {
-            query.$or = [
-                { employeeName: { $regex: search, $options: 'i' } },
-                { employeeCode: { $regex: search, $options: 'i' } },
-                { status: { $regex: search, $options: 'i' } } // ✅ Added status to search
-            ];
-        }
-
-        // Calculate pagination
+        // Calculate pagination (if not using aggr pipeline for pagination)
         const skip = (page - 1) * limit;
 
-        // Get total count
-        const total = await FinalSettlement.countDocuments(query);
+        // Base matching for status if provided
+        const matchStage: any = {};
+        if (status === 'Draft' || status === 'Confirmed') {
+            matchStage.status = status;
+        }
 
-        // Get paginated results
-        const settlements = await FinalSettlement.find(query)
-            .populate('employeeId', 'name employeeCode email')
-            .sort({ createdAt: -1 })
-            .skip(skip)
-            .limit(limit);
+        let settlements;
+        let total = 0;
+
+        if (search) {
+            // Aggregation pipeline for Search
+            // 1. Lookup User details
+            // 2. Match regex against User fields OR Settlement fields
+            const pipeline: any[] = [
+                { $match: matchStage },
+                {
+                    $lookup: {
+                        from: 'users',
+                        localField: 'employeeId',
+                        foreignField: '_id',
+                        as: 'employeeDetails'
+                    }
+                },
+                { $unwind: '$employeeDetails' },
+                {
+                    $match: {
+                        $or: [
+                            { 'employeeName': { $regex: search, $options: 'i' } }, // Check direct name
+                            { 'employeeCode': { $regex: search, $options: 'i' } }, // Check direct code
+                            { 'status': { $regex: search, $options: 'i' } },
+                            { 'employeeDetails.name': { $regex: search, $options: 'i' } },
+                            { 'employeeDetails.email': { $regex: search, $options: 'i' } },
+                            { 'employeeDetails.employeeCode': { $regex: search, $options: 'i' } }
+                        ]
+                    }
+                },
+                { $sort: { createdAt: -1 } },
+                {
+                    $facet: {
+                        metadata: [{ $count: 'total' }],
+                        data: [{ $skip: skip }, { $limit: limit }]
+                    }
+                }
+            ];
+
+            const result = await FinalSettlement.aggregate(pipeline);
+            settlements = result[0]?.data || [];
+            total = result[0]?.metadata[0]?.total || 0;
+
+            // Re-map employeeId to match populate structure manually since we unwinded
+            settlements = settlements.map((s: any) => {
+                s.employeeId = s.employeeDetails; // Mimic populate
+                s.employeeName = s.employeeName || s.employeeDetails?.name;
+                s.employeeCode = s.employeeCode || s.employeeDetails?.employeeCode;
+                delete s.employeeDetails;
+                return s;
+            });
+
+        } else {
+            // Standard Find Query (Faster if no deep search needed)
+            const countQuery = FinalSettlement.countDocuments(matchStage);
+            const findQuery = FinalSettlement.find(matchStage)
+                .populate('employeeId', 'name employeeCode email')
+                .lean()
+                .sort({ createdAt: -1 })
+                .skip(skip)
+                .limit(limit);
+
+            const [settlementsData, totalCount] = await Promise.all([findQuery, countQuery]);
+            settlements = settlementsData.map((s: any) => ({
+                ...s,
+                employeeName: s.employeeName || s.employeeId?.name,
+                employeeCode: s.employeeCode || s.employeeId?.employeeCode
+            }));
+            total = totalCount;
+        }
 
         return reply.send({
             success: true,
@@ -1280,14 +1499,16 @@ export async function confirmFinalSettlement(
 
                 let safePerDayRate = 0;
                 const basicPerc = structure.fixedEarnings?.basicPercentage ?? 0;
-                const daPerc = Number(structure.fixedEarnings?.daPercentage) || 0;
+
+                // Re-calculate days in month for consistency (Confirm Step)
+                const encashDate = settlement.leavingDate || new Date();
+                const daysInEncashMonth = new Date(encashDate.getFullYear(), encashDate.getMonth() + 1, 0).getDate();
 
                 if (basicPerc > 0) {
                     const basic = monthlyGross * (basicPerc / 100);
-                    const da = daPerc === 0 ? 0 : basic * (daPerc / 100);
-                    safePerDayRate = (basic + da) / 30;
+                    safePerDayRate = basic / daysInEncashMonth;
                 } else {
-                    safePerDayRate = monthlyGross / 30;
+                    safePerDayRate = monthlyGross / daysInEncashMonth;
                 }
 
                 bodyData.leaveBalance.forEach((l: any) => {
@@ -1300,11 +1521,27 @@ export async function confirmFinalSettlement(
 
 
             // ✅ FIX: Explicitly save Notice Period Metadata
-            // packSettlement might miss these root fields if they are not structured exactly right in bodyData
-            if (bodyData.daysServed !== undefined) settlement.daysServed = bodyData.daysServed;
-            if (bodyData.noticeRequired !== undefined) settlement.noticeRequired = bodyData.noticeRequired;
-            if (bodyData.noticePeriodDays !== undefined) settlement.noticePeriodDays = bodyData.noticePeriodDays;
-            if (bodyData.excessInNotice !== undefined) settlement.excessInNotice = bodyData.excessInNotice;
+            // If notice is NOT required, force these values to 0 for consistency
+            if (bodyData.noticeRequired === false) {
+                bodyData.daysServed = 0;
+                bodyData.noticePeriodDays = 0;
+                bodyData.excessInNotice = 0;
+                bodyData.noticePeriodRecovery = 0;
+                if (bodyData.finalCalculation) {
+                    bodyData.finalCalculation.noticePeriodRecovery = 0;
+                }
+
+                settlement.noticeRequired = false;
+                settlement.daysServed = 0;
+                settlement.noticePeriodDays = 0;
+                settlement.excessInNotice = 0;
+                settlement.noticePeriodRecovery = 0;
+            } else {
+                if (bodyData.daysServed !== undefined) settlement.daysServed = bodyData.daysServed;
+                if (bodyData.noticeRequired !== undefined) settlement.noticeRequired = bodyData.noticeRequired;
+                if (bodyData.noticePeriodDays !== undefined) settlement.noticePeriodDays = bodyData.noticePeriodDays;
+                if (bodyData.excessInNotice !== undefined) settlement.excessInNotice = bodyData.excessInNotice;
+            }
 
             // Ensure notice recovery matches calculation
             if (bodyData.finalCalculation?.noticePeriodRecovery !== undefined) {
@@ -1324,21 +1561,114 @@ export async function confirmFinalSettlement(
             await settlement.save({ session });
 
             // 2.3 Release hold payrolls
+            // Per requirement: Hold payrolls should REMAIN 'Hold' in the payroll system.
+            // The amounts are paid out via Final Settlement, but the original payroll record status 
+            // is preserving history. (User request: "hold month is not change complelete")
+            /* 
             await Payroll.updateMany(
                 { employeeId: new Types.ObjectId(employeeId), status: 'Hold' },
-                { $set: { status: 'Processed' } },
+                {
+                    $set: {
+                        status: 'Completed',
+                        paymentConfirmedAt: new Date(),
+                        payslipReleaseDate: new Date(),
+                        processedAt: new Date()
+                    }
+                },
                 { session }
             );
+            */
 
             // 2.4 Mark Income Tax as processed for unpaid months
             // This prevents double-deduction if employee is rehired or payroll is corrected
             for (const month of settlement.unpaidMonths) {
+                // ✅ AUTO-GENERATE PAYSLIP LOGIC
+                // Create or Update a standard Payroll record for this settled month
+                const monthName = MONTH_NAMES[month.month - 1];
+
+                // Prepare common payload
+                const payrollPayload = {
+                    salaryAssignmentId: (await SalaryAssignment.findOne({ employeeId: new Types.ObjectId(employeeId) }).sort({ effectiveFrom: -1 }).session(session))?._id,
+                    country: employee.country || 'IN',
+                    monthYear: `${month.year}-${String(month.month).padStart(2, '0')}`,
+
+                    // Actual Calculated Values from FNF
+                    basic: month.components.basic,
+                    hra: month.components.hra,
+                    da: 0,
+                    otherAllowance: month.components.otherAllowances,
+                    travelAllowance: month.components.conveyance,
+
+                    professionalTax: month.professionalTax,
+                    incomeTax: month.incomeTax,
+                    epfEmployee: month.providentFund,
+                    esiEmployee: month.esi,
+                    totalDeductions: Math.round(month.professionalTax + month.incomeTax + month.providentFund + month.esi + (month.lopAmount || 0)),
+
+                    netSalary: month.salary - (month.professionalTax + month.incomeTax + month.providentFund + month.esi),
+
+                    totalDaysInMonth: month.totalDays,
+                    presentDays: month.presentDays,
+                    payableDays: month.daysWorked,
+                    LOPDays: month.lopDays,
+                    leaveDeductions: month.lopAmount,
+
+                    status: 'Completed',
+                    paymentConfirmedAt: new Date(),
+                    payslipReleaseDate: new Date(),
+                    processedAt: new Date()
+                };
+
+                const existingPayroll = await Payroll.findOne({
+                    employeeId: new Types.ObjectId(employeeId),
+                    month: month.month,
+                    year: month.year
+                }).session(session);
+
+                if (existingPayroll) {
+                    await Payroll.updateOne(
+                        { _id: existingPayroll._id },
+                        { $set: payrollPayload },
+                        { session }
+                    );
+                    request.log.info(`Updated existing payslip for FNF month: ${monthName} ${month.year}`);
+                } else {
+                    // For new payrolls, we need to add the static fields (assignments etc)
+                    // (Simplification: relying on the minimal payload + existing logic or re-fetching structure if needed for full compliance, 
+                    // but FNF-generated payslips primarily need the Final values. I'll rely on the simplified update above for consistency).
+                    const salaryAssignment = await SalaryAssignment.findOne({
+                        employeeId: new Types.ObjectId(employeeId)
+                    }).sort({ effectiveFrom: -1 }).populate('salaryStructureId').session(session);
+                    const structure = salaryAssignment?.salaryStructureId;
+
+                    const newPayroll = new Payroll({
+                        employeeId: new Types.ObjectId(employeeId),
+                        month: month.month, // ✅ Critical: Missing in payload (Number)
+                        year: month.year,   // ✅ Critical: Missing in payload (Number)
+                        ...payrollPayload,
+                        assigned: {
+                            basic: Math.round((salaryAssignment?.monthlyGross || 0) * ((structure as any)?.fixedEarnings?.basicPercentage / 100) || 0),
+                            hra: Math.round((salaryAssignment?.monthlyGross || 0) * ((structure as any)?.fixedEarnings?.hraPercentage / 100) || 0),
+                            da: Math.round((salaryAssignment?.monthlyGross || 0) * ((structure as any)?.fixedEarnings?.daPercentage / 100) || 0),
+                            otherAllowance: Math.round((salaryAssignment?.monthlyGross || 0) * ((structure as any)?.fixedEarnings?.otherAllowancePercentage / 100) || 0),
+                            travelAllowance: Math.round((salaryAssignment?.monthlyGross || 0) * ((structure as any)?.fixedEarnings?.travelAllowancePercentage / 100) || 0),
+                            airTicketAllowance: 0,
+                            medicalAllowance: 0,
+                            reimbursementAllowance: 0
+                        },
+                        monthlyGross: salaryAssignment?.monthlyGross || 0,
+                        attendanceAdjustGross: 0,
+                    });
+
+                    await newPayroll.save({ session });
+                    request.log.info(`Auto-generated new payslip for FNF month: ${monthName} ${month.year}`);
+                }
+
                 if (month.incomeTax > 0) {
                     const financialYear = month.month <= 3
                         ? `${month.year - 1}-${month.year}`
                         : `${month.year}-${month.year + 1}`;
 
-                    const monthName = MONTH_NAMES[month.month - 1];
                     const monthShortName = MONTH_SHORT_NAMES[monthName];
 
                     try {
@@ -1613,7 +1943,7 @@ export async function calculateFinalSettlement(
                 const balancing = pg - (proratedBasic + proratedDA + proratedHRA + proratedTravelAllowance + proratedOtherAllowances);
 
                 const lopAmount = (monthlyGross / daysInMonth) * lopDays;
-                const ptAmount = Math.round(calculatePT(monthlyGross, month.month));
+                // const ptAmount removed to avoid redeclaration
                 const pfAmount = calculatePF(proratedBasic, proratedDA);
                 // const itAmount = await calculateIncomeTax(month.month, month.year); 
                 const esiAmount = calculateESI();
@@ -1631,6 +1961,35 @@ export async function calculateFinalSettlement(
 
                 // 2. Recalculate Statutory
                 month.salary = Math.round(pg);
+
+                // Standard PT Calculation
+                let ptAmount = Math.round(calculatePT(monthlyGross, month.month));
+
+                // ✅ NEW LOGIC: Check for Mid-Term Exit PT Liability (H1/H2 Catch-up)
+                // If employee leaves in Apr-Jul (H1) or Oct-Jan (H2), they owe the tax 
+                // that would normally be deducted in Aug or Feb.
+                // We need to determine if this 'month' is the leaving month.
+                // UNPAID MONTHS are iterated. The specific month might be the leaving month.
+                const leavingDateObj = data.leavingDate ? new Date(data.leavingDate) : new Date();
+                const isLeavingMonth = month.year === leavingDateObj.getFullYear() && month.month === (leavingDateObj.getMonth() + 1);
+
+                if (isLeavingMonth) {
+                    const mNum = month.month;
+                    // H1 Catch-up: Leaving in Apr(4), May(5), Jun(6), Jul(7) -> Owe H1 tax (Simulate Aug deduction)
+                    const h1Catchup = [4, 5, 6, 7].includes(mNum);
+                    // H2 Catch-up: Leaving in Oct(10), Nov(11), Dec(12), Jan(1) -> Owe H2 tax (Simulate Feb deduction)
+                    const h2Catchup = [10, 11, 12, 1].includes(mNum);
+
+                    if (h1Catchup || h2Catchup) {
+                        const deductionMonth = h1Catchup ? 8 : 2;
+                        const forcedPT = Math.round(calculatePT(monthlyGross, deductionMonth));
+
+                        if (ptAmount === 0 && forcedPT > 0) {
+                            ptAmount = forcedPT;
+                        }
+                    }
+                }
+
                 month.professionalTax = ptAmount;
                 month.providentFund = pfAmount;
                 month.esi = esiAmount;
@@ -1648,24 +2007,32 @@ export async function calculateFinalSettlement(
 
         // RECALCULATION LOGIC: Recalculate leave encashment amounts based on SAFE perDayRate
         let totalLeaveEncashment = 0;
-        if (data.leaveBalance) {
-            // SECURITY FIX: Calculate rate from structure (Basic + DA) / 30
-            let safePerDayRate = 0;
+        // ✅ Step 5: Leave Encashment on (Basic Salary Only)
+        // One Day Basic = Basic Salary / Actual Days in Month
+        // const leaveSummary = (data as any).leaveSummary; // Assuming leaveSummary is available in data
+        // const alBalance = leaveSummary?.annual?.remaining || 0;
+        let encashPerDay = 0;
+
+        // Get actual days in the relevant month (leaving month)
+        const encashDate = data.leavingDate ? (data.leavingDate instanceof Date ? data.leavingDate : new Date(data.leavingDate)) : new Date();
+        const daysInEncashMonth = new Date(encashDate.getFullYear(), encashDate.getMonth() + 1, 0).getDate();
+
+        // const structure = salaryAssignment?.salaryStructureId; // Already defined above
+        if (structure) {
             const basicPerc = structure.fixedEarnings?.basicPercentage ?? 0;
-            const daPerc = Number(structure.fixedEarnings?.daPercentage) || 0;
+            // Removed DA from calculation as per requirement
+            const basic = monthlyGross * (basicPerc / 100);
+            encashPerDay = basic / daysInEncashMonth;
+        } else {
+            // Fallback if no structure (should rarely happen)
+            encashPerDay = monthlyGross / daysInEncashMonth;
+        }
 
-            if (basicPerc > 0) {
-                const basic = monthlyGross * (basicPerc / 100);
-                const da = daPerc === 0 ? 0 : basic * (daPerc / 100);
-                safePerDayRate = (basic + da) / 30;
-            } else {
-                safePerDayRate = monthlyGross / 30;
-            }
-
+        if (data.leaveBalance) {
             for (const l of data.leaveBalance) {
                 // Backend trusts its own perDayRate (Basic+DA) logic provided during init
-                l.perDayRate = Math.round(safePerDayRate);
-                l.encashAmount = Math.round((Number(l.encashDays) || 0) * safePerDayRate);
+                l.perDayRate = Math.round(encashPerDay); // Use the newly calculated encashPerDay
+                l.encashAmount = Math.round((Number(l.encashDays) || 0) * encashPerDay);
                 totalLeaveEncashment += l.encashAmount;
             }
         }
@@ -1678,16 +2045,45 @@ export async function calculateFinalSettlement(
 
         let noticeRecovery = 0;
 
-        if (data.noticePeriodRecovery !== undefined) {
-            // Manual override from root (honored)
-            noticeRecovery = data.noticePeriodRecovery;
-        } else if ((data as any).noticePay?.noticePeriodRecovery !== undefined) {
-            // Manual override from nested object (Legacy/Alternative format)
-            noticeRecovery = (data as any).noticePay.noticePeriodRecovery;
-        } else if (data.excessInNotice && data.excessInNotice < 0) {
-            // Auto-calculate notice recovery if no override provided
-            if (monthlyGross > 0) {
-                noticeRecovery = Math.abs(data.excessInNotice) * monthlyGross / 30;
+        if (data.noticeRequired === false) {
+            noticeRecovery = 0;
+        } else {
+            // Check for manual override provided in request
+            const manualRecovery = (data.noticePeriodRecovery !== undefined)
+                ? data.noticePeriodRecovery
+                : (data as any).noticePay?.noticePeriodRecovery;
+
+            // If manual recovery is provided and non-zero, favor it (User Override)
+            // If it is 0, we treat it as "Please Recalculate" if there is a shortfall
+            const hasManualOverride = manualRecovery !== undefined && manualRecovery !== 0;
+
+            if (hasManualOverride) {
+                noticeRecovery = manualRecovery;
+            } else {
+                // ✅ Recalculate using precise helper
+                const resignationDate = (data as any).resignationSubmittedOn ? new Date((data as any).resignationSubmittedOn) : null;
+                const leavingDateForNotice = data.leavingDate ? new Date(data.leavingDate) : null;
+
+                // Get notice days from payload or nested
+                const noticeDays = (data.noticePeriodDays !== undefined)
+                    ? Number(data.noticePeriodDays)
+                    : Number((data as any).noticePay?.noticePeriodDays || 0);
+
+                if (resignationDate && leavingDateForNotice && monthlyGross > 0) {
+                    const calculatedNotice = await calculateNoticeData(
+                        (data.employeeId || "").toString(),
+                        resignationDate,
+                        leavingDateForNotice,
+                        noticeDays,
+                        monthlyGross
+                    );
+
+                    // Use the auto-calculated recovery
+                    noticeRecovery = Math.round(calculatedNotice.noticePeriodRecovery);
+                } else if ((data.excessInNotice || 0) < 0) {
+                    // Fallback simplistic if dates missing (should not happen in calculate preview)
+                    noticeRecovery = Math.abs(data.excessInNotice || 0) * monthlyGross / 30;
+                }
             }
         }
 

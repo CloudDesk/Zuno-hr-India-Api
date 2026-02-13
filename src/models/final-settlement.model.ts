@@ -150,6 +150,7 @@ export interface IFinalSettlement extends Document {
     confirmedAt?: Date;
     confirmedBy?: Types.ObjectId;
     pdfUrl?: string;
+    remarks?: string;
 
     // Metadata
     createdAt: Date;
@@ -305,7 +306,8 @@ const finalSettlementSchema = new Schema<IFinalSettlement>(
         initiatedBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
         confirmedAt: { type: Date },
         confirmedBy: { type: Schema.Types.ObjectId, ref: 'User' },
-        pdfUrl: { type: String }
+        pdfUrl: { type: String },
+        remarks: { type: String }
     },
     {
         timestamps: true

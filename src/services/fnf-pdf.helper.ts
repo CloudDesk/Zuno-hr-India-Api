@@ -96,12 +96,13 @@ export async function generateFNFLetter(settlement: any, employee: any): Promise
         // Header / Employee Details
         empNo: settlement.employeeCode,
         empName: settlement.employeeName,
-        empDept: (employee as any).department || (employee as any).departmentId?.name || '',
-        empDesig: (employee as any).designation || (employee as any).designationId?.name || (employee as any).role || '',
+        empDept: (employee as any).department || (employee as any).departmentId || 'N/A',
+        empDesig: (employee as any).designation || (employee as any).specificRole || (employee as any).role || 'N/A',
         empLocation: (employee as any).location || 'Chennai',
         joiningDate: formatDate((employee as any).joiningDate),
         resignDate: formatDate(settlement.resignationSubmittedOn),
         leavingDate: formatDate(settlement.leavingDate),
+        remarks: settlement.remarks || '',
 
         // ✅ FIX: Show 0 instead of null for numeric fields
         noticePeriod: settlement.noticePeriodDays || 0,
@@ -116,9 +117,9 @@ export async function generateFNFLetter(settlement: any, employee: any): Promise
         lopDays: (settlement.unpaidMonths.reduce((sum: number, m: any) => sum + (m.lopDays || 0), 0)) +
             (settlement.holdPayrolls?.reduce((sum: number, h: any) => sum + (h.lopDays || 0), 0) || 0),
 
-        // ✅ Effective workdays = SUM of daysWorked from BOTH unpaidMonths AND holdPayrolls
-        effectiveWorkdays: (settlement.unpaidMonths.reduce((sum: number, m: any) => sum + (m.daysWorked || 0), 0)) +
-            (settlement.holdPayrolls?.reduce((sum: number, h: any) => sum + (h.daysWorked || 0), 0) || 0),
+        // ✅ Effective workdays = Sum of Present Days in Unpaid Months + Sum of Present Days in Hold Months
+        effectiveWorkdays: (settlement.unpaidMonths.reduce((sum: number, m: any) => sum + (m.presentDays || 0), 0)) +
+            (settlement.holdPayrolls?.reduce((sum: number, h: any) => sum + (h.presentDays || 0), 0) || 0),
 
         // ✅ INCOME / EARNINGS (Payslip Style - Only add properties if value > 0)
         income: (() => {
