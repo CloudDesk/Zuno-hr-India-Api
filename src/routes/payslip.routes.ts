@@ -103,7 +103,7 @@ export const payslipRoutes: RouteHandler = async (
             ...filters,
             status: Array.isArray(filters?.status) && filters.status.length > 0
               ? filters.status
-              : ['Active'],
+              : ['Active', 'Resigned'],
           };
           finalUserIds = await request.container!.payrollService.getUserIdsByFilters(finalFilters, monthYear, 'onlyCompleted');
         }

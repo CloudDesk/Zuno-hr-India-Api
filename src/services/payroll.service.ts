@@ -489,12 +489,17 @@ export class PayrollService extends BaseService {
 
             if (status.includes('Resigned')) {
                 statusFilters.push({
-                    resignations: {
-                        $elemMatch: {
-                            status: 'Approved',
-                            isActive: true,
+                    $or: [
+                        {
+                            resignations: {
+                                $elemMatch: {
+                                    status: 'Approved',
+                                    isActive: true,
+                                },
+                            },
                         },
-                    },
+                        { finalSettlementDone: true }
+                    ]
                 });
             }
 
