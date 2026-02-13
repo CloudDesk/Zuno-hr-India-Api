@@ -1590,40 +1590,179 @@ export async function confirmFinalSettlement(
                 // Create or Update a standard Payroll record for this settled month
                 const monthName = MONTH_NAMES[month.month - 1];
 
-                // Prepare common payload
+                // Fetch salary assignment for proper structure
+                const salaryAssignment = await SalaryAssignment.findOne({
+                    employeeId: new Types.ObjectId(employeeId)
+                }).sort({ effectiveFrom: -1 }).populate('salaryStructureId').session(session);
+
+                if (!salaryAssignment) {
+                    throw new Error(`No salary assignment found for employee ${employeeId}`);
+                }
+
+                const monthlyGross = salaryAssignment.monthlyGross;
+                const structure = salaryAssignment.salaryStructureId as any;
+                const employeeCountry = employee.country || 'IN';
+                const isUAE = employeeCountry === 'AE';
+
+                // Calculate attendance adjusted gross (same as Payroll Service)
+                const attendanceAdjustedGross = Math.round((month.daysWorked / month.totalDays) * monthlyGross);
+
+                // Calculate earnings components (matching Payroll Service logic)
+                const basic = Math.round((structure.fixedEarnings.basicPercentage / 100) * attendanceAdjustedGross);
+                const hra = Math.round((structure.fixedEarnings.hraPercentage / 100) * attendanceAdjustedGross);
+                const da = Math.round((structure.fixedEarnings.daPercentage / 100) * basic);
+
+                // Calculate travel allowance based on country
+                const travelAllowanceFromPercentageProrated = Math.round(
+                    ((structure.fixedEarnings.travelAllowancePercentage ?? 0) / 100) * attendanceAdjustedGross
+                );
+                const travelAllowanceFromAssignment = salaryAssignment.travelAllowance || 0;
+                const travelAllowance = isUAE
+                    ? Math.round((month.daysWorked / month.totalDays) * travelAllowanceFromAssignment)
+                    : travelAllowanceFromPercentageProrated;
+
+                // Calculate other allowance based on country
+                let otherAllowance: number;
+                if (isUAE) {
+                    otherAllowance = Math.round(
+                        attendanceAdjustedGross - (basic + hra + da + travelAllowance)
+                    );
+                } else {
+                    otherAllowance = Math.round(
+                        (structure.fixedEarnings.otherAllowancePercentage / 100) * attendanceAdjustedGross
+                    );
+                }
+
+                const reimbursementAllowance = Math.round(
+                    ((structure.fixedEarnings.reimbursementPercentage ?? 0) / 100) * attendanceAdjustedGross
+                );
+
+                // Air ticket and medical allowances (UAE only, annual)
+                const airTicketAllowance = isUAE ? (salaryAssignment.airTicketAllowance || 0) : 0;
+                const medicalAllowance = isUAE ? (salaryAssignment.medicalAllowance || 0) : 0;
+
+                // Calculate assigned values (full month, not prorated)
+                const assignedBasic = Math.round((structure.fixedEarnings.basicPercentage / 100) * monthlyGross);
+                const assignedHra = Math.round((structure.fixedEarnings.hraPercentage / 100) * monthlyGross);
+                const assignedDa = Math.round((structure.fixedEarnings.daPercentage / 100) * monthlyGross);
+
+                const travelAllowanceForAssigned = isUAE ? travelAllowanceFromAssignment : Math.round(
+                    ((structure.fixedEarnings.travelAllowancePercentage ?? 0) / 100) * monthlyGross
+                );
+
+                let assignedOtherAllowance: number;
+                if (isUAE) {
+                    assignedOtherAllowance = Math.round(
+                        monthlyGross - (assignedBasic + assignedHra + assignedDa + travelAllowanceForAssigned)
+                    );
+                } else {
+                    assignedOtherAllowance = Math.round(
+                        (structure.fixedEarnings.otherAllowancePercentage / 100) * monthlyGross
+                    );
+                }
+
+                // Calculate total deductions (matching Payroll Service)
+                const totalDeductions = Math.round(
+                    month.professionalTax +
+                    month.incomeTax +
+                    month.providentFund +
+                    month.esi +
+                    (month.lopAmount || 0)
+                );
+
+                // Calculate net salary (matching Payroll Service)
+                const netSalary = Math.round(
+                    attendanceAdjustedGross -
+                    month.providentFund -
+                    month.incomeTax -
+                    month.professionalTax -
+                    month.esi
+                );
+
+                // Calculate CTC based on country (matching Payroll Service)
+                let ctc: number;
+                if (isUAE) {
+                    const monthlyComponents = assignedBasic + assignedHra + assignedDa + assignedOtherAllowance + travelAllowanceForAssigned;
+                    ctc = Math.round(
+                        (monthlyComponents * 12) +
+                        (salaryAssignment.airTicketAllowance || 0) +
+                        (salaryAssignment.medicalAllowance || 0) +
+                        ((salaryAssignment.monthlyInsurance || 0) * 12)
+                    );
+                } else {
+                    ctc = Math.round(
+                        attendanceAdjustedGross +
+                        month.providentFund + // epfEmployer
+                        month.esi // esiEmployer
+                    );
+                }
+
+                // Prepare payload matching Payroll Service structure
                 const payrollPayload = {
-                    salaryAssignmentId: (await SalaryAssignment.findOne({ employeeId: new Types.ObjectId(employeeId) }).sort({ effectiveFrom: -1 }).session(session))?._id,
-                    country: employee.country || 'IN',
+                    salaryAssignmentId: salaryAssignment._id,
+                    country: employeeCountry,
                     monthYear: `${month.year}-${String(month.month).padStart(2, '0')}`,
 
-                    // Actual Calculated Values from FNF
-                    basic: month.components.basic,
-                    hra: month.components.hra,
-                    da: 0,
-                    otherAllowance: month.components.otherAllowances,
-                    travelAllowance: (month.components as any).travelAllowance || month.components.conveyance || 0, // ✅ Fix key and Fallback
+                    // Earnings (matching Payroll Service calculations)
+                    basic,
+                    hra,
+                    da,
+                    otherAllowance,
+                    travelAllowance,
+                    airTicketAllowance,
+                    medicalAllowance,
+                    reimbursementAllowance,
 
+                    // Deductions (from FNF calculations)
                     professionalTax: month.professionalTax,
                     incomeTax: month.incomeTax,
                     epfEmployee: month.providentFund,
-                    epfEmployer: month.providentFund, // ✅ Assuming Equal Match for FNF
+                    epfEmployer: month.providentFund,
                     esiEmployee: month.esi,
-                    esiEmployer: 0, // ✅ Per user request (Simplified)
-                    totalDeductions: Math.round(month.professionalTax + month.incomeTax + month.providentFund + month.esi + (month.lopAmount || 0)),
+                    esiEmployer: month.esi,
+                    tdsDeduction: 0,
+                    additionalDeduction: 0,
+                    totalDeductions,
+                    leaveDeductions: month.lopAmount || 0,
 
-                    netSalary: month.salary - (month.professionalTax + month.incomeTax + month.providentFund + month.esi),
-                    ctc: month.salary + month.providentFund, // ✅ Added CTC (Values + Employer PF)
+                    // Salary calculations
+                    monthlyGross,
+                    attendanceAdjustedGross,
+                    netSalary,
+                    ctc,
 
+                    // Attendance data
                     totalDaysInMonth: month.totalDays,
                     presentDays: month.presentDays,
                     payableDays: month.daysWorked,
                     LOPDays: month.lopDays,
-                    leaveDeductions: month.lopAmount,
 
+                    // Additional fields
+                    overtimeHours: 0,
+                    overtimePay: 0,
+                    reimbursement: 0,
+                    bonus: 0,
+
+                    // Assigned values (matching Payroll Service)
+                    assigned: {
+                        basic: assignedBasic,
+                        hra: assignedHra,
+                        da: assignedDa,
+                        otherAllowance: assignedOtherAllowance,
+                        travelAllowance: travelAllowanceForAssigned,
+                        airTicketAllowance: isUAE ? (salaryAssignment.airTicketAllowance || 0) : 0,
+                        medicalAllowance: isUAE ? (salaryAssignment.medicalAllowance || 0) : 0,
+                        reimbursementAllowance: Math.round(
+                            ((structure.fixedEarnings.reimbursementPercentage ?? 0) / 100) * monthlyGross
+                        )
+                    },
+
+                    // Status fields (Completed for Final Settlement - main difference from Draft)
                     status: 'Completed',
                     paymentConfirmedAt: new Date(),
                     payslipReleaseDate: new Date(),
-                    processedAt: new Date()
+                    processedAt: new Date(),
+                    isFinalSettlement: true
                 };
 
                 const existingPayroll = await Payroll.findOne({
@@ -1640,31 +1779,12 @@ export async function confirmFinalSettlement(
                     );
                     request.log.info(`Updated existing payslip for FNF month: ${monthName} ${month.year}`);
                 } else {
-                    // For new payrolls, we need to add the static fields (assignments etc)
-                    // (Simplification: relying on the minimal payload + existing logic or re-fetching structure if needed for full compliance, 
-                    // but FNF-generated payslips primarily need the Final values. I'll rely on the simplified update above for consistency).
-                    const salaryAssignment = await SalaryAssignment.findOne({
-                        employeeId: new Types.ObjectId(employeeId)
-                    }).sort({ effectiveFrom: -1 }).populate('salaryStructureId').session(session);
-                    const structure = salaryAssignment?.salaryStructureId;
-
+                    // Create new payroll with all calculated values
                     const newPayroll = new Payroll({
                         employeeId: new Types.ObjectId(employeeId),
-                        month: month.month, // ✅ Critical: Missing in payload (Number)
-                        year: month.year,   // ✅ Critical: Missing in payload (Number)
-                        ...payrollPayload,
-                        assigned: {
-                            basic: Math.round((salaryAssignment?.monthlyGross || 0) * ((structure as any)?.fixedEarnings?.basicPercentage / 100) || 0),
-                            hra: Math.round((salaryAssignment?.monthlyGross || 0) * ((structure as any)?.fixedEarnings?.hraPercentage / 100) || 0),
-                            da: Math.round((salaryAssignment?.monthlyGross || 0) * ((structure as any)?.fixedEarnings?.daPercentage / 100) || 0),
-                            otherAllowance: Math.round((salaryAssignment?.monthlyGross || 0) * ((structure as any)?.fixedEarnings?.otherAllowancePercentage / 100) || 0),
-                            travelAllowance: Math.round((salaryAssignment?.monthlyGross || 0) * ((structure as any)?.fixedEarnings?.travelAllowancePercentage / 100) || 0),
-                            airTicketAllowance: 0,
-                            medicalAllowance: 0,
-                            reimbursementAllowance: 0
-                        },
-                        monthlyGross: salaryAssignment?.monthlyGross || 0,
-                        attendanceAdjustGross: 0,
+                        month: month.month,
+                        year: month.year,
+                        ...payrollPayload
                     });
 
                     await newPayroll.save({ session });
