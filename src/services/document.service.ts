@@ -1669,6 +1669,9 @@ export class DocumentService extends BaseService {
                 other: formatCurrency(assignedOtherAllowanceValue, normalizedCountry),
                 travelAllowance: formatCurrency(assignedTravelAllowanceValue, normalizedCountry),
                 reimbursement: formatCurrency(assignedReimbursementValue, normalizedCountry),
+                ...((payroll.holdSalary && payroll.holdSalary > 0) && {
+                    holdSalary: formatCurrency(payroll.holdSalary, normalizedCountry)
+                }), // ✅ NEW: Add Hold Salary to Full Column Object
                 total: formatCurrency(
                     assignedBasicValue +
                     assignedHraValue +
