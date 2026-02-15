@@ -113,7 +113,7 @@ export async function generateFNFLetter(settlement: any, employee: any): Promise
         salaryDays: (settlement.unpaidMonths.reduce((sum: number, m: any) => sum + (m.daysWorked || 0), 0)) +
             (settlement.holdPayrolls?.reduce((sum: number, h: any) => sum + (h.daysWorked || 0), 0) || 0),
         monthDays: (settlement.unpaidMonths.reduce((sum: number, m: any) => sum + (m.totalDays || 0), 0)) +
-            (settlement.holdPayrolls?.reduce((sum: number, h: any) => sum + (h.totalDays || 0), 0) || 30),
+            (settlement.holdPayrolls?.reduce((sum: number, h: any) => sum + (h.totalDays || 0), 0) || 0),
         lopDays: (settlement.unpaidMonths.reduce((sum: number, m: any) => sum + (m.lopDays || 0), 0)) +
             (settlement.holdPayrolls?.reduce((sum: number, h: any) => sum + (h.lopDays || 0), 0) || 0),
 
@@ -133,6 +133,9 @@ export async function generateFNFLetter(settlement: any, employee: any): Promise
             }
             if (unpaidHRA > 0) {
                 iObj.unpaidHRA = formatCurrency(unpaidHRA, 'IN');
+            }
+            if (unpaidConveyance > 0) {
+                iObj.unpaidConveyance = formatCurrency(unpaidConveyance, 'IN');
             }
             if (unpaidOtherAllowances > 0) {
                 iObj.unpaidOtherAllowance = formatCurrency(unpaidOtherAllowances, 'IN');
@@ -166,6 +169,7 @@ export async function generateFNFLetter(settlement: any, employee: any): Promise
             if ((settlement.finalCalculation as any).providentFund > 0) dObj.pf = formatCurrency((settlement.finalCalculation as any).providentFund, 'IN');
             if (settlement.finalCalculation.professionalTax > 0) dObj.pt = formatCurrency(settlement.finalCalculation.professionalTax, 'IN');
             if ((settlement.finalCalculation as any).incomeTax > 0) dObj.it = formatCurrency((settlement.finalCalculation as any).incomeTax, 'IN');
+            if ((settlement.finalCalculation as any).esi > 0) dObj.esi = formatCurrency((settlement.finalCalculation as any).esi, 'IN');
             if (totalLOPAmount > 0) dObj.lopDeduction = formatCurrency(totalLOPAmount, 'IN'); // ✅ Matches template {#lopDeduction}
             if (settlement.finalCalculation.noticePeriodRecovery > 0) dObj.noticeRecovery = formatCurrency(settlement.finalCalculation.noticePeriodRecovery, 'IN');
             if (settlement.finalCalculation.otherDeductions > 0) dObj.otherDeduction = formatCurrency(settlement.finalCalculation.otherDeductions, 'IN');

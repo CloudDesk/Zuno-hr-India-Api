@@ -33,8 +33,7 @@ async function calculateUnpaidGaps(
     leavingDate: Date,
     monthlyGross: number,
     salaryAssignment: any,
-    holdPayrolls: any[],
-    resignationDate?: Date // ✅ Added Resignation Date argument
+    holdPayrolls: any[]
 ) {
     const unpaidMonths = [];
     let totalUnpaidSalary = 0;
@@ -149,17 +148,18 @@ async function calculateUnpaidGaps(
         startDate = employee.joiningDate || new Date();
     }
 
-    // ✅ Requirement: "resignation date to last working date , in between unpaid months only okay"
-    // If resignation date is provided, and it is later than the calculated start date, push the start date forward.
-    // However, usually we can't skip unpaid months between Last Paid and Resignation. 
-    // But if strictly requested:
+    // ❌ REMOVED: Previous requirement "resignation date to last working date" caused issues where gaps
+    // between Last Paid (e.g. Dec) and Resignation Month (e.g. Feb) were skipped.
+    // We must calculate ALL unpaid months since the last payroll regardless of resignation date. 
+    /*
     if (resignationDate) {
         // Align to the first of the resignation month to ensure the full month is considered if applicable
         const resMonthStart = new Date(resignationDate.getFullYear(), resignationDate.getMonth(), 1);
         if (resMonthStart > startDate) {
-            startDate = resMonthStart;
+           // startDate = resMonthStart; // DISABLED to allow full gap calculation
         }
     }
+    */
 
     currentMonth = startDate.getMonth() + 1;
     currentYear = startDate.getFullYear();
@@ -168,6 +168,7 @@ async function calculateUnpaidGaps(
         holdPayrolls.map(p => `${p.year}-${p.month}`)
     );
 
+
     // Loop through all months from (lastPaid + 1) to LWD month
     while (
         currentYear < lwdYear ||
@@ -175,198 +176,209 @@ async function calculateUnpaidGaps(
     ) {
         const monthKey = `${currentYear}-${currentMonth}`;
 
-        if (!holdMonthSet.has(monthKey)) {
-            const isLWDMonth = currentYear === lwdYear && currentMonth === lwdMonth;
-            const daysInMonth = new Date(currentYear, currentMonth, 0).getDate();
-            const maxDays = isLWDMonth ? lwdDate.getDate() : daysInMonth;
-
-            const startDate = new Date(currentYear, currentMonth - 1, 1);
-            const endDate = isLWDMonth ? lwdDate : new Date(currentYear, currentMonth, 0);
-            endDate.setHours(23, 59, 59, 999);
-
-            // Fetch attendance
-            const attendanceRecords = await AttendanceRecord.find({
-                userId: new Types.ObjectId(employeeId),
-                shiftDay: {
-                    $gte: startDate,
-                    $lte: endDate
-                }
-            }).select('shiftDay attendanceStatus halfType').lean();
-
-            // Shift Assignment & Weekends
-            const firstDay = new Date(currentYear, currentMonth - 1, 1);
-            const lastDay = new Date(currentYear, currentMonth, 0);
-            const shiftAssignments = await ShiftAssignment.find({
-                userId: new Types.ObjectId(employeeId),
-                $or: [
-                    { endDate: { $exists: false }, startDate: { $lte: lastDay } },
-                    { endDate: { $gte: firstDay }, startDate: { $lte: lastDay } },
-                ],
-            }).select('weekendDays').lean();
-            const weekendDayNumbers = shiftAssignments.length > 0 && shiftAssignments[0].weekendDays?.length
-                ? Array.from(new Set(shiftAssignments.flatMap((s: any) => s.weekendDays || [])))
-                : [0, 6];
-
-            // Mandatory Holidays
-            const userForCalendar = await User.findById(employeeId).select('holidayCalendarHistory').lean();
-            let mandatoryHolidayCount = 0;
-            const mandatoryHolidayDateStrs: string[] = [];
-            if (userForCalendar?.holidayCalendarHistory?.length) {
-                const historyEntry = (userForCalendar as any).holidayCalendarHistory.find(
-                    (e: any) => e.year === currentYear && e.isActive === true
-                );
-                if (historyEntry) {
-                    const cal = await HolidayCalendar.findById(historyEntry.calendarId).select('holidays').lean();
-                    if (cal?.holidays) {
-                        (cal.holidays as any[]).filter((h: any) => {
-                            const d = new Date(h.date);
-                            return d.getFullYear() === currentYear && d.getMonth() === currentMonth - 1 && d.getDate() <= maxDays && h.type === 'mandatory';
-                        }).forEach((h: any) => {
-                            mandatoryHolidayCount++;
-                            mandatoryHolidayDateStrs.push(new Date(h.date).toISOString().split('T')[0]);
-                        });
-                    }
-                }
-            }
-
-            // Calculate Weekends (Only up to LWD)
-            let weekendDaysInMonth = 0;
-            const employmentDaysForWeekend = isLWDMonth ? lwdDate.getDate() : daysInMonth;
-            for (let i = 1; i <= employmentDaysForWeekend; i++) {
-                const d = new Date(currentYear, currentMonth - 1, i);
-                const dateStr = `${currentYear}-${String(currentMonth).padStart(2, '0')}-${String(i).padStart(2, '0')}`;
-                if (mandatoryHolidayDateStrs.includes(dateStr)) continue;
-                if (weekendDayNumbers.includes(d.getDay())) weekendDaysInMonth++;
-            }
-            const holidayDays = mandatoryHolidayCount;
-
-            // Calculate Present
-            let presentDays = 0;
-            const statusList = (arr: string[] | undefined) => Array.isArray(arr) ? arr : [];
-            attendanceRecords.forEach((record: any) => {
-                const arr = statusList(record.attendanceStatus);
-                const isWeekend = record.shiftDay && weekendDayNumbers.includes(new Date(record.shiftDay).getDay());
-                const isPresentLike = arr.includes('Present') || arr.includes('Late') || arr.includes('On-Time') || arr.includes('Early-Exit')
-                    || (arr.includes('Override') && arr.includes('Present'));
-                const isOnLeave = arr.includes('On-Leave');
-                const halfDay = record.halfType && (record.halfType === 'First Half' || record.halfType === 'Second Half');
-                if (!isWeekend && isPresentLike) {
-                    presentDays += (halfDay && isOnLeave) ? 0.5 : 1;
-                }
-            });
-
-            const weekendDays = weekendDaysInMonth;
-
-            // Approved Leaves
-            const leaves = await Leave.find({
-                userId: new Types.ObjectId(employeeId),
-                status: 'Approved',
-                startDate: { $lte: endDate },
-                endDate: { $gte: startDate }
-            });
-
-            let leaveDays = 0;
-            let lopDays = 0;
-
-            for (const leave of leaves) {
-                const leaveStart = leave.startDate < startDate ? startDate : leave.startDate;
-                const leaveEnd = leave.endDate > endDate ? endDate : leave.endDate;
-                const days = Math.floor((leaveEnd.getTime() - leaveStart.getTime()) / (1000 * 60 * 60 * 24)) + 1;
-                if (leave.leaveType === 'LOP' || leave.leaveType === 'Loss Of Pay') {
-                    lopDays += days;
-                } else {
-                    leaveDays += days;
-                }
-            }
-
-            let payableDays = presentDays + weekendDays + holidayDays + leaveDays;
-
-            // ✅ LOP Calculation Logic (Updated):
-            // LOP should ONLY be calculated for days within the employment period (1st to LWD or End of Month).
-            // Days AFTER the LWD are NOT LOP; they are simply non-payable, non-employment days.
-
-            const employmentDays = isLWDMonth ? lwdDate.getDate() : daysInMonth;
-
-            // Cap payableDays at employmentDays (just in case)
-            if (payableDays > employmentDays) payableDays = employmentDays;
-
-            // LOP = Employment Days - Payable Days
-            // Ensure we don't return negative LOP
-            lopDays = Math.max(0, employmentDays - payableDays);
-
-            // ✅ GUARD 2: Skip if no payable days (CRITICAL - Prevents overpayment)
-            if (payableDays <= 0) {
-                incrementMonth();
-                continue;
-            }
-
-            const monthlySalary = (monthlyGross / daysInMonth) * payableDays;
-
-            // Proration Logic (Matched with Payroll Service)
-            const structure = salaryAssignment?.salaryStructureId || {};
-            const basicPerc = structure.fixedEarnings?.basicPercentage ?? 0;
-            const daPerc = Number(structure.fixedEarnings?.daPercentage) || 0;
-            const hraPerc = Number(structure.fixedEarnings?.hraPercentage) || 0;
-            const conveyancePerc = Number(structure.fixedEarnings?.conveyancePercentage) || 0;
-            const otherAllowancePerc = Number(structure.fixedEarnings?.otherAllowancePercentage) || 0;
-
-            const fullBasic = monthlyGross * (basicPerc / 100);
-            const fullDA = daPerc === 0 ? 0 : fullBasic * (daPerc / 100);
-            const fullHRA = monthlyGross * (hraPerc / 100);
-            const fullConveyance = monthlyGross * (conveyancePerc / 100);
-            const fullOtherAllowances = monthlyGross * (otherAllowancePerc / 100);
-
-            const proratedBasic = (fullBasic / daysInMonth) * payableDays;
-            const proratedDA = (fullDA / daysInMonth) * payableDays;
-            const proratedHRA = (fullHRA / daysInMonth) * payableDays;
-            const proratedConveyance = (fullConveyance / daysInMonth) * payableDays;
-            const proratedOtherAllowances = (fullOtherAllowances / daysInMonth) * payableDays;
-            const proratedGross = proratedBasic + proratedDA + proratedHRA + proratedConveyance + proratedOtherAllowances;
-
-            // Note: If (proratedGross !== monthlySalary) due to rounding/residual, add difference to Other Allowance
-            const finalGross = proratedGross;
-
-            const lopAmount = (monthlyGross / daysInMonth) * lopDays;
-            const ptAmount = Math.round(calculatePT(monthlyGross, currentMonth, isLWDMonth));
-            const pfAmount = calculatePF(proratedBasic, proratedDA);
-            const itAmount = await calculateIncomeTax(currentMonth, currentYear);
-            const esiAmount = calculateESI();
-
-            unpaidMonths.push({
-                month: currentMonth,
-                year: currentYear,
-                monthYear: `${currentYear}-${String(currentMonth).padStart(2, '0')}`,
-                totalDays: daysInMonth,
-                daysWorked: payableDays,
-                presentDays: presentDays,
-                weekendDays: weekendDays,
-                holidayDays: holidayDays,
-                leaveDays: leaveDays,
-                lopDays: lopDays,
-                lopAmount: Math.round(lopAmount),
-                components: {
-                    basic: Math.round(proratedBasic + proratedDA),
-                    hra: Math.round(proratedHRA),
-                    conveyance: Math.round(proratedConveyance),
-                    specialAllowance: 0,
-                    otherAllowances: Math.round(proratedOtherAllowances),
-                    gross: Math.round(finalGross)
-                },
-                salary: Math.round(monthlySalary),
-                professionalTax: ptAmount,
-                incomeTax: itAmount,
-                providentFund: pfAmount,
-                esi: esiAmount
-            });
-
-            totalUnpaidSalary += Math.round(monthlySalary);
-            totalDaysWorked += payableDays;
-            totalProfessionalTax += ptAmount;
-            totalProvidentFund += pfAmount;
-            totalIncomeTax += itAmount;
-            totalESI += esiAmount;
-            totalLOPAmount += Math.round(lopAmount);
+        // ✅ LOGIC FIX:
+        // If the month exists in Hold Payrolls, we should SKIP it here.
+        // It will be added to the Final Settlement as a "Hold Salary" component.
+        // We only want to calculate "Unpaid Gaps" for months that are NOT in Hold.
+        if (holdMonthSet.has(monthKey)) {
+            // Skip this month, it's already covered by Hold Payrolls
+            incrementMonth();
+            continue;
         }
+
+        const isLWDMonth = currentYear === lwdYear && currentMonth === lwdMonth;
+        const daysInMonth = new Date(currentYear, currentMonth, 0).getDate();
+
+        // If it is the LWD month, we limit the calculation to the LWD date.
+        // Otherwise, it's a full unpaid month.
+        const maxDays = isLWDMonth ? lwdDate.getDate() : daysInMonth;
+
+        const periodStartDate = new Date(currentYear, currentMonth - 1, 1);
+        const endDate = isLWDMonth ? lwdDate : new Date(currentYear, currentMonth, 0);
+        endDate.setHours(23, 59, 59, 999);
+
+        // Fetch attendance
+        const attendanceRecords = await AttendanceRecord.find({
+            userId: new Types.ObjectId(employeeId),
+            shiftDay: {
+                $gte: periodStartDate,
+                $lte: endDate
+            }
+        }).select('shiftDay attendanceStatus halfType').lean();
+
+        // Shift Assignment & Weekends
+        const firstDay = new Date(currentYear, currentMonth - 1, 1);
+        const lastDay = new Date(currentYear, currentMonth, 0);
+        const shiftAssignments = await ShiftAssignment.find({
+            userId: new Types.ObjectId(employeeId),
+            $or: [
+                { endDate: { $exists: false }, startDate: { $lte: lastDay } },
+                { endDate: { $gte: firstDay }, startDate: { $lte: lastDay } },
+            ],
+        }).select('weekendDays').lean();
+        const weekendDayNumbers = shiftAssignments.length > 0 && shiftAssignments[0].weekendDays?.length
+            ? Array.from(new Set(shiftAssignments.flatMap((s: any) => s.weekendDays || [])))
+            : [0, 6];
+
+        // Mandatory Holidays
+        const userForCalendar = await User.findById(employeeId).select('holidayCalendarHistory').lean();
+        let mandatoryHolidayCount = 0;
+        const mandatoryHolidayDateStrs: string[] = [];
+        if (userForCalendar?.holidayCalendarHistory?.length) {
+            const historyEntry = (userForCalendar as any).holidayCalendarHistory.find(
+                (e: any) => e.year === currentYear && e.isActive === true
+            );
+            if (historyEntry) {
+                const cal = await HolidayCalendar.findById(historyEntry.calendarId).select('holidays').lean();
+                if (cal?.holidays) {
+                    (cal.holidays as any[]).filter((h: any) => {
+                        const d = new Date(h.date);
+                        return d.getFullYear() === currentYear && d.getMonth() === currentMonth - 1 && d.getDate() <= maxDays && h.type === 'mandatory';
+                    }).forEach((h: any) => {
+                        mandatoryHolidayCount++;
+                        mandatoryHolidayDateStrs.push(new Date(h.date).toISOString().split('T')[0]);
+                    });
+                }
+            }
+        }
+
+        // Calculate Weekends (Only up to LWD)
+        let weekendDaysInMonth = 0;
+        const employmentDaysForWeekend = isLWDMonth ? lwdDate.getDate() : daysInMonth;
+        for (let i = 1; i <= employmentDaysForWeekend; i++) {
+            const d = new Date(currentYear, currentMonth - 1, i);
+            const dateStr = `${currentYear}-${String(currentMonth).padStart(2, '0')}-${String(i).padStart(2, '0')}`;
+            if (mandatoryHolidayDateStrs.includes(dateStr)) continue;
+            if (weekendDayNumbers.includes(d.getDay())) weekendDaysInMonth++;
+        }
+        const holidayDays = mandatoryHolidayCount;
+
+        // Calculate Present
+        let presentDays = 0;
+        const statusList = (arr: string[] | undefined) => Array.isArray(arr) ? arr : [];
+        attendanceRecords.forEach((record: any) => {
+            const arr = statusList(record.attendanceStatus);
+            const isWeekend = record.shiftDay && weekendDayNumbers.includes(new Date(record.shiftDay).getDay());
+            const isPresentLike = arr.includes('Present') || arr.includes('Late') || arr.includes('On-Time') || arr.includes('Early-Exit')
+                || (arr.includes('Override') && arr.includes('Present'));
+            const isOnLeave = arr.includes('On-Leave');
+            const halfDay = record.halfType && (record.halfType === 'First Half' || record.halfType === 'Second Half');
+            if (!isWeekend && isPresentLike) {
+                presentDays += (halfDay && isOnLeave) ? 0.5 : 1;
+            }
+        });
+
+        const weekendDays = weekendDaysInMonth;
+
+        // Approved Leaves
+        const leaves = await Leave.find({
+            userId: new Types.ObjectId(employeeId),
+            status: 'Approved',
+            startDate: { $lte: endDate },
+            endDate: { $gte: periodStartDate }
+        });
+
+        let leaveDays = 0;
+        let lopDays = 0;
+
+        for (const leave of leaves) {
+            const leaveStart = leave.startDate < periodStartDate ? periodStartDate : leave.startDate;
+            const leaveEnd = leave.endDate > endDate ? endDate : leave.endDate;
+            const days = Math.floor((leaveEnd.getTime() - leaveStart.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+            if (leave.leaveType === 'LOP' || leave.leaveType === 'Loss Of Pay') {
+                lopDays += days;
+            } else {
+                leaveDays += days;
+            }
+        }
+
+        let payableDays = presentDays + weekendDays + holidayDays + leaveDays;
+
+        // ✅ LOP Calculation Logic (Updated):
+        // LOP should ONLY be calculated for days within the employment period (1st to LWD or End of Month).
+        // Days AFTER the LWD are NOT LOP; they are simply non-payable, non-employment days.
+
+        const employmentDays = isLWDMonth ? lwdDate.getDate() : daysInMonth;
+
+        // Cap payableDays at employmentDays (just in case)
+        if (payableDays > employmentDays) payableDays = employmentDays;
+
+        // LOP = Employment Days - Payable Days
+        // Ensure we don't return negative LOP
+        lopDays = Math.max(0, employmentDays - payableDays);
+
+        // ✅ GUARD 2: Skip if no payable days (CRITICAL - Prevents overpayment)
+        if (payableDays <= 0) {
+            incrementMonth();
+            continue;
+        }
+
+        const monthlySalary = (monthlyGross / daysInMonth) * payableDays;
+
+        // Proration Logic (Matched with Payroll Service)
+        const structure = salaryAssignment?.salaryStructureId || {};
+        const basicPerc = structure.fixedEarnings?.basicPercentage ?? 0;
+        const daPerc = Number(structure.fixedEarnings?.daPercentage) || 0;
+        const hraPerc = Number(structure.fixedEarnings?.hraPercentage) || 0;
+        const conveyancePerc = Number(structure.fixedEarnings?.conveyancePercentage) || 0;
+        const otherAllowancePerc = Number(structure.fixedEarnings?.otherAllowancePercentage) || 0;
+
+        const fullBasic = monthlyGross * (basicPerc / 100);
+        const fullDA = daPerc === 0 ? 0 : fullBasic * (daPerc / 100);
+        const fullHRA = monthlyGross * (hraPerc / 100);
+        const fullConveyance = monthlyGross * (conveyancePerc / 100);
+        const fullOtherAllowances = monthlyGross * (otherAllowancePerc / 100);
+
+        const proratedBasic = (fullBasic / daysInMonth) * payableDays;
+        const proratedDA = (fullDA / daysInMonth) * payableDays;
+        const proratedHRA = (fullHRA / daysInMonth) * payableDays;
+        const proratedConveyance = (fullConveyance / daysInMonth) * payableDays;
+        const proratedOtherAllowances = (fullOtherAllowances / daysInMonth) * payableDays;
+        const proratedGross = proratedBasic + proratedDA + proratedHRA + proratedConveyance + proratedOtherAllowances;
+
+        // Note: If (proratedGross !== monthlySalary) due to rounding/residual, add difference to Other Allowance
+        const finalGross = proratedGross;
+
+        const lopAmount = (monthlyGross / daysInMonth) * lopDays;
+        const ptAmount = Math.round(calculatePT(monthlyGross, currentMonth, isLWDMonth));
+        const pfAmount = calculatePF(proratedBasic, proratedDA);
+        const itAmount = await calculateIncomeTax(currentMonth, currentYear);
+        const esiAmount = calculateESI();
+
+        unpaidMonths.push({
+            month: currentMonth,
+            year: currentYear,
+            monthYear: `${currentYear}-${String(currentMonth).padStart(2, '0')}`,
+            totalDays: daysInMonth,
+            daysWorked: payableDays,
+            presentDays: presentDays,
+            weekendDays: weekendDays,
+            holidayDays: holidayDays,
+            leaveDays: leaveDays,
+            lopDays: lopDays,
+            lopAmount: Math.round(lopAmount),
+            components: {
+                basic: Math.round(proratedBasic + proratedDA),
+                hra: Math.round(proratedHRA),
+                conveyance: Math.round(proratedConveyance),
+                specialAllowance: 0,
+                otherAllowances: Math.round(proratedOtherAllowances),
+                gross: Math.round(finalGross)
+            },
+            salary: Math.round(monthlySalary),
+            professionalTax: ptAmount,
+            incomeTax: itAmount,
+            providentFund: pfAmount,
+            esi: esiAmount
+        });
+
+        totalUnpaidSalary += Math.round(monthlySalary);
+        totalDaysWorked += payableDays;
+        totalProfessionalTax += ptAmount;
+        totalProvidentFund += pfAmount;
+        totalIncomeTax += itAmount;
+        totalESI += esiAmount;
+        totalLOPAmount += Math.round(lopAmount);
 
         incrementMonth();
     }
@@ -542,21 +554,11 @@ export async function initializeFinalSettlement(
             status: 'Hold'
         }).sort({ year: 1, month: 1 });
 
-        // ✅ FIX: Filter HOLD payrolls to only include those relevant to the gap
-        // AND exclude the LWD month itself so it gets calculated freshly with the specific day cutoff.
-        // ✅ FIX: Filter HOLD payrolls to only include those relevant to the gap
-        // AND exclude the LWD month itself so it gets calculated freshly with the specific day cutoff.
-        const filteredHoldPayrolls = holdPayrolls.filter(p => {
-            // Check if this is exactly the LWD month
-            const isLWDMonth = p.year === leavingDate.getFullYear() && p.month === (leavingDate.getMonth() + 1);
-
-            // If it's the LWD month, exclude it from Hold list (so it's calc'd fresh in Unpaid Gaps)
-            if (isLWDMonth) return false;
-
-            // ✅ FIX: Include ALL Hold Payrolls for settlement (Legacy Dues)
-            // Just exclude the LWD month because it will be calculated fresh as an "Unpaid Gap".
-            return !isLWDMonth;
-        });
+        // ✅ FIX: Do NOT filter out the LWD month if it's in Hold.
+        // User Requirement: "if hold month show hold month".
+        // If the payroll for the LWD month was processed and put on Hold, we treat it as a Hold Payroll release.
+        // calculateUnpaidGaps will skip months present in this list.
+        const filteredHoldPayrolls = holdPayrolls;
 
         // Get leave summary for the year of leaving
         const leaveYear = leavingDate instanceof Date ? leavingDate.getFullYear() : new Date(leavingDate).getFullYear();
@@ -650,8 +652,7 @@ export async function initializeFinalSettlement(
             leavingDate,
             monthlyGross,
             salaryAssignment,
-            filteredHoldPayrolls, // Use filtered (which is now ALL) list
-            resignationDate // ✅ Pass resignation date
+            filteredHoldPayrolls // Use filtered (which is now ALL) list
         );
 
         const {
@@ -661,7 +662,8 @@ export async function initializeFinalSettlement(
             totalProfessionalTax,
             totalProvidentFund,
             totalIncomeTax,
-            totalESI
+            totalESI,
+            totalLOPAmount
         } = unpaidCalculation;
 
         // Auto-fill response
@@ -719,11 +721,11 @@ export async function initializeFinalSettlement(
                 incomeTax: Math.round(totalIncomeTax),
                 providentFund: Math.round(totalProvidentFund),
                 esi: Math.round(totalESI),
-                lopAmount: Math.round(unpaidCalculation.totalLOPAmount || 0), // ✅ Added LOP amount
+                lopAmount: Math.round(totalLOPAmount || 0), // ✅ Added LOP amount
                 otherDeductions: 0,
-                totalDeductions: Math.round(noticePeriodRecovery + totalProfessionalTax + totalIncomeTax + totalProvidentFund + totalESI + (unpaidCalculation.totalLOPAmount || 0)),
-                netAmount: Math.round((totalHoldAmount + totalUnpaidSalary + leaveBalance[0].encashAmount + gratuityAmount) - (noticePeriodRecovery + totalProfessionalTax + totalIncomeTax + totalProvidentFund + totalESI + (unpaidCalculation.totalLOPAmount || 0))),
-                isNegative: ((totalHoldAmount + totalUnpaidSalary + leaveBalance[0].encashAmount + gratuityAmount) - (noticePeriodRecovery + totalProfessionalTax + totalIncomeTax + totalProvidentFund + totalESI + (unpaidCalculation.totalLOPAmount || 0))) < 0
+                totalDeductions: Math.round(noticePeriodRecovery + totalProfessionalTax + totalIncomeTax + totalProvidentFund + totalESI + (totalLOPAmount || 0)),
+                netAmount: Math.round((totalHoldAmount + totalUnpaidSalary + leaveBalance[0].encashAmount + gratuityAmount) - (noticePeriodRecovery + totalProfessionalTax + totalIncomeTax + totalProvidentFund + totalESI + (totalLOPAmount || 0))),
+                isNegative: ((totalHoldAmount + totalUnpaidSalary + leaveBalance[0].encashAmount + gratuityAmount) - (noticePeriodRecovery + totalProfessionalTax + totalIncomeTax + totalProvidentFund + totalESI + (totalLOPAmount || 0))) < 0
             }
         };
 
