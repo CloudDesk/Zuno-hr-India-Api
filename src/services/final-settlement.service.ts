@@ -1697,8 +1697,9 @@ export async function confirmFinalSettlement(
                     month.incomeTax -
                     month.professionalTax -
                     month.esi +
-                    finalReimburseVal // Add Reimbursement
-                    // holdSalaryAddition  // ❌ REMOVED: Prevent double counting. Hold payrolls are released separately.
+                    month.esi +
+                    finalReimburseVal + // Add Reimbursement
+                    holdSalaryAddition  // ✅ ADDED: Include Hold Salary in Net Pay for FNF Month
                 );
                 // Calculate CTC based on country (matching Payroll Service)
                 let ctc: number;

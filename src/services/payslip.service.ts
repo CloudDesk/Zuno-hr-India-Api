@@ -109,7 +109,7 @@ export class PayslipService extends BaseService {
     const payslips = await Payslip.find(filter)
       .sort({ year: -1, month: -1 }) // Sort by year and month descending
       .populate('userId', 'name email')
-      .populate('payrollId', 'month year monthYear monthlyGross basic hra da otherAllowance travelAllowance airTicketAllowance medicalAllowance epfEmployee professionalTax incomeTax overtimePay netSalary ctc totalDeductions reimbursement bonus');
+      .populate('payrollId', 'month year monthYear monthlyGross basic hra da otherAllowance travelAllowance airTicketAllowance medicalAllowance epfEmployee professionalTax incomeTax overtimePay netSalary ctc totalDeductions reimbursement bonus holdSalary');
 
     console.log(payslips, "payslips getEmployeePayslipAndPayroll")
     // Format the response with detailed payroll calculations
@@ -142,6 +142,7 @@ export class PayslipService extends BaseService {
         ctc: payroll.ctc,
         totalDeductions: payroll.totalDeductions,
         reimbursement: payroll.reimbursement,
+        holdSalary: payroll.holdSalary || 0, // ✅ NEW: Include Hold Salary in response
         bonus: payroll.bonus,
         // generatedAt: payslip.generatedAt,
         payslipUrl: payslip.payslipUrl
@@ -505,10 +506,11 @@ export class PayslipService extends BaseService {
       ? (sanitizeText(employee.specificRole) || formatLabel(employee.role))
       : (employee.specificRole || formatLabel(employee.role));
 
-    // ✅ UPDATED: Total earnings = Monthly components only
-    // Note: Air Ticket & Medical are ANNUAL (not included in monthly total)
+    const holdSalaryValue = isUaePayroll ? sanitizeAmount(payroll.holdSalary) : (payroll.holdSalary || 0);
+
+    // ✅ UPDATED: Total earnings = Monthly components + Hold Salary (Preserving existing logic for others)
     const totalEarnings =
-      basicValue + hraValue + otherAllowanceValue + daValue + travelAllowanceValue;
+      basicValue + hraValue + otherAllowanceValue + daValue + travelAllowanceValue + holdSalaryValue;
 
     console.log(activeBankData, "activeBankData")
 
@@ -586,7 +588,8 @@ export class PayslipService extends BaseService {
           assignedBasicValue +
           assignedHraValue +
           assignedOtherAllowanceValue +
-          assignedTravelAllowanceValue,
+          assignedTravelAllowanceValue +
+          holdSalaryValue,
           payroll.country
           // ✅ Air Ticket & Medical NOT included in monthly total (annual only)
         )
