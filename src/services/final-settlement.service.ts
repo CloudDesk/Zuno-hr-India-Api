@@ -442,18 +442,26 @@ async function calculateNoticeData(
     // If shortfall exists, calculate recovery based on ACTUAL days in the specific months of the shortfall
     if (excessInNotice < 0) {
         const shortfallDays = Math.abs(excessInNotice);
-        let currentDate = new Date(leavingDate);
-        currentDate.setDate(currentDate.getDate() + 1); // Start recovery from the day AFTER leaving
+
+        // Use UTC to avoid timezone shifts affecting the "Start Date"
+        // ex: Feb 15T00:00:00Z should start recovery on Feb 16, regardless of server timezone
+        const lDate = new Date(leavingDate);
+        let currentIter = new Date(Date.UTC(lDate.getUTCFullYear(), lDate.getUTCMonth(), lDate.getUTCDate()));
+
+        // Start recovery from the day AFTER leaving
+        currentIter.setUTCDate(currentIter.getUTCDate() + 1);
 
         for (let i = 0; i < shortfallDays; i++) {
-            const year = currentDate.getFullYear();
-            const month = currentDate.getMonth(); // 0 = Jan, 1 = Feb
-            const daysInMonth = new Date(year, month + 1, 0).getDate();
+            const year = currentIter.getUTCFullYear();
+            const month = currentIter.getUTCMonth(); // 0 = Jan
+
+            // Days in Month using UTC (Day 0 of next month = Last day of current)
+            const daysInMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
 
             noticePeriodRecovery += monthlyGross / daysInMonth;
 
             // Move to next day
-            currentDate.setDate(currentDate.getDate() + 1);
+            currentIter.setUTCDate(currentIter.getUTCDate() + 1);
         }
     }
 
@@ -875,12 +883,13 @@ export async function saveFinalSettlement(
 
         // 2. Perform Backend Recalculation (Security Check)
         // SECURITY FIX: Fetch hold payrolls from DB instead of trusting body
+        // 2. Perform Backend Recalculation (Security Check)
+        // SECURITY FIX: Fetch hold payrolls from DB instead of trusting body
         const holdPayrollIds = (data.holdPayrolls || []).map((p: any) => p.payrollId || p._id);
         const holdPayrolls = await Payroll.find({
             _id: { $in: holdPayrollIds },
             employeeId: employeeIdObj
         });
-        const unpaidMonths = data.unpaidMonths || [];
 
         const salaryAssignment: any = await SalaryAssignment.findOne({
             employeeId: employeeIdObj
@@ -889,123 +898,139 @@ export async function saveFinalSettlement(
         const monthlyGross = salaryAssignment?.monthlyGross || 0;
         const structure = salaryAssignment?.salaryStructureId || {};
 
-        // Recalculation Helpers (Same as Calculate route)
-        const calculatePT = (gross: number, m: number) => {
-            const ptConfig = structure?.statutoryDeductions?.professionalTax;
-            if (!ptConfig?.slabs?.length) return 0;
-            const applicableMonths: Record<string, number[]> = {
-                half_yearly: [2, 8],
-                monthly: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
-            };
-            if (!applicableMonths[ptConfig.term]?.includes(m)) return 0;
-            for (const slab of ptConfig.slabs) {
-                if (gross >= slab.fromAmount && (!slab.toAmount || gross <= slab.toAmount)) return Number(slab.taxAmount) || 0;
-            }
-            return 0;
-        };
 
-        const calculatePF = (basic: number, da: number) => {
-            const epf = structure?.statutoryDeductions?.epf;
-            if (!epf) return 0;
-            const wage = basic + da;
-            const rate = epf.employeeContribution / 100;
-            const limit = epf.maxLimit ?? 15000;
-            return wage >= limit ? (limit * rate) : (wage * rate);
-        };
-
-        const calculateESI = () => 0;
-
-        const employee = await User.findById(effectiveEmployeeId);
-        const joiningDate = employee?.joiningDate;
         const leavingDate = data.leavingDate || data.resignationDetails?.lwd;
 
-        let gratuity = 0;
-        if (false && joiningDate && leavingDate) {
-            const jD = new Date(joiningDate as any);
-            const lD = new Date(leavingDate);
-            const diffYears = (lD.getTime() - jD.getTime()) / (1000 * 60 * 60 * 24 * 365.25);
-
-            // Eligibility: 4 years 240 days (approx 4.657 years)
-            if (diffYears >= 4.657) {
-                const bP = (structure.fixedEarnings?.basicPercentage ?? 0) / 100;
-                const dP = (structure.fixedEarnings?.daPercentage ?? 0) / 100;
-                const lastBasicDA = (monthlyGross * bP) + (monthlyGross * bP * dP);
-                gratuity = Math.round((15 / 26) * lastBasicDA * diffYears);
-            }
-        }
-
+        let unpaidMonths: any[] = [];
         let totalUnpaid = 0;
-        for (const m of unpaidMonths) {
-            const daysInMonth = m.totalDays || 30;
-            const payableDays = m.daysWorked || 0;
+        let pt = 0;
+        let pf = 0;
+        let esi = 0;
+        let it = 0;
+        let totalLOPAmount = 0;
 
-            if (daysInMonth > 0) {
-                const bP = (structure.fixedEarnings?.basicPercentage ?? 0) / 100;
-                const dP = (structure.fixedEarnings?.daPercentage ?? 0) / 100;
-                const hP = (structure.fixedEarnings?.hraPercentage ?? 0) / 100;
-                const tP = (structure.fixedEarnings?.travelAllowancePercentage ?? 0) / 100;
-                const oP = (structure.fixedEarnings?.otherAllowancePercentage ?? 0) / 100; // Assuming otherAllowancePercentage exists
+        // ✅ RECALCULATION STRATEGY:
+        // If mode is 'automatic' (or default), we MUST regenerate the Unpaid Gaps based on the
+        // potentially updated Leaving Date. Trusting 'data.unpaidMonths' is risky because
+        // it might contain stale days/weekend counts if the user changed the date in Step 2.
+        if (data.mode !== 'manual' && leavingDate) {
+            const gapCalc = await calculateUnpaidGaps(
+                effectiveEmployeeId.toString(),
+                new Date(leavingDate),
+                monthlyGross,
+                salaryAssignment,
+                holdPayrolls
+            );
 
-                const fullB = monthlyGross * bP;
-                const fullD = fullB * dP;
-                const fullH = monthlyGross * hP;
-                const fullT = monthlyGross * tP;
-                const fullOtherAllowances = monthlyGross * oP;
+            unpaidMonths = gapCalc.unpaidMonths;
+            totalUnpaid = gapCalc.totalUnpaidSalary;
+            pt = gapCalc.totalProfessionalTax;
+            pf = gapCalc.totalProvidentFund;
+            esi = gapCalc.totalESI;
+            it = gapCalc.totalIncomeTax;
+            totalLOPAmount = gapCalc.totalLOPAmount;
 
-                const pb = (fullB / daysInMonth) * payableDays;
-                const pd = (fullD / daysInMonth) * payableDays;
-                const ph = (fullH / daysInMonth) * payableDays;
-                const ptAllo = (fullT / daysInMonth) * payableDays;
-                const proratedOtherAllowances = (fullOtherAllowances / daysInMonth) * payableDays;
+        } else {
+            // Manual Mode: Trust the input array (Legacy fallback)
+            unpaidMonths = data.unpaidMonths || [];
 
-                const pg = (monthlyGross / daysInMonth) * payableDays;
-                const balancing = pg - (pb + pd + ph + ptAllo + proratedOtherAllowances); // Adjust balancing
-
-                m.components = {
-                    basic: Math.round(pb + pd),
-                    hra: Math.round(ph),
-                    conveyance: Math.round(ptAllo),
-                    specialAllowance: Math.round(balancing),
-                    otherAllowances: Math.round(proratedOtherAllowances),
-                    gross: Math.round(pg)
+            // Recalculation Helpers (Same as Calculate route)
+            const calculatePT = (gross: number, m: number) => {
+                const ptConfig = structure?.statutoryDeductions?.professionalTax;
+                if (!ptConfig?.slabs?.length) return 0;
+                const applicableMonths: Record<string, number[]> = {
+                    half_yearly: [2, 8],
+                    monthly: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
                 };
+                if (!applicableMonths[ptConfig.term]?.includes(m)) return 0;
+                for (const slab of ptConfig.slabs) {
+                    if (gross >= slab.fromAmount && (!slab.toAmount || gross <= slab.toAmount)) return Number(slab.taxAmount) || 0;
+                }
+                return 0;
+            };
 
-                m.salary = Math.round(pg);
+            const calculatePF = (basic: number, da: number) => {
+                const epf = structure?.statutoryDeductions?.epf;
+                if (!epf) return 0;
+                const wage = basic + da;
+                const rate = epf.employeeContribution / 100;
+                const limit = epf.maxLimit ?? 15000;
+                return wage >= limit ? (limit * rate) : (wage * rate);
+            };
 
-                // Standard PT Calculation
-                let ptAmount = Math.round(calculatePT(monthlyGross, m.month));
+            const calculateESI = () => 0;
 
-                // ✅ NEW LOGIC: Check for Mid-Term Exit PT Liability (H1/H2 Catch-up)
-                // If employee leaves in Apr-Jul (H1) or Oct-Jan (H2), they owe the tax 
-                // that would normally be deducted in Aug or Feb.
-                const lDate = leavingDate ? new Date(leavingDate) : new Date();
-                const isLeavingMonth = m.year === lDate.getFullYear() && m.month === (lDate.getMonth() + 1);
+            for (const m of unpaidMonths) {
+                const daysInMonth = m.totalDays || 30;
+                const payableDays = m.daysWorked || 0;
 
-                if (isLeavingMonth) {
-                    const mNum = m.month;
-                    // H1 Catch-up: Leaving in Apr(4), May(5), Jun(6), Jul(7) -> Owe H1 tax (Simulate Aug deduction)
-                    const h1Catchup = [4, 5, 6, 7].includes(mNum);
-                    // H2 Catch-up: Leaving in Oct(10), Nov(11), Dec(12), Jan(1) -> Owe H2 tax (Simulate Feb deduction)
-                    const h2Catchup = [10, 11, 12, 1].includes(mNum);
+                if (daysInMonth > 0) {
+                    const bP = (structure.fixedEarnings?.basicPercentage ?? 0) / 100;
+                    const dP = (structure.fixedEarnings?.daPercentage ?? 0) / 100;
+                    const hP = (structure.fixedEarnings?.hraPercentage ?? 0) / 100;
+                    const tP = (structure.fixedEarnings?.travelAllowancePercentage ?? 0) / 100;
+                    const oP = (structure.fixedEarnings?.otherAllowancePercentage ?? 0) / 100; // Assuming otherAllowancePercentage exists
 
-                    if (h1Catchup || h2Catchup) {
-                        const deductionMonth = h1Catchup ? 8 : 2;
-                        const forcedPT = Math.round(calculatePT(monthlyGross, deductionMonth));
+                    const fullB = monthlyGross * bP;
+                    const fullD = fullB * dP;
+                    const fullH = monthlyGross * hP;
+                    const fullT = monthlyGross * tP;
+                    const fullOtherAllowances = monthlyGross * oP;
 
-                        // Apply forced PT if standard calc didn't trigger (which it won't for these months)
-                        if (ptAmount === 0 && forcedPT > 0) {
-                            ptAmount = forcedPT;
+                    const pb = (fullB / daysInMonth) * payableDays;
+                    const pd = (fullD / daysInMonth) * payableDays;
+                    const ph = (fullH / daysInMonth) * payableDays;
+                    const ptAllo = (fullT / daysInMonth) * payableDays;
+                    const proratedOtherAllowances = (fullOtherAllowances / daysInMonth) * payableDays;
+
+                    const pg = (monthlyGross / daysInMonth) * payableDays;
+                    const balancing = pg - (pb + pd + ph + ptAllo + proratedOtherAllowances); // Adjust balancing
+
+                    m.components = {
+                        basic: Math.round(pb + pd),
+                        hra: Math.round(ph),
+                        conveyance: Math.round(ptAllo),
+                        specialAllowance: Math.round(balancing),
+                        otherAllowances: Math.round(proratedOtherAllowances),
+                        gross: Math.round(pg)
+                    };
+
+                    m.salary = Math.round(pg);
+
+                    // Standard PT Calculation
+                    let ptAmount = Math.round(calculatePT(monthlyGross, m.month));
+                    // Check catchups
+                    const lDate = leavingDate ? new Date(leavingDate) : new Date();
+                    const isLeavingMonth = m.year === lDate.getFullYear() && m.month === (lDate.getMonth() + 1);
+                    if (isLeavingMonth) {
+                        const mNum = m.month;
+                        const h1Catchup = [4, 5, 6, 7].includes(mNum);
+                        const h2Catchup = [10, 11, 12, 1].includes(mNum);
+                        if (h1Catchup || h2Catchup) {
+                            const deductionMonth = h1Catchup ? 8 : 2;
+                            const forcedPT = Math.round(calculatePT(monthlyGross, deductionMonth));
+                            if (ptAmount === 0 && forcedPT > 0) ptAmount = forcedPT;
                         }
                     }
+
+                    m.professionalTax = ptAmount;
+                    m.providentFund = Math.round(calculatePF(pb, pd));
+                    m.esi = Math.round(calculateESI());
+
+                    totalUnpaid += m.salary;
+
+                    // Sum totals
+                    pt += m.professionalTax;
+                    pf += m.providentFund;
+                    esi += m.esi;
+                    it += (m.incomeTax || 0);
+                    totalLOPAmount += (m.lopAmount || 0);
                 }
-
-                m.professionalTax = ptAmount;
-                m.providentFund = Math.round(calculatePF(pb, pd));
-                m.esi = Math.round(calculateESI());
-
-                totalUnpaid += m.salary;
             }
         }
+
+
+        let gratuity = 0;
 
         // Recalculate Leave Encashment
         let totalLeaveAmt = 0;
@@ -1026,14 +1051,7 @@ export async function saveFinalSettlement(
                 safePerDayRate = monthlyGross / daysInEncashMonth;
             }
 
-            // 🔍 DEBUG: Log leave encashment recalculation
-            console.log("=== SAVE - LEAVE ENCASHMENT RECALCULATION ===");
-            console.log("Monthly Gross:", monthlyGross);
-            console.log("Basic %:", basicPerc);
-            // console.log("DA %:", daPerc);
-            console.log("Safe Per Day Rate:", safePerDayRate);
-            console.log("Rounded Per Day Rate:", Math.round(safePerDayRate));
-            console.log("==============================================");
+
 
             for (const l of data.leaveBalance) {
                 // Force backend rate
@@ -1049,11 +1067,7 @@ export async function saveFinalSettlement(
         const totalAdditions = data.otherAdditions?.reduce((sum: number, a: any) => sum + (Number(a.amount) || 0), 0) || 0;
         const totalDeductions = data.otherDeductions?.reduce((sum: number, d: any) => sum + (Number(d.amount) || 0), 0) || 0;
 
-        const pt = unpaidMonths.reduce((sum: number, m: any) => sum + (m.professionalTax || 0), 0) || 0;
-        const pf = unpaidMonths.reduce((sum: number, m: any) => sum + (m.providentFund || 0), 0) || 0;
-        const esi = unpaidMonths.reduce((sum: number, m: any) => sum + (m.esi || 0), 0) || 0;
-        const it = unpaidMonths.reduce((sum: number, m: any) => sum + (m.incomeTax || 0), 0) || 0;
-        const totalLOPAmount = unpaidMonths.reduce((sum: number, m: any) => sum + (m.lopAmount || 0), 0) || 0; // ✅ Sum LOP
+
 
         // Notice Recovery
         let noticeRecovery = data.noticePay?.noticePeriodRecovery ?? data.noticePeriodRecovery;
@@ -1062,8 +1076,12 @@ export async function saveFinalSettlement(
         if (data.noticeRequired === false) {
             noticeRecovery = 0;
         } else {
-            // Recalculate if not provided or if likely a reset (0) with actual shortfall
-            const shouldRecalculate = noticeRecovery === undefined || (noticeRecovery === 0 && (data.excessInNotice || 0) < 0);
+            // Recalculate if:
+            // 1. Not provided
+            // 2. Is 0 but shortfall exists
+            // 3. Mode is AUTOMATIC (Force refresh to ensure backend calculated value)
+            const isAutomatic = data.mode !== 'manual';
+            const shouldRecalculate = isAutomatic || noticeRecovery === undefined || (noticeRecovery === 0 && (data.excessInNotice || 0) < 0);
 
             if (shouldRecalculate) {
                 // Determine notice days - check root, then nested, then fallback to employee default
@@ -2037,9 +2055,10 @@ export async function calculateFinalSettlement(
 
 
         // Fetch User needed for Country check inside loop
-        const employee = await User.findById(data.employeeId);
 
 
+
+        // Recalculation Helpers (Same as Calculate route)
         // Helper: PT Calculation (Cloned for recalculation logic)
         const calculatePT = (grossSalary: number, monthNumber: number) => {
             const ptConfig = structure?.statutoryDeductions?.professionalTax;
@@ -2071,93 +2090,127 @@ export async function calculateFinalSettlement(
         // Helper: ESI Calculation
         const calculateESI = () => 0;
 
-        for (const month of filteredUnpaidMonths) {
-            const daysInMonth = month.totalDays || 30;
-            const payableDays = month.daysWorked || 0;
-            const lopDays = month.lopDays || 0; // Ensure lopDays is available
+        filteredUnpaidMonths = unpaidMonthsRaw;
 
-            if (daysInMonth > 0) {
-                // 1. Recalculate Component Proration
-                const bP = (structure.fixedEarnings?.basicPercentage ?? 0) / 100;
-                const dP = (structure.fixedEarnings?.daPercentage ?? 0) / 100;
-                const hP = (structure.fixedEarnings?.hraPercentage ?? 0) / 100;
-                const tP = (structure.fixedEarnings?.travelAllowancePercentage ?? 0) / 100;
-                const oP = (structure.fixedEarnings?.otherAllowancePercentage ?? 0) / 100;
+        // Variables for aggregation
+        let professionalTax = 0;
+        let providentFund = 0;
+        let esi = 0;
+        let incomeTax = 0;
+        let totalLOPAmount = 0;
 
-                const fullB = monthlyGross * bP;
-                const fullD = fullB * dP;
-                const fullH = monthlyGross * hP;
-                const fullT = monthlyGross * tP;
-                const fullOtherAllowances = monthlyGross * oP;
+        // Reset (reuse existing variable)
+        totalUnpaidSalary = 0;
 
-                const proratedBasic = (fullB / daysInMonth) * payableDays;
-                const proratedDA = (fullD / daysInMonth) * payableDays;
-                const proratedHRA = (fullH / daysInMonth) * payableDays;
-                // 1. Calculate Allowances (Payroll naming convention)
-                const proratedTravelAllowance = (fullT / daysInMonth) * payableDays;
-                const proratedOtherAllowances = (fullOtherAllowances / daysInMonth) * payableDays;
+        const effectiveLeavingDate = data.leavingDate || (data as any).resignationDetails?.lwd;
 
-                const pg = (monthlyGross / daysInMonth) * payableDays;
+        // ✅ RECALCULATION STRATEGY:
+        // Use calculateUnpaidGaps if mode is automatic/default and we have a valid leaving date.
+        // This ensures days/weekends are correct for the given LWD.
+        if (data.mode !== 'manual' && effectiveLeavingDate && employeeIdObj) {
+            const gapCalc = await calculateUnpaidGaps(
+                employeeIdObj.toString(),
+                new Date(effectiveLeavingDate),
+                monthlyGross,
+                salaryAssignment,
+                holdPayrollsDb
+            );
 
-                // 2. Balancing Figure (Merged into Other Allowance per user request)
-                // Instead of a separate "Special Allowance", we add the rounding difference to Other Allowance
-                const balancing = pg - (proratedBasic + proratedDA + proratedHRA + proratedTravelAllowance + proratedOtherAllowances);
+            filteredUnpaidMonths = gapCalc.unpaidMonths;
+            totalUnpaidSalary = gapCalc.totalUnpaidSalary;
+            professionalTax = gapCalc.totalProfessionalTax;
+            providentFund = gapCalc.totalProvidentFund;
+            esi = gapCalc.totalESI;
+            incomeTax = gapCalc.totalIncomeTax;
+            totalLOPAmount = gapCalc.totalLOPAmount;
 
-                const lopAmount = (monthlyGross / daysInMonth) * lopDays;
-                // const ptAmount removed to avoid redeclaration
-                const pfAmount = calculatePF(proratedBasic, proratedDA);
-                // const itAmount = await calculateIncomeTax(month.month, month.year); 
-                const esiAmount = calculateESI();
+        } else {
+            // Manual Mode or missing data: Process the input array
+            // Filter unpaid months based on LWD FIRST (Legacy logic)
+            if (effectiveLeavingDate && filteredUnpaidMonths.length > 0) {
+                const lwdDate = new Date(effectiveLeavingDate);
+                const lwdYear = lwdDate.getFullYear();
+                const lwdMonth = lwdDate.getMonth() + 1;
 
-                month.components = {
-                    basic: Math.round(proratedBasic + proratedDA),
-                    hra: Math.round(proratedHRA),
-                    conveyance: Math.round(proratedTravelAllowance), // ✅ Using 'conveyance' to match Schema
-                    specialAllowance: 0, // Not used, balancing moved to Other Allowance
-                    otherAllowances: Math.round(proratedOtherAllowances + balancing), // Merged here
-                    gross: Math.round(pg)
-                };
+                filteredUnpaidMonths = filteredUnpaidMonths.filter((month: any) => {
+                    const monthYear = month.year;
+                    const monthMonth = month.month;
+                    return (monthYear < lwdYear) || (monthYear === lwdYear && monthMonth <= lwdMonth);
+                });
+            }
 
-                month.lopAmount = Math.round(lopAmount);
+            for (const month of filteredUnpaidMonths) {
+                const daysInMonth = month.totalDays || 30;
+                const payableDays = month.daysWorked || 0;
+                const lopDays = month.lopDays || 0;
 
-                // 2. Recalculate Statutory
-                month.salary = Math.round(pg);
+                if (daysInMonth > 0) {
+                    const bP = (structure.fixedEarnings?.basicPercentage ?? 0) / 100;
+                    const dP = (structure.fixedEarnings?.daPercentage ?? 0) / 100;
+                    const hP = (structure.fixedEarnings?.hraPercentage ?? 0) / 100;
+                    const tP = (structure.fixedEarnings?.travelAllowancePercentage ?? 0) / 100;
+                    const oP = (structure.fixedEarnings?.otherAllowancePercentage ?? 0) / 100;
 
-                // Standard PT Calculation
-                let ptAmount = Math.round(calculatePT(monthlyGross, month.month));
+                    const fullB = monthlyGross * bP;
+                    const fullD = fullB * dP;
+                    const fullH = monthlyGross * hP;
+                    const fullT = monthlyGross * tP;
+                    const fullOtherAllowances = monthlyGross * oP;
 
-                // ✅ NEW LOGIC: Check for Mid-Term Exit PT Liability (H1/H2 Catch-up)
-                // If employee leaves in Apr-Jul (H1) or Oct-Jan (H2), they owe the tax 
-                // that would normally be deducted in Aug or Feb.
-                // We need to determine if this 'month' is the leaving month.
-                // UNPAID MONTHS are iterated. The specific month might be the leaving month.
-                const leavingDateObj = data.leavingDate ? new Date(data.leavingDate) : new Date();
-                const isLeavingMonth = month.year === leavingDateObj.getFullYear() && month.month === (leavingDateObj.getMonth() + 1);
+                    const proratedBasic = (fullB / daysInMonth) * payableDays;
+                    const proratedDA = (fullD / daysInMonth) * payableDays;
+                    const proratedHRA = (fullH / daysInMonth) * payableDays;
+                    const proratedTravelAllowance = (fullT / daysInMonth) * payableDays;
+                    const proratedOtherAllowances = (fullOtherAllowances / daysInMonth) * payableDays;
 
-                if (isLeavingMonth) {
-                    const mNum = month.month;
-                    // H1 Catch-up: Leaving in Apr(4), May(5), Jun(6), Jul(7) -> Owe H1 tax (Simulate Aug deduction)
-                    const h1Catchup = [4, 5, 6, 7].includes(mNum);
-                    // H2 Catch-up: Leaving in Oct(10), Nov(11), Dec(12), Jan(1) -> Owe H2 tax (Simulate Feb deduction)
-                    const h2Catchup = [10, 11, 12, 1].includes(mNum);
+                    const pg = (monthlyGross / daysInMonth) * payableDays;
+                    const balancing = pg - (proratedBasic + proratedDA + proratedHRA + proratedTravelAllowance + proratedOtherAllowances);
 
-                    if (h1Catchup || h2Catchup) {
-                        const deductionMonth = h1Catchup ? 8 : 2;
-                        const forcedPT = Math.round(calculatePT(monthlyGross, deductionMonth));
+                    const lopAmount = (monthlyGross / daysInMonth) * lopDays;
+                    const pfAmount = calculatePF(proratedBasic, proratedDA);
+                    const esiAmount = calculateESI();
 
-                        if (ptAmount === 0 && forcedPT > 0) {
-                            ptAmount = forcedPT;
+                    month.components = {
+                        basic: Math.round(proratedBasic + proratedDA),
+                        hra: Math.round(proratedHRA),
+                        conveyance: Math.round(proratedTravelAllowance),
+                        specialAllowance: 0,
+                        otherAllowances: Math.round(proratedOtherAllowances + balancing),
+                        gross: Math.round(pg)
+                    };
+
+                    month.lopAmount = Math.round(lopAmount);
+                    month.salary = Math.round(pg);
+
+                    let ptAmount = Math.round(calculatePT(monthlyGross, month.month));
+                    // Check catchups
+                    const lDate = effectiveLeavingDate ? new Date(effectiveLeavingDate) : new Date();
+                    const isLeavingMonth = month.year === lDate.getFullYear() && month.month === (lDate.getMonth() + 1);
+                    if (isLeavingMonth) {
+                        const mNum = month.month;
+                        const h1Catchup = [4, 5, 6, 7].includes(mNum);
+                        const h2Catchup = [10, 11, 12, 1].includes(mNum);
+                        if (h1Catchup || h2Catchup) {
+                            const deductionMonth = h1Catchup ? 8 : 2;
+                            const forcedPT = Math.round(calculatePT(monthlyGross, deductionMonth));
+                            if (ptAmount === 0 && forcedPT > 0) ptAmount = forcedPT;
                         }
                     }
+
+                    month.professionalTax = ptAmount;
+                    month.providentFund = pfAmount;
+                    month.esi = esiAmount;
+                    month.incomeTax = month.incomeTax || 0;
+
+                    totalUnpaidSalary += month.salary;
+
+                    // Accumulate Override Stats
+                    professionalTax += month.professionalTax;
+                    providentFund += month.providentFund;
+                    esi += month.esi;
+                    incomeTax += month.incomeTax;
+                    totalLOPAmount += month.lopAmount;
                 }
-
-                month.professionalTax = ptAmount;
-                month.providentFund = pfAmount;
-                month.esi = esiAmount;
-                // Preserve Income Tax from input (Planned Tax)
-                month.incomeTax = month.incomeTax || 0;
-
-                totalUnpaidSalary += month.salary;
             }
         }
 
@@ -2215,10 +2268,11 @@ export async function calculateFinalSettlement(
                 : (data as any).noticePay?.noticePeriodRecovery;
 
             // If manual recovery is provided and non-zero, favor it (User Override)
-            // If it is 0, we treat it as "Please Recalculate" if there is a shortfall
+            // BUT: If mode is automatic, we should Recalculate based on dates to ensure accuracy
+            const isAutomatic = data.mode !== 'manual';
             const hasManualOverride = manualRecovery !== undefined && manualRecovery !== 0;
 
-            if (hasManualOverride) {
+            if (hasManualOverride && !isAutomatic) {
                 noticeRecovery = manualRecovery;
             } else {
                 // ✅ Recalculate using precise helper
@@ -2248,32 +2302,13 @@ export async function calculateFinalSettlement(
             }
         }
 
-        // Statutory Aggregation: sum from the RECALCULATED/Filtered months
-        const professionalTax = filteredUnpaidMonths.reduce((sum: number, m: any) => sum + (m.professionalTax || 0), 0) || 0;
-        const providentFund = filteredUnpaidMonths.reduce((sum: number, m: any) => sum + (m.providentFund || 0), 0) || 0;
-        const esi = filteredUnpaidMonths.reduce((sum: number, m: any) => sum + (m.esi || 0), 0) || 0;
-        const incomeTax = filteredUnpaidMonths.reduce((sum: number, m: any) => sum + (m.incomeTax || 0), 0) || 0;
-        const totalLOPAmount = filteredUnpaidMonths.reduce((sum: number, m: any) => sum + (m.lopAmount || 0), 0) || 0; // ✅ Sum LOP
+
 
         // Fetch User to check Joining Date for Gratuity
         // const employee = await User.findById(data.employeeId); // Already fetched above
-        const joiningDate = employee?.joiningDate;
-        const leavingDate = data.leavingDate || (data as any).resignationDetails?.lwd;
 
         let gratuity = 0;
-        if (false && joiningDate && leavingDate) {
-            const jD = new Date(joiningDate as any);
-            const lD = new Date(leavingDate);
-            const diffYears = (lD.getTime() - jD.getTime()) / (1000 * 60 * 60 * 24 * 365.25);
-
-            // Eligibility: 4 years 240 days (approx 4.657 years)
-            if (diffYears >= 4.657) {
-                const bP = (structure.fixedEarnings?.basicPercentage ?? 0) / 100;
-                const dP = (structure.fixedEarnings?.daPercentage ?? 0) / 100;
-                const lastBasicDA = (monthlyGross * bP) + (monthlyGross * bP * dP);
-                gratuity = Math.round((15 / 26) * lastBasicDA * diffYears);
-            }
-        }
+        // Gratuity calculation logic disabled temporarily
 
         const totalPayable = totalHoldAmount + totalUnpaidSalary + totalLeaveEncashment + totalReimbursements + totalOtherAdditions + gratuity;
         // ✅ Include LOP Amount in Total Deductions
