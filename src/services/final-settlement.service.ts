@@ -1580,7 +1580,9 @@ export async function confirmFinalSettlement(
             await settlement.save({ session });
 
             // 2.3 Release hold payrolls
-            // Update the status of all associated hold payrolls to 'Completed'
+            // DISABLED: User requested to keep original hold payrolls as 'Hold' status
+            // They are paid out via the Final Settlement PDF/Calculations, but the original record remains unchanged.
+            /*
             if (settlement.holdPayrolls && settlement.holdPayrolls.length > 0) {
                 const holdPayrollIds = settlement.holdPayrolls.map((p: any) => p.payrollId);
                 await Payroll.updateMany(
@@ -1591,13 +1593,14 @@ export async function confirmFinalSettlement(
                             paymentConfirmedAt: new Date(),
                             payslipReleaseDate: new Date(),
                             processedAt: new Date(),
-                            isFinalSettlement: true // Optional: Mark as part of FNF
+                            isFinalSettlement: true 
                         }
                     },
                     { session }
                 );
                 request.log.info(`Released ${holdPayrollIds.length} hold payrolls for FNF`);
             }
+            */
 
             // 2.4 Mark Income Tax as processed for unpaid months
             // This prevents double-deduction if employee is rehired or payroll is corrected
