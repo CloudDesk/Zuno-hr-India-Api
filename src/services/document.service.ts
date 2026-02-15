@@ -1604,8 +1604,10 @@ export class DocumentService extends BaseService {
         const assignedTravelAllowanceValue = sanitizeAmount(payroll.assigned?.travelAllowance);
         const assignedReimbursementValue = sanitizeAmount(payroll.assigned?.reimbursementAllowance);
 
+        const holdSalaryValue = isUaePayroll ? sanitizeAmount(payroll.holdSalary) : (payroll.holdSalary || 0);
+
         const totalEarnings =
-            basicValue + hraValue + otherAllowanceValue + daValue + travelAllowanceValue;
+            basicValue + hraValue + otherAllowanceValue + daValue + travelAllowanceValue + holdSalaryValue;
 
         const netSalaryValue = sanitizeAmount(payroll.netSalary);
         const netPayNumeric = Math.round(netSalaryValue);
@@ -1656,6 +1658,9 @@ export class DocumentService extends BaseService {
                 other: formatCurrency(otherAllowanceValue, normalizedCountry),
                 travelAllowance: formatCurrency(travelAllowanceValue, normalizedCountry),
                 reimbursement: formatCurrency(reimbursementValue, normalizedCountry),
+                ...((payroll.holdSalary && payroll.holdSalary > 0) && {
+                    holdSalary: formatCurrency(payroll.holdSalary, normalizedCountry)
+                }), // ✅ NEW: Hold Salary (Only if > 0)
                 total: formatCurrency(totalEarnings, normalizedCountry)
             },
             earnFull: {
@@ -1668,7 +1673,8 @@ export class DocumentService extends BaseService {
                     assignedBasicValue +
                     assignedHraValue +
                     assignedOtherAllowanceValue +
-                    assignedTravelAllowanceValue,
+                    assignedTravelAllowanceValue +
+                    (payroll.holdSalary || 0), // ✅ Add Hold Salary to numeric sum
                     normalizedCountry
                 )
             },
