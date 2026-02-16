@@ -309,7 +309,7 @@ export async function generateFNFLetter(settlement: any, employee: any): Promise
         console.log("=== START FNF PDF GENERATION ===");
 
         // Resolve FNF template
-        const templateName = 'Final_Settlement_2.docx';
+        const templateName = 'Final_Settlement.docx';
         const candidates = [
             path.join(process.cwd(), 'templates', templateName),
             path.join(process.cwd(), templateName),
