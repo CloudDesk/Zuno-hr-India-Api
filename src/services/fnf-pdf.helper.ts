@@ -182,23 +182,23 @@ export async function generateFNFLetter(settlement: any, employee: any): Promise
         netPayWords: `${currencyWord} ${netPayWords} Only`,
 
         // Earnings list breakdown (only non-zero items) - matches payslip format
-        earningsList: (() => {
+        allEarnings: (() => {
             const earningsArray: any[] = [];
 
             if (unpaidBasic > 0) {
-                earningsArray.push({ label: 'BASIC', amount: formatCurrency(unpaidBasic, 'IN') });
+                earningsArray.push({ label: 'Basic', amount: formatCurrency(unpaidBasic, 'IN') });
             }
             if (unpaidHRA > 0) {
-                earningsArray.push({ label: 'HRA', amount: formatCurrency(unpaidHRA, 'IN') });
+                earningsArray.push({ label: 'House Rent Allowance', amount: formatCurrency(unpaidHRA, 'IN') });
             }
             if (settlement.finalCalculation.holdSalaries > 0) {
-                earningsArray.push({ label: 'HOLD SALARY', amount: formatCurrency(settlement.finalCalculation.holdSalaries, 'IN') });
+                earningsArray.push({ label: 'Hold Salary', amount: formatCurrency(settlement.finalCalculation.holdSalaries, 'IN') });
             }
             if (unpaidConveyance > 0) {
-                earningsArray.push({ label: 'CONVEYANCE', amount: formatCurrency(unpaidConveyance, 'IN') });
+                earningsArray.push({ label: 'Conveyance Allowance', amount: formatCurrency(unpaidConveyance, 'IN') });
             }
             if (unpaidOtherAllowances > 0) {
-                earningsArray.push({ label: 'OTHER ALLOWANCE', amount: formatCurrency(unpaidOtherAllowances, 'IN') });
+                earningsArray.push({ label: 'Other Allowance', amount: formatCurrency(unpaidOtherAllowances, 'IN') });
             }
             if (settlement.finalCalculation.leaveEncashment > 0) {
                 earningsArray.push({ label: 'Leave Encashment', amount: formatCurrency(settlement.finalCalculation.leaveEncashment, 'IN') });
@@ -206,18 +206,45 @@ export async function generateFNFLetter(settlement: any, employee: any): Promise
             if (settlement.finalCalculation.reimbursements !== 0) {
                 earningsArray.push({ label: 'Reimbursements', amount: formatCurrency(settlement.finalCalculation.reimbursements, 'IN') });
             }
-            if (settlement.finalCalculation.otherAdditions > 0) {
+            // Add other additions (detailed breakdown)
+            if (settlement.otherAdditions && settlement.otherAdditions.length > 0) {
+                settlement.otherAdditions
+                    .filter((a: any) => (a.amount || 0) > 0)
+                    .forEach((a: any) => {
+                        earningsArray.push({
+                            label: a.description || 'Other Addition',
+                            amount: formatCurrency(a.amount, 'IN')
+                        });
+                    });
+            } else if (settlement.finalCalculation.otherAdditions > 0) {
+                // Fallback if array is missing but total exists
                 earningsArray.push({ label: 'Other Additions', amount: formatCurrency(settlement.finalCalculation.otherAdditions, 'IN') });
             }
             if ((settlement.finalCalculation as any).gratuity > 0) {
                 earningsArray.push({ label: 'Gratuity', amount: formatCurrency((settlement.finalCalculation as any).gratuity, 'IN') });
             }
 
+            // Check for variableEarnings array if it exists
+            if (settlement.variableEarnings && Array.isArray(settlement.variableEarnings)) {
+                settlement.variableEarnings
+                    .filter((e: any) => (e.amount || 0) > 0)
+                    .forEach((e: any) => {
+                        // Avoid duplicates if already added (basic check)
+                        const isDuplicate = earningsArray.some(existing => existing.label.toLowerCase() === e.label.toLowerCase());
+                        if (!isDuplicate) {
+                            earningsArray.push({
+                                label: e.label,
+                                amount: formatCurrency(e.amount, 'IN')
+                            });
+                        }
+                    });
+            }
+
             return earningsArray;
         })(),
 
         // Deductions array for template looping (only non-zero items) - matches payslip format
-        deductionsList: (() => {
+        allDeductions: (() => {
             const deductionsArray: any[] = [];
 
             const pfVal = Number((settlement.finalCalculation as any).providentFund ?? 0);
@@ -229,13 +256,13 @@ export async function generateFNFLetter(settlement: any, employee: any): Promise
 
             if (pfVal > 0) {
                 deductionsArray.push({
-                    label: 'PF',
+                    label: 'Provident Fund',
                     amount: formatCurrency(pfVal, 'IN')
                 });
             }
             if (lopVal > 0) {
                 deductionsArray.push({
-                    label: 'LOP',
+                    label: 'Loss of Pay',
                     amount: formatCurrency(lopVal, 'IN')
                 });
             }
@@ -264,16 +291,45 @@ export async function generateFNFLetter(settlement: any, employee: any): Promise
                 });
             }
 
-            // Add other deductions
+            // check for variableDeductions
+            if (settlement.variableDeductions && Array.isArray(settlement.variableDeductions)) {
+                settlement.variableDeductions
+                    .filter((d: any) => (d.amount || 0) > 0)
+                    .forEach((d: any) => {
+                        // Avoid duplicates
+                        const isDuplicate = deductionsArray.some(existing => existing.label.toLowerCase() === d.label.toLowerCase());
+                        if (!isDuplicate) {
+                            deductionsArray.push({
+                                label: d.label,
+                                amount: formatCurrency(d.amount, 'IN')
+                            });
+                        }
+                    });
+            }
+
+            // Add other deductions if not already covered
+            // Logic: standard otherDeductions array in settlement
             if (settlement.otherDeductions && settlement.otherDeductions.length > 0) {
                 settlement.otherDeductions
                     .filter((d: any) => (d.amount || 0) > 0)
                     .forEach((d: any) => {
-                        deductionsArray.push({
-                            label: d.description.toUpperCase(),
-                            amount: formatCurrency(d.amount, 'IN')
-                        });
+                        const label = d.description || d.label || 'Other Deduction';
+                        // avoid simple duplicates by label
+                        const isDuplicate = deductionsArray.some(x => x.label.toLowerCase() === label.toLowerCase());
+
+                        if (!isDuplicate) {
+                            deductionsArray.push({
+                                label: label.toUpperCase(),
+                                amount: formatCurrency(d.amount, 'IN')
+                            });
+                        }
                     });
+            } else if (settlement.finalCalculation.otherDeductions > 0) {
+                // Fallback if array is missing but total exists
+                deductionsArray.push({
+                    label: 'OTHER DEDUCTIONS',
+                    amount: formatCurrency(settlement.finalCalculation.otherDeductions, 'IN')
+                });
             }
 
             return deductionsArray;
