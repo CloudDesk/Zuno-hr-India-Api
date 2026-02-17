@@ -80,7 +80,8 @@ export async function generateFNFLetter(settlement: any, employee: any): Promise
 
     // Calculate Net Pay in Words
     const netAmount = Math.round(settlement.finalCalculation.netAmount);
-    const netPayWords = numberToWords(netAmount);
+    // Use absolute value for word conversion to handle negative net pay (recoveries)
+    const netPayWords = numberToWords(Math.abs(netAmount));
     const currencyWord = (employee.country === 'AE' || employee.country === 'United Arab Emirates') ? 'Dirhams' : 'Rupees';
 
     // ✅ Calculate component-wise breakdown from unpaid months
