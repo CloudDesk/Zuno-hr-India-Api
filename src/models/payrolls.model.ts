@@ -41,6 +41,7 @@ export interface IPayroll extends Document {
     reimbursement: number;
     bonus: number;
     holdSalary?: number; // ✅ NEW: Hold Salary field
+    noticePeriodRecovery?: number; // ✅ NEW: Notice Period Recovery field
     // Final Payroll Calculations
     netSalary: number;
     ctc: number;
@@ -107,6 +108,7 @@ const PayrollSchema = new Schema<IPayroll>(
         reimbursement: { type: Number, default: 0 },
         bonus: { type: Number, default: 0 },
         holdSalary: { type: Number, default: 0 }, // ✅ Explicit Hold Salary field
+        noticePeriodRecovery: { type: Number, default: 0 }, // ✅ Explicit Notice Period Recovery field
         netSalary: { type: Number, required: true },
         ctc: { type: Number, required: true },
         monthYear: { type: String, required: true },

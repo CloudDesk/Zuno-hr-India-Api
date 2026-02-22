@@ -1703,12 +1703,15 @@ export async function confirmFinalSettlement(
 
 
                 // Calculate total deductions (matching Payroll Service)
+                const noticeRecoveryAmount = isLastMonth ? Math.round(settlement.noticePeriodRecovery || 0) : 0;
+
                 const totalDeductions = Math.round(
                     month.professionalTax +
                     month.incomeTax +
                     month.providentFund +
                     month.esi +
-                    (month.lopAmount || 0)
+                    (month.lopAmount || 0) +
+                    noticeRecoveryAmount
                 );
 
                 // Calculate net salary (matching Payroll Service)
@@ -1718,9 +1721,9 @@ export async function confirmFinalSettlement(
                     month.incomeTax -
                     month.professionalTax -
                     month.esi +
-                    month.esi +
                     finalReimburseVal + // Add Reimbursement
-                    holdSalaryAddition  // ✅ ADDED: Include Hold Salary in Net Pay for FNF Month
+                    holdSalaryAddition - // ✅ ADDED: Include Hold Salary in Net Pay for FNF Month
+                    noticeRecoveryAmount
                 );
                 // Calculate CTC based on country (matching Payroll Service)
                 let ctc: number;
@@ -1771,6 +1774,7 @@ export async function confirmFinalSettlement(
                     esiEmployee: month.esi,
                     esiEmployer: month.esi,
                     tdsDeduction: 0,
+                    noticePeriodRecovery: noticeRecoveryAmount,
                     additionalDeduction: 0,
                     totalDeductions,
                     leaveDeductions: month.lopAmount || 0,

@@ -190,7 +190,7 @@ export async function generateFNFLetter(settlement: any, employee: any): Promise
                 earningsArray.push({ label: 'Basic', amount: formatCurrency(unpaidBasic, 'IN') });
             }
             if (unpaidHRA > 0) {
-                earningsArray.push({ label: 'House Rent Allowance', amount: formatCurrency(unpaidHRA, 'IN') });
+                earningsArray.push({ label: 'HRA', amount: formatCurrency(unpaidHRA, 'IN') });
             }
             if (settlement.finalCalculation.holdSalaries > 0) {
                 earningsArray.push({ label: 'Hold Salary', amount: formatCurrency(settlement.finalCalculation.holdSalaries, 'IN') });

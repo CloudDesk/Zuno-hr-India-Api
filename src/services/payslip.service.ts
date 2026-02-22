@@ -109,7 +109,7 @@ export class PayslipService extends BaseService {
     const payslips = await Payslip.find(filter)
       .sort({ year: -1, month: -1 }) // Sort by year and month descending
       .populate('userId', 'name email')
-      .populate('payrollId', 'month year monthYear monthlyGross basic hra da otherAllowance travelAllowance airTicketAllowance medicalAllowance epfEmployee professionalTax incomeTax overtimePay netSalary ctc totalDeductions reimbursement bonus holdSalary');
+      .populate('payrollId', 'month year monthYear monthlyGross basic hra da otherAllowance travelAllowance airTicketAllowance medicalAllowance epfEmployee professionalTax incomeTax overtimePay netSalary ctc totalDeductions reimbursement bonus holdSalary noticePeriodRecovery');
 
     console.log(payslips, "payslips getEmployeePayslipAndPayroll")
     // Format the response with detailed payroll calculations
@@ -143,6 +143,7 @@ export class PayslipService extends BaseService {
         totalDeductions: payroll.totalDeductions,
         reimbursement: payroll.reimbursement,
         holdSalary: payroll.holdSalary || 0, // ✅ NEW: Include Hold Salary in response
+        noticePeriodRecovery: payroll.noticePeriodRecovery || 0, // ✅ NEW: Include Notice Recovery in response
         bonus: payroll.bonus,
         // generatedAt: payslip.generatedAt,
         payslipUrl: payslip.payslipUrl
@@ -607,6 +608,7 @@ export class PayslipService extends BaseService {
         const ptVal = Number(payroll.professionalTax ?? 0);
         const itVal = Number(payroll.incomeTax ?? 0);
         const tdsVal = Number(payroll.tdsDeduction ?? 0);
+        const noticeVal = Number(payroll.noticePeriodRecovery ?? 0);
 
         if (pfVal > 0) {
           deductionObj.pf = formatCurrency(pfVal, payroll.country);
@@ -623,50 +625,62 @@ export class PayslipService extends BaseService {
         if (tdsVal > 0) {
           deductionObj.tds = formatCurrency(tdsVal, payroll.country);
         }
+        if (noticeVal > 0) {
+          deductionObj.noticeRecovery = formatCurrency(noticeVal, payroll.country);
+        }
 
         return deductionObj;
       })(),
 
-      // Deductions array for template looping (only non-zero items)
-      deductions: (() => {
+      // Dynamic Earnings List (only non-zero items)
+      allEarnings: (() => {
+        const earningsArray: any[] = [];
+
+        // Helper to add row if actual or full > 0
+        const pushIfValid = (label: string, actual: number, full: number) => {
+          if (actual > 0 || full > 0) {
+            earningsArray.push({
+              label,
+              fullAmount: formatCurrency(full, payroll.country),
+              actualAmount: formatCurrency(actual, payroll.country)
+            });
+          }
+        };
+
+        pushIfValid('Basic', basicValue, assignedBasicValue);
+        pushIfValid('HRA', hraValue, assignedHraValue);
+        pushIfValid('Dearness Allowance', daValue, 0); // Usually no "full" DA assigned separately
+        pushIfValid('Other Allowance', otherAllowanceValue, assignedOtherAllowanceValue);
+        pushIfValid('Travel Allowance', travelAllowanceValue, assignedTravelAllowanceValue);
+        pushIfValid('Hold Salary', holdSalaryValue, 0);
+        pushIfValid('Reimbursement', reimbursementValue, assignedReimbursementValue);
+
+        if (sanitizeAmount(payroll.airTicketAllowance) > 0 || sanitizeAmount(payroll.assigned?.airTicketAllowance) > 0) {
+          pushIfValid('Air Ticket Allowance', sanitizeAmount(payroll.airTicketAllowance), sanitizeAmount(payroll.assigned?.airTicketAllowance));
+        }
+        if (sanitizeAmount(payroll.medicalAllowance) > 0 || sanitizeAmount(payroll.assigned?.medicalAllowance) > 0) {
+          pushIfValid('Medical Allowance', sanitizeAmount(payroll.medicalAllowance), sanitizeAmount(payroll.assigned?.medicalAllowance));
+        }
+
+        return earningsArray;
+      })(),
+
+      // Dynamic Deductions List (only non-zero items)
+      allDeductions: (() => {
         const deductionsArray: any[] = [];
         const pfVal = Number(payroll.epfEmployee ?? 0);
         const lopVal = Number(payroll.leaveDeductions ?? 0);
         const ptVal = Number(payroll.professionalTax ?? 0);
         const itVal = Number(payroll.incomeTax ?? 0);
         const tdsVal = Number(payroll.tdsDeduction ?? 0);
+        const noticeVal = Number(payroll.noticePeriodRecovery ?? 0);
 
-        if (pfVal > 0) {
-          deductionsArray.push({
-            label: 'PF',
-            value: formatCurrency(pfVal, payroll.country)
-          });
-        }
-        if (lopVal > 0) {
-          deductionsArray.push({
-            label: 'LOP',
-            value: formatCurrency(lopVal, payroll.country)
-          });
-        }
-        if (itVal > 0) {
-          deductionsArray.push({
-            label: 'Income Tax',
-            value: formatCurrency(itVal, payroll.country)
-          });
-        }
-        if (ptVal > 0) {
-          deductionsArray.push({
-            label: 'Professional Tax',
-            value: formatCurrency(ptVal, payroll.country)
-          });
-        }
-        if (tdsVal > 0) {
-          deductionsArray.push({
-            label: 'TDS (1%)',
-            value: formatCurrency(tdsVal, payroll.country)
-          });
-        }
-
+        if (pfVal > 0) deductionsArray.push({ label: 'Provident Fund', amount: formatCurrency(pfVal, payroll.country) });
+        if (lopVal > 0) deductionsArray.push({ label: 'Loss of Pay', amount: formatCurrency(lopVal, payroll.country) });
+        if (itVal > 0) deductionsArray.push({ label: 'Income Tax', amount: formatCurrency(itVal, payroll.country) });
+        if (ptVal > 0) deductionsArray.push({ label: 'Professional Tax', amount: formatCurrency(ptVal, payroll.country) });
+        if (tdsVal > 0) deductionsArray.push({ label: 'TDS (1%)', amount: formatCurrency(tdsVal, payroll.country) });
+        if (noticeVal > 0) deductionsArray.push({ label: 'Notice Period Recovery', amount: formatCurrency(noticeVal, payroll.country) });
         return deductionsArray;
       })(),
 
@@ -702,7 +716,7 @@ export class PayslipService extends BaseService {
       await this.replacePlaceholdersInDocx(
         // path.join(process.cwd(), 'CD_paySlip.docx'),
         //path.join(process.cwd(), 'CD_payslip_Dubai Zuno.docx'),
-        path.join(process.cwd(), 'CD_paySlip old.docx'),
+        path.join(process.cwd(), 'CD_paySlip old2.docx'),
         // path.join(process.cwd(), 'CD_paySlip_new.docx'),
         outputDocxPath,
         templateData

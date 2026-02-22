@@ -1709,38 +1709,55 @@ export class DocumentService extends BaseService {
                 return deductionObj;
             })(),
 
-            // Deductions array for template looping (only non-zero items)
-            deductions: (() => {
+            // Dynamic Earnings List (only non-zero items)
+            allEarnings: (() => {
+                const earningsArray: any[] = [];
+
+                // Helper to add row if actual or full > 0
+                const pushIfValid = (label: string, actual: number, full: number) => {
+                    if (actual > 0 || full > 0) {
+                        earningsArray.push({
+                            label,
+                            fullAmount: formatCurrency(full, normalizedCountry),
+                            actualAmount: formatCurrency(actual, normalizedCountry)
+                        });
+                    }
+                };
+
+                pushIfValid('Basic', basicValue, assignedBasicValue);
+                pushIfValid('HRA', hraValue, assignedHraValue);
+                pushIfValid('Dearness Allowance', daValue, 0); // Usually no "full" DA assigned separately
+                pushIfValid('Other Allowance', otherAllowanceValue, assignedOtherAllowanceValue);
+                pushIfValid('Travel Allowance', travelAllowanceValue, assignedTravelAllowanceValue);
+                pushIfValid('Hold Salary', holdSalaryValue, 0);
+                pushIfValid('Reimbursement', reimbursementValue, assignedReimbursementValue);
+
+                if (sanitizeAmount(payroll.airTicketAllowance) > 0 || sanitizeAmount(payroll.assigned?.airTicketAllowance) > 0) {
+                    pushIfValid('Air Ticket Allowance', sanitizeAmount(payroll.airTicketAllowance), sanitizeAmount(payroll.assigned?.airTicketAllowance));
+                }
+                if (sanitizeAmount(payroll.medicalAllowance) > 0 || sanitizeAmount(payroll.assigned?.medicalAllowance) > 0) {
+                    pushIfValid('Medical Allowance', sanitizeAmount(payroll.medicalAllowance), sanitizeAmount(payroll.assigned?.medicalAllowance));
+                }
+
+                return earningsArray;
+            })(),
+
+            // Dynamic Deductions List (only non-zero items)
+            allDeductions: (() => {
                 const deductionsArray: any[] = [];
                 const pfVal = Number((payroll as any).epfEmployee ?? 0);
                 const lopVal = Number((payroll as any).leaveDeductions ?? 0);
                 const ptVal = Number((payroll as any).professionalTax ?? 0);
                 const itVal = Number((payroll as any).incomeTax ?? 0);
+                const tdsVal = Number((payroll as any).tdsDeduction ?? 0);
+                const noticeVal = Number((payroll as any).noticePeriodRecovery ?? 0);
 
-                if (pfVal > 0) {
-                    deductionsArray.push({
-                        label: 'PF',
-                        value: formatCurrency(pfVal, normalizedCountry)
-                    });
-                }
-                if (lopVal > 0) {
-                    deductionsArray.push({
-                        label: 'LOP',
-                        value: formatCurrency(lopVal, normalizedCountry)
-                    });
-                }
-                if (itVal > 0) {
-                    deductionsArray.push({
-                        label: 'Income Tax',
-                        value: formatCurrency(itVal, normalizedCountry)
-                    });
-                }
-                if (ptVal > 0) {
-                    deductionsArray.push({
-                        label: 'Professional Tax',
-                        value: formatCurrency(ptVal, normalizedCountry)
-                    });
-                }
+                if (pfVal > 0) deductionsArray.push({ label: 'Provident Fund', amount: formatCurrency(pfVal, normalizedCountry) });
+                if (lopVal > 0) deductionsArray.push({ label: 'Loss of Pay', amount: formatCurrency(lopVal, normalizedCountry) });
+                if (itVal > 0) deductionsArray.push({ label: 'Income Tax', amount: formatCurrency(itVal, normalizedCountry) });
+                if (ptVal > 0) deductionsArray.push({ label: 'Professional Tax', amount: formatCurrency(ptVal, normalizedCountry) });
+                if (tdsVal > 0) deductionsArray.push({ label: 'TDS (1%)', amount: formatCurrency(tdsVal, normalizedCountry) });
+                if (noticeVal > 0) deductionsArray.push({ label: 'Notice Period Recovery', amount: formatCurrency(noticeVal, normalizedCountry) });
 
                 return deductionsArray;
             })(),
@@ -1775,7 +1792,7 @@ export class DocumentService extends BaseService {
             await this.replacePlaceholdersInDocx(
                 // path.join(process.cwd(), 'CD_paySlip.docx'),
                 //path.join(process.cwd(), 'CD_payslip_Dubai Zuno.docx'),
-                path.join(process.cwd(), 'CD_paySlip old.docx'),
+                path.join(process.cwd(), 'CD_paySlip old2.docx'),
                 // path.join(process.cwd(), 'CD_paySlip_new.docx'),
 
                 outputDocxPath,
