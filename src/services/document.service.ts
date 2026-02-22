@@ -1705,6 +1705,14 @@ export class DocumentService extends BaseService {
                 if (itVal > 0) {
                     deductionObj.it = formatCurrency(itVal, normalizedCountry);
                 }
+                const tdsVal = Number((payroll as any).tdsDeduction ?? 0);
+                const noticeVal = Number((payroll as any).noticePeriodRecovery ?? 0);
+                if (tdsVal > 0) {
+                    deductionObj.tds = formatCurrency(tdsVal, normalizedCountry);
+                }
+                if (noticeVal > 0) {
+                    deductionObj.noticeRecovery = formatCurrency(noticeVal, normalizedCountry);
+                }
 
                 return deductionObj;
             })(),
@@ -1792,7 +1800,7 @@ export class DocumentService extends BaseService {
             await this.replacePlaceholdersInDocx(
                 // path.join(process.cwd(), 'CD_paySlip.docx'),
                 //path.join(process.cwd(), 'CD_payslip_Dubai Zuno.docx'),
-                path.join(process.cwd(), 'CD_paySlip old2.docx'),
+                path.join(process.cwd(), 'CD_paySlip old.docx'),
                 // path.join(process.cwd(), 'CD_paySlip_new.docx'),
 
                 outputDocxPath,
