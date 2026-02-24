@@ -186,6 +186,8 @@ async function calculateUnpaidGaps(
 
     const cyclePayrolls = await Payroll.find({
         employeeId: new Types.ObjectId(employeeId),
+        type: { $ne: 'FinalSettlement' }, // ✅ EXCLUDE F&F Drafts to prevent double-counting income
+        isFinalSettlement: { $ne: true },
         ...cycleQuery
     });
 
@@ -1302,6 +1304,16 @@ export async function unlockFinalSettlement(
             });
         }
 
+        // ✅ CLEANUP: Delete the auto-generated F&F Draft payslips that were created during confirmation.
+        // This prevents double-counting of income when recalculating during the edit flow.
+        await Payroll.deleteMany({
+            employeeId: new Types.ObjectId(employeeId),
+            monthYear: { $in: involvedMonths },
+            isFinalSettlement: true,
+            type: 'FinalSettlement',
+            status: 'Draft'
+        });
+
         settlement.status = 'Draft';
         settlement.lastEditedAt = new Date();
         settlement.lastEditedBy = new Types.ObjectId(unlockedBy);
@@ -1618,7 +1630,8 @@ export async function confirmFinalSettlement(
             // This ensures editing the settlement doesn't result in duplicate payroll records
             await Payroll.deleteMany({
                 employeeId: new Types.ObjectId(employeeId),
-                isFinalSettlement: true
+                isFinalSettlement: true,
+                type: 'FinalSettlement'
             }).session(session);
 
             // Fetch Employee and Salary details for metadata
@@ -1979,7 +1992,8 @@ export async function confirmFinalSettlement(
                     // Status fields (Set to Draft for admin review)
                     status: 'Draft',
                     processedAt: new Date(),
-                    isFinalSettlement: true
+                    isFinalSettlement: true,
+                    type: 'FinalSettlement'
                 };
 
                 if (false) { // Skip existing check since we deleted them above

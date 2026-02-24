@@ -250,7 +250,8 @@ export const payrollRoutes: RouteHandler = async (fastify: FastifyInstance): Pro
                                                 payableDays: { type: 'number' },
                                                 overtimeHours: { type: 'number' },
                                                 overtimePay: { type: 'number' },
-                                                status: { type: 'string' }
+                                                status: { type: 'string' },
+                                                type: { type: 'string', enum: ['Regular', 'FinalSettlement'] }
                                             }
                                         }
                                     }
@@ -349,6 +350,7 @@ export const payrollRoutes: RouteHandler = async (fastify: FastifyInstance): Pro
                                             ]
                                         },
                                         paymentConfirmedAt: { type: 'string', format: 'date-time', description: 'Timestamp when payment was confirmed' },
+                                        type: { type: 'string', enum: ['Regular', 'FinalSettlement'] },
                                     },
                                     required: ['_id', 'employeeId', 'status']
                                 },

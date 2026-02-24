@@ -392,7 +392,11 @@ export class PayrollService extends BaseService {
     async deletePayroll(month: number, year: number, country?: string) {
         console.log(`Deleting payroll records for ${month}-${year}${country ? ` for country ${country}` : ''}`);
         // Delete all payroll records for the specified month and year
-        const query: any = { month, year };
+        const query: any = {
+            month,
+            year,
+            type: { $ne: 'FinalSettlement' }
+        };
         if (country) {
             query.country = country;
         }
@@ -415,6 +419,10 @@ export class PayrollService extends BaseService {
 
         if (payroll.status !== PayrollStatus.Draft) {
             throw new Error(`Cannot delete payroll record with status '${payroll.status}'. Only 'Draft' records can be deleted.`);
+        }
+
+        if (payroll.type === 'FinalSettlement') {
+            throw new Error(`Cannot delete payroll records belonging to a Final Settlement.`);
         }
 
         await Payroll.findByIdAndDelete(id);
@@ -704,7 +712,8 @@ export class PayrollService extends BaseService {
                 payableDays: record.payableDays,
                 overtimeHours: record.overtimeHours || 0,
                 overtimePay: Math.round(record.overtimePay || 0),
-                status: record.status
+                status: record.status,
+                type: record.type
             };
         });
 
@@ -735,7 +744,7 @@ export class PayrollService extends BaseService {
             month,
             year
         },
-            { employeeId: 1, status: 1, paymentConfirmedAt: 1 }
+            { employeeId: 1, status: 1, paymentConfirmedAt: 1, type: 1 }
         )
         console.log(payrollRecords, 'payrollRecords getPayrollRecordsForUsers');
 
@@ -1329,6 +1338,7 @@ export class PayrollService extends BaseService {
         payrollRecords = payrollRecords.map((record) => ({
             ...record,
             status: PayrollStatus.Draft,
+            type: 'Regular'
         }));
 
         //6. Batch insert and calculate totals

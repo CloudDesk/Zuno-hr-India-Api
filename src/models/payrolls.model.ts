@@ -66,6 +66,7 @@ export interface IPayroll extends Document {
     utrNumber?: string; // New field for UTR number in Completed status
     country: string; // 'AE' | 'IN' - Country code for payroll processing
     isFinalSettlement?: boolean; // ✅ Flag for FNF generated records
+    type: 'Regular' | 'FinalSettlement'; // ✅ NEW: Type of payroll
     _id?: Types.ObjectId;
 }
 
@@ -144,6 +145,12 @@ const PayrollSchema = new Schema<IPayroll>(
             description: 'Country code for payroll processing'
         },
         isFinalSettlement: { type: Boolean, default: false }, // ✅ Flag for FNF generated records
+        type: {
+            type: String,
+            enum: ['Regular', 'FinalSettlement'],
+            required: true,
+            default: 'Regular'
+        },
     },
     { timestamps: true },
 );
