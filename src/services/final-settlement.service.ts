@@ -171,11 +171,27 @@ async function calculateUnpaidGaps(
     const isH1 = lwdMonth >= 4 && lwdMonth <= 9;
     const cycleStartYear = isH1 ? lwdYear : (lwdMonth >= 10 ? lwdYear : lwdYear - 1);
 
-    // ✅ CYCLE AWARE INCOME AGGREGATION
-    // We must identify income for EVERY month in the current cycle (e.g. Oct, Nov, Dec, Jan, Feb)
-    // to pick the correct PT slab.
     let cycleAggregateGross = 0;
     let cyclePaidPT = 0;
+
+    // ✅ ACTUAL LEGAL: Fetch ALL Salary Assignments to handle historical hikes accurately
+    const allSalaryAssignments: any[] = await SalaryAssignment.find({
+        employeeId: new Types.ObjectId(employeeId)
+    }).sort({ effectiveFrom: 1 }).populate('salaryStructureId').lean();
+
+    const _latestSalaryAssignment = allSalaryAssignments.length ? allSalaryAssignments[allSalaryAssignments.length - 1] : salaryAssignment;
+    const _latestMonthlyGross = _latestSalaryAssignment?.monthlyGross || monthlyGross;
+
+    // Helper: Find assignment for month
+    const getAssignmentForMonth = (month: number, year: number) => {
+        const firstDayOfMonth = new Date(year, month - 1, 1);
+        const lastDayOfMonth = new Date(year, month, 0);
+
+        return allSalaryAssignments.find((a: any) =>
+            new Date(a.effectiveFrom) <= lastDayOfMonth &&
+            new Date(a.effectiveTo) >= firstDayOfMonth
+        ) || _latestSalaryAssignment;
+    };
 
     // Iterate through each month of the cycle up to the month BEFORE the first gap month
     const startOfCycle = isH1 ? new Date(cycleStartYear, 3, 1) : new Date(cycleStartYear, 9, 1);
@@ -208,11 +224,14 @@ async function calculateUnpaidGaps(
             cycleAggregateGross += (Number(existing.attendanceAdjustGross) || Number((existing as any).attendanceAdjustedGross) || Number(existing.monthlyGross) || 0);
             cyclePaidPT += (Number(existing.professionalTax) || 0);
         } else {
+            // ✅ ACTUAL LEGAL: Identify correct salary for this historical month
+            const monthHistAssignment = getAssignmentForMonth(cM, cY);
+            const monthHistGross = monthHistAssignment?.monthlyGross || _latestMonthlyGross;
+
             // If NO payroll exists, but employee was ACTIVE, we should assume they earned their gross
-            // This handles cases where older records were deleted or not imported correctly
             const jDate = employee.joiningDate ? new Date(employee.joiningDate) : null;
             if (jDate && checkDate >= new Date(jDate.getFullYear(), jDate.getMonth(), 1)) {
-                cycleAggregateGross += monthlyGross;
+                cycleAggregateGross += monthHistGross;
             }
         }
 
@@ -221,8 +240,6 @@ async function calculateUnpaidGaps(
     }
 
     console.log(`PT Cycle Aware Debug: Found ${cyclePayrolls.length} items in DB. Calculated Aggregate: ${cycleAggregateGross} for cycle starting ${startOfCycle.toISOString()}`);
-
-
 
     // Loop through all months from (lastPaid + 1) to LWD month
     while (
@@ -368,21 +385,26 @@ async function calculateUnpaidGaps(
             continue;
         }
 
-        const monthlySalary = (monthlyGross / daysInMonth) * payableDays;
+        // ✅ ACTUAL LEGAL: Fetch correct assignment for THIS specific gap month
+        const currentMonthAssignment = getAssignmentForMonth(currentMonth, currentYear);
+        const currentMonthGross = currentMonthAssignment?.monthlyGross || _latestMonthlyGross;
+        const currentMonthStructure = currentMonthAssignment?.salaryStructureId || _latestSalaryAssignment?.salaryStructureId || {};
+
+        const monthlySalary = (currentMonthGross / daysInMonth) * payableDays;
 
         // Proration Logic (Matched with Payroll Service)
-        const structure = salaryAssignment?.salaryStructureId || {};
+        const structure = currentMonthStructure;
         const basicPerc = structure.fixedEarnings?.basicPercentage ?? 0;
         const daPerc = Number(structure.fixedEarnings?.daPercentage) || 0;
         const hraPerc = Number(structure.fixedEarnings?.hraPercentage) || 0;
         const conveyancePerc = Number(structure.fixedEarnings?.conveyancePercentage) || 0;
         const otherAllowancePerc = Number(structure.fixedEarnings?.otherAllowancePercentage) || 0;
 
-        const fullBasic = monthlyGross * (basicPerc / 100);
+        const fullBasic = currentMonthGross * (basicPerc / 100);
         const fullDA = daPerc === 0 ? 0 : fullBasic * (daPerc / 100);
-        const fullHRA = monthlyGross * (hraPerc / 100);
-        const fullConveyance = monthlyGross * (conveyancePerc / 100);
-        const fullOtherAllowances = monthlyGross * (otherAllowancePerc / 100);
+        const fullHRA = currentMonthGross * (hraPerc / 100);
+        const fullConveyance = currentMonthGross * (conveyancePerc / 100);
+        const fullOtherAllowances = currentMonthGross * (otherAllowancePerc / 100);
 
         const proratedBasic = (fullBasic / daysInMonth) * payableDays;
         const proratedDA = (fullDA / daysInMonth) * payableDays;
@@ -394,7 +416,7 @@ async function calculateUnpaidGaps(
         // Note: If (proratedGross !== monthlySalary) due to rounding/residual, add difference to Other Allowance
         const finalGross = proratedGross;
 
-        const lopAmount = (monthlyGross / daysInMonth) * lopDays;
+        const lopAmount = (currentMonthGross / daysInMonth) * lopDays;
 
         // ✅ PT Calculation Logic (Updated to Aggregate Cycle Logic)
         // Add current month's earned gross to the aggregate ONLY if it's in the same cycle as LWD (Apr-Sep or Oct-Mar)
@@ -419,7 +441,7 @@ async function calculateUnpaidGaps(
             }
         } else {
             // Monthly / Yearly / Other Fallbacks: Deduct in every applicable month (Individual monthly gross)
-            ptAmount = Math.round(calculatePT(monthlyGross, currentMonth, isLWDMonth));
+            ptAmount = Math.round(calculatePT(currentMonthGross, currentMonth, isLWDMonth));
         }
 
         const pfAmount = calculatePF(proratedBasic, proratedDA);
@@ -977,14 +999,27 @@ export async function saveFinalSettlement(
             employeeId: employeeIdObj
         });
 
-        const salaryAssignment: any = await SalaryAssignment.findOne({
+        // ✅ ACTUAL LEGAL: Fetch ALL Salary Assignments to handle historical hikes accurately
+        const allSalaryAssignments: any[] = await SalaryAssignment.find({
             employeeId: employeeIdObj
-        }).sort({ effectiveFrom: -1 }).populate('salaryStructureId');
+        }).sort({ effectiveFrom: 1 }).populate('salaryStructureId').lean();
 
-        const employee = await User.findById(employeeIdObj);
-
+        const salaryAssignment: any = allSalaryAssignments.length ? allSalaryAssignments[allSalaryAssignments.length - 1] : null;
         const monthlyGross = salaryAssignment?.monthlyGross || 0;
         const structure = salaryAssignment?.salaryStructureId || {};
+
+        const _latestSalaryAssignment = salaryAssignment;
+
+        const getAssignmentForMonth = (m: number, y: number) => {
+            const fD = new Date(y, m - 1, 1);
+            const lD = new Date(y, m, 0);
+            return allSalaryAssignments.find(a =>
+                new Date(a.effectiveFrom) <= lD &&
+                new Date(a.effectiveTo) >= fD
+            ) || _latestSalaryAssignment;
+        };
+
+        const employee = await User.findById(employeeIdObj);
 
 
         const leavingDate = data.leavingDate || data.resignationDetails?.lwd;
@@ -1053,17 +1088,22 @@ export async function saveFinalSettlement(
                 const payableDays = m.daysWorked || 0;
 
                 if (daysInMonth > 0) {
-                    const bP = (structure.fixedEarnings?.basicPercentage ?? 0) / 100;
-                    const dP = (structure.fixedEarnings?.daPercentage ?? 0) / 100;
-                    const hP = (structure.fixedEarnings?.hraPercentage ?? 0) / 100;
-                    const tP = (structure.fixedEarnings?.travelAllowancePercentage ?? 0) / 100;
-                    const oP = (structure.fixedEarnings?.otherAllowancePercentage ?? 0) / 100; // Assuming otherAllowancePercentage exists
+                    // ✅ ACTUAL LEGAL: Fetch correct assignment for THIS specific month in loop
+                    const mAssignment = getAssignmentForMonth(m.month, m.year);
+                    const mGross = mAssignment?.monthlyGross || monthlyGross;
+                    const mStructure = mAssignment?.salaryStructureId || structure;
 
-                    const fullB = monthlyGross * bP;
+                    const bP = (mStructure.fixedEarnings?.basicPercentage ?? 0) / 100;
+                    const dP = (mStructure.fixedEarnings?.daPercentage ?? 0) / 100;
+                    const hP = (mStructure.fixedEarnings?.hraPercentage ?? 0) / 100;
+                    const tP = (mStructure.fixedEarnings?.travelAllowancePercentage ?? 0) / 100;
+                    const oP = (mStructure.fixedEarnings?.otherAllowancePercentage ?? 0) / 100;
+
+                    const fullB = mGross * bP;
                     const fullD = fullB * dP;
-                    const fullH = monthlyGross * hP;
-                    const fullT = monthlyGross * tP;
-                    const fullOtherAllowances = monthlyGross * oP;
+                    const fullH = mGross * hP;
+                    const fullT = mGross * tP;
+                    const fullOtherAllowances = mGross * oP;
 
                     const pb = (fullB / daysInMonth) * payableDays;
                     const pd = (fullD / daysInMonth) * payableDays;
@@ -1071,7 +1111,7 @@ export async function saveFinalSettlement(
                     const ptAllo = (fullT / daysInMonth) * payableDays;
                     const proratedOtherAllowances = (fullOtherAllowances / daysInMonth) * payableDays;
 
-                    const pg = (monthlyGross / daysInMonth) * payableDays;
+                    const pg = (mGross / daysInMonth) * payableDays;
                     const balancing = pg - (pb + pd + ph + ptAllo + proratedOtherAllowances); // Adjust balancing
 
                     m.components = {
@@ -1124,9 +1164,12 @@ export async function saveFinalSettlement(
                                     prevPT += (Number(existing.professionalTax) || 0);
                                 } else {
                                     // Missing records: Use assumption if active
+                                    const monthCycleAssignment = getAssignmentForMonth(iM, iY);
+                                    const monthCycleGross = monthCycleAssignment?.monthlyGross || monthlyGross;
+
                                     const jDate = employee?.joiningDate ? new Date(employee.joiningDate) : null;
                                     if (jDate && iterDate >= new Date(jDate.getFullYear(), jDate.getMonth(), 1)) {
-                                        prevGross += monthlyGross;
+                                        prevGross += monthCycleGross;
                                     }
                                 }
                                 iterDate.setMonth(iterDate.getMonth() + 1);
@@ -1142,7 +1185,7 @@ export async function saveFinalSettlement(
                             ptAmount = 0;
                         }
                     } else {
-                        ptAmount = Math.round(calculatePT(monthlyGross, m.month));
+                        ptAmount = Math.round(calculatePT(mGross, m.month));
                     }
 
                     m.professionalTax = ptAmount;
@@ -2307,13 +2350,25 @@ export async function calculateFinalSettlement(
         // RECICULATION LOGIC: Recalculate unpaid salaries locally to ensure Zero-Logic from frontend
         let totalUnpaidSalary = 0;
 
-        // Fetch Salary Assignment to get the "Gold Standard" monthly gross and structure
-        const salaryAssignment: any = employeeIdObj ? await SalaryAssignment.findOne({
+        // ✅ ACTUAL LEGAL: Fetch ALL Salary Assignments to handle historical hikes accurately
+        const allSalaryAssignments: any[] = employeeIdObj ? await SalaryAssignment.find({
             employeeId: employeeIdObj
-        }).sort({ effectiveFrom: -1 }).populate('salaryStructureId') : null;
+        }).sort({ effectiveFrom: 1 }).populate('salaryStructureId').lean() : [];
 
+        const salaryAssignment: any = allSalaryAssignments.length ? allSalaryAssignments[allSalaryAssignments.length - 1] : null;
         const monthlyGross = salaryAssignment?.monthlyGross || 0;
         const structure = salaryAssignment?.salaryStructureId || {};
+
+        const _latestSalaryAssignment = salaryAssignment;
+
+        const getAssignmentForMonth = (m: number, y: number) => {
+            const fD = new Date(y, m - 1, 1);
+            const lD = new Date(y, m, 0);
+            return allSalaryAssignments.find(a =>
+                new Date(a.effectiveFrom) <= lD &&
+                new Date(a.effectiveTo) >= fD
+            ) || _latestSalaryAssignment;
+        };
 
 
         // Fetch User needed for Country check inside loop
@@ -2407,17 +2462,22 @@ export async function calculateFinalSettlement(
                 const lopDays = month.lopDays || 0;
 
                 if (daysInMonth > 0) {
-                    const bP = (structure.fixedEarnings?.basicPercentage ?? 0) / 100;
-                    const dP = (structure.fixedEarnings?.daPercentage ?? 0) / 100;
-                    const hP = (structure.fixedEarnings?.hraPercentage ?? 0) / 100;
-                    const tP = (structure.fixedEarnings?.travelAllowancePercentage ?? 0) / 100;
-                    const oP = (structure.fixedEarnings?.otherAllowancePercentage ?? 0) / 100;
+                    // ✅ ACTUAL LEGAL: Fetch correct assignment for THIS specific month in loop
+                    const curMonthAssignment = getAssignmentForMonth(month.month, month.year);
+                    const curMonthGross = curMonthAssignment?.monthlyGross || monthlyGross;
+                    const curMonthStructure = curMonthAssignment?.salaryStructureId || structure;
 
-                    const fullB = monthlyGross * bP;
+                    const bP = (curMonthStructure.fixedEarnings?.basicPercentage ?? 0) / 100;
+                    const dP = (curMonthStructure.fixedEarnings?.daPercentage ?? 0) / 100;
+                    const hP = (curMonthStructure.fixedEarnings?.hraPercentage ?? 0) / 100;
+                    const tP = (curMonthStructure.fixedEarnings?.travelAllowancePercentage ?? 0) / 100;
+                    const oP = (curMonthStructure.fixedEarnings?.otherAllowancePercentage ?? 0) / 100;
+
+                    const fullB = curMonthGross * bP;
                     const fullD = fullB * dP;
-                    const fullH = monthlyGross * hP;
-                    const fullT = monthlyGross * tP;
-                    const fullOtherAllowances = monthlyGross * oP;
+                    const fullH = curMonthGross * hP;
+                    const fullT = curMonthGross * tP;
+                    const fullOtherAllowances = curMonthGross * oP;
 
                     const proratedBasic = (fullB / daysInMonth) * payableDays;
                     const proratedDA = (fullD / daysInMonth) * payableDays;
@@ -2425,10 +2485,10 @@ export async function calculateFinalSettlement(
                     const proratedTravelAllowance = (fullT / daysInMonth) * payableDays;
                     const proratedOtherAllowances = (fullOtherAllowances / daysInMonth) * payableDays;
 
-                    const pg = (monthlyGross / daysInMonth) * payableDays;
+                    const pg = (curMonthGross / daysInMonth) * payableDays;
                     const balancing = pg - (proratedBasic + proratedDA + proratedHRA + proratedTravelAllowance + proratedOtherAllowances);
 
-                    const lopAmount = (monthlyGross / daysInMonth) * lopDays;
+                    const lopAmount = (curMonthGross / daysInMonth) * lopDays;
                     const pfAmount = calculatePF(proratedBasic, proratedDA);
                     const esiAmount = calculateESI();
 
@@ -2483,9 +2543,12 @@ export async function calculateFinalSettlement(
                                     prevPT += (Number(existing.professionalTax) || 0);
                                 } else {
                                     // Missing records: Use assumption if active
+                                    const monthCycleAssignment = getAssignmentForMonth(iM, iY);
+                                    const monthCycleGross = monthCycleAssignment?.monthlyGross || monthlyGross;
+
                                     const jDate = employee?.joiningDate ? new Date(employee.joiningDate) : null;
                                     if (jDate && iterDate >= new Date(jDate.getFullYear(), jDate.getMonth(), 1)) {
-                                        prevGross += monthlyGross; // Use monthlyGross from current scope
+                                        prevGross += monthCycleGross; // Use historical gross
                                     }
                                 }
                                 iterDate.setMonth(iterDate.getMonth() + 1);
@@ -2501,7 +2564,7 @@ export async function calculateFinalSettlement(
                             ptAmount = 0;
                         }
                     } else {
-                        ptAmount = Math.round(calculatePT(monthlyGross, month.month));
+                        ptAmount = Math.round(calculatePT(curMonthGross, month.month));
                     }
 
                     month.professionalTax = ptAmount;
