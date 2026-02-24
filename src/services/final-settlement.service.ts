@@ -80,20 +80,18 @@ async function calculateUnpaidGaps(
             monthly: Array.from({ length: 12 }, (_, i) => i + 1),
         };
 
-        // 1. Standard Deduction Check
-        if (applicableMonths[term]?.includes(monthNumber)) {
+        // 1. Standard Deduction Check (Monthly or traditional half-yearly months)
+        if (applicableMonths[term]?.includes(monthNumber) || [4, 10].includes(monthNumber)) {
             shouldDeduct = true;
         }
         // 2. FNF Special Rule (Catch-up for Half-Yearly)
         // If employee leaves BEFORE the deduction month (Aug or Feb), they are still liable for that half-year.
         else if (term === 'half_yearly' && isLWD) {
-            // First Half (Apr-Sept): Deduct normally in Aug (8).
-            // If leaving in Apr(4), May(5), Jun(6), Jul(7), force deduction.
-            if ([4, 5, 6, 7].includes(monthNumber)) shouldDeduct = true;
+            // First Half (Apr-Sept): If leaving in Apr-Jul, force deduction.
+            if ([5, 6, 7].includes(monthNumber)) shouldDeduct = true;
 
-            // Second Half (Oct-Mar): Deduct normally in Feb (2).
-            // If leaving in Oct(10), Nov(11), Dec(12), Jan(1), force deduction.
-            if ([10, 11, 12, 1].includes(monthNumber)) shouldDeduct = true;
+            // Second Half (Oct-Mar): If leaving in Oct-Jan, force deduction.
+            if ([11, 12, 1].includes(monthNumber)) shouldDeduct = true;
         }
 
         if (!shouldDeduct) return 0;
@@ -167,6 +165,32 @@ async function calculateUnpaidGaps(
     const holdMonthSet = new Set(
         holdPayrolls.map(p => `${p.year}-${p.month}`)
     );
+
+    // ✅ PT AGGREGATE INITIALIZATION:
+    // Identify Cycle Start for the current LWD (Apr-Sep or Oct-Mar)
+    const isH1 = lwdMonth >= 4 && lwdMonth <= 9;
+    const cycleStartYear = isH1 ? lwdYear : (lwdMonth >= 10 ? lwdYear : lwdYear - 1);
+
+    // Fetch ANY payrolls in the CURRENT cycle (to get cumulative income so far)
+    const cycleQuery = isH1
+        ? { // April to September (Same Year)
+            year: cycleStartYear,
+            month: { $gte: 4, $lte: 9 }
+        }
+        : { // October to March (Spans New Year)
+            $or: [
+                { year: cycleStartYear, month: { $gte: 10, $lte: 12 } },
+                { year: cycleStartYear + 1, month: { $gte: 1, $lte: 3 } }
+            ]
+        };
+
+    const cyclePayrolls = await Payroll.find({
+        employeeId: new Types.ObjectId(employeeId),
+        ...cycleQuery
+    });
+
+    let cycleAggregateGross = cyclePayrolls.reduce((sum, p) => sum + (p.attendanceAdjustGross || p.monthlyGross || 0), 0);
+    let cyclePaidPT = cyclePayrolls.reduce((sum, p) => sum + (p.professionalTax || 0), 0);
 
 
     // Loop through all months from (lastPaid + 1) to LWD month
@@ -340,7 +364,30 @@ async function calculateUnpaidGaps(
         const finalGross = proratedGross;
 
         const lopAmount = (monthlyGross / daysInMonth) * lopDays;
-        const ptAmount = Math.round(calculatePT(monthlyGross, currentMonth, isLWDMonth));
+
+        // ✅ PT Calculation Logic (Updated to Aggregate Cycle Logic)
+        // Add current month's earned gross to the aggregate
+        cycleAggregateGross += Math.round(monthlySalary);
+
+        let ptAmount = 0;
+        const ptConfig = salaryAssignment?.salaryStructureId?.statutoryDeductions?.professionalTax;
+        const ptTerm = ptConfig?.term || 'half_yearly';
+
+        if (ptTerm === 'half_yearly') {
+            // Half-Yearly: Only calculate PT deduction in the EXIT month (Aggregate sum)
+            if (isLWDMonth) {
+                // Determine slab for TOTAL cycle gross (Reusing calculatePT for slab lookup)
+                const representativeMonth = isH1 ? 8 : 2; // Aug or Feb
+                const totalDueForCycle = Math.round(calculatePT(cycleAggregateGross, representativeMonth, true));
+                ptAmount = Math.max(0, totalDueForCycle - cyclePaidPT);
+            } else {
+                ptAmount = 0; // Gap months for half-yearly have 0 PT (deducted at end)
+            }
+        } else {
+            // Monthly / Yearly / Other Fallbacks: Deduct in every applicable month (Individual monthly gross)
+            ptAmount = Math.round(calculatePT(monthlyGross, currentMonth, isLWDMonth));
+        }
+
         const pfAmount = calculatePF(proratedBasic, proratedDA);
         const itAmount = await calculateIncomeTax(currentMonth, currentYear);
         const esiAmount = calculateESI();
@@ -1213,6 +1260,67 @@ export async function saveFinalSettlement(
 }
 
 /**
+ * Unlock (Re-open) Confirmed Final Settlement
+ * POST /final-settlement/unlock/:employeeId
+ */
+export async function unlockFinalSettlement(
+    request: FastifyRequest<{ Params: { employeeId: string }, Body: { unlockedBy: string } }>,
+    reply: FastifyReply
+) {
+    try {
+        const { employeeId } = request.params;
+        const { unlockedBy } = request.body;
+
+        if (!Types.ObjectId.isValid(employeeId)) {
+            return reply.code(400).send({ success: false, error: 'Invalid employee ID' });
+        }
+
+        const settlement = await FinalSettlement.findOne({
+            employeeId: new Types.ObjectId(employeeId),
+            status: 'Confirmed'
+        });
+
+        if (!settlement) {
+            return reply.code(404).send({ success: false, error: 'Confirmed settlement not found' });
+        }
+
+        // ✅ REFINED SAFETY CHECK: Check if ANY payroll (Regular or F&F) for the UNPAID MONTHS 
+        // involved in this settlement has already been marked as 'Completed'.
+        // Hold payrolls are excluded from this lock check.
+        const involvedMonths = (settlement.unpaidMonths || []).map((m: any) => m.monthYear);
+
+        const completedPayslips = await Payroll.findOne({
+            employeeId: new Types.ObjectId(employeeId),
+            monthYear: { $in: involvedMonths },
+            status: 'Completed'
+        });
+
+        if (completedPayslips) {
+            return reply.code(400).send({
+                success: false,
+                error: `Cannot edit: Payroll for ${completedPayslips.monthYear} is already "Completed" (Paid).`
+            });
+        }
+
+        settlement.status = 'Draft';
+        settlement.lastEditedAt = new Date();
+        settlement.lastEditedBy = new Types.ObjectId(unlockedBy);
+
+        await settlement.save();
+
+        return reply.send({
+            success: true,
+            message: 'Settlement unlocked and returned to Draft status',
+            data: settlement
+        });
+
+    } catch (error: any) {
+        request.log.error(error);
+        return reply.code(500).send({ success: false, error: 'Internal server error', details: error.message });
+    }
+}
+
+/**
  * Get All Final Settlements (List with Pagination)
  * GET /final-settlement?page=1&limit=10&status=Draft&search=query
  */
@@ -1287,14 +1395,24 @@ export async function getAllFinalSettlements(
             settlements = result[0]?.data || [];
             total = result[0]?.metadata[0]?.total || 0;
 
-            // Re-map employeeId to match populate structure manually since we unwinded
-            settlements = settlements.map((s: any) => {
+            // Re-map and check editability
+            settlements = await Promise.all(settlements.map(async (s: any) => {
                 s.employeeId = s.employeeDetails; // Mimic populate
                 s.employeeName = s.employeeName || s.employeeDetails?.name;
                 s.employeeCode = s.employeeCode || s.employeeDetails?.employeeCode;
                 delete s.employeeDetails;
+
+                // CHECK: If any unpaid gap month is already 'Completed' in main payroll
+                const involvedMonths = (s.unpaidMonths || []).map((m: any) => m.monthYear);
+                const completedPayslip = await Payroll.findOne({
+                    employeeId: s.employeeId?._id || s.employeeId,
+                    monthYear: { $in: involvedMonths },
+                    status: 'Completed'
+                });
+                s.canEdit = !completedPayslip;
+
                 return s;
-            });
+            }));
 
         } else {
             // Standard Find Query (Faster if no deep search needed)
@@ -1307,11 +1425,26 @@ export async function getAllFinalSettlements(
                 .limit(limit);
 
             const [settlementsData, totalCount] = await Promise.all([findQuery, countQuery]);
-            settlements = settlementsData.map((s: any) => ({
-                ...s,
-                employeeName: s.employeeName || s.employeeId?.name,
-                employeeCode: s.employeeCode || s.employeeId?.employeeCode
+
+            settlements = await Promise.all(settlementsData.map(async (s: any) => {
+                const mapped = {
+                    ...s,
+                    employeeName: s.employeeName || s.employeeId?.name,
+                    employeeCode: s.employeeCode || s.employeeId?.employeeCode
+                };
+
+                // CHECK: If any unpaid gap month is already 'Completed' in main payroll
+                const involvedMonths = (s.unpaidMonths || []).map((m: any) => m.monthYear);
+                const completedPayslip = await Payroll.findOne({
+                    employeeId: s.employeeId?._id || s.employeeId,
+                    monthYear: { $in: involvedMonths },
+                    status: 'Completed'
+                });
+                mapped.canEdit = !completedPayslip;
+
+                return mapped;
             }));
+
             total = totalCount;
         }
 
@@ -1362,9 +1495,21 @@ export async function getFinalSettlement(
             });
         }
 
+        // ✅ REFINED CHECK: Check if ANY payroll (Regular or F&F) for the UNPAID MONTHS 
+        // involved in this settlement has already been marked as 'Completed'.
+        // Hold payrolls are excluded from this lock check.
+        const involvedMonths = (settlement.unpaidMonths || []).map((m: any) => m.monthYear);
+
+        const completedPayslips = await Payroll.findOne({
+            employeeId: new Types.ObjectId(employeeId),
+            monthYear: { $in: involvedMonths },
+            status: 'Completed'
+        });
+
         // ✅ FIX #2: Return flattened response for GET endpoint
         return reply.send({
             success: true,
+            canEdit: !completedPayslips, // Indicate if it can be unlocked/edited
 
             // Root-level fields
             pdfUrl: settlement.pdfUrl,
@@ -1464,11 +1609,20 @@ export async function confirmFinalSettlement(
             return reply.code(500).send({ success: false, error: `PDF generation failed: ${pdfErr.message || pdfErr}` });
         }
 
-        // --- PHASE 2: Atomic Transaction for DB Updates ---
-        const session = await FinalSettlement.startSession();
-        session.startTransaction();
-
+        // ✅ START TRANSACTION: To ensure atomicity of data creation
+        const session = await FinalSettlement.db.startSession();
         try {
+            session.startTransaction();
+
+            // ✅ CLEANUP: Delete any previously generated FNF payslips for this employee
+            // This ensures editing the settlement doesn't result in duplicate payroll records
+            await Payroll.deleteMany({
+                employeeId: new Types.ObjectId(employeeId),
+                isFinalSettlement: true
+            }).session(session);
+
+            // Fetch Employee and Salary details for metadata
+            const employee: any = await User.findById(employeeId).session(session);
             // 2.1 Re-fetch AND LOCK the draft inside transaction
             const settlement = await FinalSettlement.findOne({
                 _id: draft._id,
@@ -1572,10 +1726,16 @@ export async function confirmFinalSettlement(
             // Use packSettlement helper for consistent structure mapping
             packSettlement(settlement, bodyData);
 
+            // Update settlement status and audit info
             settlement.status = 'Confirmed';
-            settlement.pdfUrl = pdfUrl;
             settlement.confirmedAt = new Date();
             settlement.confirmedBy = new Types.ObjectId(confirmedBy);
+
+            // If it was already confirmed before, track that it's being updated
+            if (settlement.confirmedAt) {
+                settlement.lastEditedAt = new Date();
+                settlement.lastEditedBy = new Types.ObjectId(confirmedBy);
+            }
 
             await settlement.save({ session });
 
@@ -1816,27 +1976,14 @@ export async function confirmFinalSettlement(
                         )
                     },
 
-                    // Status fields (Completed for Final Settlement - main difference from Draft)
-                    status: 'Completed',
-                    paymentConfirmedAt: new Date(),
-                    payslipReleaseDate: new Date(),
+                    // Status fields (Set to Draft for admin review)
+                    status: 'Draft',
                     processedAt: new Date(),
                     isFinalSettlement: true
                 };
 
-                const existingPayroll = await Payroll.findOne({
-                    employeeId: new Types.ObjectId(employeeId),
-                    month: month.month,
-                    year: month.year
-                }).session(session);
-
-                if (existingPayroll) {
-                    await Payroll.updateOne(
-                        { _id: existingPayroll._id },
-                        { $set: payrollPayload },
-                        { session }
-                    );
-                    request.log.info(`Updated existing payslip for FNF month: ${monthName} ${month.year}`);
+                if (false) { // Skip existing check since we deleted them above
+                    // (Old block kept for context but disabled by cleanup logic above)
                 } else {
                     // Create new payroll with all calculated values
                     const newPayroll = new Payroll({
@@ -2125,11 +2272,11 @@ export async function calculateFinalSettlement(
 
             filteredUnpaidMonths = gapCalc.unpaidMonths;
             totalUnpaidSalary = gapCalc.totalUnpaidSalary;
-            professionalTax = gapCalc.totalProfessionalTax;
-            providentFund = gapCalc.totalProvidentFund;
-            esi = gapCalc.totalESI;
-            incomeTax = gapCalc.totalIncomeTax;
-            totalLOPAmount = gapCalc.totalLOPAmount;
+            professionalTax = gapCalc.totalProfessionalTax || 0;
+            providentFund = gapCalc.totalProvidentFund || 0;
+            esi = gapCalc.totalESI || 0;
+            incomeTax = gapCalc.totalIncomeTax || 0;
+            totalLOPAmount = gapCalc.totalLOPAmount || 0;
 
         } else {
             // Manual Mode or missing data: Process the input array

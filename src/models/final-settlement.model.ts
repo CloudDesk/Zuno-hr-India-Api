@@ -152,6 +152,10 @@ export interface IFinalSettlement extends Document {
     pdfUrl?: string;
     remarks?: string;
 
+    // Audit Tracking for edits after confirmation
+    lastEditedAt?: Date;
+    lastEditedBy?: Types.ObjectId;
+
     // Metadata
     createdAt: Date;
     updatedAt: Date;
@@ -307,7 +311,11 @@ const finalSettlementSchema = new Schema<IFinalSettlement>(
         confirmedAt: { type: Date },
         confirmedBy: { type: Schema.Types.ObjectId, ref: 'User' },
         pdfUrl: { type: String },
-        remarks: { type: String }
+        remarks: { type: String },
+
+        // Audit Tracking for edits after confirmation
+        lastEditedAt: { type: Date },
+        lastEditedBy: { type: Schema.Types.ObjectId, ref: 'User' }
     },
     {
         timestamps: true

@@ -7,7 +7,8 @@ import {
     getAllFinalSettlements,
     confirmFinalSettlement,
     deleteFinalSettlement,
-    calculateFinalSettlement
+    calculateFinalSettlement,
+    unlockFinalSettlement
 } from '../services/final-settlement.service';
 
 export default async function finalSettlementRoutes(fastify: FastifyInstance) {
@@ -157,4 +158,27 @@ export default async function finalSettlementRoutes(fastify: FastifyInstance) {
             }
         }
     }, calculateFinalSettlement as any);
+
+    // Unlock (Re-open) Final Settlement
+    fastify.post('/final-settlement/unlock/:employeeId', {
+        onRequest: [authenticate],
+        schema: {
+            description: 'Unlock a confirmed final settlement to return it to Draft status for editing',
+            tags: ['Final Settlement'],
+            params: {
+                type: 'object',
+                required: ['employeeId'],
+                properties: {
+                    employeeId: { type: 'string', description: 'Employee ID' }
+                }
+            },
+            body: {
+                type: 'object',
+                required: ['unlockedBy'],
+                properties: {
+                    unlockedBy: { type: 'string', description: 'Admin user ID who unlocked' }
+                }
+            }
+        }
+    }, unlockFinalSettlement as any);
 }

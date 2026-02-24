@@ -107,20 +107,16 @@ export async function generateFNFLetter(settlement: any, employee: any): Promise
 
         // ✅ FIX: Show 0 instead of null for numeric fields
         noticePeriod: settlement.noticePeriodDays || 0,
-        noticeAdjustable: settlement.excessInNotice < 0 ? Math.abs(settlement.excessInNotice) : 0,
+        noticeAdjustable: settlement.daysServed || 0, // ✅ User Requirement: Show Notice served days
 
-        // Days Calculation - SUM holdPayrolls AND unpaidMonths
+        // Days Calculation - strictly use UNPAID MONTHS (exclude holdPayrolls as per user requirement)
         plDays: settlement.leaveBalance?.reduce((sum: number, l: any) => sum + (l.encashDays || 0), 0) || 0,
-        salaryDays: (settlement.unpaidMonths.reduce((sum: number, m: any) => sum + (m.daysWorked || 0), 0)) +
-            (settlement.holdPayrolls?.reduce((sum: number, h: any) => sum + (h.daysWorked || 0), 0) || 0),
-        monthDays: (settlement.unpaidMonths.reduce((sum: number, m: any) => sum + (m.totalDays || 0), 0)) +
-            (settlement.holdPayrolls?.reduce((sum: number, h: any) => sum + (h.totalDays || 0), 0) || 0),
-        lopDays: (settlement.unpaidMonths.reduce((sum: number, m: any) => sum + (m.lopDays || 0), 0)) +
-            (settlement.holdPayrolls?.reduce((sum: number, h: any) => sum + (h.lopDays || 0), 0) || 0),
+        salaryDays: settlement.unpaidMonths.reduce((sum: number, m: any) => sum + (m.daysWorked || 0), 0),
+        monthDays: settlement.unpaidMonths.reduce((sum: number, m: any) => sum + (m.totalDays || 0), 0),
+        lopDays: settlement.unpaidMonths.reduce((sum: number, m: any) => sum + (m.lopDays || 0), 0),
 
-        // ✅ Effective workdays = Sum of Present Days in Unpaid Months + Sum of Present Days in Hold Months
-        effectiveWorkdays: (settlement.unpaidMonths.reduce((sum: number, m: any) => sum + (m.presentDays || 0), 0)) +
-            (settlement.holdPayrolls?.reduce((sum: number, h: any) => sum + (h.presentDays || 0), 0) || 0),
+        // ✅ Effective workdays - strictly use UNPAID MONTHS (exclude holdPayrolls as per user requirement)
+        effectiveWorkdays: settlement.unpaidMonths.reduce((sum: number, m: any) => sum + (m.presentDays || 0), 0),
 
         // ✅ INCOME / EARNINGS (Payslip Style - Only add properties if value > 0)
         income: (() => {
