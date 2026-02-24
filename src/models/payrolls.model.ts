@@ -159,12 +159,12 @@ PayrollSchema.index({ employeeId: 1, monthYear: 1, month: 1, year: 1 }, { unique
 
 PayrollSchema.pre<IPayroll>('save', async function (next) {
     if (this.isNew) {
-        const existingPayroll = await Payroll.findOne({
+        const existingPayroll = await (this.constructor as any).findOne({
             employeeId: this.employeeId,
             monthYear: this.monthYear,
             month: this.month,
             year: this.year,
-        });
+        }).session(this.$session());
 
         if (existingPayroll) {
             return next(new Error('Payroll entry for this employee and period already exists.'));
