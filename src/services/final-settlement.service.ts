@@ -171,28 +171,57 @@ async function calculateUnpaidGaps(
     const isH1 = lwdMonth >= 4 && lwdMonth <= 9;
     const cycleStartYear = isH1 ? lwdYear : (lwdMonth >= 10 ? lwdYear : lwdYear - 1);
 
-    // Fetch ANY payrolls in the CURRENT cycle (to get cumulative income so far)
-    const cycleQuery = isH1
-        ? { // April to September (Same Year)
-            year: cycleStartYear,
-            month: { $gte: 4, $lte: 9 }
-        }
-        : { // October to March (Spans New Year)
-            $or: [
-                { year: cycleStartYear, month: { $gte: 10, $lte: 12 } },
-                { year: cycleStartYear + 1, month: { $gte: 1, $lte: 3 } }
-            ]
-        };
+    // ✅ CYCLE AWARE INCOME AGGREGATION
+    // We must identify income for EVERY month in the current cycle (e.g. Oct, Nov, Dec, Jan, Feb)
+    // to pick the correct PT slab.
+    let cycleAggregateGross = 0;
+    let cyclePaidPT = 0;
 
+    // Iterate through each month of the cycle up to the month BEFORE the first gap month
+    const startOfCycle = isH1 ? new Date(cycleStartYear, 3, 1) : new Date(cycleStartYear, 9, 1);
+    const endOfCycle = isH1 ? new Date(cycleStartYear, 8, 30) : new Date(cycleStartYear + 1, 2, 31);
+
+    // Fetch all relevant payrolls for the cycle
     const cyclePayrolls = await Payroll.find({
         employeeId: new Types.ObjectId(employeeId),
-        type: { $ne: 'FinalSettlement' }, // ✅ EXCLUDE F&F Drafts to prevent double-counting income
-        isFinalSettlement: { $ne: true },
-        ...cycleQuery
-    });
+        status: 'Completed',
+        type: { $ne: 'FinalSettlement' },
+        $or: [
+            { year: cycleStartYear, month: { $gte: isH1 ? 4 : 10 } },
+            { year: cycleStartYear + 1, month: { $lte: 3 } }
+        ]
+    }).lean();
 
-    let cycleAggregateGross = cyclePayrolls.reduce((sum, p) => sum + (p.attendanceAdjustGross || p.monthlyGross || 0), 0);
-    let cyclePaidPT = cyclePayrolls.reduce((sum, p) => sum + (p.professionalTax || 0), 0);
+    const payrollMap = new Map(cyclePayrolls.map(p => [`${p.year}-${p.month}`, p]));
+
+    // Iterate through cycle months to determine aggregate gross
+    let checkDate = new Date(startOfCycle);
+    const lastMonthToCalc = new Date(currentYear, currentMonth - 1, 1); // Start of our "Unpaid Gaps" loop
+
+    while (checkDate < lastMonthToCalc && checkDate <= endOfCycle) {
+        const cM = checkDate.getMonth() + 1;
+        const cY = checkDate.getFullYear();
+        const key = `${cY}-${cM}`;
+
+        const existing = payrollMap.get(key);
+        if (existing) {
+            cycleAggregateGross += (Number(existing.attendanceAdjustGross) || Number((existing as any).attendanceAdjustedGross) || Number(existing.monthlyGross) || 0);
+            cyclePaidPT += (Number(existing.professionalTax) || 0);
+        } else {
+            // If NO payroll exists, but employee was ACTIVE, we should assume they earned their gross
+            // This handles cases where older records were deleted or not imported correctly
+            const jDate = employee.joiningDate ? new Date(employee.joiningDate) : null;
+            if (jDate && checkDate >= new Date(jDate.getFullYear(), jDate.getMonth(), 1)) {
+                cycleAggregateGross += monthlyGross;
+            }
+        }
+
+        // Move to next month
+        checkDate.setMonth(checkDate.getMonth() + 1);
+    }
+
+    console.log(`PT Cycle Aware Debug: Found ${cyclePayrolls.length} items in DB. Calculated Aggregate: ${cycleAggregateGross} for cycle starting ${startOfCycle.toISOString()}`);
+
 
 
     // Loop through all months from (lastPaid + 1) to LWD month
@@ -368,8 +397,11 @@ async function calculateUnpaidGaps(
         const lopAmount = (monthlyGross / daysInMonth) * lopDays;
 
         // ✅ PT Calculation Logic (Updated to Aggregate Cycle Logic)
-        // Add current month's earned gross to the aggregate
-        cycleAggregateGross += Math.round(monthlySalary);
+        // Add current month's earned gross to the aggregate ONLY if it's in the same cycle as LWD (Apr-Sep or Oct-Mar)
+        const currentMonthIsH1 = currentMonth >= 4 && currentMonth <= 9;
+        if (currentMonthIsH1 === isH1) {
+            cycleAggregateGross += Math.round(monthlySalary);
+        }
 
         let ptAmount = 0;
         const ptConfig = salaryAssignment?.salaryStructureId?.statutoryDeductions?.professionalTax;
@@ -949,6 +981,8 @@ export async function saveFinalSettlement(
             employeeId: employeeIdObj
         }).sort({ effectiveFrom: -1 }).populate('salaryStructureId');
 
+        const employee = await User.findById(employeeIdObj);
+
         const monthlyGross = salaryAssignment?.monthlyGross || 0;
         const structure = salaryAssignment?.salaryStructureId || {};
 
@@ -1051,20 +1085,64 @@ export async function saveFinalSettlement(
 
                     m.salary = Math.round(pg);
 
-                    // Standard PT Calculation
-                    let ptAmount = Math.round(calculatePT(monthlyGross, m.month));
-                    // Check catchups
+                    // ✅ PT Calculation Logic (Updated to Aggregate Cycle Logic for Manual Mode)
                     const lDate = leavingDate ? new Date(leavingDate) : new Date();
                     const isLeavingMonth = m.year === lDate.getFullYear() && m.month === (lDate.getMonth() + 1);
-                    if (isLeavingMonth) {
-                        const mNum = m.month;
-                        const h1Catchup = [4, 5, 6, 7].includes(mNum);
-                        const h2Catchup = [10, 11, 12, 1].includes(mNum);
-                        if (h1Catchup || h2Catchup) {
-                            const deductionMonth = h1Catchup ? 8 : 2;
-                            const forcedPT = Math.round(calculatePT(monthlyGross, deductionMonth));
-                            if (ptAmount === 0 && forcedPT > 0) ptAmount = forcedPT;
+                    const lwMonth = lDate.getMonth() + 1;
+                    const lwYear = lDate.getFullYear();
+                    const isH1_m = lwMonth >= 4 && lwMonth <= 9;
+                    const cycleStartYear_m = isH1_m ? lwYear : (lwMonth >= 10 ? lwYear : lwYear - 1);
+
+                    let ptAmount = 0;
+                    const ptConfig = structure?.statutoryDeductions?.professionalTax;
+                    const ptTerm = ptConfig?.term || 'half_yearly';
+
+                    if (ptTerm === 'half_yearly') {
+                        if (isLeavingMonth) {
+                            // Simplified lookup for manual mode with Cycle Awareness
+                            const allCompleted = await Payroll.find({
+                                employeeId: employeeIdObj,
+                                status: 'Completed',
+                                type: { $ne: 'FinalSettlement' }
+                            }).lean();
+                            const payrollMap_m = new Map(allCompleted.map(p => [`${p.year}-${p.month}`, p]));
+
+                            let prevGross = 0;
+                            let prevPT = 0;
+
+                            const cycleStartDate = isH1_m ? new Date(cycleStartYear_m, 3, 1) : new Date(cycleStartYear_m, 9, 1);
+                            const thisMonthStart = new Date(m.year, m.month - 1, 1);
+                            let iterDate = new Date(cycleStartDate);
+
+                            while (iterDate < thisMonthStart) {
+                                const iM = iterDate.getMonth() + 1;
+                                const iY = iterDate.getFullYear();
+                                const key = `${iY}-${iM}`;
+                                const existing = payrollMap_m.get(key);
+                                if (existing) {
+                                    prevGross += (Number(existing.attendanceAdjustGross) || Number((existing as any).attendanceAdjustedGross) || Number(existing.monthlyGross) || 0);
+                                    prevPT += (Number(existing.professionalTax) || 0);
+                                } else {
+                                    // Missing records: Use assumption if active
+                                    const jDate = employee?.joiningDate ? new Date(employee.joiningDate) : null;
+                                    if (jDate && iterDate >= new Date(jDate.getFullYear(), jDate.getMonth(), 1)) {
+                                        prevGross += monthlyGross;
+                                    }
+                                }
+                                iterDate.setMonth(iterDate.getMonth() + 1);
+                            }
+
+                            // totalUnpaid includes all gaps before this month
+                            // plus current month gross (pg)
+                            const totalCycleGross = prevGross + totalUnpaid + pg;
+                            const representativeMonth = isH1_m ? 8 : 2;
+                            const totalDue = Math.round(calculatePT(totalCycleGross, representativeMonth));
+                            ptAmount = Math.max(0, totalDue - prevPT);
+                        } else {
+                            ptAmount = 0;
                         }
+                    } else {
+                        ptAmount = Math.round(calculatePT(monthlyGross, m.month));
                     }
 
                     m.professionalTax = ptAmount;
@@ -2239,7 +2317,7 @@ export async function calculateFinalSettlement(
 
 
         // Fetch User needed for Country check inside loop
-
+        const employee = employeeIdObj ? await User.findById(employeeIdObj) : null;
 
 
         // Recalculation Helpers (Same as Calculate route)
@@ -2366,19 +2444,64 @@ export async function calculateFinalSettlement(
                     month.lopAmount = Math.round(lopAmount);
                     month.salary = Math.round(pg);
 
-                    let ptAmount = Math.round(calculatePT(monthlyGross, month.month));
-                    // Check catchups
+                    // ✅ PT Calculation Logic (Updated to Aggregate Cycle Logic for Manual recalculation)
                     const lDate = effectiveLeavingDate ? new Date(effectiveLeavingDate) : new Date();
                     const isLeavingMonth = month.year === lDate.getFullYear() && month.month === (lDate.getMonth() + 1);
-                    if (isLeavingMonth) {
-                        const mNum = month.month;
-                        const h1Catchup = [4, 5, 6, 7].includes(mNum);
-                        const h2Catchup = [10, 11, 12, 1].includes(mNum);
-                        if (h1Catchup || h2Catchup) {
-                            const deductionMonth = h1Catchup ? 8 : 2;
-                            const forcedPT = Math.round(calculatePT(monthlyGross, deductionMonth));
-                            if (ptAmount === 0 && forcedPT > 0) ptAmount = forcedPT;
+                    const lwMonth = lDate.getMonth() + 1;
+                    const lwYear = lDate.getFullYear();
+                    const isH1_m = lwMonth >= 4 && lwMonth <= 9;
+                    const cycleStartYear_m = isH1_m ? lwYear : (lwMonth >= 10 ? lwYear : lwYear - 1);
+
+                    let ptAmount = 0;
+                    const ptConfig = structure?.statutoryDeductions?.professionalTax;
+                    const ptTerm = ptConfig?.term || 'half_yearly';
+
+                    if (ptTerm === 'half_yearly') {
+                        if (isLeavingMonth) {
+                            // Simplified lookup for recalculation with Cycle Awareness
+                            const allCompletedRecalc = await Payroll.find({
+                                employeeId: employeeIdObj,
+                                status: 'Completed',
+                                type: { $ne: 'FinalSettlement' }
+                            }).lean();
+                            const payrollMap_r = new Map(allCompletedRecalc.map(p => [`${p.year}-${p.month}`, p]));
+
+                            let prevGross = 0;
+                            let prevPT = 0;
+
+                            const cycleStartDate = isH1_m ? new Date(cycleStartYear_m, 3, 1) : new Date(cycleStartYear_m, 9, 1);
+                            const thisMonthStart = new Date(month.year, month.month - 1, 1);
+                            let iterDate = new Date(cycleStartDate);
+
+                            while (iterDate < thisMonthStart) {
+                                const iM = iterDate.getMonth() + 1;
+                                const iY = iterDate.getFullYear();
+                                const key = `${iY}-${iM}`;
+                                const existing = payrollMap_r.get(key);
+                                if (existing) {
+                                    prevGross += (Number(existing.attendanceAdjustGross) || Number((existing as any).attendanceAdjustedGross) || Number(existing.monthlyGross) || 0);
+                                    prevPT += (Number(existing.professionalTax) || 0);
+                                } else {
+                                    // Missing records: Use assumption if active
+                                    const jDate = employee?.joiningDate ? new Date(employee.joiningDate) : null;
+                                    if (jDate && iterDate >= new Date(jDate.getFullYear(), jDate.getMonth(), 1)) {
+                                        prevGross += monthlyGross; // Use monthlyGross from current scope
+                                    }
+                                }
+                                iterDate.setMonth(iterDate.getMonth() + 1);
+                            }
+
+                            // totalUnpaidSalary includes all gaps processed before this month
+                            // plus current month gross (pg)
+                            const totalCycleGross = prevGross + totalUnpaidSalary + pg;
+                            const representativeMonth = isH1_m ? 8 : 2;
+                            const totalDue = Math.round(calculatePT(totalCycleGross, representativeMonth));
+                            ptAmount = Math.max(0, totalDue - prevPT);
+                        } else {
+                            ptAmount = 0;
                         }
+                    } else {
+                        ptAmount = Math.round(calculatePT(monthlyGross, month.month));
                     }
 
                     month.professionalTax = ptAmount;
