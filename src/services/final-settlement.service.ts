@@ -1436,6 +1436,8 @@ export async function getAllFinalSettlements(
             const countQuery = FinalSettlement.countDocuments(matchStage);
             const findQuery = FinalSettlement.find(matchStage)
                 .populate('employeeId', 'name employeeCode email')
+                .populate('initiatedBy', 'name')
+                .populate('lastEditedBy', 'name')
                 .lean()
                 .sort({ createdAt: -1 })
                 .skip(skip)
@@ -1503,7 +1505,10 @@ export async function getFinalSettlement(
 
         const settlement = await FinalSettlement.findOne({
             employeeId: new Types.ObjectId(employeeId)
-        }).sort({ createdAt: -1 });
+        })
+            .populate('lastEditedBy', 'name')
+            .populate('initiatedBy', 'name')
+            .sort({ createdAt: -1 });
 
         if (!settlement) {
             return reply.code(404).send({
