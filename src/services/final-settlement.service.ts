@@ -840,6 +840,11 @@ function packSettlement(settlement: any, data: any) {
 
     rootFields.forEach(field => {
         if (data[field] !== undefined) {
+            // ✅ PREVENT CLEARING PDF URL: If settlement already has a PDF, 
+            // don't let it be overwritten by an empty string or null during saves.
+            if (field === 'pdfUrl' && settlement[field] && !data[field]) {
+                return;
+            }
             settlement[field] = data[field];
         }
     });
@@ -1647,6 +1652,9 @@ export async function confirmFinalSettlement(
                 return reply.code(400).send({ success: false, error: 'Settlement status changed during PDF generation. Please retry.' });
             }
 
+            // Check if this settlement was already confirmed before (for audit tracking)
+            const wasAlreadyConfirmed = !!settlement.confirmedAt;
+
             // 2.2 Update settlement data
             // SECURITY FIX: Fetch hold payrolls from DB (Mirroring save/calculate)
             if (bodyData.holdPayrolls && bodyData.holdPayrolls.length > 0) {
@@ -1744,8 +1752,11 @@ export async function confirmFinalSettlement(
             settlement.confirmedAt = new Date();
             settlement.confirmedBy = new Types.ObjectId(confirmedBy);
 
+            // ✅ FORCE PERSISTENT PDF URL
+            settlement.set('pdfUrl', pdfUrl);
+
             // If it was already confirmed before, track that it's being updated
-            if (settlement.confirmedAt) {
+            if (wasAlreadyConfirmed) {
                 settlement.lastEditedAt = new Date();
                 settlement.lastEditedBy = new Types.ObjectId(confirmedBy);
             }
