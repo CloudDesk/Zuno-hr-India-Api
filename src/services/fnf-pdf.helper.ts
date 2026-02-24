@@ -116,7 +116,7 @@ export async function generateFNFLetter(settlement: any, employee: any): Promise
         lopDays: settlement.unpaidMonths.reduce((sum: number, m: any) => sum + (m.lopDays || 0), 0),
 
         // ✅ Effective workdays - strictly use UNPAID MONTHS (exclude holdPayrolls as per user requirement)
-        effectiveWorkdays: settlement.unpaidMonths.reduce((sum: number, m: any) => sum + (m.presentDays || 0), 0),
+        effectiveWorkdays: settlement.unpaidMonths.reduce((sum: number, m: any) => sum + (m.daysWorked || 0), 0),
 
         // ✅ INCOME / EARNINGS (Payslip Style - Only add properties if value > 0)
         income: (() => {
