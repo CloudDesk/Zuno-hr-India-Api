@@ -647,19 +647,19 @@ export class PayslipService extends BaseService {
           }
         };
 
-        pushIfValid('Basic', basicValue, assignedBasicValue);
+        pushIfValid('BASIC', basicValue, assignedBasicValue);
         pushIfValid('HRA', hraValue, assignedHraValue);
-        pushIfValid('Dearness Allowance', daValue, 0); // Usually no "full" DA assigned separately
-        pushIfValid('Other Allowance', otherAllowanceValue, assignedOtherAllowanceValue);
-        pushIfValid('Travel Allowance', travelAllowanceValue, assignedTravelAllowanceValue);
-        pushIfValid('Hold Salary', holdSalaryValue, 0);
-        pushIfValid('Reimbursement', reimbursementValue, assignedReimbursementValue);
+        pushIfValid('DEARNESS ALLOWANCE', daValue, 0); // Usually no "full" DA assigned separately
+        pushIfValid('OTHER ALLOWANCE', otherAllowanceValue, assignedOtherAllowanceValue);
+        pushIfValid('TRAVEL ALLOWANCE', travelAllowanceValue, assignedTravelAllowanceValue);
+        pushIfValid('HOLD SALARY', holdSalaryValue, 0);
+        pushIfValid('REIMBURSEMENT', reimbursementValue, assignedReimbursementValue);
 
         if (sanitizeAmount(payroll.airTicketAllowance) > 0 || sanitizeAmount(payroll.assigned?.airTicketAllowance) > 0) {
-          pushIfValid('Air Ticket Allowance', sanitizeAmount(payroll.airTicketAllowance), sanitizeAmount(payroll.assigned?.airTicketAllowance));
+          pushIfValid('AIR TICKET ALLOWANCE', sanitizeAmount(payroll.airTicketAllowance), sanitizeAmount(payroll.assigned?.airTicketAllowance));
         }
         if (sanitizeAmount(payroll.medicalAllowance) > 0 || sanitizeAmount(payroll.assigned?.medicalAllowance) > 0) {
-          pushIfValid('Medical Allowance', sanitizeAmount(payroll.medicalAllowance), sanitizeAmount(payroll.assigned?.medicalAllowance));
+          pushIfValid('MEDICAL ALLOWANCE', sanitizeAmount(payroll.medicalAllowance), sanitizeAmount(payroll.assigned?.medicalAllowance));
         }
 
         return earningsArray;
@@ -675,12 +675,12 @@ export class PayslipService extends BaseService {
         const tdsVal = Number(payroll.tdsDeduction ?? 0);
         const noticeVal = Number(payroll.noticePeriodRecovery ?? 0);
 
-        if (pfVal > 0) deductionsArray.push({ label: 'Provident Fund', amount: formatCurrency(pfVal, payroll.country) });
-        if (lopVal > 0) deductionsArray.push({ label: 'Loss of Pay', amount: formatCurrency(lopVal, payroll.country) });
-        if (itVal > 0) deductionsArray.push({ label: 'Income Tax', amount: formatCurrency(itVal, payroll.country) });
-        if (ptVal > 0) deductionsArray.push({ label: 'Professional Tax', amount: formatCurrency(ptVal, payroll.country) });
+        if (pfVal > 0) deductionsArray.push({ label: 'PROVIDENT FUND', amount: formatCurrency(pfVal, payroll.country) });
+        if (lopVal > 0) deductionsArray.push({ label: 'LOSS OF PAY', amount: formatCurrency(lopVal, payroll.country) });
+        if (itVal > 0) deductionsArray.push({ label: 'INCOME TAX', amount: formatCurrency(itVal, payroll.country) });
+        if (ptVal > 0) deductionsArray.push({ label: 'PROFESSIONAL TAX', amount: formatCurrency(ptVal, payroll.country) });
         if (tdsVal > 0) deductionsArray.push({ label: 'TDS (1%)', amount: formatCurrency(tdsVal, payroll.country) });
-        if (noticeVal > 0) deductionsArray.push({ label: 'Notice Period Recovery', amount: formatCurrency(noticeVal, payroll.country) });
+        if (noticeVal > 0) deductionsArray.push({ label: 'NOTICE PERIOD RECOVERY', amount: formatCurrency(noticeVal, payroll.country) });
         return deductionsArray;
       })(),
 
