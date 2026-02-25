@@ -652,7 +652,7 @@ export class PayslipService extends BaseService {
         pushIfValid('DEARNESS ALLOWANCE', daValue, 0); // Usually no "full" DA assigned separately
         pushIfValid('OTHER ALLOWANCE', otherAllowanceValue, assignedOtherAllowanceValue);
         pushIfValid('TRAVEL ALLOWANCE', travelAllowanceValue, assignedTravelAllowanceValue);
-        pushIfValid('HOLD SALARY', holdSalaryValue, 0);
+        pushIfValid('HOLD SALARY', holdSalaryValue, holdSalaryValue);
         pushIfValid('REIMBURSEMENT', reimbursementValue, assignedReimbursementValue);
 
         if (sanitizeAmount(payroll.airTicketAllowance) > 0 || sanitizeAmount(payroll.assigned?.airTicketAllowance) > 0) {
