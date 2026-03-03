@@ -450,9 +450,19 @@ export class ShiftService extends BaseService {
 
     const userUpdatePromises = addUserIds.map(async (userId) => {
       const user: any = await User.findById(userId);
+      if (!user) return null;
 
       const start = new Date(startDate);
       const end = endDate ? new Date(endDate) : null;
+
+      // ── 1. JOINING DATE VALIDATION (Allow 1 day before for night shifts) ──
+      const minAllowedDate = new Date(user.joiningDate);
+      minAllowedDate.setDate(minAllowedDate.getDate() - 1);
+      minAllowedDate.setHours(0, 0, 0, 0);
+
+      if (start < minAllowedDate) {
+        throw new Error(`Cannot assign shift to ${user.name} starting ${start.toDateString()} - joined on ${new Date(user.joiningDate).toDateString()}. (Max 1 day prior allowed)`);
+      }
 
       const isCurrent = start <= currentDate && (!end || end >= currentDate);
       // const isUpcomingShift = startDateTime > currentDate;
@@ -521,18 +531,26 @@ export class ShiftService extends BaseService {
 
         // Check for null endDate
         if (user.currentShiftAssignmentData.endDate === null) {
-          const newEndDate = new Date(startDateTime.getTime() - 24 * 60 * 60 * 1000); // previous day
-          user.currentShiftAssignmentData.endDate = newEndDate;
-          needsUpdate = true;
+          // Only truncate if new shift starts AFTER or AT existing shift start
+          const currentStart = new Date(user.currentShiftAssignmentData.startDate);
+          if (startDateTime >= currentStart) {
+            const newEndDate = new Date(startDateTime.getTime() - 24 * 60 * 60 * 1000); // previous day
+            user.currentShiftAssignmentData.endDate = newEndDate;
+            needsUpdate = true;
+          }
         }
-        // Check for endDate after new startDate
+        // Check for endDate after or overlapping new startDate
         else if (
           user.currentShiftAssignmentData.endDate &&
           new Date(user.currentShiftAssignmentData.endDate) >= startDateTime
         ) {
-          const newEndDate = new Date(startDateTime.getTime() - 24 * 60 * 60 * 1000); // previous day
-          user.currentShiftAssignmentData.endDate = newEndDate;
-          needsUpdate = true;
+          const currentStart = new Date(user.currentShiftAssignmentData.startDate);
+          // Only truncate if new shift starts AFTER or AT existing shift start
+          if (startDateTime >= currentStart) {
+            const newEndDate = new Date(startDateTime.getTime() - 24 * 60 * 60 * 1000); // previous day
+            user.currentShiftAssignmentData.endDate = newEndDate;
+            needsUpdate = true;
+          }
         }
 
         // ENHANCEMENT: Update the corresponding ShiftAssignment record if needed
@@ -646,8 +664,8 @@ export class ShiftService extends BaseService {
     const currentDate = new Date();
 
     // Convert shiftAssignmentId to ObjectId for consistent handling
-    const shiftAssignmentIdObj = typeof shiftAssignmentId === 'string' 
-      ? new Types.ObjectId(shiftAssignmentId) 
+    const shiftAssignmentIdObj = typeof shiftAssignmentId === 'string'
+      ? new Types.ObjectId(shiftAssignmentId)
       : shiftAssignmentId;
     const shiftAssignmentIdStr = shiftAssignmentIdObj.toString();
 
@@ -687,6 +705,18 @@ export class ShiftService extends BaseService {
       : shiftAssignment.weekendDays || [0]; // Retain existing or default to [0]
 
 
+    // ── JOINING DATE VALIDATION (Allow 1 day before) ───────────────────────
+    const updatedStartDateForValidation = startDate ? new Date(startDate) : new Date(shiftAssignment.startDate);
+    if (user.joiningDate) {
+      const minAllowed = new Date(user.joiningDate);
+      minAllowed.setDate(minAllowed.getDate() - 1);
+      minAllowed.setHours(0, 0, 0, 0);
+      if (updatedStartDateForValidation < minAllowed) {
+        throw new Error(`Start date cannot be before ${minAllowed.toDateString()} (joining date is ${new Date(user.joiningDate).toDateString()})`);
+      }
+    }
+
+
     // Store original values for comparison
     const originalStartDate = shiftAssignment.startDate;
     const originalEndDate = shiftAssignment.endDate;
@@ -699,14 +729,14 @@ export class ShiftService extends BaseService {
     // Safely handle potential undefined shiftAssignmentId in user data
     const currentShiftAssignmentId = user.currentShiftAssignmentData?.shiftAssignmentId;
     const upcomingShiftAssignmentId = user.upcomingShiftAssignmentData?.shiftAssignmentId;
-    
-    const isCurrentForUser = currentShiftAssignmentId && 
+
+    const isCurrentForUser = currentShiftAssignmentId &&
       (currentShiftAssignmentId.toString() === shiftAssignmentIdStr ||
-       (typeof currentShiftAssignmentId === 'object' && currentShiftAssignmentId.toString() === shiftAssignmentIdStr));
-    
-    const isUpcomingForUser = upcomingShiftAssignmentId && 
+        (typeof currentShiftAssignmentId === 'object' && currentShiftAssignmentId.toString() === shiftAssignmentIdStr));
+
+    const isUpcomingForUser = upcomingShiftAssignmentId &&
       (upcomingShiftAssignmentId.toString() === shiftAssignmentIdStr ||
-       (typeof upcomingShiftAssignmentId === 'object' && upcomingShiftAssignmentId.toString() === shiftAssignmentIdStr));
+        (typeof upcomingShiftAssignmentId === 'object' && upcomingShiftAssignmentId.toString() === shiftAssignmentIdStr));
 
     // HANDLE CREATE NEW ASSIGNMENT FLOW 
     // If createNew is true and changes are being made to a current assignment
@@ -1056,7 +1086,7 @@ export class ShiftService extends BaseService {
     // Set to start of day for proper date comparison (UTC)
     const currentDateStart = new Date(currentDate);
     currentDateStart.setUTCHours(0, 0, 0, 0);
-    
+
     let currentShiftAssignment: IShiftAssignment | null = null;
     let upcomingShiftAssignment: IShiftAssignment | null = null;
 
@@ -1064,7 +1094,7 @@ export class ShiftService extends BaseService {
     for (const assignment of shiftAssignments) {
       const startDate = new Date(assignment.startDate);
       const endDate = assignment.endDate ? new Date(assignment.endDate) : null;
-      
+
       // If this is an upcoming shift but its start date has arrived, convert it to current
       if (assignment.status === 'upcoming' && startDate <= currentDate && (!endDate || endDate >= currentDate)) {
         await ShiftAssignment.findByIdAndUpdate(assignment._id, {
@@ -1136,9 +1166,9 @@ export class ShiftService extends BaseService {
       startDateStart.setUTCHours(0, 0, 0, 0);
       // Upcoming if start date is after today (at start of day) and it's not the current assignment
       // Also exclude assignments that are already marked as past
-      return startDateStart > currentDateStart && 
-             assignment._id.toString() !== (currentShiftAssignment?._id.toString() || '') &&
-             assignment.status !== 'past';
+      return startDateStart > currentDateStart &&
+        assignment._id.toString() !== (currentShiftAssignment?._id.toString() || '') &&
+        assignment.status !== 'past';
     });
     upcomingShiftAssignment = foundUpcoming || null;
 
@@ -1161,7 +1191,7 @@ export class ShiftService extends BaseService {
         assignment._id.toString() !== currentShiftAssignment?._id.toString()
       ) {
         await ShiftAssignment.findByIdAndUpdate(assignment._id, {
-          $set: { 
+          $set: {
             status: 'past',
             isActive: false
           }
@@ -1171,29 +1201,29 @@ export class ShiftService extends BaseService {
         console.log(`📅 [recalculateUserShiftStatus] Marked shift ${assignment._id} as past (endDate: ${assignment.endDate.toISOString()})`);
       }
     }
-    
+
     // Final refresh after all status updates to ensure we have the latest data for user update
     const finalAssignments = await ShiftAssignment.find({
       userId,
       isActive: true
     }).sort({ startDate: 1 });
-    
+
     // Re-find current and upcoming with final data
     const finalCurrent = finalAssignments.find(assignment => {
       const startDate = new Date(assignment.startDate);
       const endDate = assignment.endDate ? new Date(assignment.endDate) : null;
       return startDate <= currentDate && (!endDate || endDate >= currentDate);
     });
-    
+
     const finalUpcoming = finalAssignments.find(assignment => {
       const startDate = new Date(assignment.startDate);
       const startDateStart = new Date(startDate);
       startDateStart.setUTCHours(0, 0, 0, 0);
-      return startDateStart > currentDateStart && 
-             assignment._id.toString() !== (finalCurrent?._id.toString() || '') &&
-             assignment.status !== 'past';
+      return startDateStart > currentDateStart &&
+        assignment._id.toString() !== (finalCurrent?._id.toString() || '') &&
+        assignment.status !== 'past';
     });
-    
+
     // Use final assignments for user update
     currentShiftAssignment = finalCurrent || currentShiftAssignment || null;
     upcomingShiftAssignment = finalUpcoming || upcomingShiftAssignment || null;
