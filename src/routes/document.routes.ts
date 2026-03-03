@@ -547,7 +547,7 @@ export const documentRoutes = async (
                 // Expected field names: file_01, file_02, ..., file_12
                 const filesMap = new Map<number, { file: any; netSalary?: number }>();
                 const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
-                                   'July', 'August', 'September', 'October', 'November', 'December'];
+                    'July', 'August', 'September', 'October', 'November', 'December'];
 
                 for (const file of files) {
                     // Extract month from fieldname (file_01, file_02, etc.)
@@ -576,8 +576,8 @@ export const documentRoutes = async (
 
                     // Extract netSalary if provided (netSalary_01, netSalary_02, etc.)
                     const netSalaryField = `netSalary_${match[1]}`;
-                    const netSalary = body[netSalaryField] 
-                        ? parseFloat(body[netSalaryField] as string) 
+                    const netSalary = body[netSalaryField]
+                        ? parseFloat(body[netSalaryField] as string)
                         : undefined;
 
                     filesMap.set(month, { file, netSalary });
@@ -2463,7 +2463,7 @@ export const documentRoutes = async (
         async (request, reply) => {
             try {
                 // Check if user is admin
-                if (request.user.role !== 'admin') {
+                if (request.user.role?.toLowerCase() !== 'admin') {
                     return reply.status(403).send({
                         success: false,
                         error: 'Only admins can upload attendance files'
@@ -2481,15 +2481,16 @@ export const documentRoutes = async (
                 const file = files[0]; // Get the first file
 
                 // Get form fields from request.body (multer already parsed them)
+                const employeeId = (request.body as any)?.employeeId as string;
                 const documentName = (request.body as any)?.documentName as string;
                 const year = parseInt((request.body as any)?.year as string);
                 const description = (request.body as any)?.description as string | undefined;
 
                 // Validate required fields
-                if (!documentName || !year) {
+                if (!employeeId || !documentName || !year) {
                     return reply.status(400).send({
                         success: false,
-                        error: 'Document name and year are required'
+                        error: 'Employee ID, document name and year are required'
                     });
                 }
 
@@ -2501,12 +2502,22 @@ export const documentRoutes = async (
                     });
                 }
 
+                // Validate employee exists
+                const employee = await User.findById(employeeId).lean();
+                if (!employee) {
+                    return reply.status(404).send({
+                        success: false,
+                        error: 'Employee not found'
+                    });
+                }
+
                 // Upload the file
                 const document = await request.container!.documentService.uploadAttendanceFile(
                     file,
                     documentName,
                     year,
                     description,
+                    new Types.ObjectId(employeeId),
                     new Types.ObjectId(request.user._id)
                 );
 

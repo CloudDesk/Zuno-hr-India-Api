@@ -660,7 +660,9 @@ export class DocumentService extends BaseService {
                         };
                     }
 
-                    query.employeeId = { $in: employeeIds };
+                    if (type !== 'AttendanceFile') {
+                        query.employeeId = { $in: employeeIds };
+                    }
 
                     req.log.info({
                         adminId: user._id,
@@ -3574,7 +3576,8 @@ export class DocumentService extends BaseService {
         documentName: string,
         year: number,
         description: string | undefined,
-        uploadedBy: Types.ObjectId
+        targetEmployeeId: Types.ObjectId,  // The employee this file belongs to
+        uploadedBy: Types.ObjectId          // The admin who uploaded
     ): Promise<IDocument> {
         try {
             // Validate file type (only Excel and PDF allowed)
@@ -3608,7 +3611,7 @@ export class DocumentService extends BaseService {
             const gcpResult = await uploadFileToGCP({
                 filePath: tempFilePath,
                 fileName: baseFileName,
-                employeeId: uploadedBy.toString(), // Using admin's ID as reference
+                employeeId: targetEmployeeId.toString(), // Use target employee's ID for GCP path
                 category: 'Attendance',
                 type: 'AttendanceFile'
             });
@@ -3626,15 +3629,15 @@ export class DocumentService extends BaseService {
                 console.warn(`Failed to delete temp file ${tempFilePath}:`, err);
             }
 
-            // Create document record
+            // Create document record — employeeId = target employee, uploadedBy = admin
             const document = new Document({
-                employeeId: uploadedBy, // Using admin's ID as the uploader
+                employeeId: targetEmployeeId,  // ✅ The employee this attendance file belongs to
                 type: 'AttendanceFile',
                 category: 'Attendance',
                 fileName: file.originalname,
                 filePath: fileUrl,
                 uploadDate: new Date(),
-                uploadedBy: uploadedBy,
+                uploadedBy: uploadedBy,         // ✅ Admin who uploaded
                 accessLevel: 'Role-Based', // Accessible by admins and managers
                 status: 'Uploaded',
                 tags: ['Attendance', `${year}`],
@@ -3651,7 +3654,7 @@ export class DocumentService extends BaseService {
                     action: 'Upload',
                     performedBy: uploadedBy,
                     timestamp: new Date(),
-                    details: `Attendance file uploaded: ${documentName} for year ${year}`
+                    details: `Attendance file uploaded for employee ${targetEmployeeId}: ${documentName} for year ${year}`
                 }]
             });
 
@@ -3662,5 +3665,6 @@ export class DocumentService extends BaseService {
             throw new Error(`Failed to upload attendance file: ${error.message}`);
         }
     }
+
 
 }
