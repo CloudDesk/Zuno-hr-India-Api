@@ -1955,6 +1955,17 @@ export class PayrollService extends BaseService {
         };
     }
     //Calculates professional tax based on salary slabs and term.
+    //
+    // IMPORTANT — Slab comparison basis:
+    //   The slab fromAmount/toAmount values in the DB represent the TOTAL salary
+    //   for the full term period, NOT the monthly gross. So we scale accordingly:
+    //     - monthly     → compare monthlyGross × 1  (no change)
+    //     - half_yearly → compare monthlyGross × 6  (6-month income)
+    //     - yearly      → compare monthlyGross × 12 (annual income)
+    //
+    // Example (Tamil Nadu half_yearly):
+    //   monthlyGross = ₹6,000 → salaryForComparison = ₹36,000
+    //   Matches slab 30,001–45,000 → PT = ₹425 (deducted in Feb & Aug)
     private calculateProfessionalTax(
         grossSalary: number,
         ptConfig: any,
@@ -1974,11 +1985,27 @@ export class PayrollService extends BaseService {
             return 0;
         }
 
+        // Scale monthly gross to the full term period for slab comparison
+        const termMultiplier: Record<string, number> = {
+            monthly: 1,
+            half_yearly: 6,
+            yearly: 12,
+        };
+        const salaryForComparison = grossSalary * (termMultiplier[term] ?? 1);
+
+        console.log(
+            `PT calculation — term: ${term}, monthlyGross: ${grossSalary}, ` +
+            `multiplier: ${termMultiplier[term] ?? 1}, salaryForComparison: ${salaryForComparison}`
+        );
+
         for (const slab of slabs) {
-            if (grossSalary >= slab.fromAmount && (!slab.toAmount || grossSalary <= slab.toAmount)) {
+            if (salaryForComparison >= slab.fromAmount && (!slab.toAmount || salaryForComparison <= slab.toAmount)) {
+                console.log(`PT slab matched — fromAmount: ${slab.fromAmount}, toAmount: ${slab.toAmount ?? '∞'}, taxAmount: ${slab.taxAmount}`);
                 return slab.taxAmount;
             }
         }
+
+        console.log(`PT — no slab matched for salaryForComparison: ${salaryForComparison}`);
         return 0;
     }
     //Calculates income tax deduction for the month and updates tax declaration.
