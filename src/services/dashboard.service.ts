@@ -171,11 +171,19 @@ export class DashboardService extends BaseService {
             byType: pendingByType
         });
 
-        // Get payroll processed with detailed breakdown
+        // First, find the most recent month for which we have payroll data
+        const latestPayroll = await Payroll.findOne({
+            status: 'Completed'
+        }).sort({ year: -1, month: -1 }).select('monthYear').exec();
+
+        const latestMonthYear = latestPayroll ? latestPayroll.monthYear : `${getYear(today)}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+
+        // Get payroll processed with detailed breakdown for the MOST RECENT month only
         const payrollProcessed = await Payroll.aggregate([
             {
                 $match: {
-                    status: { $in: ['Completed', 'InPayment'] }
+                    status: 'Completed',
+                    monthYear: latestMonthYear
                 }
             },
             {
@@ -198,8 +206,13 @@ export class DashboardService extends BaseService {
             }
         ]).exec();
 
-        // Get payroll by status
+        // Get payroll by status for the most recent month
         const payrollByStatus = await Payroll.aggregate([
+            {
+                $match: {
+                    monthYear: latestMonthYear
+                }
+            },
             {
                 $group: {
                     _id: '$status',
@@ -804,8 +817,9 @@ export class DashboardService extends BaseService {
     }
 
     private getAttendanceStatus(record: any): string {
+        // If they have explicit statuses marking them as present/late/etc
         if (record.attendanceStatus && record.attendanceStatus.length > 0) {
-            if (record.attendanceStatus.includes('Present')) {
+            if (record.attendanceStatus.some((s: string) => ['Present', 'On-Time', 'Late', 'Early-Exit'].includes(s))) {
                 return 'present';
             } else if (record.attendanceStatus.includes('On-Leave')) {
                 return 'onLeave';
@@ -814,11 +828,9 @@ export class DashboardService extends BaseService {
             }
         }
 
-        // Fallback based on swipes
-        if (record.swipes && record.swipes.length >= 2) {
+        // Fallback: If they have ANY swipes today or a first punch-in time, they are present today
+        if ((record.swipes && record.swipes.length > 0) || record.firstIn) {
             return 'present';
-        } else if (record.swipes && record.swipes.length === 1) {
-            return 'partial';
         }
 
         return 'unknown';
