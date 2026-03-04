@@ -5,7 +5,6 @@ import { AttendanceRegularization } from '../models/attendance-regularization.mo
 import { Overtime } from '../models/overtime.model';
 import { Payroll } from '../models/payrolls.model';
 import { HolidayCalendar } from '../models/holiday-calendar.model';
-import { Attendance } from '../models/attendance.model';
 import { AttendanceRecord } from '../models/attendance-record.model';
 import { IDashboardMetrics } from '../models/dashboard.model';
 import { startOfDay, endOfDay, startOfMonth, addMonths, getYear } from 'date-fns';
@@ -296,14 +295,18 @@ export class DashboardService extends BaseService {
 
         // Get today's attendance and leave status
         const [todayAttendance, todayLeaves] = await Promise.all([
-            Attendance.aggregate([
+            AttendanceRecord.aggregate([
                 {
                     $match: {
-                        date: {
+                        shiftDay: {
                             $gte: startOfToday,
                             $lte: endOfToday
                         },
-                        status: { $in: ['On-Time', 'Late', 'Early-Exit'] }
+                        $or: [
+                            { swipes: { $exists: true, $not: { $size: 0 } } },
+                            { firstIn: { $ne: null } },
+                            { attendanceStatus: { $in: ['Present', 'On-Time', 'Late', 'Early-Exit'] } }
+                        ]
                     }
                 },
                 {
