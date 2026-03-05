@@ -272,7 +272,7 @@ const TaxDeclarationSchema = new Schema<ITaxDeclaration>({
 
     poiSubmissionStatus: {
         type: String,
-        enum: ["not_submitted", "submitted", "verified", "rejected", "resubmission"],
+        enum: ["not_submitted", "submitted", "verified", "rejected", "resubmission", "partial_submitted"],
         default: "not_submitted"
     },
     reviewHistory: [
