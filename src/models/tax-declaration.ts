@@ -124,7 +124,7 @@ export interface ITaxDeclaration extends Document {
     noFurtherTaxDeduction: boolean; // Flag when employee claims refund from govt
     excessTaxPaid: number;          // Track excess tax if any
 
-    poiSubmissionStatus: "not_submitted" | "submitted" | "verified" | "rejected" | "resubmission";
+    poiSubmissionStatus: "not_submitted" | "partial_submitted" | "submitted" | "verified" | "rejected" | "resubmission";
     reviewHistory: [
         {
             reviewedBy: Types.ObjectId;

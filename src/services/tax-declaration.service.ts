@@ -100,7 +100,7 @@ export interface ITaxDeclarationUpdate {
     revisedTaxAmount: number;
     taxPaid: number;
 
-    poiSubmissionStatus: "not_submitted" | "submitted" | "verified" | "rejected" | "resubmission";
+    poiSubmissionStatus: "not_submitted" | "partial_submitted" | "submitted" | "verified" | "rejected" | "resubmission";
     reviewHistory?: {
         reviewedBy: string;
         reviewDate: string;
@@ -877,9 +877,28 @@ export class TaxDeclarationService extends BaseService {
 
         console.log(taxDeclaration, "6 taxDeclaration after processing all files");
 
-        // 6. Update POI submission status
-        taxDeclaration.poiSubmissionStatus = 'submitted';
-        taxDeclaration.isPOISubmitted = true;
+        // 6. Smart POI submission status
+        //    Only count declarations that still need action (exclude verified and finally rejected)
+        const needingDecls = taxDeclaration.declarations.filter(
+            d => d.declaredAmount > 0 && d.status !== 'verified' && d.status !== 'rejected'
+        );
+        const coveredDecls = needingDecls.filter(
+            d => d.documents.some(doc => doc.isLatestVersion === true)
+        );
+
+        if (needingDecls.length > 0) {
+            if (coveredDecls.length === needingDecls.length) {
+                // Every active declaration has at least one document
+                taxDeclaration.poiSubmissionStatus = 'submitted';
+            } else if (coveredDecls.length > 0) {
+                // Some declarations have docs, but not all
+                taxDeclaration.poiSubmissionStatus = 'partial_submitted';
+            }
+            // coveredDecls.length === 0: keep existing status (edge case guard)
+        }
+
+        // isPOISubmitted = true as long as at least one document was ever submitted
+        taxDeclaration.isPOISubmitted = coveredDecls.length > 0;
 
         // 7. Save and return updated document
         return await taxDeclaration.save();
