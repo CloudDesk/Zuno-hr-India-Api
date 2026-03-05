@@ -32,6 +32,7 @@ interface RegularizationFilters {
     date?: string; // Single date (legacy)
     startDate?: string;
     endDate?: string;
+    search?: string;
 }
 
 
@@ -152,6 +153,15 @@ export class AttendanceRegularizationService extends BaseService {
             query.shiftDay = { $gte: startOfDay, $lte: endOfDay };
         }
 
+        if (filters.search) {
+            const escapedSearch = filters.search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            query.$or = [
+                { reason: { $regex: escapedSearch, $options: 'i' } },
+                { status: { $regex: escapedSearch, $options: 'i' } },
+                { 'approver.name': { $regex: escapedSearch, $options: 'i' } },
+            ];
+        }
+
         console.log("Final query:", JSON.stringify(query, null, 2));
 
         // Fetch regularization records
@@ -234,27 +244,46 @@ export class AttendanceRegularizationService extends BaseService {
 
     async getAssignedRegularizationRecords(
         approverId: string,
-        status: 'Pending' | 'Approved' | 'Rejected' | 'Rejected-Absent' | 'Rejected-Leave' | 'Withdrawn' = 'Pending',
+        status?: 'Pending' | 'Approved' | 'Rejected' | 'Rejected-Absent' | 'Rejected-Leave' | 'Withdrawn',
         isAdmin: boolean = false,
-        date?: string
+        date?: string,
+        search?: string,
+        startDate?: string,
+        endDate?: string
     ) {
         // Validate approverId
         if (!Types.ObjectId.isValid(approverId)) {
             throw new Error('Invalid approverId');
         }
 
-        // Build query
-        const query: any = {
-            status
-        };
+        // Build query — omit status filter entirely when undefined (= "All")
+        const query: any = {};
+
+        if (status !== undefined) {
+            query.status = status;
+        }
 
         // If not admin, filter by approverId
         if (!isAdmin) {
             query['approver.id'] = new Types.ObjectId(approverId);
         }
 
-        // Add date filter if provided
-        if (date) {
+        // Add date range filtering
+        if (startDate || endDate) {
+            const dateQuery: any = {};
+            if (startDate) {
+                const sd = new Date(startDate);
+                sd.setUTCHours(0, 0, 0, 0);
+                dateQuery.$gte = sd;
+            }
+            if (endDate) {
+                const ed = new Date(endDate);
+                ed.setUTCHours(23, 59, 59, 999);
+                dateQuery.$lte = ed;
+            }
+            query.shiftDay = dateQuery;
+        } else if (date) {
+            // Add single date filter if provided
             const parsedDate = new Date(date);
             if (isNaN(parsedDate.getTime())) {
                 throw new Error('Invalid date format. Expected format: YYYY-MM-DD');
@@ -268,6 +297,30 @@ export class AttendanceRegularizationService extends BaseService {
 
             query.shiftDay = { $gte: startOfDay, $lte: endOfDay };
         }
+
+        if (search) {
+            const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const searchConditions: any[] = [
+                { reason: { $regex: escapedSearch, $options: 'i' } },
+                { status: { $regex: escapedSearch, $options: 'i' } },
+                { 'approver.name': { $regex: escapedSearch, $options: 'i' } },
+            ];
+
+            const userSearchFilter = {
+                $or: [
+                    { name: { $regex: escapedSearch, $options: 'i' } },
+                    { email: { $regex: escapedSearch, $options: 'i' } },
+                    { employeeCode: { $regex: escapedSearch, $options: 'i' } },
+                ]
+            };
+            const matchingUsers = await User.find(userSearchFilter).select('_id').lean();
+            if (matchingUsers.length > 0) {
+                searchConditions.push({ userId: { $in: matchingUsers.map(u => u._id) } });
+            }
+
+            query.$or = searchConditions;
+        }
+
         console.log(query, "query getAssignedRegularizationRecords")
         // Fetch assigned regularization records
         const records = await AttendanceRegularization.find(query)
@@ -293,6 +346,7 @@ export class AttendanceRegularizationService extends BaseService {
             userName: (record.userId && typeof record.userId !== 'string' && 'name' in record.userId) ? record.userId.name : ''
         }));
     }
+
 
     async createRegularization(data: Partial<IAttendanceRegularization>): Promise<IAttendanceRegularization> {
 
@@ -549,7 +603,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
                         attendance.attendanceStatus.push('Pending-Regularization');
                     }
                     attendance.needsRegularization = true;
-                    
+
                     // Set status to pending_regularization if not a special status
                     const specialStatuses = ['holiday_swipe', 'leave_swipe', 'overridden', 'regularized'];
                     if (!specialStatuses.includes(attendance.status)) {

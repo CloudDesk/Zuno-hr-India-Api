@@ -42,6 +42,7 @@ interface IGetCalendarsQuery {
     year?: number;
     page?: number;
     limit?: number;
+    search?: string;
 }
 
 interface IUpcomingHolidaysQuery {
@@ -268,6 +269,10 @@ export async function holidayCalendarRoutes(fastify: FastifyInstance): Promise<v
                             minimum: 1,
                             maximum: 100,
                             default: 10
+                        },
+                        search: {
+                            type: 'string',
+                            description: 'Search by name or description'
                         }
                     }
                 },

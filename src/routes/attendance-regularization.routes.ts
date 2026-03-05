@@ -534,7 +534,10 @@ export const attendanceRegularizeRoutes: RouteHandler = async (
         Params: { approverId: string };
         Querystring: {
             status?: 'Pending' | 'Approved' | 'Rejected' | 'Rejected-Absent' | 'Rejected-Leave' | 'Withdrawn';
+            allStatus?: boolean;
             date?: string;
+            startDate?: string;
+            endDate?: string;
             isAdmin?: boolean;
         };
     }>(
@@ -561,10 +564,25 @@ export const attendanceRegularizeRoutes: RouteHandler = async (
                             default: 'Pending',
                             description: 'Filter by regularization status'
                         },
+                        allStatus: {
+                            type: 'boolean',
+                            default: false,
+                            description: 'If true, returns records for all statuses'
+                        },
                         date: {
                             type: 'string',
                             format: 'date',
                             description: 'Optional date in YYYY-MM-DD format'
+                        },
+                        startDate: {
+                            type: 'string',
+                            format: 'date',
+                            description: 'Start date for date range filtering'
+                        },
+                        endDate: {
+                            type: 'string',
+                            format: 'date',
+                            description: 'End date for date range filtering'
                         },
                         isAdmin: {
                             type: 'boolean',
@@ -622,12 +640,15 @@ export const attendanceRegularizeRoutes: RouteHandler = async (
         async (request, reply) => {
             try {
                 const { approverId } = request.params;
-                const { status = 'Pending', date, isAdmin = false } = request.query;
+                const { status = 'Pending', allStatus = false, date, startDate, endDate, isAdmin = false } = request.query;
                 const result = await request.container!.attendanceRegularizationService.getAssignedRegularizationRecords(
                     approverId,
-                    status,
+                    allStatus ? undefined : status,
                     isAdmin,
-                    date
+                    date,
+                    undefined, // search
+                    startDate,
+                    endDate
                 );
                 console.log(result, "result route getAssignedRegularizationRecords")
                 return reply.send({

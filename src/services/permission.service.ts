@@ -109,7 +109,7 @@ export class PermissionService extends BaseService {
     if (search) {
       // Escape special regex characters in search string
       const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      
+
       // Search in reason, remarks, status, and appliedTo name (stored in document)
       const searchFilter: any[] = [
         { 'reason': { $regex: escapedSearch, $options: 'i' } },
@@ -123,6 +123,7 @@ export class PermissionService extends BaseService {
         $or: [
           { name: { $regex: escapedSearch, $options: 'i' } },
           { email: { $regex: escapedSearch, $options: 'i' } },
+          { employeeCode: { $regex: escapedSearch, $options: 'i' } },
         ]
       };
 
@@ -243,9 +244,10 @@ export class PermissionService extends BaseService {
     }
 
     if (search) {
+      const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       query.$or = [
-        { 'user.name': { $regex: search, $options: 'i' } },
-        { reason: { $regex: search, $options: 'i' } },
+        { 'user.name': { $regex: escapedSearch, $options: 'i' } },
+        { reason: { $regex: escapedSearch, $options: 'i' } },
       ];
     }
 
@@ -423,7 +425,7 @@ export class PermissionService extends BaseService {
 
       if (admins && admins.length > 0) {
         const adminEmails = admins.map(admin => admin.email).filter(Boolean);
-        
+
         if (adminEmails.length > 0 && user) {
           const permissionDateFormatted = permission.permissionDate.toLocaleDateString('en-US', {
             weekday: 'long',
@@ -559,9 +561,9 @@ Permission Details:
 - Reason: ${permission.reason || 'N/A'}
 ${permission.remarks ? `- Remarks: ${permission.remarks}` : ''}
 
-${permission.status === 'Approved' 
-  ? 'Your permission request has been approved. Please ensure you coordinate with your team regarding your absence.'
-  : 'Unfortunately, your permission request has been rejected. If you have any questions, please contact your manager.'}
+${permission.status === 'Approved'
+            ? 'Your permission request has been approved. Please ensure you coordinate with your team regarding your absence.'
+            : 'Unfortunately, your permission request has been rejected. If you have any questions, please contact your manager.'}
 
 Thank you for your understanding.
 
@@ -609,7 +611,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
         });
 
         const adminEmails = admins.map(admin => admin.email).filter(Boolean);
-        
+
         if (adminEmails.length > 0) {
           const adminEmailText = `Dear Admin,
 
@@ -759,7 +761,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
       filter.userId = typeof userId === 'string' ? new Types.ObjectId(userId) : userId;
     }
     if (status) filter.status = status; // Only filter by status if explicitly provided
-    
+
     if (startDate || endDate) {
       const dateFilter: any = {
         permissionDate: {}
@@ -781,7 +783,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
     if (search) {
       // Escape special regex characters in search string
       const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      
+
       // Search in document fields (reason, remarks, appliedTo.name, status)
       const searchConditions: any[] = [
         { reason: { $regex: escapedSearch, $options: 'i' } },
@@ -795,6 +797,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
         $or: [
           { name: { $regex: escapedSearch, $options: 'i' } },
           { email: { $regex: escapedSearch, $options: 'i' } },
+          { employeeCode: { $regex: escapedSearch, $options: 'i' } },
         ]
       };
 

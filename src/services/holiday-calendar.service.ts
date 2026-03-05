@@ -352,14 +352,44 @@ export class HolidayCalendarService extends BaseService {
         }
     }
 
-    async getCalendars(query: { year?: number; page?: number; limit?: number }) {
-        const { year, page = 1, limit = 10 } = query;
+    async getCalendars(query: { year?: number; page?: number; limit?: number; search?: string }) {
+        const { year, page = 1, limit = 10, search } = query;
         const skip = (page - 1) * limit;
 
         // Build filter
         const filter: any = {};
         if (year) {
             filter.year = year;
+        }
+
+        if (search) {
+            const trimmedSearch = search.trim();
+            const escapedSearch = trimmedSearch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const searchConditions: any[] = [
+                { name: { $regex: escapedSearch, $options: 'i' } },
+                { description: { $regex: escapedSearch, $options: 'i' } },
+                { "holidays.name": { $regex: escapedSearch, $options: 'i' } }
+            ];
+
+            // If search is numeric, also search the year field
+            if (/^\d+$/.test(trimmedSearch)) {
+                const searchNum = parseInt(trimmedSearch);
+                // For exact 4-digit year, match exactly
+                if (trimmedSearch.length === 4) {
+                    searchConditions.push({ year: searchNum });
+                } else {
+                    // For partial numeric search, check if year contains the numbers
+                    // Since year is a number, we use $expr to convert to string or partial match if needed
+                    // But in MongoDB, searching a number field with regex isn't directly supported 
+                    // without $expr or converting to string.
+                    // For simplicity, we'll only do exact year if 4 digits, 
+                    // or just rely on the other string fields if partial.
+                    // Alternatively, we can use $where or $expr:
+                    searchConditions.push({ $expr: { $gt: [{ $indexOfCP: [{ $toString: "$year" }, trimmedSearch] }, -1] } });
+                }
+            }
+
+            filter.$or = searchConditions;
         }
 
         // Execute queries in parallel

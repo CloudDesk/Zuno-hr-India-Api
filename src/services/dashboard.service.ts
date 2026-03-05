@@ -43,39 +43,47 @@ export class DashboardService extends BaseService {
                 $match: { year: currentYear }
             },
             {
+                $lookup: {
+                    from: 'users',
+                    localField: 'userId',
+                    foreignField: '_id',
+                    as: 'user'
+                }
+            },
+            { $unwind: '$user' },
+            {
+                $match: { 'user.active': true }
+            },
+            {
                 $group: {
                     _id: null,
-                    annual: {
-                        $sum: {
-                            $subtract: ['$annual.alloted', '$annual.availed']
-                        }
-                    },
-                    sick: {
-                        $sum: {
-                            $subtract: ['$sick.alloted', '$sick.availed']
-                        }
-                    },
-                    compOff: {
-                        $sum: {
-                            $subtract: ['$compOff.alloted', '$compOff.availed']
-                        }
-                    },
-                    lossOfPay: {
-                        $sum: {
-                            $subtract: ['$lossOfPay.alloted', '$lossOfPay.availed']
-                        }
-                    },
-                    otherPaid: {
-                        $sum: {
-                            $subtract: ['$otherPaid.alloted', '$otherPaid.availed']
-                        }
-                    },
-                    otherUnpaid: {
-                        $sum: {
-                            $subtract: ['$otherUnpaid.alloted', '$otherUnpaid.availed']
-                        }
-                    },
-                    maternity: {
+                    annualAlloted: { $sum: '$annual.alloted' },
+                    annualAvailed: { $sum: '$annual.availed' },
+                    annualRemaining: { $sum: { $subtract: ['$annual.alloted', '$annual.availed'] } },
+
+                    sickAlloted: { $sum: '$sick.alloted' },
+                    sickAvailed: { $sum: '$sick.availed' },
+                    sickRemaining: { $sum: { $subtract: ['$sick.alloted', '$sick.availed'] } },
+
+                    compOffAlloted: { $sum: '$compOff.alloted' },
+                    compOffAvailed: { $sum: '$compOff.availed' },
+                    compOffRemaining: { $sum: { $subtract: ['$compOff.alloted', '$compOff.availed'] } },
+
+                    lossOfPayAlloted: { $sum: '$lossOfPay.alloted' },
+                    lossOfPayAvailed: { $sum: '$lossOfPay.availed' },
+                    lossOfPayRemaining: { $sum: { $subtract: ['$lossOfPay.alloted', '$lossOfPay.availed'] } },
+
+                    otherPaidAlloted: { $sum: '$otherPaid.alloted' },
+                    otherPaidAvailed: { $sum: '$otherPaid.availed' },
+                    otherPaidRemaining: { $sum: { $subtract: ['$otherPaid.alloted', '$otherPaid.availed'] } },
+
+                    otherUnpaidAlloted: { $sum: '$otherUnpaid.alloted' },
+                    otherUnpaidAvailed: { $sum: '$otherUnpaid.availed' },
+                    otherUnpaidRemaining: { $sum: { $subtract: ['$otherUnpaid.alloted', '$otherUnpaid.availed'] } },
+
+                    maternityAlloted: { $sum: { $ifNull: ['$maternity.alloted', 0] } },
+                    maternityAvailed: { $sum: { $ifNull: ['$maternity.availed', 0] } },
+                    maternityRemaining: {
                         $sum: {
                             $subtract: [
                                 { $ifNull: ['$maternity.alloted', 0] },
@@ -123,11 +131,31 @@ export class DashboardService extends BaseService {
             }
         });
 
-        // Get pending approvals with detailed breakdown
+        // Get pending approvals for ACTIVE users only
         const [pendingLeaves, pendingRegularizations, pendingOvertime] = await Promise.all([
-            Leave.countDocuments({ status: 'Pending' }),
-            AttendanceRegularization.countDocuments({ status: 'Pending' }),
-            Overtime.countDocuments({ status: 'Pending' })
+            Leave.aggregate([
+                { $match: { status: 'Pending' } },
+                { $lookup: { from: 'users', localField: 'userId', foreignField: '_id', as: 'user' } },
+                { $unwind: '$user' },
+                { $match: { 'user.active': true } },
+                { $count: 'count' }
+            ]).exec().then(res => res[0]?.count || 0),
+
+            AttendanceRegularization.aggregate([
+                { $match: { status: 'Pending' } },
+                { $lookup: { from: 'users', localField: 'userId', foreignField: '_id', as: 'user' } },
+                { $unwind: '$user' },
+                { $match: { 'user.active': true } },
+                { $count: 'count' }
+            ]).exec().then(res => res[0]?.count || 0),
+
+            Overtime.aggregate([
+                { $match: { status: 'Pending' } },
+                { $lookup: { from: 'users', localField: 'userId', foreignField: '_id', as: 'user' } },
+                { $unwind: '$user' },
+                { $match: { 'user.active': true } },
+                { $count: 'count' }
+            ]).exec().then(res => res[0]?.count || 0)
         ]);
 
         // Get pending approvals by department
@@ -142,6 +170,7 @@ export class DashboardService extends BaseService {
                 }
             },
             { $unwind: '$user' },
+            { $match: { 'user.active': true } },
             {
                 $group: {
                     _id: '$user.departmentId',
@@ -153,6 +182,9 @@ export class DashboardService extends BaseService {
         // Get pending approvals by type
         const pendingByType = await Leave.aggregate([
             { $match: { status: 'Pending' } },
+            { $lookup: { from: 'users', localField: 'userId', foreignField: '_id', as: 'user' } },
+            { $unwind: '$user' },
+            { $match: { 'user.active': true } },
             {
                 $group: {
                     _id: '$leaveType',
@@ -306,7 +338,7 @@ export class DashboardService extends BaseService {
             departments: departmentWiseEmployees
         });
 
-        // Get today's attendance and leave status
+        // Get today's attendance and leave status for active employees only
         const [todayAttendance, todayLeaves] = await Promise.all([
             AttendanceRecord.aggregate([
                 {
@@ -323,10 +355,22 @@ export class DashboardService extends BaseService {
                     }
                 },
                 {
-                    $group: {
-                        _id: null,
-                        present: { $sum: 1 }
+                    $lookup: {
+                        from: 'users',
+                        localField: 'userId',
+                        foreignField: '_id',
+                        as: 'user'
                     }
+                },
+                { $unwind: '$user' },
+                { $match: { 'user.active': true } },
+                {
+                    $group: {
+                        _id: '$userId'
+                    }
+                },
+                {
+                    $count: 'count'
                 }
             ]).exec(),
 
@@ -339,10 +383,22 @@ export class DashboardService extends BaseService {
                     }
                 },
                 {
-                    $group: {
-                        _id: null,
-                        leave: { $sum: 1 }
+                    $lookup: {
+                        from: 'users',
+                        localField: 'userId',
+                        foreignField: '_id',
+                        as: 'user'
                     }
+                },
+                { $unwind: '$user' },
+                { $match: { 'user.active': true } },
+                {
+                    $group: {
+                        _id: '$userId'
+                    }
+                },
+                {
+                    $count: 'count'
                 }
             ]).exec()
         ]);
@@ -350,9 +406,9 @@ export class DashboardService extends BaseService {
         // Get total active employees for comparison
         const totalActiveEmployees = await User.countDocuments({ active: true });
 
-        const presentCount = todayAttendance[0]?.present || 0;
-        const leaveCount = todayLeaves[0]?.leave || 0;
-        const absentCount = totalActiveEmployees - presentCount - leaveCount;
+        const presentCount = todayAttendance[0]?.count || 0;
+        const leaveCount = todayLeaves[0]?.count || 0;
+        const absentCount = Math.max(0, totalActiveEmployees - presentCount - leaveCount);
 
         console.log('5. Today Attendance:', {
             present: presentCount,
@@ -373,7 +429,7 @@ export class DashboardService extends BaseService {
                 }
             },
             { $sort: { "holidays.date": 1 } },
-            { $limit: 5 },
+            { $limit: 20 },
             {
                 $project: {
                     date: "$holidays.date",
@@ -514,13 +570,13 @@ export class DashboardService extends BaseService {
 
         // Prepare leave balances data
         const leaveBalancesData = leaveBalances[0] || {
-            annual: 0,
-            sick: 0,
-            compOff: 0,
-            lossOfPay: 0,
-            otherPaid: 0,
-            otherUnpaid: 0,
-            maternity: 0,
+            annualAlloted: 0, annualAvailed: 0, annualRemaining: 0,
+            sickAlloted: 0, sickAvailed: 0, sickRemaining: 0,
+            compOffAlloted: 0, compOffAvailed: 0, compOffRemaining: 0,
+            lossOfPayAlloted: 0, lossOfPayAvailed: 0, lossOfPayRemaining: 0,
+            otherPaidAlloted: 0, otherPaidAvailed: 0, otherPaidRemaining: 0,
+            otherUnpaidAlloted: 0, otherUnpaidAvailed: 0, otherUnpaidRemaining: 0,
+            maternityAlloted: 0, maternityAvailed: 0, maternityRemaining: 0,
             totalAlloted: 0,
             totalAvailed: 0
         };
@@ -530,39 +586,39 @@ export class DashboardService extends BaseService {
             pendingApprovals: pendingApprovalsData,
             leaveBalances: {
                 annual: {
-                    alloted: leaveBalancesData.totalAlloted || 0,
-                    availed: leaveBalancesData.totalAvailed || 0,
-                    remaining: leaveBalancesData.annual || 0
+                    alloted: leaveBalancesData.annualAlloted || 0,
+                    availed: leaveBalancesData.annualAvailed || 0,
+                    remaining: leaveBalancesData.annualRemaining || 0
                 },
                 sick: {
-                    alloted: leaveBalancesData.totalAlloted || 0,
-                    availed: leaveBalancesData.totalAvailed || 0,
-                    remaining: leaveBalancesData.sick || 0
+                    alloted: leaveBalancesData.sickAlloted || 0,
+                    availed: leaveBalancesData.sickAvailed || 0,
+                    remaining: leaveBalancesData.sickRemaining || 0
                 },
                 compOff: {
-                    alloted: leaveBalancesData.totalAlloted || 0,
-                    availed: leaveBalancesData.totalAvailed || 0,
-                    remaining: leaveBalancesData.compOff || 0
+                    alloted: leaveBalancesData.compOffAlloted || 0,
+                    availed: leaveBalancesData.compOffAvailed || 0,
+                    remaining: leaveBalancesData.compOffRemaining || 0
                 },
                 lossOfPay: {
-                    alloted: leaveBalancesData.totalAlloted || 0,
-                    availed: leaveBalancesData.totalAvailed || 0,
-                    remaining: leaveBalancesData.lossOfPay || 0
+                    alloted: leaveBalancesData.lossOfPayAlloted || 0,
+                    availed: leaveBalancesData.lossOfPayAvailed || 0,
+                    remaining: leaveBalancesData.lossOfPayRemaining || 0
                 },
                 otherPaid: {
-                    alloted: leaveBalancesData.totalAlloted || 0,
-                    availed: leaveBalancesData.totalAvailed || 0,
-                    remaining: leaveBalancesData.otherPaid || 0
+                    alloted: leaveBalancesData.otherPaidAlloted || 0,
+                    availed: leaveBalancesData.otherPaidAvailed || 0,
+                    remaining: leaveBalancesData.otherPaidRemaining || 0
                 },
                 otherUnpaid: {
-                    alloted: leaveBalancesData.totalAlloted || 0,
-                    availed: leaveBalancesData.totalAvailed || 0,
-                    remaining: leaveBalancesData.otherUnpaid || 0
+                    alloted: leaveBalancesData.otherUnpaidAlloted || 0,
+                    availed: leaveBalancesData.otherUnpaidAvailed || 0,
+                    remaining: leaveBalancesData.otherUnpaidRemaining || 0
                 },
                 maternity: {
-                    alloted: leaveBalancesData.totalAlloted || 0,
-                    availed: leaveBalancesData.totalAvailed || 0,
-                    remaining: leaveBalancesData.maternity || 0
+                    alloted: leaveBalancesData.maternityAlloted || 0,
+                    availed: leaveBalancesData.maternityAvailed || 0,
+                    remaining: leaveBalancesData.maternityRemaining || 0
                 }
             },
             payrollProcessed: payrollProcessedData,
