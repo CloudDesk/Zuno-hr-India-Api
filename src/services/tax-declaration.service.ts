@@ -12,6 +12,7 @@ import path from 'path';
 import { Document } from "../models/document.model";
 import * as xlsx from 'xlsx';
 import { deductionSections, TAX_DEDUCTION_SECTION_IDS, type IDeductionSection } from "../constants/tax-deduction-sections";
+import { uploadFileToGCP } from "../utilis/gcpStorage";
 
 export interface ITaxDeclarationCreate {
     employeeId: string;
@@ -241,7 +242,7 @@ export class TaxDeclarationService extends BaseService {
 
         for (const assignment of salaryAssignments) {
             const salaryStructure = assignment.salaryStructureId as any;
-            
+
             if (!salaryStructure || salaryStructure.country !== 'IN') {
                 // PT is only applicable for Indian employees
                 continue;
@@ -282,7 +283,7 @@ export class TaxDeclarationService extends BaseService {
             // Determine PT payment frequency based on professionalTax term
             const term = salaryStructure.statutoryDeductions?.professionalTax?.term || 'monthly';
             let ptFrequency = 12; // Default to monthly (12 times per year)
-            
+
             if (term === 'half_yearly') {
                 ptFrequency = 2; // Paid 2 times per year
             } else if (term === 'yearly') {
@@ -367,7 +368,7 @@ export class TaxDeclarationService extends BaseService {
         console.log(annualGross, "3.1 annualGross");
 
         // 3.2 Calculate annual PT (Professional Tax) deduction - ONLY for old regime
-        const ptDeduction = regime === 'old' 
+        const ptDeduction = regime === 'old'
             ? await this.calculateAnnualPTDeduction(employeeId, financialYear)
             : 0;
         console.log(ptDeduction, "3.2 ptDeduction (only for old regime)");
@@ -658,12 +659,12 @@ export class TaxDeclarationService extends BaseService {
             throw new Error('Tax Declaration not found');
         }
 
-        // NEW: Check if submissions are locked for users
+        // 2. Check if submissions are locked for users
         if (!taxDeclaration.isSubmissionsEnabled && this.context.user?.role !== "admin") {
             throw new Error("Document submission is currently locked by the administrator.");
         }
 
-        // 2. Get user info using employeeId
+        // 3. Get user info using employeeId
         const user = await User.findOne({ _id: taxDeclaration.employeeId });
         if (!user) {
             throw new Error('User not found for given employeeId');
@@ -671,13 +672,10 @@ export class TaxDeclarationService extends BaseService {
 
         const userCleanName = user.name.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
 
-
-        console.log("*******")
-        console.log(request.file)
         const files = request.files;
         const body = request.body || {};
 
-        // HRA validation for > 1,00,000
+        // 4. HRA validation for > 1,00,000
         const hraDecl = taxDeclaration.declarations.find(d => d.section === "10_13A" && d.subSection === "rent_paid");
         if (hraDecl && hraDecl.declaredAmount > 100000) {
             const isHraUpdate = files.some((f: any) => f.fieldname.startsWith("10_13A_rent_paid"));
@@ -692,16 +690,16 @@ export class TaxDeclarationService extends BaseService {
             }
         }
 
-        console.log(taxDeclaration, "1 taxDeclaration")
-        console.log(files, "1.1 files ")
+        console.log(taxDeclaration, "1 taxDeclaration");
+        console.log(files, "1.1 files");
 
-        // 2. Process each uploaded file
-        files.forEach((file: any) => {
+        // 5. Process each uploaded file
+        for (const file of files) {
             const fieldname = file.fieldname;
             let section = "";
             let subSection = "";
 
-            // Correctly parse section and subsection by checking against known section IDs
+            // 5a. Parse section + subSection against known section IDs
             for (const sId of TAX_DEDUCTION_SECTION_IDS) {
                 if (fieldname.startsWith(sId + "_")) {
                     section = sId;
@@ -710,81 +708,180 @@ export class TaxDeclarationService extends BaseService {
                 }
             }
 
-            // Fallback to split if no matching section ID found (though unlikely with current constants)
+            // Fallback split (should not be reached with current constants)
             if (!section) {
                 const parts = fieldname.split('_');
                 section = parts[0];
                 subSection = parts.slice(1).join('_');
             }
 
+            console.log(section, subSection, "5a section, subsection identified");
+
+            // 5b. Preserve original file extension
+            const ext = path.extname(file.originalname); // e.g., '.pdf', '.jpg'
             const timestamp = Date.now();
-            const newFileName = `Tax_Dec_${section}_${subSection}_${userCleanName}_${timestamp}`;
+            const newFileName = `Tax_Dec_${section}_${subSection}_${userCleanName}_${timestamp}${ext}`;
             const uploadDir = path.dirname(file.path);
             const newFilePath = path.join(uploadDir, newFileName);
 
-            // Rename file on disk
+            // 5c. Rename file on disk
             fs.renameSync(file.path, newFilePath);
 
-            const fileUrl = `http://${request.headers.host}/${newFileName}`;
+            // 5d. Upload to GCP Cloud Storage
+            let gcpFileUrl = '';
+            try {
+                const gcpResult = await uploadFileToGCP({
+                    filePath: newFilePath,
+                    fileName: newFileName,
+                    employeeId: taxDeclaration.employeeId.toString(),
+                    category: 'Tax',
+                    type: 'TaxProof'
+                });
 
-            console.log(section, subSection, "2.1 section, subsection identified")
+                if (!gcpResult.success) {
+                    throw new Error(`GCP upload failed: ${gcpResult.error}`);
+                }
+                gcpFileUrl = gcpResult.fileUrl!;
+                console.log(gcpFileUrl, "5d GCP upload successful");
+            } finally {
+                // 5e. Clean up temp file from disk regardless of GCP outcome
+                try {
+                    fs.unlinkSync(newFilePath);
+                } catch (cleanupErr) {
+                    console.warn(`Failed to clean up temp file ${newFilePath}:`, cleanupErr);
+                }
+            }
 
-            // 3. Find the matching declaration 
+            // 5f. Find the matching declaration
             // Sub-fields like _landlordPanDoc are matched to the parent subsection (e.g. rent_paid)
             const declaration = taxDeclaration.declarations.find(
                 (decl) => decl.section === section &&
                     (decl.subSection === subSection || subSection.startsWith(decl.subSection + '_'))
             );
 
-            if (declaration) {
-                // Determine document type
-                let documentType = "standard";
-                if (subSection.endsWith("_landlordPanDoc")) {
-                    documentType = "landlord_pan_doc";
+            if (!declaration) {
+                console.warn(`No matching declaration found for section=${section}, subSection=${subSection}. Skipping.`);
+                continue;
+            }
+
+            // 5g. Determine document type
+            let documentType = "standard";
+            if (subSection.endsWith("_landlordPanDoc")) {
+                documentType = "landlord_pan_doc";
+            }
+
+            // 5h. Mark all existing docs of the same type as not latest
+            declaration.documents.forEach(doc => {
+                if (doc.documentType === documentType || (!doc.documentType && documentType === "standard")) {
+                    doc.isLatestVersion = false;
                 }
+            });
 
-                // 4. Mark all existing documents of the same type as not latest
-                declaration.documents.forEach(doc => {
-                    if (doc.documentType === documentType || (!doc.documentType && documentType === "standard")) {
-                        doc.isLatestVersion = false;
-                    }
-                });
+            // 5i. Add new document entry with GCP URL as documentPath
+            declaration.documents.push({
+                documentName: file.originalname,
+                documentPath: gcpFileUrl,        // ← GCP URL (was local http URL)
+                uploadDate: new Date(),
+                isLatestVersion: true,
+                documentType
+            });
 
-                // 4.1 Add new document entry
-                declaration.documents.push({
-                    documentName: file.originalname,
-                    documentPath: fileUrl,
-                    uploadDate: new Date(),
-                    isLatestVersion: true,
-                    documentType
-                });
+            // 5j. Update declaration status
+            declaration.lastUpdated = new Date();
+            declaration.status = 'document_submitted';
 
-                // 6. Update declaration status
-                declaration.lastUpdated = new Date();
-                declaration.status = 'document_submitted';
+            // 5j.1 Update landlordName / landlordPan on rentDetails if provided
+            const specificLandlordName = body[`${section}_${subSection.split('_')[0]}_landlordName`] || body[`${section}_landlordName`];
+            const specificLandlordPan = body[`${section}_${subSection.split('_')[0]}_landlordPan`] || body[`${section}_landlordPan`];
 
-                const body = request.body || {};
-                const specificLandlordName = body[`${section}_${subSection.split('_')[0]}_landlordName`] || body[`${section}_landlordName`];
-                const specificLandlordPan = body[`${section}_${subSection.split('_')[0]}_landlordPan`] || body[`${section}_landlordPan`];
+            if (declaration.rentDetails && declaration.rentDetails.length > 0) {
+                const landlordName = specificLandlordName || ((section === '10_13A' || section === '80GG') ? (body.landlordName || body[`${section}_rent_paid_landlordName`]) : undefined);
+                const landlordPan = specificLandlordPan || ((section === '10_13A' || section === '80GG') ? (body.landlordPan || body[`${section}_rent_paid_landlordPan`]) : undefined);
 
-                if (declaration.rentDetails && declaration.rentDetails.length > 0) {
-                    const landlordName = specificLandlordName || ((section === '10_13A' || section === '80GG') ? (body.landlordName || body[`${section}_rent_paid_landlordName`]) : undefined);
-                    const landlordPan = specificLandlordPan || ((section === '10_13A' || section === '80GG') ? (body.landlordPan || body[`${section}_rent_paid_landlordPan`]) : undefined);
-
-                    if (landlordName || landlordPan) {
-                        declaration.rentDetails.forEach((detail: any) => {
-                            if (landlordName) detail.landlordName = landlordName;
-                            if (landlordPan) detail.landlordPan = landlordPan;
-                        });
-                    }
+                if (landlordName || landlordPan) {
+                    declaration.rentDetails.forEach((detail: any) => {
+                        if (landlordName) detail.landlordName = landlordName;
+                        if (landlordPan) detail.landlordPan = landlordPan;
+                    });
                 }
             }
-        });
-        console.log(taxDeclaration, "6 taxDeclaration");
-        // 7. Update POI submission status
+
+            // 5k. Upsert Document collection record (type: TaxProof, category: Tax)
+            // Key: taxDeclarationId + section + parent subSection + documentType
+            const parentSubSection = declaration.subSection; // always the parent e.g. 'rent_paid'
+            try {
+                const existingDoc = await Document.findOne({
+                    employeeId: taxDeclaration.employeeId,
+                    type: 'TaxProof',
+                    'metadata.taxProof.taxDeclarationId': taxDeclaration._id,
+                    'metadata.taxProof.section': section,
+                    'metadata.taxProof.subSection': parentSubSection,
+                    'metadata.taxProof.documentType': documentType,
+                });
+
+                const docData = {
+                    employeeId: taxDeclaration.employeeId,
+                    type: 'TaxProof' as const,
+                    category: 'Tax' as const,
+                    fileName: newFileName,
+                    filePath: gcpFileUrl,
+                    tags: ['TaxProof', taxDeclaration.financialYear, section, parentSubSection],
+                    uploadDate: new Date(),
+                    uploadedBy: new Types.ObjectId(this.context.user?._id),
+                    accessLevel: 'Private' as const,
+                    status: 'Uploaded' as const,
+                    metadata: {
+                        taxProof: {
+                            taxDeclarationId: taxDeclaration._id,
+                            financialYear: taxDeclaration.financialYear,
+                            section,
+                            subSection: parentSubSection,
+                            documentType: documentType as 'standard' | 'landlord_pan_doc',
+                            uploadedAt: new Date(),
+                        }
+                    },
+                };
+
+                if (existingDoc) {
+                    // Update existing: new GCP URL, increment version, add audit entry
+                    Object.assign(existingDoc, { ...docData, version: existingDoc.version + 1 });
+                    existingDoc.auditLog = existingDoc.auditLog || [];
+                    existingDoc.auditLog.push({
+                        action: 'Re-upload',
+                        performedBy: new Types.ObjectId(this.context.user?._id),
+                        timestamp: new Date(),
+                        details: `Re-uploaded POI for ${section} / ${parentSubSection} (${documentType})`,
+                    });
+                    await existingDoc.save();
+                    console.log(existingDoc._id, "5k Updated existing Document record");
+                } else {
+                    // Create new Document record
+                    const newDoc = new Document({
+                        ...docData,
+                        version: 1,
+                        auditLog: [{
+                            action: 'Upload',
+                            performedBy: new Types.ObjectId(this.context.user?._id),
+                            timestamp: new Date(),
+                            details: `Uploaded POI for ${section} / ${parentSubSection} (${documentType})`,
+                        }],
+                    });
+                    await newDoc.save();
+                    console.log(newDoc._id, "5k Created new Document record");
+                }
+            } catch (docErr) {
+                // Log but don't fail the request — embedded doc is already saved
+                console.error(`Failed to upsert Document collection record for ${section}/${parentSubSection}:`, docErr);
+            }
+        }
+
+        console.log(taxDeclaration, "6 taxDeclaration after processing all files");
+
+        // 6. Update POI submission status
         taxDeclaration.poiSubmissionStatus = 'submitted';
         taxDeclaration.isPOISubmitted = true;
-        // 8. Save and return updated document
+
+        // 7. Save and return updated document
         return await taxDeclaration.save();
     }
 
@@ -2170,7 +2267,7 @@ export class TaxDeclarationService extends BaseService {
 
         // 0. Only update PT deduction if not already set
         if (!taxDeclaration.ptDeduction || taxDeclaration.ptDeduction === 0) {
-            const ptDeduction = taxDeclaration.regime === 'old' 
+            const ptDeduction = taxDeclaration.regime === 'old'
                 ? await this.calculateAnnualPTDeduction(taxDeclaration.employeeId.toString(), taxDeclaration.financialYear)
                 : 0;
             taxDeclaration.ptDeduction = ptDeduction;
@@ -2222,7 +2319,7 @@ export class TaxDeclarationService extends BaseService {
         // 6. Populate migrationAdjustment fields
         const processedMonths = uptoIndex + 1; // Months from Apr to uptoMonth (inclusive)
         const remainingMonths = 12 - processedMonths;
-        
+
         taxDeclaration.migrationAdjustment = {
             appliedForFY: taxDeclaration.financialYear,
             uploadedAt: new Date(),

@@ -2,7 +2,7 @@ import { Document as DocumentM, Schema, Types, model } from 'mongoose';
 
 export interface IDocument extends DocumentM {
     employeeId: Types.ObjectId; // Links to the employee
-    type: 'Payslip' | 'TimesheetFile' | 'Form16' | 'Form12B' | 'Form12BB' | 'OfferLetter' | 'HikeLetter' | 'Certificate' | 'AdminUpload' | 'GovernmentId' | 'Academic' | 'Experience' | 'AttendanceFile'; // Document types
+    type: 'Payslip' | 'TimesheetFile' | 'Form16' | 'Form12B' | 'Form12BB' | 'OfferLetter' | 'HikeLetter' | 'Certificate' | 'AdminUpload' | 'GovernmentId' | 'Academic' | 'Experience' | 'AttendanceFile' | 'TaxProof'; // Document types
     category: 'Payroll' | 'Timesheet' | 'Tax' | 'EmployeeLifecycle' | 'Certification' | 'Attendance'; // Document categories
     tags?: string[]; // e.g., ['2025', 'Confidential', 'Exported', 'Degree', 'Aadhaar']
     fileName: string; // e.g., 'ABCDE1234F_2025-06.xlsx'
@@ -174,6 +174,15 @@ export interface IDocument extends DocumentM {
             uploadedAt: Date; // When admin uploaded
             description?: string; // Optional description
         };
+        // Tax POI (Proof of Investment) documents for tax declaration submissions
+        taxProof?: {
+            taxDeclarationId: Types.ObjectId; // Reference to TaxDeclaration collection
+            financialYear: string;            // e.g., '2025-2026'
+            section: string;                  // e.g., '80C', '10_13A', '80D'
+            subSection: string;               // e.g., 'life_insurance', 'rent_paid'
+            documentType: 'standard' | 'landlord_pan_doc'; // standard proof or landlord PAN copy
+            uploadedAt: Date;
+        };
     };
     auditLog?: Array<{
         action: 'Upload' | 'View' | 'Download' | 'Send' | 'Generate' | 'Acknowledge' | 'Verify' | 'Update' | 'Re-upload' | 'Re-Generate'; // Added Re-Generate for Form12BB
@@ -188,7 +197,7 @@ const documentSchema = new Schema<IDocument>(
         employeeId: { type: Schema.Types.ObjectId, required: true, ref: 'User' },
         type: {
             type: String,
-            enum: ['Payslip', 'TimesheetFile', 'Form16', 'OfferLetter', 'HikeLetter', 'Certificate', 'Form12B', 'Form12BB', 'AdminUpload', 'GovernmentId', 'Academic', 'Experience', 'AttendanceFile'],
+            enum: ['Payslip', 'TimesheetFile', 'Form16', 'OfferLetter', 'HikeLetter', 'Certificate', 'Form12B', 'Form12BB', 'AdminUpload', 'GovernmentId', 'Academic', 'Experience', 'AttendanceFile', 'TaxProof'],
             required: true,
         },
         category: {
@@ -306,6 +315,17 @@ const documentSchema = new Schema<IDocument>(
                     }
                     if (docType === 'AttendanceFile') {
                         return value.attendanceFile && value.attendanceFile.documentName && value.attendanceFile.year && value.attendanceFile.uploadedAt;
+                    }
+                    // Tax POI proof — uploaded via tax-declaration updateDocuments flow
+                    if (docType === 'TaxProof') {
+                        return (
+                            value.taxProof &&
+                            value.taxProof.taxDeclarationId &&
+                            value.taxProof.financialYear &&
+                            value.taxProof.section &&
+                            value.taxProof.subSection &&
+                            value.taxProof.documentType
+                        );
                     }
 
                     return true;

@@ -36,7 +36,7 @@ export interface IForm12BBGenerate {
 export interface IDocumentQuery {
     access?: 'own' | 'team' | 'global';
     employeeId?: string;
-    type?: 'Payslip' | 'TimesheetFile' | 'Form16' | 'Form12B' | 'Form12BB' | 'OfferLetter' | 'HikeLetter' | 'Certificate' | 'AdminUpload' | 'AttendanceFile'
+    type?: 'Payslip' | 'TimesheetFile' | 'Form16' | 'Form12B' | 'Form12BB' | 'OfferLetter' | 'HikeLetter' | 'Certificate' | 'AdminUpload' | 'AttendanceFile' | 'TaxProof'
     category?: 'Payroll' | 'Timesheet' | 'Tax' | 'EmployeeLifecycle' | 'Certification' | 'Attendance';
     year?: number;
     month?: number;
@@ -1023,7 +1023,7 @@ export const documentRoutes = async (
                     properties: {
                         access: { type: 'string', enum: ['own', 'team', 'global'], default: 'own' },
                         employeeId: { type: 'string' },
-                        type: { type: 'string', enum: ['Payslip', 'TimesheetFile', 'Form16', 'Form12B', 'Form12BB', 'OfferLetter', 'HikeLetter', 'Certificate', 'AdminUpload', 'AttendanceFile'] },
+                        type: { type: 'string', enum: ['Payslip', 'TimesheetFile', 'Form16', 'Form12B', 'Form12BB', 'OfferLetter', 'HikeLetter', 'Certificate', 'AdminUpload', 'AttendanceFile', 'TaxProof'] },
                         category: { type: 'string', enum: ['Payroll', 'Timesheet', 'Tax', 'EmployeeLifecycle', 'Certification', 'Attendance'] },
                         year: { type: 'integer' },
                         month: { type: 'integer' },
@@ -1059,7 +1059,7 @@ export const documentRoutes = async (
                                         },
                                         type: {
                                             type: 'string',
-                                            enum: ['Payslip', 'TimesheetFile', 'Form16', 'OfferLetter', 'HikeLetter', 'Certificate', 'Form12B', 'Form12BB', 'AdminUpload', 'AttendanceFile']
+                                            enum: ['Payslip', 'TimesheetFile', 'Form16', 'OfferLetter', 'HikeLetter', 'Certificate', 'Form12B', 'Form12BB', 'AdminUpload', 'AttendanceFile', 'TaxProof']
                                         },
                                         category: {
                                             type: 'string',
@@ -1362,7 +1362,7 @@ export const documentRoutes = async (
                                         },
                                         required: ['_id', 'name', 'email']
                                     },
-                                    type: { type: 'string', enum: ['Payslip', 'TimesheetFile', 'Form16', 'OfferLetter', 'HikeLetter', 'Certificate', 'Form12B', 'Form12BB', 'AdminUpload', 'AttendanceFile'] },
+                                    type: { type: 'string', enum: ['Payslip', 'TimesheetFile', 'Form16', 'OfferLetter', 'HikeLetter', 'Certificate', 'Form12B', 'Form12BB', 'AdminUpload', 'AttendanceFile', 'TaxProof'] },
                                     category: { type: 'string', enum: ['Payroll', 'Timesheet', 'Tax', 'EmployeeLifecycle', 'Certification', 'Attendance'] },
                                     tags: { type: 'array', items: { type: 'string' } },
                                     fileName: { type: 'string' },
