@@ -1715,29 +1715,29 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
           }
         } else {
           // All other leave cases (Regular leaves or Restricted Holiday without swipes)
-          
+
           // India-specific: Handle half-day leave type
           if (leave.leaveDuration === 'half-day' && leave.halfDayType) {
             // ✅ halfType is SET ONLY for half-day leaves
             updateFields.halfType = leave.halfDayType === 'first-half' ? 'First Half' : 'Second Half';
-            
+
             // For half-day leave: Check if employee has swipes (worked the other half)
             // If swipes exist, add both 'On-Leave' and 'Present' to attendanceStatus
             if (hasSwipes && existingRecord) {
               // Employee worked one half and took leave for the other half
               const currentStatus = existingRecord.attendanceStatus || [];
               updateFields.attendanceStatus = [...currentStatus];
-              
+
               // Add 'On-Leave' if not already present
               if (!updateFields.attendanceStatus.includes('On-Leave')) {
                 updateFields.attendanceStatus.push('On-Leave');
               }
-              
+
               // Add 'Present' if not already present (employee worked the other half)
               if (!updateFields.attendanceStatus.includes('Present')) {
                 updateFields.attendanceStatus.push('Present');
               }
-              
+
               // Preserve other statuses like 'Late', 'Early-Exit', etc.
             } else {
               // No swipes - full half-day leave only
@@ -1801,15 +1801,15 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
           // This indicates: worked one half, but rejected half = 0.5 LOP
           const currentStatus = existingRecord.attendanceStatus || [];
           attendanceStatusUpdate = [...currentStatus];
-          
+
           // Remove 'On-Leave' if present
           attendanceStatusUpdate = attendanceStatusUpdate.filter(s => s !== 'On-Leave');
-          
+
           // Add 'Absent' to indicate the rejected half-day (0.5 LOP)
           if (!attendanceStatusUpdate.includes('Absent')) {
             attendanceStatusUpdate.push('Absent');
           }
-          
+
           // Keep 'Present' if it exists (employee worked the other half)
           // This allows payroll to calculate: 0.5 Present + 0.5 Absent (LOP)
         } else {

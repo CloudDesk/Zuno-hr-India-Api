@@ -196,11 +196,11 @@ export const leaveRoutes: RouteHandler = async (
         // Parse multipart form data or JSON body
         let body: any;
         let files: any[] = [];
-        
+
         // Check if request has multipart content
         const contentType = request.headers['content-type'] || '';
         const isMultipart = contentType.includes('multipart/form-data');
-        
+
         if (isMultipart) {
           try {
             const parsed = await parseMultipartForm(request);
@@ -245,7 +245,7 @@ export const leaveRoutes: RouteHandler = async (
           console.log('Body values:', { userId, leaveTypeId, startDate, endDate, reason });
           return reply.status(400).send({
             success: false,
-            error: { 
+            error: {
               message: `Missing required fields: ${missingFields.join(', ')}`,
               missingFields: missingFields
             },
@@ -270,7 +270,7 @@ export const leaveRoutes: RouteHandler = async (
         // Process uploaded documents (optional)
         const documents: Array<{ fileName: string; filePath: string; uploadDate: Date; uploadedBy: Types.ObjectId }> = [];
         const fileErrors: string[] = [];
-        
+
         if (files && files.length > 0) {
           // File validation constants
           const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
@@ -341,7 +341,7 @@ export const leaveRoutes: RouteHandler = async (
           if (documents.length === 0 && files.length > 0 && fileErrors.length > 0) {
             return reply.status(400).send({
               success: false,
-              error: { 
+              error: {
                 message: 'All file uploads failed',
                 details: fileErrors
               },
@@ -623,6 +623,7 @@ export const leaveRoutes: RouteHandler = async (
         return reply.send({
           success: true,
           data: result.leaves,
+          total: result.meta?.total || 0,
           meta: result.meta,
         });
       } catch (error: any) {
