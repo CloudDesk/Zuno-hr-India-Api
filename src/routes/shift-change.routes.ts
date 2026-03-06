@@ -270,6 +270,8 @@ export const shiftChangeRoutes: RouteHandler = async (
                         _id: { type: 'string' },
                         name: { type: 'string' },
                         code: { type: 'string' },
+                        startTime: { type: 'string' },
+                        endTime: { type: 'string' },
                       },
                     },
                     currentShift: {
@@ -278,6 +280,8 @@ export const shiftChangeRoutes: RouteHandler = async (
                         _id: { type: 'string' },
                         name: { type: 'string' },
                         code: { type: 'string' },
+                        startTime: { type: 'string' },
+                        endTime: { type: 'string' },
                       },
                     },
                     createdAt: { type: 'string', format: 'date-time' },

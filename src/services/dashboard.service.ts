@@ -9,6 +9,7 @@ import { AttendanceRecord } from '../models/attendance-record.model';
 import { IDashboardMetrics } from '../models/dashboard.model';
 import { startOfDay, endOfDay, startOfMonth, addMonths, getYear } from 'date-fns';
 import { LeaveSummary } from '../models/leave-summary.model';
+import { WFH } from '../models/wfh.model';
 
 export class DashboardService extends BaseService {
     async getDashboardMetrics(): Promise<IDashboardMetrics> {
@@ -132,7 +133,7 @@ export class DashboardService extends BaseService {
         });
 
         // Get pending approvals for ACTIVE users only
-        const [pendingLeaves, pendingRegularizations, pendingOvertime] = await Promise.all([
+        const [pendingLeaves, pendingRegularizations, pendingOvertime, pendingWFH] = await Promise.all([
             Leave.aggregate([
                 { $match: { status: 'Pending' } },
                 { $lookup: { from: 'users', localField: 'userId', foreignField: '_id', as: 'user' } },
@@ -150,6 +151,14 @@ export class DashboardService extends BaseService {
             ]).exec().then(res => res[0]?.count || 0),
 
             Overtime.aggregate([
+                { $match: { status: 'Pending' } },
+                { $lookup: { from: 'users', localField: 'userId', foreignField: '_id', as: 'user' } },
+                { $unwind: '$user' },
+                { $match: { 'user.active': true } },
+                { $count: 'count' }
+            ]).exec().then(res => res[0]?.count || 0),
+
+            WFH.aggregate([
                 { $match: { status: 'Pending' } },
                 { $lookup: { from: 'users', localField: 'userId', foreignField: '_id', as: 'user' } },
                 { $unwind: '$user' },
@@ -198,7 +207,8 @@ export class DashboardService extends BaseService {
             leaves: pendingLeaves,
             regularizations: pendingRegularizations,
             overtime: pendingOvertime,
-            total: pendingLeaves + pendingRegularizations + pendingOvertime,
+            wfh: pendingWFH,
+            total: pendingLeaves + pendingRegularizations + pendingOvertime + pendingWFH,
             byDepartment: pendingByDepartment,
             byType: pendingByType
         });
@@ -434,7 +444,8 @@ export class DashboardService extends BaseService {
                 $project: {
                     date: "$holidays.date",
                     name: "$holidays.name",
-                    description: "$holidays.description"
+                    description: "$holidays.description",
+                    type: "$holidays.type"
                 }
             }
         ]);
@@ -526,7 +537,8 @@ export class DashboardService extends BaseService {
             leaves: pendingLeaves,
             regularizations: pendingRegularizations,
             overtime: pendingOvertime,
-            total: pendingLeaves + pendingRegularizations + pendingOvertime,
+            wfh: pendingWFH,
+            total: pendingLeaves + pendingRegularizations + pendingOvertime + pendingWFH,
             byDepartment: pendingByDepartment.map(dept => ({
                 departmentId: dept._id,
                 count: dept.count
@@ -565,7 +577,8 @@ export class DashboardService extends BaseService {
         const upcomingHolidaysData = upcomingHolidays.map(holiday => ({
             date: holiday.date,
             name: holiday.name,
-            description: holiday.description
+            description: holiday.description,
+            type: holiday.type
         }));
 
         // Prepare leave balances data
@@ -716,7 +729,7 @@ export class DashboardService extends BaseService {
         console.log('Today Leaves Count:', todayLeaves.length);
 
         // Get pending approvals
-        const [pendingLeaves, pendingRegularizations, pendingOvertime, pendingResignations] = await Promise.all([
+        const [pendingLeaves, pendingRegularizations, pendingOvertime, pendingWFH, pendingResignations] = await Promise.all([
             Leave.countDocuments({
                 userId: { $in: employeeIds },
                 status: 'Pending'
@@ -726,6 +739,10 @@ export class DashboardService extends BaseService {
                 status: 'Pending'
             }),
             Overtime.countDocuments({
+                userId: { $in: employeeIds },
+                status: 'Pending'
+            }),
+            WFH.countDocuments({
                 userId: { $in: employeeIds },
                 status: 'Pending'
             }),
@@ -740,6 +757,7 @@ export class DashboardService extends BaseService {
             leaves: pendingLeaves,
             regularizations: pendingRegularizations,
             overtime: pendingOvertime,
+            wfh: pendingWFH,
             resignations: pendingResignations
         });
 
@@ -848,7 +866,7 @@ export class DashboardService extends BaseService {
             teamOverview: {
                 totalEmployees: teamEmployees.length,
                 employeesOnLeaveToday: attendanceSummary.onLeave,
-                pendingApprovals: pendingLeaves + pendingRegularizations + pendingOvertime + pendingResignations
+                pendingApprovals: pendingLeaves + pendingRegularizations + pendingOvertime + pendingWFH + pendingResignations
             },
             attendanceSummary,
             attendanceStatus,
@@ -856,6 +874,7 @@ export class DashboardService extends BaseService {
                 leaves: pendingLeaves,
                 regularizations: pendingRegularizations,
                 overtime: pendingOvertime,
+                wfh: pendingWFH,
                 resignations: pendingResignations
             },
             employees: Array.from(attendanceMap.values())

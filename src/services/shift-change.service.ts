@@ -172,7 +172,7 @@ export class ShiftChangeService extends BaseService {
 
       if (admins && admins.length > 0) {
         const adminEmails = admins.map(admin => admin.email).filter(Boolean);
-        
+
         if (adminEmails.length > 0 && user) {
           // Get current shift details for admin email
           const currentShift = currentShiftAssignment.shiftId as any;
@@ -269,7 +269,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
     if (search) {
       // Escape special regex characters in search string
       const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      
+
       // First, search User collection for matching names/emails
       const userSearchFilter: any = {
         $or: [
@@ -649,7 +649,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
     if (search) {
       // Escape special regex characters in search string
       const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      
+
       // First, search User collection for matching names/emails
       const userSearchFilter: any = {
         $or: [
@@ -859,6 +859,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
           reqObj.requestedShift = (req as any).requestedShift ?? null;
           reqObj.currentShift = (req as any).currentShift ?? null;
           reqObj.appliedToUser = (req as any).appliedToUser ?? null;
+          reqObj.user = req.user ?? null;
 
           return reqObj;
         })
@@ -964,6 +965,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
         reqObj.requestedShift = (req as any).requestedShift ?? null;
         reqObj.currentShift = (req as any).currentShift ?? null;
         reqObj.appliedToUser = (req as any).appliedToUser ?? null;
+        reqObj.user = req.user ?? null;
 
         return reqObj;
       })
@@ -1144,19 +1146,19 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
     try {
       const employee = await User.findById(request.userId).select('name email');
       const approver = await User.findById(updateData.approvedById).select('name email');
-      
+
       if (employee && employee.email) {
         // Get current shift assignment details
         const currentShiftAssignment = await ShiftAssignment.findById(request.currentShiftId).populate('shiftId', 'name code startTime endTime');
         const requestedShift = await Shift.findById(request.requestedShiftId).select('name code startTime endTime');
-        
+
         const currentShift = currentShiftAssignment?.shiftId as any;
         const currentShiftName = currentShift?.name || 'N/A';
         const currentShiftCode = currentShiftAssignment?.shiftCode || currentShift?.code || 'N/A';
-        const currentShiftTime = currentShift?.startTime && currentShift?.endTime 
+        const currentShiftTime = currentShift?.startTime && currentShift?.endTime
           ? `${currentShift.startTime} - ${currentShift.endTime}`
           : 'N/A';
-        
+
         const requestedShiftName = requestedShift?.name || 'N/A';
         const requestedShiftCode = requestedShift?.code || 'N/A';
         const requestedShiftTime = requestedShift?.startTime && requestedShift?.endTime
@@ -1182,9 +1184,9 @@ Request Details:
 - Reason: ${request.reason}
 ${updateData.remarks ? `- Remarks: ${updateData.remarks}` : ''}
 
-${updateData.status === 'Approved' 
-  ? `Your shift change has been approved and will be effective from ${effectiveDateFormatted}. Please ensure you are available for the new shift timing.`
-  : `Unfortunately, your shift change request has been rejected. If you have any questions, please contact your manager.`}
+${updateData.status === 'Approved'
+            ? `Your shift change has been approved and will be effective from ${effectiveDateFormatted}. Please ensure you are available for the new shift timing.`
+            : `Unfortunately, your shift change request has been rejected. If you have any questions, please contact your manager.`}
 
 Thank you for your understanding.
 
@@ -1222,7 +1224,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
             html,
           },
         });
-        
+
         console.log(`Email notification sent to ${employee.email} for shift change request ${request._id} - Status: ${updateData.status}`);
       } else {
         console.warn(`Cannot send email: Employee not found or email missing for userId: ${request.userId}`);
@@ -1255,13 +1257,13 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
 
         const currentShiftAssignment = await ShiftAssignment.findById(request.currentShiftId).populate('shiftId', 'name code startTime endTime');
         const requestedShift = await Shift.findById(request.requestedShiftId).select('name code startTime endTime');
-        
+
         const currentShift = currentShiftAssignment?.shiftId as any;
         const currentShiftCode = currentShiftAssignment?.shiftCode || currentShift?.code || 'N/A';
         const requestedShiftCode = requestedShift?.code || 'N/A';
 
         const adminEmails = admins.map(admin => admin.email).filter(Boolean);
-        
+
         if (adminEmails.length > 0) {
           const adminEmailText = `Dear Admin,
 

@@ -268,11 +268,11 @@ export class UserService extends BaseService {
     // If role is specified and limit is explicitly set to something else, use that
     // Otherwise use provided limit or default to 10
     let limit: number;
-    if (role) {
-      // For role-based queries, use 1000 unless explicitly set to a different value
-      limit = (providedLimit && providedLimit !== 10) ? providedLimit : 1000;
+    if (role && !providedLimit) {
+      // For role-based queries (likely dropdowns), use 1000 if no limit is provided
+      limit = 1000;
     } else {
-      // For non-role queries, use provided limit or default to 10
+      // Otherwise use provided limit or default to 10
       limit = providedLimit || 10;
     }
     const skip = (page - 1) * limit;

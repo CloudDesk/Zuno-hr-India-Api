@@ -455,14 +455,22 @@ export class ShiftService extends BaseService {
       const start = new Date(startDate);
       const end = endDate ? new Date(endDate) : null;
 
-      // ── 1. JOINING DATE VALIDATION (Allow 1 day before for night shifts) ──
-      const minAllowedDate = new Date(user.joiningDate);
-      minAllowedDate.setDate(minAllowedDate.getDate() - 1);
-      minAllowedDate.setHours(0, 0, 0, 0);
+      // ── 1. JOINING DATE VALIDATION (Allow max 1 day prior) ──
+      if (user.joiningDate) {
+        const startDay = new Date(new Date(startDate).getTime() + (5.5 * 60 * 60 * 1000));
+        const startDayStr = startDay.toISOString().split('T')[0];
 
-      if (start < minAllowedDate) {
-        throw new Error(`Cannot assign shift to ${user.name} starting ${start.toDateString()} - joined on ${new Date(user.joiningDate).toDateString()}. (Max 1 day prior allowed)`);
+        const joinDay = new Date(new Date(user.joiningDate).getTime() + (5.5 * 60 * 60 * 1000));
+        const minAllowedDate = new Date(joinDay);
+        minAllowedDate.setDate(minAllowedDate.getDate() - 1);
+        const minAllowedDayStr = minAllowedDate.toISOString().split('T')[0];
+
+        if (startDayStr < minAllowedDayStr) {
+          throw new Error(`Cannot assign shift to ${user.name} starting ${startDayStr} - joined on ${joinDay.toISOString().split('T')[0]}. (Max 1 day prior allowed)`);
+        }
       }
+
+
 
       const isCurrent = start <= currentDate && (!end || end >= currentDate);
       // const isUpcomingShift = startDateTime > currentDate;
@@ -705,16 +713,23 @@ export class ShiftService extends BaseService {
       : shiftAssignment.weekendDays || [0]; // Retain existing or default to [0]
 
 
-    // ── JOINING DATE VALIDATION (Allow 1 day before) ───────────────────────
-    const updatedStartDateForValidation = startDate ? new Date(startDate) : new Date(shiftAssignment.startDate);
+    // ── JOINING DATE VALIDATION (Allow max 1 day prior) ──
     if (user.joiningDate) {
-      const minAllowed = new Date(user.joiningDate);
-      minAllowed.setDate(minAllowed.getDate() - 1);
-      minAllowed.setHours(0, 0, 0, 0);
-      if (updatedStartDateForValidation < minAllowed) {
-        throw new Error(`Start date cannot be before ${minAllowed.toDateString()} (joining date is ${new Date(user.joiningDate).toDateString()})`);
+      const updatedStart = startDate ? new Date(startDate) : new Date(shiftAssignment.startDate);
+      const startDay = new Date(updatedStart.getTime() + (5.5 * 60 * 60 * 1000));
+      const startDayStr = startDay.toISOString().split('T')[0];
+
+      const joinDay = new Date(new Date(user.joiningDate).getTime() + (5.5 * 60 * 60 * 1000));
+      const minAllowedDate = new Date(joinDay);
+      minAllowedDate.setDate(minAllowedDate.getDate() - 1);
+      const minAllowedDayStr = minAllowedDate.toISOString().split('T')[0];
+
+      if (startDayStr < minAllowedDayStr) {
+        throw new Error(`Start date (${startDayStr}) cannot be before ${minAllowedDayStr} (joining date is ${joinDay.toISOString().split('T')[0]})`);
       }
     }
+
+
 
 
     // Store original values for comparison

@@ -6,6 +6,7 @@ export interface IDashboardMetrics {
         leaves: number;
         regularizations: number;
         overtime: number;
+        wfh: number;
         total: number;
         byDepartment: Array<{
             departmentId: string;
@@ -59,6 +60,7 @@ export interface IDashboardMetrics {
         date: Date;
         name: string;
         description?: string;
+        type?: string;
     }>;
     resignationStatus: Array<{
         month: string;

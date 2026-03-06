@@ -539,6 +539,8 @@ export const attendanceRegularizeRoutes: RouteHandler = async (
             startDate?: string;
             endDate?: string;
             isAdmin?: boolean;
+            page?: number;
+            limit?: number;
         };
     }>(
         '/assigned/:approverId',
@@ -588,6 +590,19 @@ export const attendanceRegularizeRoutes: RouteHandler = async (
                             type: 'boolean',
                             default: false,
                             description: 'Admin flag to view all regularization records'
+                        },
+                        page: {
+                            type: 'number',
+                            minimum: 1,
+                            default: 1,
+                            description: 'Page number for pagination'
+                        },
+                        limit: {
+                            type: 'number',
+                            minimum: 1,
+                            maximum: 100,
+                            default: 10,
+                            description: 'Number of records per page'
                         }
                     }
                 },
@@ -609,7 +624,7 @@ export const attendanceRegularizeRoutes: RouteHandler = async (
                                         reason: { type: 'string' },
                                         status: {
                                             type: 'string',
-                                            enum: ['Approved', 'Rejected', 'Pending', 'Rejected-Absent', 'Rejected-Leave']
+                                            enum: ['Approved', 'Rejected', 'Pending', 'Rejected-Absent', 'Rejected-Leave', 'Withdrawn']
                                         },
                                         approver: {
                                             type: 'object',
@@ -623,6 +638,15 @@ export const attendanceRegularizeRoutes: RouteHandler = async (
                                         userId: { type: 'string' },
                                         userName: { type: 'string' }
                                     }
+                                }
+                            },
+                            meta: {
+                                type: 'object',
+                                properties: {
+                                    page: { type: 'number' },
+                                    limit: { type: 'number' },
+                                    total: { type: 'number' },
+                                    totalPages: { type: 'number' }
                                 }
                             }
                         }
@@ -640,20 +664,37 @@ export const attendanceRegularizeRoutes: RouteHandler = async (
         async (request, reply) => {
             try {
                 const { approverId } = request.params;
-                const { status = 'Pending', allStatus = false, date, startDate, endDate, isAdmin = false } = request.query;
+                const { status = 'Pending', allStatus, date, startDate, endDate, isAdmin, page, limit } = request.query as any;
+
+                // Ensure boolean flags are correctly parsed from strings if necessary
+                const isAllStatus = String(allStatus) === 'true';
+                const isAdminFlag = String(isAdmin) === 'true';
+                const pageNum = parseInt(String(page || 1)) || 1;
+                const limitNum = parseInt(String(limit || 10)) || 10;
+
                 const result = await request.container!.attendanceRegularizationService.getAssignedRegularizationRecords(
                     approverId,
-                    allStatus ? undefined : status,
-                    isAdmin,
+                    isAllStatus ? undefined : status,
+                    isAdminFlag,
                     date,
                     undefined, // search
                     startDate,
                     endDate
                 );
-                console.log(result, "result route getAssignedRegularizationRecords")
+                // Apply pagination in the route since service returns all records
+                const total = result.length;
+                const skip = (pageNum - 1) * limitNum;
+                const paginatedData = result.slice(skip, skip + limitNum);
+
                 return reply.send({
                     success: true,
-                    data: result
+                    data: paginatedData,
+                    meta: {
+                        page: pageNum,
+                        limit: limitNum,
+                        total,
+                        totalPages: Math.ceil(total / limitNum)
+                    }
                 });
             } catch (error: any) {
                 return reply.status(400).send({

@@ -254,14 +254,12 @@ export const userRoutes: RouteHandler = async (
             page: {
               type: 'number',
               minimum: 1,
-              default: 1,
               description: 'Page number for pagination'
             },
             limit: {
               type: 'number',
               minimum: 1,
-              maximum: 100,
-              default: 10,
+              maximum: 1000,
               description: 'Records per page'
             },
             // Special filters
