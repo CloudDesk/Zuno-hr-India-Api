@@ -386,7 +386,6 @@ const userSchema = new Schema<IUser>(
     maritalStatus: {
       type: String,
       trim: true,
-      enum: ['Single', 'Married', 'Divorced', 'Widowed'],
     },
     spouseName: {
       type: String,

@@ -814,7 +814,6 @@ export const userRoutes: RouteHandler = async (
             },
             maritalStatus: {
               type: 'string',
-              enum: ['Single', 'Married', 'Divorced', 'Widowed'],
               description: 'Employee marital status'
             },
             spouseName: {
@@ -1056,7 +1055,6 @@ export const userRoutes: RouteHandler = async (
             },
             maritalStatus: {
               type: 'string',
-              enum: ['Single', 'Married', 'Divorced', 'Widowed'],
               description: 'Employee marital status'
             },
             spouseName: {
