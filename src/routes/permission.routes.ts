@@ -133,10 +133,6 @@ export const permissionRoutes: RouteHandler = async (
             page: { type: 'number', minimum: 1, default: 1 },
             limit: { type: 'number', minimum: 1, maximum: 100, default: 10 },
             search: {
-              oneOf: [
-                { type: 'string' },
-                { type: 'array', items: { type: 'string' } }
-              ],
               description: 'Search by employee name, reason, manager name, or status'
             },
           },

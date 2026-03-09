@@ -123,10 +123,6 @@ export const optionalHolidayRoutes: RouteHandler = async (
             page: { type: 'number', minimum: 1, default: 1 },
             limit: { type: 'number', minimum: 1, maximum: 100, default: 10 },
             search: {
-              oneOf: [
-                { type: 'string' },
-                { type: 'array', items: { type: 'string' } }
-              ],
               description: 'Search by holiday name, reason, employee name, status, or applied to (manager name)'
             },
           },

@@ -303,7 +303,6 @@ export class AttendanceRegularizationService extends BaseService {
             const searchConditions: any[] = [
                 { reason: { $regex: escapedSearch, $options: 'i' } },
                 { status: { $regex: escapedSearch, $options: 'i' } },
-                { 'approver.name': { $regex: escapedSearch, $options: 'i' } },
             ];
 
             const userSearchFilter = {
