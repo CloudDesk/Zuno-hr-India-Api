@@ -1947,40 +1947,82 @@ export class TaxDeclarationService extends BaseService {
     }
 
     /**
-     * Override monthly deductions for remaining months only
+     * Override monthly deductions for remaining months only.
+     *
+     * - Past months  (index < externalTaxPaidMonths):
+     *     Evenly distribute externalTaxPaid (floor + 1 for remainder),
+     *     mark isProcessed = true, set plannedDate to 5th of that month.
+     *     adjustmentAmount is left unchanged (spread from existing record).
+     *
+     * - Future months (index >= externalTaxPaidMonths):
+     *     Unchanged from original logic — evenly split newTaxToPay.
+     *
+     * startIndex = externalTaxPaidMonths (≡ months.length - remainingMonths
+     *   since externalTaxPaidMonths + newSystemTaxMonths === 12 is already validated).
      */
     private overrideRemainingMonths(
         monthlyDeductions: IMonthlyTaxDeduction[],
         newTaxToPay: number,
-        remainingMonths: number
+        remainingMonths: number,
+        externalTaxPaid: number,
+        externalTaxPaidMonths: number,
+        financialYear: string
     ): IMonthlyTaxDeduction[] {
-        const months = ["Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Jan", "Feb", "Mar"];
+        const [startYear, endYear] = financialYear.split('-').map(Number);
 
-        // Find starting index for remaining months
-        const startIndex = months.length - remainingMonths;
+        // startIndex separates past months from future months.
+        // Since externalTaxPaidMonths + newSystemTaxMonths === 12 (validated),
+        // this equals months.length - remainingMonths — same as before.
+        const startIndex = externalTaxPaidMonths;
 
-        // Calculate equal distribution
-        const monthlyAmount = Math.floor(newTaxToPay / remainingMonths);
-        let remainderAmount = newTaxToPay - (monthlyAmount * remainingMonths);
+        // --- External (past) months: evenly split externalTaxPaid ---
+        const externalMonthlyAmount = externalTaxPaidMonths > 0
+            ? Math.floor(externalTaxPaid / externalTaxPaidMonths)
+            : 0;
+        let externalRemainder = externalTaxPaidMonths > 0
+            ? externalTaxPaid - (externalMonthlyAmount * externalTaxPaidMonths)
+            : 0;
+
+        // --- Future (remaining) months: evenly split newTaxToPay (unchanged logic) ---
+        const newMonthlyAmount = remainingMonths > 0
+            ? Math.floor(newTaxToPay / remainingMonths)
+            : 0;
+        let newRemainder = remainingMonths > 0
+            ? newTaxToPay - (newMonthlyAmount * remainingMonths)
+            : 0;
 
         return monthlyDeductions.map((deduction, index) => {
             if (index < startIndex) {
-                // Past months: mark as processed with 0 deduction (paid externally)
+                // ── PAST MONTHS ──────────────────────────────────────────────
+                // Distribute externalTaxPaid evenly; first months absorb the
+                // remainder (1 extra rupee each) so the total sums exactly.
+                const externalAdjustment = externalRemainder > 0 ? 1 : 0;
+                externalRemainder -= externalAdjustment;
+
+                // plannedDate = 5th of this month in the correct calendar year.
+                // Apr–Dec (index 0–8) belong to startYear;
+                // Jan–Mar (index 9–11) belong to endYear.
+                const year = index <= 8 ? startYear : endYear;
+                const calendarMonth = index <= 8 ? index + 3 : index - 9; // 0-based
+                const plannedDate = new Date(year, calendarMonth, 5);
+
                 return {
-                    ...deduction,
-                    plannedDeduction: 0,
-                    actualDeduction: 0,
-                    isProcessed: true
+                    ...deduction,           // preserves adjustmentAmount as-is
+                    plannedDeduction: externalMonthlyAmount + externalAdjustment,
+                    actualDeduction: externalMonthlyAmount + externalAdjustment,
+                    isProcessed: true,
+                    plannedDate
                 };
             } else {
-                // Remaining months: override with new amounts
-                const adjustment = remainderAmount > 0 ? 1 : 0;
-                remainderAmount -= adjustment;
+                // ── FUTURE / REMAINING MONTHS ─────────────────────────────
+                // Exact same logic as before — do NOT touch this block.
+                const adjustment = newRemainder > 0 ? 1 : 0;
+                newRemainder -= adjustment;
 
                 return {
                     ...deduction,
-                    plannedDeduction: monthlyAmount + adjustment,
-                    actualDeduction: monthlyAmount + adjustment,
+                    plannedDeduction: newMonthlyAmount + adjustment,
+                    actualDeduction: newMonthlyAmount + adjustment,
                     adjustmentAmount: adjustment,
                     isProcessed: false
                 };
@@ -2023,11 +2065,16 @@ export class TaxDeclarationService extends BaseService {
                     JSON.stringify(taxDeclaration.monthlyDeductions)
                 );
 
-                // 4. Override monthly deductions for remaining months ONLY
+                // 4. Override monthly deductions:
+                //    - Past months  → evenly distribute externalTaxPaid, isProcessed = true
+                //    - Future months → evenly distribute newSystemTaxToPay, isProcessed = false
                 const newMonthlyDeductions = this.overrideRemainingMonths(
                     taxDeclaration.monthlyDeductions,
                     data.newSystemTaxToPay,
-                    data.newSystemTaxMonths
+                    data.newSystemTaxMonths,
+                    data.externalTaxPaid,
+                    data.externalTaxPaidMonths,
+                    data.financialYear
                 );
 
                 // 5. Update tax declaration with migration override
