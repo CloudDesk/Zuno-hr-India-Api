@@ -532,33 +532,41 @@ export class UserService extends BaseService {
     month?: string; // '2025-05'
     departmentId?: string;
     role?: string;
-    status?: ('Active' | 'On Hold' | 'Resigned')[];
+    status?: ('Active' | 'On Hold' | 'Resigned')[] | string;
     active?: boolean;
     country?: 'AE' | 'IN';
   }) {
     const { page = 1, limit = 10, search, month, departmentId, role, status, active, country } = query;
     const skip = (page - 1) * limit;
-    // const filter: any = {};
     const andConditions: any[] = [];
-    console.log(status, 'status in adminFindUsers');
 
-    // 1. Search filter (name or email)
+    // 1. Search filter with escaped regex and word boundaries
     if (search) {
+      const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      // Prioritize matches that start at a word boundary for better UX
+      const searchRegex = new RegExp(`(^|\\s|\\.|_)${escapedSearch}`, 'i');
+
       andConditions.push({
         $or: [
-          { name: { $regex: search, $options: 'i' } },
-          { email: { $regex: search, $options: 'i' } },
+          { name: { $regex: searchRegex } },
+          { email: { $regex: searchRegex } },
+          { employeeCode: { $regex: searchRegex } },
+          // Keep broad search as fallback if word boundary doesn't match?
+          // Actually, let's keep it simple: word boundary + name/email/code
         ],
       });
     }
+
     // 2. Month filter on joiningDate
     if (month) {
       const [year, monthNum] = month.split('-').map(Number);
+      // Last day of the requested month
       const monthEnd = new Date(year, monthNum, 0, 23, 59, 59, 999);
       andConditions.push({
         joiningDate: { $lte: monthEnd },
       });
     }
+
     // 3. Department filter
     if (departmentId) {
       andConditions.push({ departmentId });
@@ -568,23 +576,27 @@ export class UserService extends BaseService {
     if (role) {
       andConditions.push({ role });
     }
+
     // 5. Country filter
     if (country) {
       andConditions.push({ country });
     }
+
     // 6. Active filter (direct boolean filter)
     if (typeof active === 'boolean') {
       andConditions.push({ active });
     }
-    // 7. Status filter
-    if (status?.length) {
+
+    // 7. Status filter (handle both array and single string)
+    const statusArray = Array.isArray(status) ? status : (status ? [status] : []);
+    if (statusArray.length > 0) {
       const statusFilters: any[] = [];
 
-      if (status.includes('Active')) {
+      if (statusArray.includes('Active' as any)) {
         statusFilters.push({ active: true });
       }
 
-      if (status.includes('On Hold')) {
+      if (statusArray.includes('On Hold' as any)) {
         statusFilters.push({
           active: true,
           resignations: {
@@ -596,7 +608,7 @@ export class UserService extends BaseService {
         });
       }
 
-      if (status.includes('Resigned')) {
+      if (statusArray.includes('Resigned' as any)) {
         statusFilters.push({
           resignations: {
             $elemMatch: {
@@ -611,16 +623,19 @@ export class UserService extends BaseService {
         andConditions.push({ $or: statusFilters });
       }
     }
+
     // Final query
     const finalQuery = andConditions.length > 0 ? { $and: andConditions } : {};
 
-    console.log(JSON.stringify(finalQuery, null, 2), 'Final filter in adminFindUsers');
+    console.log('Payroll adminFindUsers Filter:', JSON.stringify(finalQuery, null, 2));
 
-
-
-    // Fetch users and count
+    // Fetch users and count with explicit sorting
     const [users, total] = await Promise.all([
-      User.find(finalQuery).skip(skip).limit(limit).lean(),
+      User.find(finalQuery)
+        .sort({ name: 1 }) // Always sort by name for predictable payroll management
+        .skip(skip)
+        .limit(limit)
+        .lean(),
       User.countDocuments(finalQuery),
     ]);
 

@@ -603,6 +603,10 @@ export const attendanceRegularizeRoutes: RouteHandler = async (
                             maximum: 100,
                             default: 10,
                             description: 'Number of records per page'
+                        },
+                        search: {
+                            type: 'string',
+                            description: 'Optional search term to filter results by'
                         }
                     }
                 },
@@ -664,7 +668,7 @@ export const attendanceRegularizeRoutes: RouteHandler = async (
         async (request, reply) => {
             try {
                 const { approverId } = request.params;
-                const { status = 'Pending', allStatus, date, startDate, endDate, isAdmin, page, limit } = request.query as any;
+                const { status = 'Pending', allStatus, date, search, startDate, endDate, isAdmin, page, limit } = request.query as any;
 
                 // Ensure boolean flags are correctly parsed from strings if necessary
                 const isAllStatus = String(allStatus) === 'true';
@@ -677,7 +681,7 @@ export const attendanceRegularizeRoutes: RouteHandler = async (
                     isAllStatus ? undefined : status,
                     isAdminFlag,
                     date,
-                    undefined, // search
+                    search,
                     startDate,
                     endDate
                 );
