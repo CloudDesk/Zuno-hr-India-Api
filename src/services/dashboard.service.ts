@@ -232,7 +232,7 @@ export class DashboardService extends BaseService {
                 $group: {
                     _id: null,
                     totalAmount: { $sum: '$netSalary' },
-                    totalCTC: { $sum: '$ctc' },
+                    totalCTC: { $sum: '$monthlyGross' },
                     totalDeductions: { $sum: '$totalDeductions' },
                     totalOvertimePay: { $sum: '$overtimePay' },
                     totalBonus: { $sum: '$bonus' },

@@ -678,6 +678,22 @@ userSchema.index({ client: 1 });
 userSchema.index({ isConsultancy: 1 });
 userSchema.index({ isIntern: 1 });
 
+// Initializer hook to handle legacy data where emergencyContact might be an empty string
+// This fixes the data as soon as it's loaded from the DB, preventing validation errors later
+userSchema.post('init', function (doc) {
+  if (doc.emergencyContact === '' as any) {
+    doc.emergencyContact = undefined;
+  }
+});
+
+// Pre-validate hook as a second layer of defense
+userSchema.pre('validate', function (next) {
+  if (this.emergencyContact === '' as any) {
+    this.emergencyContact = undefined;
+  }
+  next();
+});
+
 // Hash password before saving
 userSchema.pre('save', async function (next) {
   console.log('🔐 User pre-save hook: Password hashing');
