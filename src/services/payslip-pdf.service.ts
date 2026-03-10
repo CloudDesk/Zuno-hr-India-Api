@@ -414,12 +414,34 @@ export class PayslipPdfService extends BaseService {
 
         try {
             const page = await browser.newPage();
+
+            // Set viewport to A4 width at 96dpi so the table layout
+            // sees the same width as a desktop browser — this is the
+            // root cause of the centering discrepancy between browser
+            // preview and PDF output.
+            await page.setViewport({ width: 794, height: 1123, deviceScaleFactor: 1 });
             await page.setContent(html, { waitUntil: 'networkidle0' });
+
+            // Measure the actual rendered content height so we can
+            // trim the PDF to fit — no wasted blank space at the bottom.
+            const contentHeight = await page.evaluate(() => {
+                const body = document.body;
+                const html = document.documentElement;
+                return Math.max(
+                    body.scrollHeight, body.offsetHeight,
+                    html.clientHeight, html.scrollHeight, html.offsetHeight
+                );
+            });
+
+            // Convert px → mm  (1px = 0.264583mm at 96dpi)
+            const heightMm = Math.ceil(contentHeight * 0.264583) + 10; // +10mm bottom breathing room
+
             await page.pdf({
                 path: outputPath,
-                format: 'A4',
+                width: '210mm',           // A4 width — fixed
+                height: `${heightMm}mm`, // dynamic height — trims blank space
                 printBackground: true,
-                margin: { top: '10mm', right: '10mm', bottom: '10mm', left: '10mm' }
+                margin: { top: '8mm', right: '10mm', bottom: '8mm', left: '10mm' }
             });
         } finally {
             await browser.close();
