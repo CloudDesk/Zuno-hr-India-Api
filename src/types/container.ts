@@ -31,6 +31,7 @@ import { WFHService } from '../services/wfh.service';
 import { WFHSummaryService } from '../services/wfh-summary.service';
 import { ShiftChangeService } from '../services/shift-change.service';
 import { OptionalHolidayService } from '../services/optional-holiday.service';
+import { PayslipPdfService } from '../services/payslip-pdf.service';
 
 export interface ServiceContainer {
   requestContext: RequestContext;
@@ -66,4 +67,5 @@ export interface ServiceContainer {
   wfhSummaryService: WFHSummaryService;
   shiftChangeService: ShiftChangeService;
   optionalHolidayService: OptionalHolidayService;
+  payslipPdfService: PayslipPdfService;
 } 

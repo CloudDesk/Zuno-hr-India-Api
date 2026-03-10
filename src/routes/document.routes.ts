@@ -248,8 +248,8 @@ export const documentRoutes = async (
                         error: { message: 'No employees found for processing payslips.' },
                     });
                 }
-
-                const salary = await request.container!.documentService.generatePayslip(
+                // const salary = await request.container!.documentService.generatePayslip()
+                const salary = await request.container!.payslipPdfService.generatePayslip(
                     month,
                     year,
                     finalUserIds

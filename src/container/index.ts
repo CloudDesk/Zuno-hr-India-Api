@@ -32,7 +32,7 @@ import { WFHService } from '../services/wfh.service';
 import { WFHSummaryService } from '../services/wfh-summary.service';
 import { ShiftChangeService } from '../services/shift-change.service';
 import { OptionalHolidayService } from '../services/optional-holiday.service';
-// import { PdfService } from '../services/pdf.service';
+import { PayslipPdfService } from '../services/payslip-pdf.service';
 
 export class Container {
   private static instance: Container;
@@ -87,7 +87,7 @@ export class Container {
       wfhSummaryService: new WFHSummaryService(context),
       shiftChangeService: new ShiftChangeService(context),
       optionalHolidayService: new OptionalHolidayService(context),
-      // pdfService: new PdfService(context),
+      payslipPdfService: new PayslipPdfService(context),
     };
   }
 
