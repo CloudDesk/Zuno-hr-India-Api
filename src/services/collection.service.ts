@@ -19,7 +19,7 @@ export class CollectionService extends BaseService {
             }
         });
 
-        console.log('Collection to Model Map:', this.collectionToModelMap);
+        // console.log('Collection to Model Map:', this.collectionToModelMap);
     }
     async getAllCollection() {
         const collections = await mongoose.connection.db.listCollections().toArray();
@@ -34,7 +34,7 @@ export class CollectionService extends BaseService {
 
         if (!modelName) {
             // Log available mappings for debugging
-            console.log('Available Collection to Model Mappings:', this.collectionToModelMap);
+            // console.log('Available Collection to Model Mappings:', this.collectionToModelMap);
             throw new Error(`Model for collection '${name}' not found`);
         }
 
