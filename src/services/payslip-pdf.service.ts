@@ -210,12 +210,21 @@ export class PayslipPdfService extends BaseService {
         const normalizedCountry = (payroll.country as string)?.toUpperCase() || 'IN';
         const isUaePayroll = normalizedCountry === 'AE';
 
+        const sanitizeText = (value: unknown): string | undefined => {
+            if (value === undefined || value === null) return undefined;
+            const text = String(value).trim();
+            if (!text || text === '-' || ['undefined', 'null', 'n/a', 'na'].includes(text.toLowerCase())) return undefined;
+            return text;
+        };
+
         const formatLabel = (input: any): string => {
-            if (!input) return '-';
-            if (typeof input === 'object' && input.name) return input.name;
-            const str = String(input);
-            if (['undefined', 'null', 'n/a', 'na', '-'].includes(str.toLowerCase())) return '-';
-            return str;
+            if (typeof input === 'object' && input?.name) return input.name;
+            const sanitized = sanitizeText(input);
+            if (!sanitized) return '-';
+            return sanitized
+                .split('_')
+                .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+                .join(' ');
         };
 
         const sanitizeAmount = (value: unknown): number => {
@@ -230,83 +239,139 @@ export class PayslipPdfService extends BaseService {
         const activeBankData = employee.bankDetails?.find((bank: any) => bank?.isActive);
         const govtIds = await this.getIdentityDocuments(employee._id.toString());
 
-        // Core values mapped from old service logic
-        const basicValue = sanitizeAmount(payroll.basic);
-        const hraValue = sanitizeAmount(payroll.hra);
-        const daValue = sanitizeAmount(payroll.da);
-        const otherAllowanceValue = sanitizeAmount(payroll.otherAllowance);
-        const travelAllowanceValue = sanitizeAmount(payroll.travelAllowance);
-        const holdSalaryValue = sanitizeAmount(payroll.holdSalary);
-        const reimbursementValue = sanitizeAmount(payroll.reimbursement);
+        // Core values mapped from master service logic
+        const basicValue = isUaePayroll ? sanitizeAmount(payroll.basic) : (payroll.basic || 0);
+        const hraValue = isUaePayroll ? sanitizeAmount(payroll.hra) : (payroll.hra || 0);
+        const daValue = isUaePayroll ? sanitizeAmount(payroll.da) : (payroll.da || 0);
+        const otherAllowanceValue = isUaePayroll ? sanitizeAmount(payroll.otherAllowance) : (payroll.otherAllowance || 0);
+        const travelAllowanceValue = isUaePayroll ? sanitizeAmount(payroll.travelAllowance) : (payroll.travelAllowance ?? 0);
+        const reimbursementValue = isUaePayroll ? sanitizeAmount(payroll.reimbursement) : (payroll.reimbursement || 0);
+        const holdSalaryValue = isUaePayroll ? sanitizeAmount(payroll.holdSalary) : (payroll.holdSalary || 0);
         const airTicketAllowanceValue = sanitizeAmount(payroll.airTicketAllowance);
         const medicalAllowanceValue = sanitizeAmount(payroll.medicalAllowance);
 
-        const assignedBasicValue = sanitizeAmount(payroll.assigned?.basic);
-        const assignedHraValue = sanitizeAmount(payroll.assigned?.hra);
-        const assignedOtherAllowanceValue = sanitizeAmount(payroll.assigned?.otherAllowance);
-        const assignedTravelAllowanceValue = sanitizeAmount(payroll.assigned?.travelAllowance);
-        const assignedReimbursementValue = sanitizeAmount(payroll.assigned?.reimbursementAllowance);
+        const assignedBasicValue = isUaePayroll ? sanitizeAmount(payroll.assigned?.basic) : (payroll.assigned?.basic || 0);
+        const assignedHraValue = isUaePayroll ? sanitizeAmount(payroll.assigned?.hra) : (payroll.assigned?.hra || 0);
+        const assignedOtherAllowanceValue = isUaePayroll ? sanitizeAmount(payroll.assigned?.otherAllowance) : (payroll.assigned?.otherAllowance || 0);
+        const assignedTravelAllowanceValue = isUaePayroll ? sanitizeAmount(payroll.assigned?.travelAllowance) : (payroll.assigned?.travelAllowance ?? 0);
+        const assignedReimbursementValue = isUaePayroll ? sanitizeAmount(payroll.assigned?.reimbursementAllowance) : (payroll.assigned?.reimbursementAllowance || 0);
         const assignedAirTicketValue = sanitizeAmount(payroll.assigned?.airTicketAllowance);
         const assignedMedicalValue = sanitizeAmount(payroll.assigned?.medicalAllowance);
 
-        const netPayNumeric = Math.round(sanitizeAmount(payroll.netSalary));
+        const employeeDesignation = isUaePayroll
+            ? (sanitizeText(employee.specificRole) || formatLabel(employee.role))
+            : (employee.specificRole || formatLabel(employee.role));
+
+        // Matching old service totalEarnings calculation
+        const totalEarnings = basicValue + hraValue + otherAllowanceValue + daValue + travelAllowanceValue + holdSalaryValue;
+
+        const netSalaryValue = isUaePayroll ? sanitizeAmount(payroll.netSalary) : (payroll.netSalary || 0);
+        const netPayNumeric = Math.round(netSalaryValue);
         const netPayWordsRaw = await this.numberToWords(netPayNumeric);
         const netPayWords = netPayNumeric > 0
             ? `${isUaePayroll ? 'Dirhams' : 'Rupees'} ${netPayWordsRaw} only`
             : `${isUaePayroll ? 'Dirhams' : 'Rupees'} ${netPayWordsRaw}`;
 
+        const earnActual = {
+            basic: formatCurrency(basicValue, payroll.country),
+            hra: formatCurrency(hraValue, payroll.country),
+            other: formatCurrency(otherAllowanceValue, payroll.country),
+            travelAllowance: formatCurrency(travelAllowanceValue, payroll.country),
+            reimbursement: formatCurrency(reimbursementValue, payroll.country),
+            holdSalary: holdSalaryValue > 0 ? formatCurrency(holdSalaryValue, payroll.country) : undefined,
+            airTicketAllowance: formatCurrency(airTicketAllowanceValue, payroll.country),
+            medicalAllowance: formatCurrency(medicalAllowanceValue, payroll.country),
+            total: formatCurrency(totalEarnings, payroll.country)
+        };
+
+        const earnFull = {
+            basic: formatCurrency(assignedBasicValue, payroll.country),
+            hra: formatCurrency(assignedHraValue, payroll.country),
+            other: formatCurrency(assignedOtherAllowanceValue, payroll.country),
+            travelAllowance: formatCurrency(assignedTravelAllowanceValue, payroll.country),
+            reimbursement: formatCurrency(assignedReimbursementValue, payroll.country),
+            holdSalary: holdSalaryValue > 0 ? formatCurrency(holdSalaryValue, payroll.country) : undefined,
+            airTicketAllowance: formatCurrency(assignedAirTicketValue, payroll.country),
+            medicalAllowance: formatCurrency(assignedMedicalValue, payroll.country),
+            total: formatCurrency(
+                assignedBasicValue +
+                assignedHraValue +
+                assignedOtherAllowanceValue +
+                assignedTravelAllowanceValue +
+                holdSalaryValue,
+                payroll.country
+            )
+        };
+
+        const deduction = (() => {
+            const pf = Number(payroll.epfEmployee || 0);
+            const lop = Number(payroll.leaveDeductions || 0);
+            const pt = Number(payroll.professionalTax || 0);
+            const it = Number(payroll.incomeTax || 0);
+            const tds = Number(payroll.tdsDeduction || 0);
+            const notice = Number(payroll.noticePeriodRecovery || 0);
+
+            const obj: any = {
+                total: formatCurrency(payroll.totalDeductions || 0, payroll.country)
+            };
+            if (pf > 0) obj.pf = formatCurrency(pf, payroll.country);
+            if (lop > 0) obj.lop = formatCurrency(lop, payroll.country);
+            if (pt > 0) obj.pt = formatCurrency(pt, payroll.country);
+            if (it > 0) obj.it = formatCurrency(it, payroll.country);
+            if (tds > 0) obj.tds = formatCurrency(tds, payroll.country);
+            if (notice > 0) obj.noticeRecovery = formatCurrency(notice, payroll.country);
+
+            return obj;
+        })();
+
         const templateData = {
-            empName: formatLabel(employee.name),
+            empName: sanitizeText(employee.name) || '-',
             empJoinDate: employee.joiningDate ? new Date(employee.joiningDate).toISOString().split('T')[0] : 'N/A',
-            empRole: formatLabel(employee.specificRole) || formatLabel(employee.role),
+            empRole: employeeDesignation,
+            empDes: employeeDesignation || '-',
             empDept: formatLabel(employee.departmentId),
             empLocation: formatLabel(employee.location),
-            empNo: formatLabel(employee.employeeCode) || formatLabel(employee.biometricId),
-            bankName: formatLabel(activeBankData?.bankName),
-            bankAccNo: formatLabel(activeBankData?.accountNumber),
-            panNo: formatLabel(govtIds.panNumber) || formatLabel(employee.governmentIds?.pan?.number),
-            pfNo: formatLabel(employee.pfNumber) || formatLabel(govtIds.pfNumber) || formatLabel(employee.governmentIds?.pf?.number),
-            pfUan: formatLabel(employee.uanNumber) || formatLabel(govtIds.pfUan) || formatLabel(employee.governmentIds?.pf?.uan),
+            empNo: sanitizeText(employee.employeeCode) || sanitizeText(employee.biometricId) || '-',
+            bankName: sanitizeText(activeBankData?.bankName) || '-',
+            bankAccNo: sanitizeText(activeBankData?.accountNumber) || '-',
+            panNo: sanitizeText(govtIds.panNumber) || sanitizeText(employee.governmentIds?.pan?.number) || '-',
+            pfNo: sanitizeText(employee.pfNumber) || sanitizeText(govtIds.pfNumber) || sanitizeText(employee.governmentIds?.pf?.number) || '-',
+            pfUan: sanitizeText(employee.uanNumber) || sanitizeText(govtIds.pfUan) || sanitizeText(employee.governmentIds?.pf?.uan) || '-',
             payMonth: this.getMonthName(payroll.month),
             payYear: payroll.year.toString(),
+
             daysPresent: payroll.presentDays || 0,
-            effectiveWorkDays: payroll.payableDays || (payroll.totalDaysInMonth - (payroll.lopDays || 0)) || 0,
-            lopDays: payroll.lopDays || 0,
+            daysLOP: payroll.LOPDays || 0,
+            lopDays: payroll.LOPDays || 0,
+            effectiveDays: payroll.payableDays || 0,
+            effectiveWorkDays: payroll.payableDays || (payroll.totalDaysInMonth - (payroll.LOPDays || 0)) || 0,
+            monthDays: payroll.totalDaysInMonth || 0,
+
+            earnActual: earnActual,
+            earnFull: earnFull,
 
             income: {
-                total: formatCurrency(payroll.monthlyGross || 0, normalizedCountry),
-                fullTotal: formatCurrency(
-                    assignedBasicValue +
-                    assignedHraValue +
-                    assignedOtherAllowanceValue +
-                    assignedTravelAllowanceValue +
-                    assignedReimbursementValue +
-                    assignedAirTicketValue +
-                    assignedMedicalValue +
-                    holdSalaryValue,
-                    normalizedCountry
-                )
+                total: earnActual.total,
+                fullTotal: earnFull.total
             },
-            deduction: {
-                total: formatCurrency(payroll.totalDeductions || 0, normalizedCountry)
-            },
+            deduction: deduction,
 
             allEarnings: (() => {
                 const arr: any[] = [];
                 const pushIfValid = (label: string, actual: number, full: number) => {
                     if (actual > 0 || full > 0) {
-                        arr.push({ label, fullAmount: formatCurrency(full, normalizedCountry), actualAmount: formatCurrency(actual, normalizedCountry) });
+                        arr.push({ label, fullAmount: formatCurrency(full, payroll.country), actualAmount: formatCurrency(actual, payroll.country) });
                     }
                 };
                 pushIfValid('BASIC', basicValue, assignedBasicValue);
                 pushIfValid('HRA', hraValue, assignedHraValue);
-                if (daValue > 0) pushIfValid('DEARNESS ALLOWANCE', daValue, 0);
+                pushIfValid('DEARNESS ALLOWANCE', daValue, 0); 
                 pushIfValid('OTHER ALLOWANCE', otherAllowanceValue, assignedOtherAllowanceValue);
                 pushIfValid('TRAVEL ALLOWANCE', travelAllowanceValue, assignedTravelAllowanceValue);
-                if (holdSalaryValue > 0) pushIfValid('HOLD SALARY', holdSalaryValue, holdSalaryValue);
-                if (reimbursementValue > 0) pushIfValid('REIMBURSEMENT', reimbursementValue, assignedReimbursementValue);
-                if (airTicketAllowanceValue > 0 || assignedAirTicketValue > 0) pushIfValid('AIR TICKET ALLOWANCE', airTicketAllowanceValue, assignedAirTicketValue);
-                if (medicalAllowanceValue > 0 || assignedMedicalValue > 0) pushIfValid('MEDICAL ALLOWANCE', medicalAllowanceValue, assignedMedicalValue);
+                pushIfValid('HOLD SALARY', holdSalaryValue, holdSalaryValue);
+                pushIfValid('REIMBURSEMENT', reimbursementValue, assignedReimbursementValue);
+                pushIfValid('AIR TICKET ALLOWANCE', airTicketAllowanceValue, assignedAirTicketValue);
+                pushIfValid('MEDICAL ALLOWANCE', medicalAllowanceValue, assignedMedicalValue);
 
                 return arr;
             })(),
@@ -320,23 +385,23 @@ export class PayslipPdfService extends BaseService {
                 const tds = Number(payroll.tdsDeduction || 0);
                 const notice = Number(payroll.noticePeriodRecovery || 0);
 
-                if (pf > 0) arr.push({ label: 'PROVIDENT FUND', amount: formatCurrency(pf, normalizedCountry) });
-                if (lop > 0) arr.push({ label: 'LOSS OF PAY', amount: formatCurrency(lop, normalizedCountry) });
-                if (it > 0) arr.push({ label: 'INCOME TAX', amount: formatCurrency(it, normalizedCountry) });
-                if (pt > 0) arr.push({ label: 'PROFESSIONAL TAX', amount: formatCurrency(pt, normalizedCountry) });
-                if (tds > 0) arr.push({ label: 'TDS (1%)', amount: formatCurrency(tds, normalizedCountry) });
-                if (notice > 0) arr.push({ label: 'NOTICE PERIOD RECOVERY', amount: formatCurrency(notice, normalizedCountry) });
+                if (pf > 0) arr.push({ label: 'PROVIDENT FUND', amount: formatCurrency(pf, payroll.country) });
+                if (lop > 0) arr.push({ label: 'LOSS OF PAY', amount: formatCurrency(lop, payroll.country) });
+                if (it > 0) arr.push({ label: 'INCOME TAX', amount: formatCurrency(it, payroll.country) });
+                if (pt > 0) arr.push({ label: 'PROFESSIONAL TAX', amount: formatCurrency(pt, payroll.country) });
+                if (tds > 0) arr.push({ label: 'TDS (1%)', amount: formatCurrency(tds, payroll.country) });
+                if (notice > 0) arr.push({ label: 'NOTICE PERIOD RECOVERY', amount: formatCurrency(notice, payroll.country) });
 
                 return arr;
             })(),
 
-            netPay: formatCurrency(payroll.netSalary || 0, normalizedCountry),
+            netPay: formatCurrency(payroll.netSalary || 0, payroll.country),
             netPayWords: netPayWords
         };
 
         const templatePath = path.join(process.cwd(), 'src', 'emails', 'templates', 'payslip.hbs');
         console.log(`[PAYSLIP_DEBUG] Loading template from: ${templatePath}`);
-        
+
         const templateHtml = await fsPromises.readFile(templatePath, 'utf-8');
         console.log(`[PAYSLIP_DEBUG] Template content begins with: ${templateHtml.substring(0, 100).replace(/\n/g, ' ')}...`);
         const compiledTemplate = handlebars.compile(templateHtml);

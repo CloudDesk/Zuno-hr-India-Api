@@ -28,55 +28,35 @@
     /* ══════════════════════════
        HEADER
     ══════════════════════════ */
-    .header {
-      display: flex;
-      align-items: center;
-      padding: 8px 12px;
-      gap: 8px;
-    }
-    .header-logo {
-      flex: 0 0 150px;
-    }
-    .header-logo img {
-      display: block;
-      width: 140px;
-      height: auto;
-      max-height: 80px;
-      object-fit: contain;
-    }
-    .header-info {
-      flex: 1;
-      text-align: center;
-    }
-    .co-name {
-      font-family: "Times New Roman", Times, serif;
-      font-size: 12pt;
-      font-weight: bold;
-      line-height: 1.3;
-      margin-bottom: 2px;
-    }
-    .co-addr {
-      font-family: "Times New Roman", Times, serif;
-      font-size: 7.5pt;
-      font-weight: normal;
-      color: #000;
-      line-height: 1.4;
-    }
 
-    /* ══════════════════════════
-       PAYSLIP TITLE
-       — sits directly under header border, NO extra top line
-    ══════════════════════════ */
-    .slip-title {
-      font-family: "Times New Roman", Times, serif;
-      font-size: 11pt;
-      font-weight: bold;
-      text-align: center;
-      padding: 5px 10px;
-      /* Only a bottom border — header's border-bottom is the line above */
-      border-bottom: 1.5px solid #000;
-      border-top: none;
-    }
+
+.co-name {
+ font-family: "Times New Roman", Times, serif;
+  font-size: 13pt;
+  font-weight: bold;
+  line-height: 1.4;
+  margin-bottom: 4px;
+  letter-spacing: 0.01em;
+}
+
+.co-addr {
+  font-family: "Times New Roman", Times, serif;
+  font-size: 8pt;
+  font-weight: normal;
+  color: #000;
+  line-height: 1.6;
+}
+
+.header-spacer {
+  width: 140px; /* mirrors logo column to keep center perfectly balanced */
+}
+
+.slip-title{
+   font-family: "Times New Roman", Times, serif;
+  font-size: 11pt;
+  font-weight: bold;
+  text-align: center;
+}
 
     /* ══════════════════════════
        EMPLOYEE DETAILS TABLE
@@ -181,13 +161,15 @@
       font-size: 9pt;
       padding: 5px 10px;
     }
-    .net-pay-row .net-label {
-      flex: 1;
+    .net-label {
+      font-family: "Times New Roman", Times, serif;
+      font-size: 9pt;
       font-weight: normal;
     }
-    .net-pay-row .net-amount {
-      font-weight: bold;
+    .net-amount {
+      font-family: "Times New Roman", Times, serif;
       font-size: 9pt;
+      font-weight: bold;
       text-align: right;
     }
 
@@ -216,19 +198,28 @@
 <div class="slip">
 
   <!-- ── HEADER ── -->
-  <div class="header">
-    <div class="header-logo">
-      <img src="https://storage.googleapis.com/tendlylogo/CloudDesk_Logo.jpg" alt="Cloud Desk Logo" />
-    </div>
-    <div class="header-info">
-      <div class="co-name">Cloud Desk Technology Private Limited</div>
-      <div class="co-addr">No: 51, TEK Meadows, Old Mahabalipuram Rd, Sholinganallur, Chennai ,<br>Tamilnadu -600119</div>
-    </div>
+<div class="header" style="display:grid; grid-template-columns: repeat(12, 1fr); grid-template-rows: auto auto; border-bottom: 1.5px solid #000;">
+  
+  <!-- 1: Logo - col 1-3, spans both rows -->
+  <div style="grid-column: 1 / 4; grid-row: 1 / 3; display:flex; align-items:center; justify-content:center; padding: 12px;">
+    <img src="https://storage.googleapis.com/tendlylogo/cd_logo_2%20(1).png" style="width:120px; height:auto; object-fit:contain;">
   </div>
 
-  <!-- ── PAYSLIP TITLE ── -->
-  <div class="slip-title">Payslip for the month of {{payMonth}} {{payYear}}</div>
+  <!-- 2: Company Info - col 4-12, row 1 -->
+  <div class="header-info" style="grid-column: 4 / 13; grid-row: 1; display:flex; flex-direction:column; align-items:center; justify-content:center; padding: 14px 12px 6px;">
+    <div class="co-name">Cloud Desk Technology Private Limited</div>
+    <div class="co-addr">No: 51, TEK Meadows, Old Mahabalipuram Rd, Sholinganallur, Chennai,<br>Tamilnadu - 600119</div>
+  </div>
 
+  <!-- 3: Slip Title - col 4-12, row 2 -->
+  <div class="slip-title" style="grid-column: 4 / 13; grid-row: 2; display:flex; align-items:center; justify-content:center; padding: 6px 12px 10px;">
+    Payslip for the month of {{payMonth}} {{payYear}}
+  </div>
+
+</div>
+
+  <!-- ── PAYSLIP TITLE ── -->
+ 
   <!-- ── EMPLOYEE DETAILS ── -->
   <table class="emp-table">
     <colgroup>
