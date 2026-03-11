@@ -414,7 +414,18 @@ export class PayslipPdfService extends BaseService {
 
         const browser = await puppeteer.launch({
             headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
+            // In Docker, PUPPETEER_EXECUTABLE_PATH points to /usr/bin/chromium (system package).
+            // Locally, this env var is unset so Puppeteer uses its own bundled Chrome.
+            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',   // Critical for Docker — /dev/shm is often too small
+                '--disable-gpu',             // No GPU in containers
+                '--no-first-run',
+                '--no-zygote',               // Reduces memory usage in containers
+                '--single-process'           // Lower memory footprint
+            ]
         });
 
         try {
