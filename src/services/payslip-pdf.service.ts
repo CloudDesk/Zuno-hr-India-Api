@@ -365,7 +365,7 @@ export class PayslipPdfService extends BaseService {
                 };
                 pushIfValid('BASIC', basicValue, assignedBasicValue);
                 pushIfValid('HRA', hraValue, assignedHraValue);
-                pushIfValid('DEARNESS ALLOWANCE', daValue, 0); 
+                pushIfValid('DEARNESS ALLOWANCE', daValue, 0);
                 pushIfValid('OTHER ALLOWANCE', otherAllowanceValue, assignedOtherAllowanceValue);
                 pushIfValid('TRAVEL ALLOWANCE', travelAllowanceValue, assignedTravelAllowanceValue);
                 pushIfValid('HOLD SALARY', holdSalaryValue, holdSalaryValue);
@@ -461,12 +461,9 @@ export class PayslipPdfService extends BaseService {
             });
 
             // Convert px → mm  (1px = 0.264583mm at 96dpi)
-            // Buffer explanation:
-            //   - 16mm covers the top+bottom PDF margins (8mm each)
-            //   - extra 9mm compensates for the PDF content width (190mm ≈ 718px) being
-            //     narrower than our measurement viewport (794px), which can cause text
-            //     to reflow slightly taller in the final PDF
-            const heightMm = Math.ceil(contentHeightPx * 0.264583) + 25;
+            // Buffer = 8mm top margin + 8mm bottom margin = 16mm exactly.
+            // No extra needed since viewport width (718px) now matches PDF rendering width.
+            const heightMm = Math.ceil(contentHeightPx * 0.264583) + 12;
 
             await page.pdf({
                 path: outputPath,
