@@ -267,27 +267,32 @@
     <div class="slip">
 
         <!-- ── HEADER ── -->
-        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-bottom: 1.5px solid #000; border-collapse: collapse; table-layout: fixed;">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0"
+            style="border-bottom: 1.5px solid #000; border-collapse: collapse; table-layout: fixed;">
+            <!-- Row 1: Logo (rowspan 2) | Company Name + Address | Spacer (rowspan 2) -->
             <tr>
-                <!-- Left: Logo cell (fixed 120px) -->
-                <td width="120" style="padding: 8px 10px; vertical-align: middle; text-align: center;">
+                <!-- Left: Logo cell — spans both rows -->
+                <td width="120" rowspan="2" style="padding: 8px 10px; vertical-align: middle; text-align: center;">
                     <img src="https://storage.googleapis.com/tendlylogo/cd_logo_2%20(1).png"
                         style="width: 95px; height: auto; display: block; margin: 0 auto;">
                 </td>
 
-                <!-- Centre: Company info + title (auto-fills remaining width) -->
-                <td style="padding: 8px 6px; vertical-align: middle; text-align: center;">
+                <!-- Centre Row 1: Company name & address -->
+                <td style="padding: 8px 6px 4px 6px; vertical-align: middle; text-align: center;">
                     <div class="co-name">Cloud Desk Technology Private Limited</div>
                     <div class="co-addr" style="margin-top: 2px;">
                         No: 51, TEK Meadows, Old Mahabalipuram Rd, Sholinganallur, Chennai, Tamilnadu - 600119
                     </div>
-                    <div class="slip-title" style="margin-top: 6px;">
-                        Payslip for the month of {{payMonth}} {{payYear}}
-                    </div>
                 </td>
 
-                <!-- Right: Mirror spacer — MUST be same width as logo cell -->
-                <td width="120" style="padding: 8px 10px;"></td>
+                <!-- Right: Mirror spacer — spans both rows, same width as logo -->
+                <td width="120" rowspan="2" style="padding: 8px 10px;"></td>
+            </tr>
+            <!-- Row 2: Payslip Title (centre column only) -->
+            <tr>
+                <td style="padding: 4px 6px 8px 6px; vertical-align: middle; text-align: center;">
+                    <div class="slip-title">Payslip for the month of {{payMonth}} {{payYear}}</div>
+                </td>
             </tr>
         </table>
 
