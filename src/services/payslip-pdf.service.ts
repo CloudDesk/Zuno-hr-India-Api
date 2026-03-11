@@ -431,10 +431,14 @@ export class PayslipPdfService extends BaseService {
         try {
             const page = await browser.newPage();
 
-            // Set viewport to exact A4 width at 96dpi so table layout
-            // sees the same width as a browser — fixes the centering
-            // discrepancy between browser preview and PDF output.
-            await page.setViewport({ width: 794, height: 1123, deviceScaleFactor: 1 });
+            // ── Viewport width MUST match the PDF content area ──────────────
+            // PDF page = 210mm, margins = 10mm each side → content = 190mm
+            // 190mm × (96dpi / 25.4) = 718px
+            // If we measure at 794px the content is 76px wider than in the
+            // PDF, so text reflows and the actual PDF is taller → 2 pages.
+            // Setting 718px makes measurement match exact PDF rendering width.
+            // Height 5000px ensures nothing is clipped for any size payslip.
+            await page.setViewport({ width: 718, height: 5000, deviceScaleFactor: 1 });
             await page.setContent(html, { waitUntil: 'networkidle0' });
 
             // ── Measure ACTUAL content height ──────────────────────────
@@ -457,8 +461,12 @@ export class PayslipPdfService extends BaseService {
             });
 
             // Convert px → mm  (1px = 0.264583mm at 96dpi)
-            // Add top+bottom margin (8mm each = 16mm = ~60px) to the height
-            const heightMm = Math.ceil(contentHeightPx * 0.264583) + 16;
+            // Buffer explanation:
+            //   - 16mm covers the top+bottom PDF margins (8mm each)
+            //   - extra 9mm compensates for the PDF content width (190mm ≈ 718px) being
+            //     narrower than our measurement viewport (794px), which can cause text
+            //     to reflow slightly taller in the final PDF
+            const heightMm = Math.ceil(contentHeightPx * 0.264583) + 25;
 
             await page.pdf({
                 path: outputPath,
