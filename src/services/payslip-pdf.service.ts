@@ -399,7 +399,12 @@ export class PayslipPdfService extends BaseService {
             netPayWords: netPayWords
         };
 
-        const templatePath = path.join(process.cwd(), 'src', 'emails', 'templates', 'payslip.hbs');
+        // Use __dirname so the path resolves correctly in BOTH environments:
+        //   Dev  (ts-node):  __dirname = src/services/ → src/emails/templates/payslip.hbs  ✅
+        //   Prod (compiled): __dirname = dist/services/ → dist/emails/templates/payslip.hbs ✅
+        // Using process.cwd() + 'src' breaks in Docker because the src/ folder
+        // does not exist in the container — only dist/ does.
+        const templatePath = path.join(__dirname, '..', 'emails', 'templates', 'payslip.hbs');
         console.log(`[PAYSLIP_DEBUG] Loading template from: ${templatePath}`);
 
         const templateHtml = await fsPromises.readFile(templatePath, 'utf-8');
