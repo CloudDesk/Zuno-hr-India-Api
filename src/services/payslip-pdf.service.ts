@@ -415,31 +415,39 @@ export class PayslipPdfService extends BaseService {
         try {
             const page = await browser.newPage();
 
-            // Set viewport to A4 width at 96dpi so the table layout
-            // sees the same width as a desktop browser — this is the
-            // root cause of the centering discrepancy between browser
-            // preview and PDF output.
+            // Set viewport to exact A4 width at 96dpi so table layout
+            // sees the same width as a browser — fixes the centering
+            // discrepancy between browser preview and PDF output.
             await page.setViewport({ width: 794, height: 1123, deviceScaleFactor: 1 });
             await page.setContent(html, { waitUntil: 'networkidle0' });
 
-            // Measure the actual rendered content height so we can
-            // trim the PDF to fit — no wasted blank space at the bottom.
-            const contentHeight = await page.evaluate(() => {
-                const body = document.body;
-                const html = document.documentElement;
-                return Math.max(
-                    body.scrollHeight, body.offsetHeight,
-                    html.clientHeight, html.scrollHeight, html.offsetHeight
-                );
+            // ── Measure ACTUAL content height ──────────────────────────
+            // BUG FIX: The previous code used Math.max(html.clientHeight, ...)
+            // which always returned the viewport height (1123px = full A4).
+            // Instead, we measure the real bottom of visible content.
+            const contentHeightPx = await page.evaluate((): number => {
+                const slip = document.querySelector('.slip') as HTMLElement | null;
+                const footer = document.querySelector('.footer-note') as HTMLElement | null;
+                if (footer) {
+                    const rect = footer.getBoundingClientRect();
+                    return Math.ceil(rect.bottom) + 16; // 16px bottom buffer
+                }
+                if (slip) {
+                    const rect = slip.getBoundingClientRect();
+                    return Math.ceil(rect.bottom) + 16;
+                }
+                // Fallback: body scroll height (better than clientHeight)
+                return document.body.scrollHeight;
             });
 
             // Convert px → mm  (1px = 0.264583mm at 96dpi)
-            const heightMm = Math.ceil(contentHeight * 0.264583) + 10; // +10mm bottom breathing room
+            // Add top+bottom margin (8mm each = 16mm = ~60px) to the height
+            const heightMm = Math.ceil(contentHeightPx * 0.264583) + 16;
 
             await page.pdf({
                 path: outputPath,
-                width: '210mm',           // A4 width — fixed
-                height: `${heightMm}mm`, // dynamic height — trims blank space
+                width: '210mm',           // A4 width — always fixed
+                height: `${heightMm}mm`, // dynamic — trims blank space below content
                 printBackground: true,
                 margin: { top: '8mm', right: '10mm', bottom: '8mm', left: '10mm' }
             });
