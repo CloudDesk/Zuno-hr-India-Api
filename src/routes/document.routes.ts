@@ -1183,17 +1183,17 @@ export const documentRoutes = async (
                                                             properties: {
                                                                 skillName: { type: 'string' },
                                                                 proficiencyLevel: {
-                                                                    type: 'string', enum: ['Beginner', 'Intermediate', 'Advanced', 'Expert']
+                                                                    type: 'string'
                                                                 },
                                                                 category: {
-                                                                    type: 'string', enum: ['Technical', 'Soft']
+                                                                    type: 'string'
                                                                 },
                                                             }
                                                         },
                                                         academicDetails: {
                                                             type: 'object',
                                                             properties: {
-                                                                qualificationType: { type: 'string', enum: ['Secondary', 'HigherSecondary', 'Diploma', 'Bachelor', 'Master', 'Doctorate', 'Other'] },
+                                                                qualificationType: { type: 'string' },
                                                                 fieldOfStudy: { type: 'string' },
                                                                 grade: { type: 'string' },
                                                                 institution: { type: 'string' },

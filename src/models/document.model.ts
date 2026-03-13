@@ -100,12 +100,12 @@ export interface IDocument extends DocumentM {
             };
             skillDetails?: {
                 skillName: string; // e.g., 'Cloud Computing', 'Salesforce'
-                proficiencyLevel?: 'Beginner' | 'Intermediate' | 'Advanced' | 'Expert';
-                category: 'Technical' | 'Soft';
+                proficiencyLevel?: string;
+                category: string;
             }; // For skill-related certificates
 
             academicDetails?: { // Added for Degree certificates
-                qualificationType: 'Secondary' | 'HigherSecondary' | 'Diploma' | 'Bachelor' | 'Master' | 'Doctorate' | 'Other'; // Renamed degreeType to qualificationType
+                qualificationType: string; // Renamed degreeType to qualificationType
                 fieldOfStudy: string; // e.g., 'Computer Science', 'Mechanical Engineering'
                 grade?: string; // e.g., 'First Class', '3.8 GPA'
                 institution: string; // e.g., 'University of XYZ'

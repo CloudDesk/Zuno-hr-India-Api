@@ -142,7 +142,7 @@ export interface IUser extends Document {
     pf?: { number?: string; uan?: string; familyPfNumber?: string; country?: string; documentUrl?: string; documentId?: string; verificationStatus?: 'Pending' | 'Verified' | 'Rejected' };
   };
   academicDetails?: Array<{
-    qualificationType?: 'Secondary' | 'HigherSecondary' | 'Diploma' | 'Bachelor' | 'Master' | 'Doctorate' | 'Other';
+    qualificationType?: string;
     fieldOfStudy?: string;
     institution?: string;
     grade?: string;
@@ -547,7 +547,7 @@ const userSchema = new Schema<IUser>(
     },
     academicDetails: {
       type: [{
-        qualificationType: { type: String, enum: ['Secondary', 'HigherSecondary', 'Diploma', 'Bachelor', 'Master', 'Doctorate', 'Other'], trim: true },
+        qualificationType: { type: String, trim: true },
         fieldOfStudy: { type: String, trim: true, maxlength: 200 },
         institution: { type: String, trim: true, maxlength: 200 },
         grade: { type: String, trim: true, maxlength: 50 },

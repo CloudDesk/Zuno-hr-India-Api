@@ -120,30 +120,48 @@ const academicDetailsSchema = {
   items: {
     type: 'object',
     properties: {
-      instituteName: { type: 'string' },
-      grade: { type: 'string' },
-      documentUrl: { type: 'string' },
-      documentId: { type: 'string' },
-      yearOfPassing: { type: 'string' },
-    }
+      qualificationType: {
+        type: 'string',
+        description: 'Type of qualification'
+      },
+      fieldOfStudy: { type: 'string', description: 'Major or field of study' },
+      institution: { type: 'string', description: 'Name of the educational institution' },
+      grade: { type: 'string', description: 'Grade or percentage obtained' },
+      yearOfCompletion: { type: ['string', 'number'], description: 'Year the qualification was completed' },
+      documentUrl: { type: 'string', description: 'URL to the academic certificate' },
+      documentId: { type: 'string', description: 'ID of the corresponding document record' },
+      verificationStatus: {
+        type: 'string',
+        enum: ['Pending', 'Verified', 'Rejected'],
+        default: 'Pending'
+      },
+    },
   },
-}
+};
+
 const experienceDetailsSchema = {
   type: 'array',
   items: {
     type: 'object',
     properties: {
-      companyName: { type: 'string' },
-      period: { type: 'string' },
-      documentUrl: { type: 'string' },
-      documentId: { type: 'string' },
+      companyName: { type: 'string', description: 'Name of the previous employer' },
+      role: { type: 'string', description: 'Designation or role held' },
+      startDate: { type: ['string', 'null'], description: 'Employment start date' },
+      endDate: { type: ['string', 'null'], description: 'Employment end date' },
+      duration: { type: 'string', description: 'Total duration of employment' },
+      documentUrl: { type: 'string', description: 'URL to the experience certificate' },
+      documentId: { type: 'string', description: 'ID of the corresponding document record' },
       companyAddress: { type: 'string' },
       lastDrawnSalary: { type: 'number' },
       reasonForLeaving: { type: 'string' },
-      designation: { type: 'string' },
+      verificationStatus: {
+        type: 'string',
+        enum: ['Pending', 'Verified', 'Rejected'],
+        default: 'Pending'
+      },
     }
   },
-}
+};
 
 // Unified user response schema
 const userResponseSchema = {
@@ -1934,10 +1952,12 @@ export const userRoutes: RouteHandler = async (
             : undefined;
 
         // Extract metadata if available
-        const metadata = body?.instituteName || body?.yearOfPassing
+        const metadata = body?.institution || body?.yearOfCompletion
           ? {
-            instituteName: body?.instituteName,
-            yearOfPassing: body?.yearOfPassing
+            institution: body?.institution,
+            yearOfCompletion: body?.yearOfCompletion,
+            qualificationType: body?.qualificationType,
+            fieldOfStudy: body?.fieldOfStudy
           }
           : undefined;
 
@@ -2018,10 +2038,11 @@ export const userRoutes: RouteHandler = async (
             : undefined;
 
         // Extract metadata if available
-        const metadata = body?.companyName || body?.period
+        const metadata = body?.companyName || body?.duration || body?.role
           ? {
             companyName: body?.companyName,
-            period: body?.period
+            duration: body?.duration,
+            role: body?.role
           }
           : undefined;
 
