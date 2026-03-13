@@ -18,7 +18,7 @@ import { config } from "../config";
 
 import { TaxDeclaration } from "../models/tax-declaration";
 import { TaxDeclarationService } from "./tax-declaration.service";
-import { getCurrentFinancialYear } from "../utilis/dates";
+import { getCurrentFinancialYear, formatDateToDDMMYYYY } from "../utilis/dates";
 import { uploadFileToGCP, deleteFileFromGCP } from "../utilis/gcpStorage";
 import { formatCurrency } from "../utilis/currency";
 // import AdmZip from 'adm-zip';
@@ -1626,7 +1626,7 @@ export class DocumentService extends BaseService {
         const templateData = {
             // Personal Info
             empName: sanitizeText(employee.name) || '-',
-            empJoinDate: employee.joiningDate ? employee.joiningDate.toISOString().split('T')[0] : 'N/A',
+            empJoinDate: formatDateToDDMMYYYY(employee.joiningDate),
             empRole: employeeDesignation,
             empDept: formatLabel(employee.departmentId),
             empLocation: formatLabel(employee.location),

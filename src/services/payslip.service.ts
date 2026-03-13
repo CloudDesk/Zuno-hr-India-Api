@@ -14,6 +14,7 @@ import { emailService } from './email.service';
 import { BaseService } from './base.service';
 import { RequestContext } from '../types/context';
 import { uploadFileToGCP } from '../utilis/gcpStorage';
+import { formatDateToDDMMYYYY } from '../utilis/dates';
 
 //fs-extra ,number-to-words ,pdfkit
 
@@ -532,7 +533,7 @@ export class PayslipService extends BaseService {
       // Personal Details
       // Personal Info
       empName: sanitizeText(employee.name) || '-',
-      empJoinDate: employee.joiningDate ? employee.joiningDate.toISOString().split('T')[0] : 'N/A',
+      empJoinDate: formatDateToDDMMYYYY(employee.joiningDate),
       empRole: employeeDesignation,
       empDes: employeeDesignation || '-',
       empDept: formatLabel(employee.departmentId),

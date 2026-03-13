@@ -1331,7 +1331,9 @@ export class PayrollService extends BaseService {
             monthNumber,
             year,
         );
-        console.log(payrollRecords, '5 payrollrecords initiatePayroll');
+        console.log('--- PAYROLL RECORDS GENERATED ---');
+        console.log(JSON.stringify(payrollRecords, null, 2));
+        console.log('---------------------------------');
         if (!payrollRecords.length) {
             throw new Error('No eligible employees found for payroll processing');
         }
@@ -1349,7 +1351,9 @@ export class PayrollService extends BaseService {
         console.log(savedRecords, "6 savedRecords initiatePayroll")
         //7. Calculate payrollsummary
         // const payrollSummary = this.calculatePayrollSummary(payrollRecords)
-        // console.log(payrollSummary, '7 payrollSummar initiatePayroll');
+        console.log('--- PAYROLL SUMMARY ---');
+        console.log(JSON.stringify(payrollSummary, null, 2));
+        console.log('-----------------------');
         return {
             ...payrollSummary,
             totalActiveEmployees: allEmployees.length,
@@ -1540,6 +1544,7 @@ export class PayrollService extends BaseService {
         // UAE: Use fixed amounts from salary assignment (travel, air ticket, medical)
         // India: Use percentage from salary structure (backward compatible)
         const isUAE = employeeCountry === 'AE';
+        const isIndia = employeeCountry === 'IN';
 
         const travelAllowanceFromAssignment = salaryAssignment.travelAllowance || 0;
         const airTicketAllowanceFromAssignment = salaryAssignment.airTicketAllowance || 0; // ✅ NEW
@@ -1571,8 +1576,14 @@ export class PayrollService extends BaseService {
             if (assignedOtherAllowance < 0) {
                 throw new Error(`Invalid salary structure for employee ${employee.name}: Other Allowance would be negative (${assignedOtherAllowance}). Total of Basic + HRA + DA + Travel cannot exceed Monthly Gross.`);
             }
+        } else if (isIndia) {
+            // India: Calculate as balancing figure to prevent ₹1 rounding discrepancy
+            // Other Allowance = Total Gross - (Basic + HRA + DA + Travel + Reimbursement)
+            assignedOtherAllowance = Math.round(
+                monthlyGross - (assignedBasic + assignedHra + assignedDa + travelAllowanceForAssigned + Math.round(((salaryStructure.fixedEarnings.reimbursementPercentage ?? 0) / 100) * monthlyGross))
+            );
         } else {
-            // India: Use percentage from structure (backward compatible)
+            // Other countries: Use percentage from structure (existing logic)
             assignedOtherAllowance = Math.round(
                 (salaryStructure.fixedEarnings.otherAllowancePercentage / 100) * monthlyGross,
             );
@@ -1611,6 +1622,11 @@ export class PayrollService extends BaseService {
 
         // ✅ AUTO-CALCULATE Other Allowance for UAE (prorated by attendance)
         // Note: Air Ticket & Medical are ANNUAL ONLY (not included in monthly calculation)
+        const reimbursementAllowance = Math.round(
+            ((salaryStructure.fixedEarnings.reimbursementPercentage ?? 0) / 100) * attendanceAdjustedGross,
+        );
+
+        // ✅ AUTO-CALCULATE Other Allowance
         let otherAllowance: number;
         if (isUAE) {
             otherAllowance = Math.round(
@@ -1620,16 +1636,18 @@ export class PayrollService extends BaseService {
             if (otherAllowance < 0) {
                 throw new Error(`Invalid salary calculation for employee ${employee.name}: Other Allowance would be negative (${otherAllowance}). Check salary structure and allowances.`);
             }
+        } else if (isIndia) {
+            // India: Calculate as balancing figure to prevent ₹1 rounding discrepancy
+            // Other Allowance = Total Gross - (Basic + HRA + DA + Travel + Reimbursement)
+            otherAllowance = Math.round(
+                attendanceAdjustedGross - (basic + hra + da + travelAllowance + reimbursementAllowance)
+            );
         } else {
-            // India: Use percentage from structure (backward compatible)
+            // Other countries: Use percentage from structure (existing logic)
             otherAllowance = Math.round(
                 (salaryStructure.fixedEarnings.otherAllowancePercentage / 100) * attendanceAdjustedGross,
             );
         }
-
-        const reimbursementAllowance = Math.round(
-            ((salaryStructure.fixedEarnings.reimbursementPercentage ?? 0) / 100) * attendanceAdjustedGross,
-        );
         // ✅ UPDATED: Gross salary = Monthly components only (Air Ticket & Medical are annual only)
         const grossSalary = Math.round(basic + hra + da + otherAllowance + travelAllowance + reimbursementAllowance);
 

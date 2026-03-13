@@ -9,6 +9,7 @@ import { User, Payroll } from "../models";
 import { Document } from "../models/document.model";
 import { uploadFileToGCP, deleteFileFromGCP } from "../utilis/gcpStorage";
 import { formatCurrency } from "../utilis/currency";
+import { formatDateToDDMMYYYY } from "../utilis/dates";
 
 interface IPayslipGenerationResult {
     userId: string;
@@ -326,7 +327,7 @@ export class PayslipPdfService extends BaseService {
 
         const templateData = {
             empName: sanitizeText(employee.name) || '-',
-            empJoinDate: employee.joiningDate ? new Date(employee.joiningDate).toISOString().split('T')[0] : 'N/A',
+            empJoinDate: formatDateToDDMMYYYY(employee.joiningDate),
             empRole: employeeDesignation,
             empDes: employeeDesignation || '-',
             empDept: formatLabel(employee.departmentId),
