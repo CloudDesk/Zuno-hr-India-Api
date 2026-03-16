@@ -2,26 +2,45 @@ import { Storage } from "@google-cloud/storage";
 import * as fs from "fs";
 import path from 'path';
 import dotenv from 'dotenv'
-import { config } from '../config';
 
 dotenv.config()
 
-// Initialize GCP Storage with project ID from config
-const storage = new Storage({
-  projectId: config.PROJECT_ID,
-});
+function buildStorageClient(): Storage {
+  const projectId = process.env.PROJECT_ID;
+  const serviceAccountJson = process.env.GCP_SERVICE_ACCOUNT_JSON;
+  const clientEmail = process.env.GCP_CLIENT_EMAIL;
+  const privateKey = process.env.GCP_PRIVATE_KEY?.replace(/\\n/g, '\n');
 
-// Get bucket name from config (environment-specific)
-const bucketName = config.GCP_STORAGE_BUCKET;
+  if (serviceAccountJson) {
+    const parsedCredentials = JSON.parse(serviceAccountJson);
+    return new Storage({
+      projectId,
+      credentials: {
+        client_email: parsedCredentials.client_email,
+        private_key: parsedCredentials.private_key,
+      },
+    });
+  }
 
-// Log configuration (mask sensitive info in production)
-if (process.env.NODE_ENV !== 'production') {
-  console.log('GCP Configuration:', {
-    projectId: config.PROJECT_ID,
-    bucketName: bucketName,
-    environment: config.NODE_ENV
+  if (clientEmail && privateKey) {
+    return new Storage({
+      projectId,
+      credentials: {
+        client_email: clientEmail,
+        private_key: privateKey,
+      },
+    });
+  }
+
+  return new Storage({
+    projectId,
   });
 }
+
+const storage = buildStorageClient();
+console.log(process.env.PROJECT_ID, 'process.env.PROJECT_ID');
+console.log(process.env.GCP_STORAGE_BUCKET, 'process.env.GCP_STORAGE_BUCKETs');
+const bucketName =process.env.GCP_STORAGE_BUCKET;
 
 export interface IGCPUploadParams {
   filePath: string;
