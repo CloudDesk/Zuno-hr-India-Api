@@ -1560,20 +1560,17 @@ export class PayrollService extends BaseService {
         const airTicketAllowanceForAssigned = isUAE ? airTicketAllowanceFromAssignment : 0; // ✅ NEW: India doesn't use this
         const medicalAllowanceForAssigned = isUAE ? medicalAllowanceFromAssignment : 0; // ✅ NEW: India doesn't use this
 
-        //actual Assign
-        const assignedBasic = Number(((salaryStructure.fixedEarnings.basicPercentage / 100) * monthlyGross).toFixed(2));
-        const assignedHra = Number(((salaryStructure.fixedEarnings.hraPercentage / 100) * monthlyGross).toFixed(2));
-        const assignedDa = Number(((salaryStructure.fixedEarnings.daPercentage / 100) * monthlyGross).toFixed(2));
-        const assignedReimbursementAllowance = Number(
-            (((salaryStructure.fixedEarnings.reimbursementPercentage ?? 0) / 100) * monthlyGross).toFixed(2)
-        );
+        // actual Assign - Using "Balance Component" Method with Integer Rounding
+        // ✅ 1. Round first components to integers
+        const assignedBasic = Math.round((salaryStructure.fixedEarnings.basicPercentage / 100) * monthlyGross);
+        const assignedHra = Math.round((salaryStructure.fixedEarnings.hraPercentage / 100) * monthlyGross);
+        const assignedDa = Math.round((salaryStructure.fixedEarnings.daPercentage / 100) * monthlyGross);
+        const assignedReimbursementAllowance = Math.round(((salaryStructure.fixedEarnings.reimbursementPercentage ?? 0) / 100) * monthlyGross);
+        const assignedTravelAllowance = Math.round(travelAllowanceForAssigned);
 
-        // ✅ AUTO-CALCULATE Other Allowance (Balancing Allowance)
+        // ✅ 2. Calculate "Other Allowance" as the balance to match monthlyGross exactly
         // Other Allowance = Total Gross - (Basic + HRA + DA + Travel + Reimbursement)
-        // Note: Air Ticket & Medical are ANNUAL ONLY (not included in monthly)
-        const assignedOtherAllowance = Number((
-            monthlyGross - (assignedBasic + assignedHra + assignedDa + travelAllowanceForAssigned + assignedReimbursementAllowance)
-        ).toFixed(2));
+        const assignedOtherAllowance = monthlyGross - (assignedBasic + assignedHra + assignedDa + assignedTravelAllowance + assignedReimbursementAllowance);
 
         // Validate that other allowance is not negative
         if (assignedOtherAllowance < 0) {
@@ -1585,35 +1582,34 @@ export class PayrollService extends BaseService {
             hra: assignedHra,
             da: assignedDa,
             otherAllowance: assignedOtherAllowance,
-            travelAllowance: travelAllowanceForAssigned, // Country-specific: UAE=fixed, India=percentage
+            travelAllowance: assignedTravelAllowance, // Rounded integer
             airTicketAllowance: airTicketAllowanceForAssigned, // ✅ NEW: UAE only
             medicalAllowance: medicalAllowanceForAssigned, // ✅ NEW: UAE only
             reimbursementAllowance: assignedReimbursementAllowance,
         }
 
-        // Earnings
-        const basic = Number(((salaryStructure.fixedEarnings.basicPercentage / 100) * attendanceAdjustedGross).toFixed(2));
-        const hra = Number(((salaryStructure.fixedEarnings.hraPercentage / 100) * attendanceAdjustedGross).toFixed(2));
-        const da = Number(((salaryStructure.fixedEarnings.daPercentage / 100) * basic).toFixed(2));
+        // Earnings - Using "Balance Component" Method with Integer Rounding
+        // ✅ 1. Round components based on attendanceAdjustedGross
+        const basic = Math.round((salaryStructure.fixedEarnings.basicPercentage / 100) * attendanceAdjustedGross);
+        const hra = Math.round((salaryStructure.fixedEarnings.hraPercentage / 100) * attendanceAdjustedGross);
+        const da = Math.round((salaryStructure.fixedEarnings.daPercentage / 100) * attendanceAdjustedGross);
 
-        // ✅ COUNTRY-SPECIFIC: Fixed allowances calculation
-        // UAE: Fixed amounts from assignment (PRORATED by attendance for monthly calculation)
         // India: Percentage from structure (prorated by attendance for consistency)
         const travelAllowanceFromPercentageProrated =
             ((salaryStructure.fixedEarnings.travelAllowancePercentage ?? 0) / 100) * attendanceAdjustedGross;
         // ✅ FIX: Prorate UAE travel allowance by attendance to prevent negative other allowance
-        const travelAllowance = Number((isUAE
+        const travelAllowance = Math.round(isUAE
             ? ((payableDays / daysInMonth) * travelAllowanceFromAssignment)
-            : travelAllowanceFromPercentageProrated).toFixed(2));
+            : travelAllowanceFromPercentageProrated);
+
         const airTicketAllowance = isUAE ? airTicketAllowanceFromAssignment : 0; // ✅ Annual only, not in monthly
         const medicalAllowance = isUAE ? medicalAllowanceFromAssignment : 0; // ✅ Annual only, not in monthly
 
         const reimbursementAllowance =
-            Number(((salaryStructure.fixedEarnings.reimbursementPercentage ?? 0) / 100 * attendanceAdjustedGross).toFixed(2));
+            Math.round((salaryStructure.fixedEarnings.reimbursementPercentage ?? 0) / 100 * attendanceAdjustedGross);
 
-        // ✅ AUTO-CALCULATE Other Allowance (Balancing Allowance) - Applied to both India & UAE
-        // Other Allowance = Target Gross - (Basic + HRA + DA + Travel + Reimbursement)
-        // This absorbs all rounding variances to ensure the payslip balances perfectly.
+        // ✅ 2. AUTO-CALCULATE Other Allowance (Balancing Allowance) - Applied to both India & UAE
+        // This absorbs all rounding variances to ensure the payslip balances perfectly against the target gross.
         const otherAllowance = Number((
             attendanceAdjustedGross - (basic + hra + da + travelAllowance + reimbursementAllowance)
         ).toFixed(2));
