@@ -1533,7 +1533,9 @@ export class PayrollService extends BaseService {
             daysInMonth,
             attendance.presentDays + attendance.weekendDays + attendance.holidayDays + approvedLeaves
         );
-        const attendanceAdjustedGross = Math.round((payableDays / daysInMonth) * monthlyGross);
+        const attendanceAdjustedGross = Number(
+            ((payableDays / daysInMonth) * monthlyGross).toFixed(2)
+        );
 
         console.log(monthlyGross, ' monthlyGross calculatePayrollRecord');
         console.log(salaryStructure, "salaryStructure calculatePayrollRecord");
@@ -1544,15 +1546,14 @@ export class PayrollService extends BaseService {
         // UAE: Use fixed amounts from salary assignment (travel, air ticket, medical)
         // India: Use percentage from salary structure (backward compatible)
         const isUAE = employeeCountry === 'AE';
-        const isIndia = employeeCountry === 'IN';
 
         const travelAllowanceFromAssignment = salaryAssignment.travelAllowance || 0;
         const airTicketAllowanceFromAssignment = salaryAssignment.airTicketAllowance || 0; // ✅ NEW
         const medicalAllowanceFromAssignment = salaryAssignment.medicalAllowance || 0; // ✅ NEW
 
-        const travelAllowanceFromPercentage = Math.round(
+        const travelAllowanceFromPercentage = Number((
             ((salaryStructure.fixedEarnings.travelAllowancePercentage ?? 0) / 100) * monthlyGross
-        );
+        ).toFixed(2));
 
         // UAE uses fixed amounts, India uses percentage
         const travelAllowanceForAssigned = isUAE ? travelAllowanceFromAssignment : travelAllowanceFromPercentage;
@@ -1560,96 +1561,73 @@ export class PayrollService extends BaseService {
         const medicalAllowanceForAssigned = isUAE ? medicalAllowanceFromAssignment : 0; // ✅ NEW: India doesn't use this
 
         //actual Assign
-        const assignedBasic = Math.round((salaryStructure.fixedEarnings.basicPercentage / 100) * monthlyGross);
-        const assignedHra = Math.round((salaryStructure.fixedEarnings.hraPercentage / 100) * monthlyGross);
-        const assignedDa = Math.round((salaryStructure.fixedEarnings.daPercentage / 100) * monthlyGross);
+        const assignedBasic = Number(((salaryStructure.fixedEarnings.basicPercentage / 100) * monthlyGross).toFixed(2));
+        const assignedHra = Number(((salaryStructure.fixedEarnings.hraPercentage / 100) * monthlyGross).toFixed(2));
+        const assignedDa = Number(((salaryStructure.fixedEarnings.daPercentage / 100) * monthlyGross).toFixed(2));
+        const assignedReimbursementAllowance = Number(
+            (((salaryStructure.fixedEarnings.reimbursementPercentage ?? 0) / 100) * monthlyGross).toFixed(2)
+        );
 
-        // ✅ AUTO-CALCULATE Other Allowance for UAE
-        // Other Allowance = Total Salary - (Basic + HRA + DA + Travel)
+        // ✅ AUTO-CALCULATE Other Allowance (Balancing Allowance)
+        // Other Allowance = Total Gross - (Basic + HRA + DA + Travel + Reimbursement)
         // Note: Air Ticket & Medical are ANNUAL ONLY (not included in monthly)
-        let assignedOtherAllowance: number;
-        if (isUAE) {
-            assignedOtherAllowance = Math.round(
-                monthlyGross - (assignedBasic + assignedHra + assignedDa + travelAllowanceForAssigned)
-            );
-            // Validate that other allowance is not negative
-            if (assignedOtherAllowance < 0) {
-                throw new Error(`Invalid salary structure for employee ${employee.name}: Other Allowance would be negative (${assignedOtherAllowance}). Total of Basic + HRA + DA + Travel cannot exceed Monthly Gross.`);
-            }
-        } else if (isIndia) {
-            // India: Calculate as balancing figure to prevent ₹1 rounding discrepancy
-            // Other Allowance = Total Gross - (Basic + HRA + DA + Travel + Reimbursement)
-            assignedOtherAllowance = Math.round(
-                monthlyGross - (assignedBasic + assignedHra + assignedDa + travelAllowanceForAssigned + Math.round(((salaryStructure.fixedEarnings.reimbursementPercentage ?? 0) / 100) * monthlyGross))
-            );
-        } else {
-            // Other countries: Use percentage from structure (existing logic)
-            assignedOtherAllowance = Math.round(
-                (salaryStructure.fixedEarnings.otherAllowancePercentage / 100) * monthlyGross,
-            );
+        const assignedOtherAllowance = Number((
+            monthlyGross - (assignedBasic + assignedHra + assignedDa + travelAllowanceForAssigned + assignedReimbursementAllowance)
+        ).toFixed(2));
+
+        // Validate that other allowance is not negative
+        if (assignedOtherAllowance < 0) {
+            throw new Error(`Invalid salary structure for employee ${employee.name}: Other Allowance would be negative (${assignedOtherAllowance}). Total of fixed components exceeds Monthly Gross.`);
         }
 
         const assigned = {
             basic: assignedBasic,
             hra: assignedHra,
             da: assignedDa,
-            otherAllowance: assignedOtherAllowance, // ✅ AUTO-CALCULATED for UAE
+            otherAllowance: assignedOtherAllowance,
             travelAllowance: travelAllowanceForAssigned, // Country-specific: UAE=fixed, India=percentage
             airTicketAllowance: airTicketAllowanceForAssigned, // ✅ NEW: UAE only
             medicalAllowance: medicalAllowanceForAssigned, // ✅ NEW: UAE only
-            reimbursementAllowance: Math.round(
-                ((salaryStructure.fixedEarnings.reimbursementPercentage ?? 0) / 100) * monthlyGross,
-            ),
+            reimbursementAllowance: assignedReimbursementAllowance,
         }
 
         // Earnings
-        const basic = Math.round((salaryStructure.fixedEarnings.basicPercentage / 100) * attendanceAdjustedGross);
-        const hra = Math.round((salaryStructure.fixedEarnings.hraPercentage / 100) * attendanceAdjustedGross);
-        const da = Math.round((salaryStructure.fixedEarnings.daPercentage / 100) * basic);
+        const basic = Number(((salaryStructure.fixedEarnings.basicPercentage / 100) * attendanceAdjustedGross).toFixed(2));
+        const hra = Number(((salaryStructure.fixedEarnings.hraPercentage / 100) * attendanceAdjustedGross).toFixed(2));
+        const da = Number(((salaryStructure.fixedEarnings.daPercentage / 100) * basic).toFixed(2));
 
         // ✅ COUNTRY-SPECIFIC: Fixed allowances calculation
         // UAE: Fixed amounts from assignment (PRORATED by attendance for monthly calculation)
         // India: Percentage from structure (prorated by attendance for consistency)
-        const travelAllowanceFromPercentageProrated = Math.round(
-            ((salaryStructure.fixedEarnings.travelAllowancePercentage ?? 0) / 100) * attendanceAdjustedGross
-        );
+        const travelAllowanceFromPercentageProrated =
+            ((salaryStructure.fixedEarnings.travelAllowancePercentage ?? 0) / 100) * attendanceAdjustedGross;
         // ✅ FIX: Prorate UAE travel allowance by attendance to prevent negative other allowance
-        const travelAllowance = isUAE
-            ? Math.round((payableDays / daysInMonth) * travelAllowanceFromAssignment)
-            : travelAllowanceFromPercentageProrated;
+        const travelAllowance = Number((isUAE
+            ? ((payableDays / daysInMonth) * travelAllowanceFromAssignment)
+            : travelAllowanceFromPercentageProrated).toFixed(2));
         const airTicketAllowance = isUAE ? airTicketAllowanceFromAssignment : 0; // ✅ Annual only, not in monthly
         const medicalAllowance = isUAE ? medicalAllowanceFromAssignment : 0; // ✅ Annual only, not in monthly
 
-        // ✅ AUTO-CALCULATE Other Allowance for UAE (prorated by attendance)
-        // Note: Air Ticket & Medical are ANNUAL ONLY (not included in monthly calculation)
-        const reimbursementAllowance = Math.round(
-            ((salaryStructure.fixedEarnings.reimbursementPercentage ?? 0) / 100) * attendanceAdjustedGross,
-        );
+        const reimbursementAllowance =
+            Number(((salaryStructure.fixedEarnings.reimbursementPercentage ?? 0) / 100 * attendanceAdjustedGross).toFixed(2));
 
-        // ✅ AUTO-CALCULATE Other Allowance
-        let otherAllowance: number;
-        if (isUAE) {
-            otherAllowance = Math.round(
-                attendanceAdjustedGross - (basic + hra + da + travelAllowance)
-            );
-            // Validate that other allowance is not negative
-            if (otherAllowance < 0) {
-                throw new Error(`Invalid salary calculation for employee ${employee.name}: Other Allowance would be negative (${otherAllowance}). Check salary structure and allowances.`);
-            }
-        } else if (isIndia) {
-            // India: Calculate as balancing figure to prevent ₹1 rounding discrepancy
-            // Other Allowance = Total Gross - (Basic + HRA + DA + Travel + Reimbursement)
-            otherAllowance = Math.round(
-                attendanceAdjustedGross - (basic + hra + da + travelAllowance + reimbursementAllowance)
-            );
-        } else {
-            // Other countries: Use percentage from structure (existing logic)
-            otherAllowance = Math.round(
-                (salaryStructure.fixedEarnings.otherAllowancePercentage / 100) * attendanceAdjustedGross,
-            );
+        // ✅ AUTO-CALCULATE Other Allowance (Balancing Allowance) - Applied to both India & UAE
+        // Other Allowance = Target Gross - (Basic + HRA + DA + Travel + Reimbursement)
+        // This absorbs all rounding variances to ensure the payslip balances perfectly.
+        const otherAllowance = Number((
+            attendanceAdjustedGross - (basic + hra + da + travelAllowance + reimbursementAllowance)
+        ).toFixed(2));
+
+        // Validate that other allowance is not negative
+        if (otherAllowance < 0) {
+            throw new Error(`Invalid salary calculation for employee ${employee.name}: Other Allowance would be negative (${otherAllowance}). Check salary structure components.`);
         }
-        // ✅ UPDATED: Gross salary = Monthly components only (Air Ticket & Medical are annual only)
-        const grossSalary = Math.round(basic + hra + da + otherAllowance + travelAllowance + reimbursementAllowance);
+
+
+        // ✅ Sum up rounded components to get the final Total Gross
+        // This ensures (Basic + HRA + DA + Other + Travel + Reimbursement) matches the total exactly.
+        const grossSalary = Number((basic + hra + da + otherAllowance + travelAllowance + reimbursementAllowance).toFixed(2));
+
 
         console.log(basic, 'basic calculatePayrollRecord');
         console.log(hra, 'hra calculatePayrollRecord');
@@ -1657,9 +1635,12 @@ export class PayrollService extends BaseService {
         console.log(da, 'da calculatePayrollRecord');
         console.log(grossSalary, 'grossSalary calculatePayrollRecord');
 
-        const additionalDeduction = Math.round(
-            ((salaryStructure.fixedEarnings.deductionPercentage ?? 0) / 100) * attendanceAdjustedGross,
+        const additionalDeduction = Number(
+            (((salaryStructure.fixedEarnings.deductionPercentage ?? 0) / 100) * attendanceAdjustedGross).toFixed(2)
         );
+
+        // Additional pay (Overtime)
+        const overtimePay = Number((overtimeHours * (grossSalary / (workingDays * 8))).toFixed(2));
 
         // Deductions
         const resolvedDeductions = await this.calculateDeductions(
@@ -1680,22 +1661,18 @@ export class PayrollService extends BaseService {
             employee.isConsultancy || false, // Pass consultancy flag
             employee.isIntern || false // Pass intern flag
         );
-        console.log(resolvedDeductions, 'resolvedDeductions calculatePayrollRecord');
-        const totalDeductions = resolvedDeductions.totalDeductions + additionalDeduction;
-        // Additional pay
-        const overtimePay = Math.round(overtimeHours * (grossSalary / (workingDays * 8)));
-        const totalOT = overtimePay;
-        // ✅ UPDATED: Net Salary includes monthly components only (already attendance-adjusted)
-        // Note: Air Ticket & Medical are ANNUAL ONLY (not included in monthly net salary)
-        const netSalary = Math.round(
-            attendanceAdjustedGross -
-            resolvedDeductions.epfEmployee -
-            resolvedDeductions.incomeTax -
-            resolvedDeductions.professionalTax -
-            (resolvedDeductions.tdsDeduction || 0) -
-            additionalDeduction +
-            totalOT
-        );
+        // ✅ THE CORRECT SOLUTION: 
+        // Calculate totals strictly from the sum of rounded components.
+        // This ensures the payslip always balances perfectly: (Sum of Rounded Items) - (Sum of Rounded Deductions) = Net Pay.
+
+        const finalAttendanceAdjustedGross = Number((basic + hra + da + otherAllowance + travelAllowance + reimbursementAllowance).toFixed(2));
+        const finalTotalDeductions = Number((resolvedDeductions.totalDeductions + additionalDeduction).toFixed(2));
+
+        const netSalary = Number((
+            finalAttendanceAdjustedGross -
+            finalTotalDeductions +
+            overtimePay
+        ).toFixed(2));
 
         // ✅ COUNTRY-SPECIFIC CTC CALCULATION
         // UAE: CTC = (Monthly Salary × 12) + Air Ticket (annual) + Medical (annual) + Insurance (monthly × 12)
@@ -1715,19 +1692,19 @@ export class PayrollService extends BaseService {
             );
         } else {
             // India: Add employer contributions (travel allowance already in gross from structure percentage)
-            ctc = Math.round(
+            ctc = Number((
                 attendanceAdjustedGross +
                 resolvedDeductions.epfEmployer +
                 resolvedDeductions.esiEmployer +
                 overtimePay
-            );
+            ).toFixed(2));
         }
 
         return {
             employeeId: employee._id,
             salaryAssignmentId: salaryAssignment._id,
             monthlyGross,
-            attendanceAdjustedGross,
+            attendanceAdjustedGross: finalAttendanceAdjustedGross,
             totalDaysInMonth: daysInMonth,
             payableDays,
             basic,
@@ -1745,7 +1722,7 @@ export class PayrollService extends BaseService {
             professionalTax: resolvedDeductions.professionalTax,
             incomeTax: resolvedDeductions.incomeTax,
             tdsDeduction: resolvedDeductions.tdsDeduction,
-            totalDeductions,
+            totalDeductions: finalTotalDeductions,
             additionalDeduction,
             leaveDeductions: resolvedDeductions.leaveDeductions,
             overtimeHours,
@@ -1796,7 +1773,7 @@ export class PayrollService extends BaseService {
             // Calculate non-payable (deductible) days
             const unpaidLeaveDays = Math.max(daysInMonth - payableDays, 0);
             const unpaidLeaveRatio = unpaidLeaveDays / daysInMonth;
-            const leaveDeductionAmount = Math.round(unpaidLeaveDays > 0 ? unpaidLeaveRatio * monthlyGross : 0);
+            const leaveDeductionAmount = unpaidLeaveDays > 0 ? unpaidLeaveRatio * monthlyGross : 0;
 
             console.log(`UAE deductions - Leave deduction: ${leaveDeductionAmount}, Total deductions: ${leaveDeductionAmount}`);
 
@@ -1839,18 +1816,16 @@ export class PayrollService extends BaseService {
                 salaryStructure.statutoryDeductions.epf.maxLimit;
 
             // Apply ceiling if basic >= maxLimit
-            finalEpfEmployee = Math.round(
-                basic >= salaryStructure.statutoryDeductions.epf.maxLimit
+            finalEpfEmployee =
+                Number((basic >= salaryStructure.statutoryDeductions.epf.maxLimit
                     ? maxEpfContribution  // 12% × ₹15,000 = ₹1,800
-                    : epfEmployee
-            );
+                    : epfEmployee).toFixed(2));
 
             // Employer contribution should also be capped (EPF compliance)
-            finalEpfEmployer = Math.round(
-                basic >= salaryStructure.statutoryDeductions.epf.maxLimit
+            finalEpfEmployer =
+                Number((basic >= salaryStructure.statutoryDeductions.epf.maxLimit
                     ? maxEpfContribution  // 12% × ₹15,000 = ₹1,800
-                    : epfEmployer
-            );
+                    : epfEmployer).toFixed(2));
 
             /*
                 CORRECTED EPF CALCULATION:
@@ -1882,14 +1857,14 @@ export class PayrollService extends BaseService {
 
         if (!isConsultancy && !isIntern) {
             const esiLimit = salaryStructure.statutoryDeductions.esi.applicabilityLimit;
-            esiEmployee = Math.round(
-                grossSalary <= esiLimit
+            esiEmployee =
+                Number((grossSalary <= esiLimit
                     ? (salaryStructure.statutoryDeductions.esi.employeeContribution / 100) * grossSalary
-                    : 0);
-            esiEmployer = Math.round(
-                grossSalary <= esiLimit
+                    : 0).toFixed(2));
+            esiEmployer =
+                Number((grossSalary <= esiLimit
                     ? (salaryStructure.statutoryDeductions.esi.employerContribution / 100) * grossSalary
-                    : 0);
+                    : 0).toFixed(2));
             console.log(esiLimit, 'esiLimit');
             console.log(esiEmployee, 'esiEmployee');
             console.log(esiEmployer, 'esoEmployer');
@@ -1904,11 +1879,11 @@ export class PayrollService extends BaseService {
         // Intern: No Professional Tax
         let professionalTax = 0;
         if (!isConsultancy && !isIntern) {
-            professionalTax = Math.round(this.calculateProfessionalTax(
+            professionalTax = Number(this.calculateProfessionalTax(
                 monthlyGross,
                 salaryStructure.statutoryDeductions.professionalTax,
                 monthNumber,
-            ));
+            ).toFixed(2));
         } else if (isConsultancy) {
             console.log('Consultancy staff - No Professional Tax');
         } else if (isIntern) {
@@ -1924,14 +1899,14 @@ export class PayrollService extends BaseService {
 
         if (isConsultancy) {
             // 1% TDS on monthly gross for consultancy staff
-            tdsDeduction = Math.round((1 / 100) * monthlyGross);
+            tdsDeduction = Number(((1 / 100) * monthlyGross).toFixed(2));
             console.log(`Consultancy TDS (1% of ${monthlyGross}): ${tdsDeduction}`);
         } else if (isIntern) {
             // Intern: No income tax, No TDS
             console.log('Intern - No Income Tax, No TDS');
         } else {
             // Regular income tax for non-consultancy staff
-            incomeTax = Math.round(await this.calculateIncomeTax(employeeId, monthName, monthNumber, year));
+            incomeTax = Number((await this.calculateIncomeTax(employeeId, monthName, monthNumber, year)).toFixed(2));
             console.log(incomeTax, 'incomeTaxfinal');
         }
         console.log('employeeIdemployeeId', employeeId);
@@ -1952,10 +1927,10 @@ export class PayrollService extends BaseService {
         const unpaidLeaveRatio = unpaidLeaveDays / daysInMonth;
 
         // Compute leave deduction amount from gross salary
-        const leaveDeductionAmount = Math.round(unpaidLeaveDays > 0 ? unpaidLeaveRatio * monthlyGross : 0);
+        const leaveDeductionAmount = Number((unpaidLeaveDays > 0 ? unpaidLeaveRatio * monthlyGross : 0).toFixed(2));
         console.log(leaveDeductionAmount, 'leaveDeductionAmount');
 
-        const totalDeductions = Math.round(finalEpfEmployee + professionalTax + incomeTax + tdsDeduction + leaveDeductionAmount);
+        const totalDeductions = Number((finalEpfEmployee + professionalTax + incomeTax + tdsDeduction + leaveDeductionAmount).toFixed(2));
         // const totalDeductions =
         // finalEpfEmployee + esiEmployee + professionalTax + incomeTax + leaveDeductionAmount;
         console.log(totalDeductions, 'totalDeductionsfinal');
