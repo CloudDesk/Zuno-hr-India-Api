@@ -90,19 +90,19 @@
 
         /* column widths */
         table.emp-table col.c1 {
-            width: 19%;
+            width: 25%;
         }
 
         table.emp-table col.c2 {
-            width: 31%;
+            width: 25%;
         }
 
         table.emp-table col.c3 {
-            width: 19%;
+            width: 22%;
         }
 
         table.emp-table col.c4 {
-            width: 31%;
+            width: 28%;
         }
 
         /* ══════════════════════════
@@ -119,10 +119,18 @@
             flex: 0 0 50%;
             /* vertical divider between earnings and deductions */
             border-right: 1.5px solid #000;
+            display: flex;
+            flex-direction: column;
         }
 
         /* Right: Deductions (remaining 50%) */
         .deductions-side {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .pay-body {
             flex: 1;
         }
 
@@ -139,6 +147,7 @@
 
         .pay-header .col-label {
             flex: 1;
+            white-space: nowrap;
         }
 
         .pay-header .col-full {
@@ -152,7 +161,7 @@
         }
 
         .pay-header .col-ded {
-            width: 100px;
+            width: 88px;
             text-align: right;
         }
 
@@ -170,6 +179,7 @@
 
         .pay-row .col-label {
             flex: 1;
+            white-space: nowrap;
         }
 
         .pay-row .col-full {
@@ -183,7 +193,7 @@
         }
 
         .pay-row .col-ded {
-            width: 100px;
+            width: 88px;
             text-align: right;
         }
 
@@ -200,6 +210,7 @@
 
         .pay-total .col-label {
             flex: 1;
+            white-space: nowrap;
         }
 
         .pay-total .col-full {
@@ -213,7 +224,7 @@
         }
 
         .pay-total .col-ded {
-            width: 100px;
+            width: 88px;
             text-align: right;
         }
 
@@ -272,9 +283,9 @@
             <!-- Row 1: Logo (rowspan 2) | Company Name + Address | Spacer (rowspan 2) -->
             <tr>
                 <!-- Left: Logo cell — spans both rows -->
-                <td width="120" rowspan="2" style="padding: 8px 10px; vertical-align: middle; text-align: center;">
+                <td width="150" rowspan="2" style="padding: 8px 10px; vertical-align: middle; text-align: center;">
                     <img src="https://storage.googleapis.com/tendlylogo/cd_logo_2%20(1).png"
-                        style="width: 95px; height: auto; display: block; margin: 0 auto;">
+                        style="width: 130px; height: auto; display: block; margin: 0 auto;">
                 </td>
 
                 <!-- Centre Row 1: Company name & address -->
@@ -286,7 +297,7 @@
                 </td>
 
                 <!-- Right: Mirror spacer — spans both rows, same width as logo -->
-                <td width="120" rowspan="2" style="padding: 8px 10px;"></td>
+                <td width="150" rowspan="2" style="padding: 8px 10px;"></td>
             </tr>
             <!-- Row 2: Payslip Title (centre column only) -->
             <tr>
@@ -360,13 +371,15 @@
                     <span class="col-act">Actual</span>
                 </div>
 
-                {{#each allEarnings}}
-                <div class="pay-row">
-                    <span class="col-label">{{this.label}}</span>
-                    <span class="col-full">{{this.fullAmount}}</span>
-                    <span class="col-act">{{this.actualAmount}}</span>
+                <div class="pay-body">
+                    {{#each allEarnings}}
+                    <div class="pay-row">
+                        <span class="col-label">{{this.label}}</span>
+                        <span class="col-full">{{this.fullAmount}}</span>
+                        <span class="col-act">{{this.actualAmount}}</span>
+                    </div>
+                    {{/each}}
                 </div>
-                {{/each}}
 
                 <div class="pay-total">
                     <span class="col-label">Total Earnings:</span>
@@ -379,18 +392,23 @@
             <div class="deductions-side">
                 <div class="pay-header">
                     <span class="col-label">Deductions</span>
+                    <span class="col-full"></span>
                     <span class="col-ded">Actual</span>
                 </div>
 
-                {{#each allDeductions}}
-                <div class="pay-row">
-                    <span class="col-label">{{this.label}}</span>
-                    <span class="col-ded">{{this.amount}}</span>
+                <div class="pay-body">
+                    {{#each allDeductions}}
+                    <div class="pay-row">
+                        <span class="col-label">{{this.label}}</span>
+                        <span class="col-full"></span>
+                        <span class="col-ded">{{this.amount}}</span>
+                    </div>
+                    {{/each}}
                 </div>
-                {{/each}}
 
                 <div class="pay-total">
                     <span class="col-label">Total Deductions:</span>
+                    <span class="col-full"></span>
                     <span class="col-ded">{{deduction.total}}</span>
                 </div>
             </div>
