@@ -88,7 +88,7 @@ export class PayslipPdfService extends BaseService {
 
         try {
             const results: IPayslipGenerationResult[] = [];
-            
+
             // Process payslips sequentially to avoid memory spikes and browser crashes
             for (const employee of employees) {
                 try {
@@ -287,10 +287,18 @@ export class PayslipPdfService extends BaseService {
 
         const netSalaryValue = isUaePayroll ? sanitizeAmount(payroll.netSalary) : (payroll.netSalary || 0);
         const netPayNumeric = Math.round(netSalaryValue);
-        const netPayWordsRaw = await this.numberToWords(netPayNumeric);
-        const netPayWords = netPayNumeric > 0
-            ? `${isUaePayroll ? 'Dirhams' : 'Rupees'} ${netPayWordsRaw} only`
-            : `${isUaePayroll ? 'Dirhams' : 'Rupees'} ${netPayWordsRaw}`;
+        const absoluteNetPay = Math.abs(netPayNumeric);
+        const netPayWordsRaw = await this.numberToWords(absoluteNetPay);
+        
+        let netPayWords = "";
+        if (netPayNumeric === 0) {
+            netPayWords = `${isUaePayroll ? 'Dirhams' : 'Rupees'} zero only`;
+        } else if (netPayNumeric > 0) {
+            netPayWords = `${isUaePayroll ? 'Dirhams' : 'Rupees'} ${netPayWordsRaw} only`;
+        } else {
+            // Handle negative values for "words" sentence
+            netPayWords = `Minus ${isUaePayroll ? 'Dirhams' : 'Rupees'} ${netPayWordsRaw} only`;
+        }
 
         const earnActual = {
             basic: formatCurrency(basicValue, payroll.country),
