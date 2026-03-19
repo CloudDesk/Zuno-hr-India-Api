@@ -33,24 +33,20 @@ interface IGovernmentIds {
 
 interface IExperienceDetails {
   companyName?: string;
-  role?: string;
-  startDate?: Date | string;
-  endDate?: Date | string;
-  duration?: string;
+  period?: string;
   documentUrl?: string;
   documentId?: string;
   companyAddress?: string;
   lastDrawnSalary?: number;
   reasonForLeaving?: string;
+  designation?: string;
   verificationStatus?: 'Pending' | 'Verified' | 'Rejected';
 }
 
 interface IAcademicDetails {
-  qualificationType?: string;
-  fieldOfStudy?: string;
-  institution?: string;
+  instituteName?: string;
   grade?: string;
-  yearOfCompletion?: string | number;
+  yearOfPassing?: string;
   documentUrl?: string;
   documentId?: string;
   verificationStatus?: 'Pending' | 'Verified' | 'Rejected';
@@ -116,7 +112,6 @@ interface IUserCreate {
   uanNumber?: string;
   familyPfNumber?: string;
   pfJoinDate?: Date; // Optional - PF join date
-  academicDetails?: IAcademicDetails[];
   experienceDetails?: IExperienceDetails[];
   /** When true and email already exists: allow create as payroll-only (same email, no login). New employee gets portalAccess: false. */
   allowDuplicateEmail?: boolean;
@@ -184,7 +179,6 @@ interface IUserUpdate {
   uanNumber?: string;
   familyPfNumber?: string;
   pfJoinDate?: Date; // Optional - PF join date
-  academicDetails?: IAcademicDetails[];
   experienceDetails?: IExperienceDetails[];
 }
 
@@ -694,76 +688,7 @@ export class UserService extends BaseService {
 
   async findById(id: string) {
     const user = await User.findById(id);
-
-    // Auto-sync academic details if empty but documents might exist
-    if (user && (!user.academicDetails || user.academicDetails.length === 0)) {
-      try {
-        const academicDocs = await Document.find({
-          employeeId: user._id,
-          type: 'Certificate',
-          'metadata.certificate.certificateType': 'Academic'
-        }).lean();
-
-        if (academicDocs.length > 0) {
-          console.log(`Auto-syncing academic details for user ${user.name} during findById`);
-          const academicDetails = academicDocs.map(doc => {
-            const cert = doc.metadata?.certificate;
-            const academic = cert?.academicDetails;
-            return {
-              qualificationType: academic?.qualificationType,
-              fieldOfStudy: academic?.fieldOfStudy,
-              institution: academic?.institution,
-              grade: academic?.grade,
-              yearOfCompletion: academic?.yearOfCompletion,
-              documentUrl: doc.filePath,
-              documentId: doc._id.toString(),
-              verificationStatus: cert?.verificationStatus || 'Pending'
-            };
-          });
-
-          user.academicDetails = academicDetails as any;
-          await User.findByIdAndUpdate(user._id, { $set: { academicDetails } });
-        }
-      } catch (syncError) {
-        console.error('Failed to auto-sync academic details in findById:', syncError);
-      }
-    }
-
-    // Auto-sync experience details if empty but documents might exist
-    if (user && (!user.experienceDetails || user.experienceDetails.length === 0)) {
-      try {
-        const experienceDocs = await Document.find({
-          employeeId: user._id,
-          type: 'Certificate',
-          'metadata.certificate.certificateType': 'Experience'
-        }).lean();
-
-        if (experienceDocs.length > 0) {
-          console.log(`Auto-syncing experience details for user ${user.name} during findById`);
-          const experienceDetails = experienceDocs.map(doc => {
-            const cert = doc.metadata?.certificate;
-            const exp = cert?.experienceDetails;
-            return {
-              companyName: exp?.companyName || 'Unknown',
-              role: exp?.role,
-              startDate: exp?.startDate,
-              endDate: exp?.endDate,
-              duration: exp?.duration,
-              documentUrl: doc.filePath,
-              documentId: doc._id.toString(),
-              verificationStatus: cert?.verificationStatus || 'Pending'
-            };
-          });
-
-          user.experienceDetails = experienceDetails as any;
-          await User.findByIdAndUpdate(user._id, { $set: { experienceDetails } });
-        }
-      } catch (syncError) {
-        console.error('Failed to auto-sync experience details in findById:', syncError);
-      }
-    }
-
-    console.log('User data retrieved:', user?._id);
+    console.log('Raw user data:', JSON.stringify(user, null, 2));
     return user;
   }
 
@@ -2029,11 +1954,11 @@ export class UserService extends BaseService {
 
     // Validate the incoming data (optional, depending on requirements)
     for (const detail of academicDetails) {
-      if (!detail.institution?.trim()) {
-        throw new Error('Institution name is required for all academic details');
+      if (!detail.instituteName?.trim()) {
+        throw new Error('Institute name is required for all academic details');
       }
-      if (detail.yearOfCompletion && !/^\d{4}$/.test(detail.yearOfCompletion.toString())) {
-        throw new Error('Year of completion must be a valid 4-digit year');
+      if (detail.yearOfPassing && !/^\d{4}$/.test(detail.yearOfPassing)) {
+        throw new Error('Year of passing must be a valid 4-digit year');
       }
     }
 
@@ -2041,11 +1966,9 @@ export class UserService extends BaseService {
     user.academicDetails = academicDetails.map((detail, index) => {
       const existing = (user.academicDetails || [])[index] as any;
       return {
-        qualificationType: detail.qualificationType || existing?.qualificationType || undefined,
-        fieldOfStudy: detail.fieldOfStudy || existing?.fieldOfStudy || undefined,
-        institution: detail.institution,
+        instituteName: detail.instituteName,
         grade: detail.grade || undefined,
-        yearOfCompletion: detail.yearOfCompletion || undefined,
+        yearOfPassing: detail.yearOfPassing || undefined,
         documentUrl: detail.documentUrl || existing?.documentUrl || undefined,
         documentId: detail.documentId || existing?.documentId || undefined,
         verificationStatus:
@@ -2072,8 +1995,8 @@ export class UserService extends BaseService {
       if (!detail.companyName?.trim()) {
         throw new Error('Company name is required for all experience details');
       }
-      if (detail.duration && !/^\w+\s\d{4}(\s?-\s?\w+\s\d{4})?$/.test(detail.duration)) {
-        throw new Error('Duration must be in format like "Jan 2020 - Dec 2023"');
+      if (detail.period && !/^\w+\s\d{4}(\s?-\s?\w+\s\d{4})?$/.test(detail.period)) {
+        throw new Error('Period must be in format like "Jan 2020 - Dec 2023"');
       }
     }
 
@@ -2082,15 +2005,13 @@ export class UserService extends BaseService {
       const existing = (user.experienceDetails || [])[index] as any;
       return {
         companyName: detail.companyName,
-        role: detail.role || undefined,
-        startDate: detail.startDate || existing?.startDate || undefined,
-        endDate: detail.endDate || existing?.endDate || undefined,
-        duration: detail.duration || undefined,
+        period: detail.period || undefined,
         documentUrl: detail.documentUrl || existing?.documentUrl || undefined,
         documentId: detail.documentId || existing?.documentId || undefined,
         companyAddress: detail.companyAddress || undefined,
         lastDrawnSalary: detail.lastDrawnSalary || undefined,
         reasonForLeaving: detail.reasonForLeaving || undefined,
+        designation: detail.designation || undefined,
         verificationStatus:
           detail.verificationStatus ||
           existing?.verificationStatus ||
@@ -2106,7 +2027,7 @@ export class UserService extends BaseService {
     userId: string,
     academicDetailIndex: number,
     file: any,
-    metadata?: { qualificationType?: any, fieldOfStudy?: string, institution?: string, yearOfCompletion?: string | number },
+    metadata?: { instituteName?: string; yearOfPassing?: string },
     verificationStatus?: 'Pending' | 'Verified' | 'Rejected'
   ): Promise<any> {
     const user = await User.findById(userId);
@@ -2123,10 +2044,8 @@ export class UserService extends BaseService {
     if (!user.academicDetails[academicDetailIndex]) {
       // Create a new academic detail entry with metadata if provided
       const newAcademicDetail: any = {
-        qualificationType: metadata?.qualificationType || 'Other',
-        fieldOfStudy: metadata?.fieldOfStudy || undefined,
-        institution: metadata?.institution || 'Unknown',
-        yearOfCompletion: metadata?.yearOfCompletion || undefined,
+        instituteName: metadata?.instituteName || 'Unknown',
+        yearOfPassing: metadata?.yearOfPassing || undefined,
         grade: undefined,
         documentUrl: undefined,
         documentId: undefined,
@@ -2156,8 +2075,8 @@ export class UserService extends BaseService {
       const fileExt = path.extname(file.originalname);
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       const sanitizedEmployeeName = user.name.replace(/[^a-zA-Z0-9]/g, '_');
-      const institution = metadata?.institution || academicDetail.institution || 'Unknown';
-      const sanitizedInstitute = institution.replace(/[^a-zA-Z0-9]/g, '_');
+      const instituteName = metadata?.instituteName || academicDetail.instituteName || 'Unknown';
+      const sanitizedInstitute = instituteName.replace(/[^a-zA-Z0-9]/g, '_');
       const newFileName = `Academic_${sanitizedInstitute}_${sanitizedEmployeeName}_${timestamp}${fileExt}`;
 
       // Upload file to GCP Cloud Storage
@@ -2187,7 +2106,7 @@ export class UserService extends BaseService {
         employeeId: new Types.ObjectId(userId),
         type: 'Academic',
         category: 'Certification',
-        tags: ['Academic', institution, academicDetail.yearOfCompletion || 'Unknown'],
+        tags: ['Academic', instituteName, academicDetail.yearOfPassing || 'Unknown'],
         fileName: newFileName,
         filePath: fileUrl,
         accessLevel: 'Private',
@@ -2195,8 +2114,8 @@ export class UserService extends BaseService {
         uploadedBy: new Types.ObjectId(this.context.user?._id),
         metadata: {
           academic: {
-            instituteName: institution,
-            yearOfPassing: academicDetail.yearOfCompletion ? String(academicDetail.yearOfCompletion) : undefined,
+            instituteName: instituteName,
+            yearOfPassing: academicDetail.yearOfPassing,
             grade: academicDetail.grade,
             uploadedAt: new Date(),
             verificationStatus: resolvedStatus
@@ -2207,7 +2126,7 @@ export class UserService extends BaseService {
             action: 'Upload',
             performedBy: new Types.ObjectId(this.context.user?._id),
             timestamp: new Date(),
-            details: `Uploaded academic document for ${institution} - ${user.name}`
+            details: `Uploaded academic document for ${instituteName} - ${user.name}`
           }
         ]
       });
@@ -2244,7 +2163,7 @@ export class UserService extends BaseService {
     userId: string,
     experienceDetailIndex: number,
     file: any,
-    metadata?: { companyName?: string; duration?: string, role?: string },
+    metadata?: { companyName?: string; period?: string },
     verificationStatus?: 'Pending' | 'Verified' | 'Rejected'
   ): Promise<any> {
     const user = await User.findById(userId);
@@ -2262,8 +2181,8 @@ export class UserService extends BaseService {
       // Create a new experience detail entry with metadata if provided
       const newExperienceDetail: any = {
         companyName: metadata?.companyName || 'Unknown',
-        role: metadata?.role || undefined,
-        duration: metadata?.duration || undefined,
+        period: metadata?.period || undefined,
+        designation: undefined,
         documentUrl: undefined,
         documentId: undefined,
         verificationStatus: verificationStatus || 'Pending',
@@ -2323,7 +2242,7 @@ export class UserService extends BaseService {
         employeeId: new Types.ObjectId(userId),
         type: 'Experience',
         category: 'Certification',
-        tags: ['Experience', companyName, experienceDetail.duration || 'Unknown'],
+        tags: ['Experience', companyName, experienceDetail.period || 'Unknown'],
         fileName: newFileName,
         filePath: fileUrl,
         accessLevel: 'Private',
@@ -2332,8 +2251,8 @@ export class UserService extends BaseService {
         metadata: {
           experience: {
             companyName: companyName,
-            period: experienceDetail.duration,
-            designation: experienceDetail.role,
+            period: experienceDetail.period,
+            designation: experienceDetail.designation,
             uploadedAt: new Date(),
             verificationStatus: resolvedStatus
           }

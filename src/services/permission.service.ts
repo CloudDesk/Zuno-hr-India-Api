@@ -110,13 +110,12 @@ export class PermissionService extends BaseService {
       // Escape special regex characters in search string
       const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-      // Search in reason, remarks, status, user name and email (stored in document)
+      // Search in reason, remarks, status, and appliedTo name (stored in document)
       const searchFilter: any[] = [
-        { 'user.name': { $regex: escapedSearch, $options: 'i' } },
-        { 'user.email': { $regex: escapedSearch, $options: 'i' } },
         { 'reason': { $regex: escapedSearch, $options: 'i' } },
         { 'remarks': { $regex: escapedSearch, $options: 'i' } },
         { 'status': { $regex: escapedSearch, $options: 'i' } },
+        { 'appliedTo.name': { $regex: escapedSearch, $options: 'i' } },
       ];
 
       // Also search in user collection to find matching users
@@ -785,12 +784,11 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
       // Escape special regex characters in search string
       const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-      // Search in document fields (user.name, user.email, user.employeeCode, reason, remarks, status)
+      // Search in document fields (reason, remarks, appliedTo.name, status)
       const searchConditions: any[] = [
-        { 'user.name': { $regex: escapedSearch, $options: 'i' } },
-        { 'user.email': { $regex: escapedSearch, $options: 'i' } },
         { reason: { $regex: escapedSearch, $options: 'i' } },
         { remarks: { $regex: escapedSearch, $options: 'i' } },
+        { 'appliedTo.name': { $regex: escapedSearch, $options: 'i' } },
         { status: { $regex: escapedSearch, $options: 'i' } },
       ];
 

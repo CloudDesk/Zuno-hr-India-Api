@@ -620,12 +620,11 @@ export class LeaveService extends BaseService {
       // Escape special regex characters in search string
       const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-      // Search in document fields (user.name, user.email, user.employeeCode, leaveType, reason, status)
+      // Search in document fields (leaveType, reason, appliedTo.name, status)
       const searchConditions: any[] = [
-        { 'user.name': { $regex: escapedSearch, $options: 'i' } },
-        { 'user.email': { $regex: escapedSearch, $options: 'i' } },
         { leaveType: { $regex: escapedSearch, $options: 'i' } },
         { reason: { $regex: escapedSearch, $options: 'i' } },
+        { 'appliedTo.name': { $regex: escapedSearch, $options: 'i' } },
         { status: { $regex: escapedSearch, $options: 'i' } },
       ];
 
@@ -1972,12 +1971,11 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
       // Escape special regex characters in search string
       const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-      // Search in document fields (user.name, user.email, user.employeeCode, leaveType, reason, status)
+      // Search in document fields (leaveType, reason, appliedTo.name, status)
       const searchConditions: any[] = [
-        { 'user.name': { $regex: escapedSearch, $options: 'i' } },
-        { 'user.email': { $regex: escapedSearch, $options: 'i' } },
         { leaveType: { $regex: escapedSearch, $options: 'i' } },
         { reason: { $regex: escapedSearch, $options: 'i' } },
+        { 'appliedTo.name': { $regex: escapedSearch, $options: 'i' } },
         { status: { $regex: escapedSearch, $options: 'i' } },
       ];
 

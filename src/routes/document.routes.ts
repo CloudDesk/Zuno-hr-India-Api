@@ -248,16 +248,12 @@ export const documentRoutes = async (
                         error: { message: 'No employees found for processing payslips.' },
                     });
                 }
-                const salary = await request.container!.payslipPdfService.generatePayslip(
+                // const salary = await request.container!.payslipPdfService.generatePayslip()
+                const salary = await request.container!.documentService.generatePayslip(
                     month,
                     year,
                     finalUserIds
                 );
-                // const salary = await request.container!.documentService.generatePayslip(
-                //     month,
-                //     year,
-                //     finalUserIds
-                // );
 
                 return reply.send({
                     success: true,
@@ -1187,17 +1183,17 @@ export const documentRoutes = async (
                                                             properties: {
                                                                 skillName: { type: 'string' },
                                                                 proficiencyLevel: {
-                                                                    type: 'string'
+                                                                    type: 'string', enum: ['Beginner', 'Intermediate', 'Advanced', 'Expert']
                                                                 },
                                                                 category: {
-                                                                    type: 'string'
+                                                                    type: 'string', enum: ['Technical', 'Soft']
                                                                 },
                                                             }
                                                         },
                                                         academicDetails: {
                                                             type: 'object',
                                                             properties: {
-                                                                qualificationType: { type: 'string' },
+                                                                qualificationType: { type: 'string', enum: ['Secondary', 'HigherSecondary', 'Diploma', 'Bachelor', 'Master', 'Doctorate', 'Other'] },
                                                                 fieldOfStudy: { type: 'string' },
                                                                 grade: { type: 'string' },
                                                                 institution: { type: 'string' },
@@ -1652,43 +1648,6 @@ export const documentRoutes = async (
             return reply.status(errorMessage.includes('Forbidden') ? 403 : 500).send({
                 success: false,
                 error: errorMessage.includes('Forbidden') ? errorMessage : 'Internal server error',
-            });
-        }
-    });
-
-    //delete bulk payslips
-    fastify.delete('/payroll/bulk', {
-        preHandler: [authenticate]
-    }, async (request, reply) => {
-        try {
-            const { month, year } = request.query as { month: string, year: string };
-            const user = request.user;
-            if (user?.role.toLowerCase() !== 'admin') {
-                return reply.status(403).send({ success: false, error: 'Forbidden: Only admins can bulk delete payslips.' });
-            }
-            if (!month || !year) {
-                return reply.status(400).send({ success: false, error: 'Month and year are required.' });
-            }
-            const deletedCount = await request.container!.documentService.deletePayrollDocuments(parseInt(month), parseInt(year));
-
-            // Also delete from the legacy Payslip collection for synchronization
-            try {
-                await request.container!.payslipService.deletePayroll(parseInt(month), parseInt(year));
-            } catch (err) {
-                console.warn('Failed to delete from legacy Payslip collection during bulk delete:', err);
-            }
-
-            return reply.status(200).send({
-                success: true,
-                message: `Bulk deletion successful. Deleted ${deletedCount} payslips.`,
-                deletedCount
-            });
-        } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            console.error('Error during bulk payslip deletion:', errorMessage);
-            return reply.status(500).send({
-                success: false,
-                error: 'Internal server error during bulk deletion',
             });
         }
     });
