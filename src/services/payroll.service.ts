@@ -56,7 +56,7 @@ interface PayrollRecord {
     employeeId: Types.ObjectId;
     salaryAssignmentId: Types.ObjectId;
     monthlyGross: number;
-    attendanceAdjustedGross: number;
+    attendanceAdjustGross: number;
     totalDaysInMonth: number;
     payableDays: number;  // attendance.presentDays + attendance.weekendDays + attendance.holidayDays + approvedLeaves
     basic: number;
@@ -1700,7 +1700,7 @@ export class PayrollService extends BaseService {
             employeeId: employee._id,
             salaryAssignmentId: salaryAssignment._id,
             monthlyGross,
-            attendanceAdjustedGross: finalAttendanceAdjustedGross,
+            attendanceAdjustGross: finalAttendanceAdjustedGross,
             totalDaysInMonth: daysInMonth,
             payableDays,
             basic,
@@ -2045,7 +2045,7 @@ export class PayrollService extends BaseService {
             totalRecords: payrollRecords.length,
             totalEmployees: payrollRecords.length,
             totalGrossSalary: Math.round(payrollRecords.reduce(
-                (sum, record) => sum + record.attendanceAdjustedGross,
+                (sum, record) => sum + record.attendanceAdjustGross,
                 0,
             )),
             totalNetSalary: Math.round(payrollRecords.reduce((sum, record) => sum + record.netSalary, 0)),

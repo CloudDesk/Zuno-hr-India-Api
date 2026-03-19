@@ -2122,8 +2122,8 @@ export async function confirmFinalSettlement(
                     leaveDeductions: month.lopAmount || 0,
 
                     // Salary calculations
-                    monthlyGross,
-                    attendanceAdjustedGross,
+                    monthlyGross: attendanceAdjustedGross,
+                    attendanceAdjustGross: attendanceAdjustedGross,
                     netSalary,
                     ctc,
 
