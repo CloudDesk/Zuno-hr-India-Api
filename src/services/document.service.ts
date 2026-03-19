@@ -429,10 +429,11 @@ export class DocumentService extends BaseService {
         const isCertification = document.category === 'Certification';
         const isTaxForm12B = document.category === 'Tax' && document.type === 'Form12B';
         const isPayrollPayslip = document.category === 'Payroll' && document.type === 'Payslip';
+        const isSettlement = document.category === 'Settlement';
         const isAdminUpload = document.type === 'AdminUpload';
 
-        if (!(isCertification || isTaxForm12B || isPayrollPayslip || isAdminUpload)) {
-            throw new Error('Only documents under category "Certification", "Tax" (Form12B), "Payroll" (Payslip), or "AdminUpload" can be deleted.');
+        if (!(isCertification || isTaxForm12B || isPayrollPayslip || isAdminUpload || isSettlement)) {
+            throw new Error('Only documents under category "Certification", "Tax" (Form12B), "Payroll" (Payslip), "AdminUpload", or "Settlement" can be deleted.');
         }
 
         if (isCertification) {
