@@ -10,7 +10,7 @@ import { HolidayCalendar } from '../models/holiday-calendar.model';
 import { Types } from 'mongoose';
 
 import { emailService } from './email.service';
-import { generateFNFLetter } from './fnf-pdf.helper';
+import { generateFNFLetter } from './fnf-puppeteer.helper';
 import { TaxDeclaration } from '../models/tax-declaration';
 import { Document } from '../models/document.model';
 
@@ -1889,14 +1889,14 @@ export async function confirmFinalSettlement(
             }
 
             await settlement.save({ session });
-            
+
             // ✅ REGISTER AS DOCUMENT FOR DASHBOARD VISIBILITY
             const fileName = pdfUrl.split('/').pop() || `FNF_Letter_${settlement.employeeCode}.pdf`;
-            
+
             await Document.findOneAndUpdate(
-                { 
-                    employeeId: new Types.ObjectId(employeeId), 
-                    type: 'FNF Letter' 
+                {
+                    employeeId: new Types.ObjectId(employeeId),
+                    type: 'FNF Letter'
                 },
                 {
                     $set: {
