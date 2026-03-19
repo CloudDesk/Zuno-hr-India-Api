@@ -135,7 +135,7 @@ export async function generateFNFLetter(settlement: any, employee: any): Promise
 
     let browser;
     try {
-        const templatePath = path.join(process.cwd(), 'src', 'emails', 'templates', 'finalSettlement.hbs');
+        const templatePath = path.join(__dirname, '..', 'emails', 'templates', 'finalSettlement.hbs');
         const templateHtml = await fsPromises.readFile(templatePath, 'utf-8');
         const compiledTemplate = handlebars.compile(templateHtml);
         const html = compiledTemplate(templateData);
