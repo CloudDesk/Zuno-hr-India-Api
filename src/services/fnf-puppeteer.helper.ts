@@ -156,12 +156,13 @@ export async function generateFNFLetter(settlement: any, employee: any): Promise
         const page = await browser.newPage();
         await page.setContent(html, { waitUntil: 'networkidle0' });
 
-        await page.pdf({
-            path: outputPdfPath,
+        const pdfBuffer = await page.pdf({
             format: 'A4',
             printBackground: true,
             margin: { top: '5mm', right: '5mm', bottom: '5mm', left: '5mm' }
         });
+
+        await fsPromises.writeFile(outputPdfPath, pdfBuffer);
 
         const gcpResult = await uploadFileToGCP({
             filePath: outputPdfPath,
