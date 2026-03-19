@@ -2,8 +2,8 @@ import { Document as DocumentM, Schema, Types, model } from 'mongoose';
 
 export interface IDocument extends DocumentM {
     employeeId: Types.ObjectId; // Links to the employee
-    type: 'Payslip' | 'TimesheetFile' | 'Form16' | 'Form12B' | 'Form12BB' | 'OfferLetter' | 'HikeLetter' | 'Certificate' | 'AdminUpload' | 'GovernmentId' | 'Academic' | 'Experience' | 'AttendanceFile' | 'TaxProof'; // Document types
-    category: 'Payroll' | 'Timesheet' | 'Tax' | 'EmployeeLifecycle' | 'Certification' | 'Attendance'; // Document categories
+    type: 'Payslip' | 'TimesheetFile' | 'Form16' | 'Form12B' | 'Form12BB' | 'OfferLetter' | 'HikeLetter' | 'Certificate' | 'AdminUpload' | 'GovernmentId' | 'Academic' | 'Experience' | 'AttendanceFile' | 'TaxProof' | 'FNF Letter'; // Document types
+    category: 'Payroll' | 'Timesheet' | 'Tax' | 'EmployeeLifecycle' | 'Certification' | 'Attendance' | 'Settlement'; // Document categories
     tags?: string[]; // e.g., ['2025', 'Confidential', 'Exported', 'Degree', 'Aadhaar']
     fileName: string; // e.g., 'ABCDE1234F_2025-06.xlsx'
     filePath: string; // GCP or local path
@@ -100,12 +100,12 @@ export interface IDocument extends DocumentM {
             };
             skillDetails?: {
                 skillName: string; // e.g., 'Cloud Computing', 'Salesforce'
-                proficiencyLevel?: 'Beginner' | 'Intermediate' | 'Advanced' | 'Expert';
-                category: 'Technical' | 'Soft';
+                proficiencyLevel?: string;
+                category: string;
             }; // For skill-related certificates
 
             academicDetails?: { // Added for Degree certificates
-                qualificationType: 'Secondary' | 'HigherSecondary' | 'Diploma' | 'Bachelor' | 'Master' | 'Doctorate' | 'Other'; // Renamed degreeType to qualificationType
+                qualificationType: string; // Renamed degreeType to qualificationType
                 fieldOfStudy: string; // e.g., 'Computer Science', 'Mechanical Engineering'
                 grade?: string; // e.g., 'First Class', '3.8 GPA'
                 institution: string; // e.g., 'University of XYZ'
@@ -197,12 +197,12 @@ const documentSchema = new Schema<IDocument>(
         employeeId: { type: Schema.Types.ObjectId, required: true, ref: 'User' },
         type: {
             type: String,
-            enum: ['Payslip', 'TimesheetFile', 'Form16', 'OfferLetter', 'HikeLetter', 'Certificate', 'Form12B', 'Form12BB', 'AdminUpload', 'GovernmentId', 'Academic', 'Experience', 'AttendanceFile', 'TaxProof'],
+            enum: ['Payslip', 'TimesheetFile', 'Form16', 'OfferLetter', 'HikeLetter', 'Certificate', 'Form12B', 'Form12BB', 'AdminUpload', 'GovernmentId', 'Academic', 'Experience', 'AttendanceFile', 'TaxProof', 'FNF Letter'],
             required: true,
         },
         category: {
             type: String,
-            enum: ['Payroll', 'Timesheet', 'Tax', 'EmployeeLifecycle', 'Certification', 'Attendance'],
+            enum: ['Payroll', 'Timesheet', 'Tax', 'EmployeeLifecycle', 'Certification', 'Attendance', 'Settlement'],
             required: true,
         },
         tags: [{ type: String }],

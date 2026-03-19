@@ -126,12 +126,13 @@ export class WFHService extends BaseService {
       // Escape special regex characters in search string
       const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-      // Search in reason, remarks, status, and appliedTo name (stored in document)
+      // Search in reason, remarks, status, user name and email (stored in document)
       const searchFilter: any[] = [
+        { 'user.name': { $regex: escapedSearch, $options: 'i' } },
+        { 'user.email': { $regex: escapedSearch, $options: 'i' } },
         { 'reason': { $regex: escapedSearch, $options: 'i' } },
         { 'remarks': { $regex: escapedSearch, $options: 'i' } },
         { 'status': { $regex: escapedSearch, $options: 'i' } },
-        { 'appliedTo.name': { $regex: escapedSearch, $options: 'i' } },
       ];
 
       // Also search in user collection to find matching users
@@ -1036,9 +1037,10 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
       const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
       const searchConditions: any[] = [
+        { 'user.name': { $regex: escapedSearch, $options: 'i' } },
+        { 'user.email': { $regex: escapedSearch, $options: 'i' } },
         { reason: { $regex: escapedSearch, $options: 'i' } },
         { remarks: { $regex: escapedSearch, $options: 'i' } },
-        { 'appliedTo.name': { $regex: escapedSearch, $options: 'i' } },
         { status: { $regex: escapedSearch, $options: 'i' } },
       ];
 

@@ -37,12 +37,19 @@ RUN npm run build
 FROM node:20-slim AS production
  
  
-# Install only runtime dependencies (LibreOffice for document conversion)
+# Install runtime dependencies: LibreOffice and Chromium for PDF generation
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    libreoffice && \
+    libreoffice \
+    chromium \
+    fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg fonts-kacst fonts-freefont-ttf libxss1 \
+    --no-install-recommends && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
+
+# Set environment variables for Puppeteer
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
  
  
 # Set the working directory
