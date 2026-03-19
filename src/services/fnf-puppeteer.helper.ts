@@ -79,7 +79,7 @@ export async function generateFNFLetter(settlement: any, employee: any): Promise
     if (settlement.finalCalculation.leaveEncashment > 0) allEarnings.push({ label: 'LEAVE ENCASHMENT', amount: (settlement.finalCalculation.leaveEncashment).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) });
     if (settlement.finalCalculation.reimbursements > 0) allEarnings.push({ label: 'REIMBURSEMENTS', amount: (settlement.finalCalculation.reimbursements).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) });
     if ((settlement as any).gratuity > 0) allEarnings.push({ label: 'GRATUITY', amount: ((settlement as any).gratuity).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) });
-    
+
     (settlement.otherAdditions || []).forEach((a: any) => {
         if (a.amount > 0) allEarnings.push({ label: (a.description || 'OTHER ADDITION').toUpperCase(), amount: (a.amount).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) });
     });
@@ -92,7 +92,7 @@ export async function generateFNFLetter(settlement: any, employee: any): Promise
     if (d.professionalTax > 0) allDeductions.push({ label: 'PROF TAX', amount: (d.professionalTax).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) });
     if (d.incomeTax > 0) allDeductions.push({ label: 'INCOME TAX', amount: (d.incomeTax).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) });
     if (d.noticePeriodRecovery > 0) allDeductions.push({ label: 'NOTICE PERIOD RECOVERY', amount: (d.noticePeriodRecovery).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) });
-    
+
     (settlement.otherDeductions || []).forEach((od: any) => {
         if (od.amount > 0) allDeductions.push({ label: (od.description || 'OTHER DEDUCTION').toUpperCase(), amount: (od.amount).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) });
     });
@@ -124,7 +124,7 @@ export async function generateFNFLetter(settlement: any, employee: any): Promise
         monthDays: (settlement.unpaidMonths || []).reduce((sum: number, m: any) => sum + (m.totalDays || 0), 0),
         lopDays: (settlement.unpaidMonths || []).reduce((sum: number, m: any) => sum + (m.lopDays || 0), 0),
         effectiveWorkdays: (settlement.unpaidMonths || []).reduce((sum: number, m: any) => sum + (m.daysWorked || 0), 0),
-        
+
         combinedRows,
         totalIncome: (settlement.finalCalculation.totalPayable).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
         totalDeductions: (settlement.finalCalculation.totalDeductions).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
@@ -171,7 +171,7 @@ export async function generateFNFLetter(settlement: any, employee: any): Promise
             category: 'Settlement',
             type: 'FNF Letter'
         });
-
+        console.log(gcpResult, "gcpResult");
         if (!gcpResult.success) {
             throw new Error(`GCP Upload failed: ${gcpResult.error}`);
         }
