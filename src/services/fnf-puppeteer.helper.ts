@@ -12,7 +12,7 @@ import { formatCurrency } from '../utilis/currency';
  */
 export async function generateFNFLetter(settlement: any, employee: any): Promise<string> {
     const fnfDir = path.join(process.cwd(), 'uploads');
-
+console.log('inside html to pdf helper');
     if (!fs.existsSync("uploads")) {
         fs.mkdirSync("uploads", { recursive: true });
     }
