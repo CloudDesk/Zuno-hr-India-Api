@@ -5,6 +5,7 @@ import path from 'path';
 import puppeteer from 'puppeteer';
 import handlebars from 'handlebars';
 import { formatCurrency } from '../utilis/currency';
+import { getPuppeteerLaunchOptions } from '../utilis/puppeteer';
 
 /**
  * Generate FNF Letter PDF via HTML to PDF (Puppeteer)
@@ -140,18 +141,7 @@ export async function generateFNFLetter(settlement: any, employee: any): Promise
         const compiledTemplate = handlebars.compile(templateHtml);
         const html = compiledTemplate(templateData);
 
-        browser = await puppeteer.launch({
-            headless: true,
-            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-gpu',
-                '--no-first-run',
-                '--no-zygote'
-            ]
-        });
+        browser = await puppeteer.launch(getPuppeteerLaunchOptions());
 
         const page = await browser.newPage();
         await page.setContent(html, { waitUntil: 'networkidle0' });

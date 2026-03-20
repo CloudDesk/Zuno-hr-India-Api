@@ -16,10 +16,14 @@ RUN apt-get update && \
 # Set the working directory in the container
 # Set the working directory
 WORKDIR /app
+
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
  
  
 # Copy package files first for better layer caching
 COPY package*.json ./
+COPY .puppeteerrc.cjs ./
+COPY scripts/install-puppeteer-browser.js ./scripts/install-puppeteer-browser.js
  
 # Install all dependencies (including devDependencies for build)
 RUN npm ci
@@ -61,6 +65,8 @@ WORKDIR /app
  
 # Copy package files
 COPY package*.json ./
+COPY .puppeteerrc.cjs ./
+COPY scripts/install-puppeteer-browser.js ./scripts/install-puppeteer-browser.js
  
 # Install only production dependencies
 RUN npm ci --only=production && \

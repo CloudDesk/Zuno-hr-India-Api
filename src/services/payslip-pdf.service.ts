@@ -10,6 +10,7 @@ import { Document } from "../models/document.model";
 import { uploadFileToGCP, deleteFileFromGCP } from "../utilis/gcpStorage";
 import { formatCurrency } from "../utilis/currency";
 import { formatDateToDDMMYYYY } from "../utilis/dates";
+import { getPuppeteerLaunchOptions } from "../utilis/puppeteer";
 
 interface IPayslipGenerationResult {
     userId: string;
@@ -73,18 +74,7 @@ export class PayslipPdfService extends BaseService {
             throw new Error('No payroll data found for the specified users.');
         }
 
-        const browser = await puppeteer.launch({
-            headless: true,
-            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-gpu',
-                '--no-first-run',
-                '--no-zygote'
-            ]
-        });
+        const browser = await puppeteer.launch(getPuppeteerLaunchOptions());
 
         try {
             const results: IPayslipGenerationResult[] = [];
