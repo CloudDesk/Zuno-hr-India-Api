@@ -10,8 +10,8 @@ import { HolidayCalendar } from '../models/holiday-calendar.model';
 import { Types } from 'mongoose';
 
 import { emailService } from './email.service';
-import { generateFNFLetter } from './fnf-pdf.helper';
 import { TaxDeclaration } from '../models/tax-declaration';
+import { generateFNFLetter } from './fnf-puppeteer.helper';
 
 const MONTH_NAMES = [
     'January', 'February', 'March', 'April', 'May', 'June',
