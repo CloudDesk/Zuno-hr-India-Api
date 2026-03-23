@@ -20,6 +20,9 @@ import { RequestContext } from '../types/context';
 import { DeductionQuery } from '../routes/payroll.routes';
 import { getCurrentFinancialYear } from '../utilis/dates';
 import { Parser } from "json2csv";
+import { Document } from '../models/document.model';
+import { deleteFileFromGCP } from '../utilis/gcpStorage';
+
 
 // Constants
 const MONTH_NAMES = [
@@ -246,7 +249,7 @@ export class PayrollService extends BaseService {
         [PayrollStatus.Completed]: [],
         [PayrollStatus.Failed]: [PayrollStatus.Completed, PayrollStatus.Failed],
         [PayrollStatus.RetryPending]: [PayrollStatus.InPayment, PayrollStatus.Cancelled],
-        [PayrollStatus.Cancelled]: [],
+        [PayrollStatus.Cancelled]: [PayrollStatus.Draft],
         [PayrollStatus.Hold]: [PayrollStatus.Draft, PayrollStatus.PendingApproval, PayrollStatus.InPayment, PayrollStatus.Completed], // Can release from hold or complete via FNF
     };
 
@@ -391,7 +394,14 @@ export class PayrollService extends BaseService {
 
     async deletePayroll(month: number, year: number, country?: string) {
         console.log(`Deleting payroll records for ${month}-${year}${country ? ` for country ${country}` : ''}`);
-        // Delete all payroll records for the specified month and year
+        
+        const monthName = MONTH_NAMES[month - 1];
+        const monthShort = MONTH_SHORT_NAMES[monthName];
+        // Financial Year: e.g., for April 2024, FY is 2024-2025; for Jan 2025, FY is 2024-2025.
+        const financialYear = month <= 3 ? `${year - 1}-${year}` : `${year}-${year + 1}`;
+
+        // 1. IDENTIFY AFFECTED EMPLOYEES (Surgical approach)
+        // We first find the records to delete so we can target their specific tax/docs
         const query: any = {
             month,
             year,
@@ -400,12 +410,76 @@ export class PayrollService extends BaseService {
         if (country) {
             query.country = country;
         }
+
+        const affectedPayrolls = await Payroll.find(query).select('employeeId').lean();
+        const affectedUserIds = affectedPayrolls.map(p => p.employeeId);
+
+        if (affectedUserIds.length === 0) {
+            console.log(`No payroll records to delete for ${month}-${year}`);
+            return false;
+        }
+
+        console.log(`Identified ${affectedUserIds.length} affected employees for deletion.`);
+
+        // 2. REVERT TAX DEDUCTION FLAGS (Only for affected users)
+        try {
+            await TaxDeclaration.updateMany(
+                { 
+                    employeeId: { $in: affectedUserIds },
+                    financialYear, 
+                    'monthlyDeductions.month': monthShort 
+                },
+                { 
+                    $set: { 
+                        'monthlyDeductions.$.isProcessed': false,
+                        'monthlyDeductions.$.actualDeduction': 0 
+                    } 
+                }
+            );
+            console.log(`Reverted tax flags for up to ${affectedUserIds.length} employees.`);
+        } catch (error) {
+            console.error('Error reverting tax declaration flags:', error);
+        }
+
+        // 3. CLEANUP PAYSLIP DOCUMENTS (GCP + DB)
+        try {
+            const documentsToDelete = await Document.find({
+                employeeId: { $in: affectedUserIds },
+                type: 'Payslip',
+                'metadata.payslip.month': month,
+                'metadata.payslip.year': year
+            });
+
+            if (documentsToDelete.length > 0) {
+                console.log(`Cleaning up ${documentsToDelete.length} payslip files from GCP storage...`);
+                await Promise.all(documentsToDelete.map(async (doc) => {
+                    if (doc.filePath) {
+                        try {
+                            await deleteFileFromGCP(doc.filePath);
+                        } catch (err) {
+                            console.warn(`Failed to delete GCP file for doc ${doc._id}: ${doc.filePath}`, err);
+                        }
+                    }
+                }));
+
+                await Document.deleteMany({
+                    _id: { $in: documentsToDelete.map(d => d._id) }
+                });
+            }
+        } catch (error) {
+            console.error('Error cleaning up payroll documents:', error);
+        }
+
+        // 4. DELETE PAYROLL RECORDS
         const result = await Payroll.deleteMany(query);
-        console.log(`Deleted ${result.deletedCount} payroll records for ${month}-${year}${country ? ` for country ${country}` : ''}`);
+        console.log(`Deleted ${result.deletedCount} payroll records.`);
+        
         return result.deletedCount > 0;
     }
 
-    // Delete a single payroll record by ID (Only if status is Draft)
+
+
+    // Delete a single payroll record by ID (Safe Delete for Completed/Processing)
     async deletePayrollRecord(id: string) {
         if (!Types.ObjectId.isValid(id)) {
             throw new Error('Invalid Payroll ID');
@@ -417,17 +491,73 @@ export class PayrollService extends BaseService {
             throw new Error('Payroll record not found');
         }
 
-        if (payroll.status !== PayrollStatus.Draft) {
-            throw new Error(`Cannot delete payroll record with status '${payroll.status}'. Only 'Draft' records can be deleted.`);
+        // Only allow deletion of Draft, Cancelled, Completed, or Failed
+        const deletableStatuses = [PayrollStatus.Draft, PayrollStatus.Cancelled, PayrollStatus.Completed, PayrollStatus.Failed];
+        if (!deletableStatuses.includes(payroll.status as PayrollStatus)) {
+            throw new Error(`Cannot delete payroll record with status '${payroll.status}'.`);
         }
+
 
         if (payroll.type === 'FinalSettlement') {
             throw new Error(`Cannot delete payroll records belonging to a Final Settlement.`);
         }
 
+        // If it was COMPLETED, we must perform SAFE REVERSE logic for this specific employee
+        if (payroll.status === PayrollStatus.Completed) {
+            console.log(`Performing surgical safe reverse for single record: ${id} (Employee: ${payroll.employeeId})`);
+            
+            const { month, year, employeeId } = payroll;
+            const monthName = MONTH_NAMES[month - 1];
+            const monthShort = MONTH_SHORT_NAMES[monthName];
+            const financialYear = month <= 3 ? `${year - 1}-${year}` : `${year}-${year + 1}`;
+
+            // 1. REVERT TAX FLAG
+            try {
+                await TaxDeclaration.updateOne(
+                    { 
+                        employeeId: employeeId,
+                        financialYear, 
+                        'monthlyDeductions.month': monthShort 
+                    },
+                    { 
+                        $set: { 
+                            'monthlyDeductions.$.isProcessed': false,
+                            'monthlyDeductions.$.actualDeduction': 0 
+                        } 
+                    }
+                );
+            } catch (error) {
+                console.error('Error reverting tax flag for single delete:', error);
+            }
+
+            // 2. CLEANUP PAYSLIP
+            try {
+                const doc = await Document.findOne({
+                    employeeId: employeeId,
+                    type: 'Payslip',
+                    'metadata.payslip.month': month,
+                    'metadata.payslip.year': year
+                });
+
+                if (doc) {
+                    if (doc.filePath) {
+                        try {
+                            await deleteFileFromGCP(doc.filePath);
+                        } catch (err) {
+                            console.warn(`Failed to delete GCP file for doc ${doc._id}`, err);
+                        }
+                    }
+                    await Document.deleteOne({ _id: doc._id });
+                }
+            } catch (error) {
+                console.error('Error cleaning up document for single delete:', error);
+            }
+        }
+
         await Payroll.findByIdAndDelete(id);
-        return { success: true, message: 'Payroll record deleted successfully' };
+        return { success: true, message: 'Payroll record deleted safely' };
     }
+
 
     async getUserIdsByFilters(
         filters: {
@@ -1265,7 +1395,6 @@ export class PayrollService extends BaseService {
             month: monthNumber,
             year,
             employeeId: userIds ? { $in: userIds } : { $exists: true },
-            status: { $nin: ['Cancelled'] },
         }).lean();
         console.log(existingPayroll, 'existingPayroll initiatePayroll');
         // Skip users with existing payroll records

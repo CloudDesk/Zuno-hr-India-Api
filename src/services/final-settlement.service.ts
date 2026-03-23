@@ -975,18 +975,33 @@ export async function saveFinalSettlement(
         const employeeIdStr = String(effectiveEmployeeId);
         const employeeIdObj = new Types.ObjectId(employeeIdStr);
 
-        // 1. Check if draft already exists
+        // 1. Check if a Draft already exists (priority)
         let settlement = await FinalSettlement.findOne({
             employeeId: employeeIdObj,
-            status: 'Draft'
+            status: "Draft",
         });
 
+        // 2. If no Draft exists, check if a Confirmed one is already there
+        // This prevents creating a second settlement record for the same employee
         if (!settlement) {
+            const confirmedExisting = await FinalSettlement.findOne({
+                employeeId: employeeIdObj,
+                status: "Confirmed",
+            });
+
+            if (confirmedExisting) {
+                return reply.code(400).send({
+                    success: false,
+                    error: "A confirmed settlement already exists for this employee. Please use the 'Unlock' feature to make any changes.",
+                });
+            }
+
+            // 3. If no settlement (Draft or Confirmed) exists, create a new one
             settlement = new FinalSettlement({
                 employeeId: employeeIdObj,
-                status: 'Draft',
+                status: "Draft",
                 initiatedAt: new Date(),
-                initiatedBy: data.initiatedBy || employeeIdObj
+                initiatedBy: data.initiatedBy || employeeIdObj,
             });
         }
 
@@ -1482,112 +1497,106 @@ export async function getAllFinalSettlements(
         const status = request.query.status;
         const search = request.query.search?.trim();
 
-        // Calculate pagination (if not using aggr pipeline for pagination)
+        // Calculate skip for pagination
         const skip = (page - 1) * limit;
 
-        // Base matching for status if provided
+        // Define matching criteria (e.g. status)
         const matchStage: any = {};
-        if (status === 'Draft' || status === 'Confirmed') {
+        if (status === "Draft" || status === "Confirmed") {
             matchStage.status = status;
         }
 
-        let settlements;
-        let total = 0;
+        // Unified Aggregation Pipeline for Listing & Searching
+        // This ensures deduplication while maintaining search capabilities
+        const deduplicatePipeline: any[] = [
+            { $match: matchStage },
+            // 1. Initial sort to ensure $group picks the newest record correctly
+            { $sort: { createdAt: -1 } },
+            // 2. Group by employee to ensure uniqueness
+            {
+                $group: {
+                    _id: "$employeeId",
+                    doc: { $first: "$$ROOT" },
+                },
+            },
+            { $replaceRoot: { newRoot: "$doc" } },
+        ];
 
+        // 3. Add Search Stage if applicable
         if (search) {
-            // Aggregation pipeline for Search
-            // 1. Lookup User details
-            // 2. Match regex against User fields OR Settlement fields
-            const pipeline: any[] = [
-                { $match: matchStage },
-                {
-                    $lookup: {
-                        from: 'users',
-                        localField: 'employeeId',
-                        foreignField: '_id',
-                        as: 'employeeDetails'
-                    }
+            deduplicatePipeline.push({
+                $lookup: {
+                    from: "users",
+                    localField: "employeeId",
+                    foreignField: "_id",
+                    as: "employeeDetails",
                 },
-                { $unwind: '$employeeDetails' },
-                {
-                    $match: {
-                        $or: [
-                            { 'employeeName': { $regex: search, $options: 'i' } }, // Check direct name
-                            { 'employeeCode': { $regex: search, $options: 'i' } }, // Check direct code
-                            { 'status': { $regex: search, $options: 'i' } },
-                            { 'employeeDetails.name': { $regex: search, $options: 'i' } },
-                            { 'employeeDetails.email': { $regex: search, $options: 'i' } },
-                            { 'employeeDetails.employeeCode': { $regex: search, $options: 'i' } }
-                        ]
-                    }
+            });
+            deduplicatePipeline.push({ $unwind: "$employeeDetails" });
+            deduplicatePipeline.push({
+                $match: {
+                    $or: [
+                        { employeeName: { $regex: search, $options: "i" } },
+                        { employeeCode: { $regex: search, $options: "i" } },
+                        { status: { $regex: search, $options: "i" } },
+                        { "employeeDetails.name": { $regex: search, $options: "i" } },
+                        { "employeeDetails.email": { $regex: search, $options: "i" } },
+                        { "employeeDetails.employeeCode": { $regex: search, $options: "i" } },
+                    ],
                 },
-                { $sort: { createdAt: -1 } },
-                {
-                    $facet: {
-                        metadata: [{ $count: 'total' }],
-                        data: [{ $skip: skip }, { $limit: limit }]
-                    }
-                }
-            ];
-
-            const result = await FinalSettlement.aggregate(pipeline);
-            settlements = result[0]?.data || [];
-            total = result[0]?.metadata[0]?.total || 0;
-
-            // Re-map and check editability
-            settlements = await Promise.all(settlements.map(async (s: any) => {
-                s.employeeId = s.employeeDetails; // Mimic populate
-                s.employeeName = s.employeeName || s.employeeDetails?.name;
-                s.employeeCode = s.employeeCode || s.employeeDetails?.employeeCode;
-                delete s.employeeDetails;
-
-                // CHECK: If any unpaid gap month is already 'Completed' in main payroll
-                const involvedMonths = (s.unpaidMonths || []).map((m: any) => m.monthYear);
-                const completedPayslip = await Payroll.findOne({
-                    employeeId: s.employeeId?._id || s.employeeId,
-                    monthYear: { $in: involvedMonths },
-                    status: 'Completed'
-                });
-                s.canEdit = !completedPayslip;
-
-                return s;
-            }));
-
+            });
         } else {
-            // Standard Find Query (Faster if no deep search needed)
-            const countQuery = FinalSettlement.countDocuments(matchStage);
-            const findQuery = FinalSettlement.find(matchStage)
-                .populate('employeeId', 'name employeeCode email')
-                .populate('initiatedBy', 'name')
-                .populate('lastEditedBy', 'name')
-                .lean()
-                .sort({ createdAt: -1 })
-                .skip(skip)
-                .limit(limit);
+            // Standard population for normal list
+            deduplicatePipeline.push({
+                $lookup: {
+                    from: "users",
+                    localField: "employeeId",
+                    foreignField: "_id",
+                    as: "employeeDetails",
+                },
+            });
+            deduplicatePipeline.push({
+                $unwind: { path: "$employeeDetails", preserveNullAndEmptyArrays: true },
+            });
+        }
 
-            const [settlementsData, totalCount] = await Promise.all([findQuery, countQuery]);
+        // 4. Final sorting and pagination
+        deduplicatePipeline.push({ $sort: { createdAt: -1 } });
+        deduplicatePipeline.push({
+            $facet: {
+                metadata: [{ $count: "total" }],
+                data: [{ $skip: skip }, { $limit: limit }],
+            },
+        });
 
-            settlements = await Promise.all(settlementsData.map(async (s: any) => {
+        // 5. Execute Pipeline
+        const result = await FinalSettlement.aggregate(deduplicatePipeline);
+        const settlementsRaw = result[0]?.data || [];
+        const total = result[0]?.metadata[0]?.total || 0;
+
+        // 6. Final mapping and populate mimics
+        const settlements = await Promise.all(
+            settlementsRaw.map(async (s: any) => {
                 const mapped = {
                     ...s,
-                    employeeName: s.employeeName || s.employeeId?.name,
-                    employeeCode: s.employeeCode || s.employeeId?.employeeCode
+                    employeeId: s.employeeDetails || s.employeeId,
+                    employeeName: s.employeeName || s.employeeDetails?.name,
+                    employeeCode: s.employeeCode || s.employeeDetails?.employeeCode,
                 };
+                delete mapped.employeeDetails;
 
                 // CHECK: If any unpaid gap month is already 'Completed' in main payroll
                 const involvedMonths = (s.unpaidMonths || []).map((m: any) => m.monthYear);
                 const completedPayslip = await Payroll.findOne({
-                    employeeId: s.employeeId?._id || s.employeeId,
+                    employeeId: mapped.employeeId?._id || mapped.employeeId,
                     monthYear: { $in: involvedMonths },
-                    status: 'Completed'
+                    status: "Completed",
                 });
                 mapped.canEdit = !completedPayslip;
 
                 return mapped;
-            }));
-
-            total = totalCount;
-        }
+            }),
+        );
 
         return reply.send({
             success: true,
@@ -1596,9 +1605,10 @@ export async function getAllFinalSettlements(
                 page,
                 limit,
                 total,
-                totalPages: Math.ceil(total / limit)
-            }
+                totalPages: Math.ceil(total / limit),
+            },
         });
+
 
     } catch (error: any) {
         request.log.error(error);

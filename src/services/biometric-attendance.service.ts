@@ -1440,16 +1440,24 @@ export class BiometricAttendanceService extends BaseService {
       // Add the processed record to user's records
       userRecord.records.push(processedRecord);
 
-      // Update summary - now including all status types
-      if (record.status) { // Count all records with a status
+      // Update summary - now including all status types accurately
+      if (record.attendanceStatus?.includes('Present')) {
         userRecord.summary.presentDays++;
-        if (record.attendanceStatus?.includes('Late')) {
-          userRecord.summary.lateDays++;
-        }
       }
-      if (record.needsRegularization) {
+      
+      if (record.attendanceStatus?.includes('Late')) {
+        userRecord.summary.lateDays++;
+      }
+
+      if (record.attendanceStatus?.includes('On-Leave')) {
+        userRecord.summary.leaveDays++;
+      }
+
+
+      if (record.status === 'regularized' || (record.regularization && record.regularization.isRegularized)) {
         userRecord.summary.regularisedDays++;
       }
+
     }
 
     console.log('Users processed:', userRecords.size);

@@ -55,7 +55,7 @@ export class PayrollStatusManager {
         [PayrollStatus.Completed]: [], // No further transitions allowed
         [PayrollStatus.Failed]: [PayrollStatus.RetryPending, PayrollStatus.Cancelled],
         [PayrollStatus.RetryPending]: [PayrollStatus.InPayment, PayrollStatus.Cancelled],
-        [PayrollStatus.Cancelled]: [], // No further transitions allowed
+        [PayrollStatus.Cancelled]: [PayrollStatus.Draft], // Allow restoring to Draft
         [PayrollStatus.Hold]: [PayrollStatus.Draft, PayrollStatus.PendingApproval, PayrollStatus.InPayment, PayrollStatus.Completed]
     };
 
