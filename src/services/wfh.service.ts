@@ -164,22 +164,11 @@ export class WFHService extends BaseService {
       ];
     }
 
-    // Date range filter - handle separately from search
     if (startDate || endDate) {
       const dateFilter: any = {
-        $or: [
-          {
-            startDate: {
-              ...(startDate && { $gte: new Date(startDate) }),
-              ...(endDate && { $lte: new Date(endDate) }),
-            },
-          },
-          {
-            endDate: {
-              ...(startDate && { $gte: new Date(startDate) }),
-              ...(endDate && { $lte: new Date(endDate) }),
-            },
-          },
+        $and: [
+          ...(endDate ? [{ startDate: { $lte: new Date(endDate) } }] : []),
+          ...(startDate ? [{ endDate: { $gte: new Date(startDate) } }] : []),
         ],
       };
 
@@ -276,19 +265,9 @@ export class WFHService extends BaseService {
     }
 
     if (startDate || endDate) {
-      query.$or = [
-        {
-          startDate: {
-            ...(startDate && { $gte: new Date(startDate) }),
-            ...(endDate && { $lte: new Date(endDate) }),
-          },
-        },
-        {
-          endDate: {
-            ...(startDate && { $gte: new Date(startDate) }),
-            ...(endDate && { $lte: new Date(endDate) }),
-          },
-        },
+      query.$and = [
+        ...(endDate ? [{ startDate: { $lte: new Date(endDate) } }] : []),
+        ...(startDate ? [{ endDate: { $gte: new Date(startDate) } }] : []),
       ];
     }
 
@@ -1003,19 +982,9 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
 
     if (startDate || endDate) {
       const dateFilter: any = {
-        $or: [
-          {
-            startDate: {
-              ...(startDate && { $gte: new Date(startDate) }),
-              ...(endDate && { $lte: new Date(endDate) }),
-            },
-          },
-          {
-            endDate: {
-              ...(startDate && { $gte: new Date(startDate) }),
-              ...(endDate && { $lte: new Date(endDate) }),
-            },
-          },
+        $and: [
+          ...(endDate ? [{ startDate: { $lte: new Date(endDate) } }] : []),
+          ...(startDate ? [{ endDate: { $gte: new Date(startDate) } }] : []),
         ],
       };
 
