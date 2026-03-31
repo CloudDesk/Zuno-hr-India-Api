@@ -893,12 +893,23 @@ function packSettlement(settlement: any, data: any) {
         'noticeRequired', 'daysServed', 'noticePeriodRecovery', 'excessInNotice', 'noticePeriodDays'
     ];
 
+    // Date fields that must be sanitized — 'N/A' or empty strings cause Mongoose cast errors
+    const dateFields = new Set(['lastPaidMonthDate', 'resignationSubmittedOn', 'leavingDate', 'settlementDate']);
+
     rootFields.forEach(field => {
         if (data[field] !== undefined) {
             // ✅ PREVENT CLEARING PDF URL: If settlement already has a PDF, 
             // don't let it be overwritten by an empty string or null during saves.
             if (field === 'pdfUrl' && settlement[field] && !data[field]) {
                 return;
+            }
+            // ✅ SANITIZE DATE FIELDS: Reject 'N/A', empty strings, or unparseable values
+            if (dateFields.has(field)) {
+                const val = data[field];
+                if (!val || val === 'N/A' || val === 'n/a' || isNaN(Date.parse(val))) {
+                    settlement[field] = null;
+                    return;
+                }
             }
             settlement[field] = data[field];
         }
