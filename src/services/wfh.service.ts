@@ -7,17 +7,27 @@ import { LeaveSummaryService } from './leave-summary.service';
 import { generateEmailTemplate } from '../emails/templates';
 import { emailService } from './email.service';
 import { calculateBusinessDays } from '../utilis/dates';
-import { ShiftAssignment } from '../models/shift.model';
+import { ShiftAssignment, IShiftAssignment } from '../models/shift.model';
+import { HolidayCalendar } from '../models/holiday-calendar.model';
 
 export interface IWFHCreate {
   userId: string | Types.ObjectId;
   startDate: Date;
   endDate: Date;
+  noOfDays?: number;
   remarks?: string;
   reason?: string; // Optional field
   appliedTo?: {
     _id: string;
     name: string;
+  };
+  // Weekend and holiday exclusion – calculated by backend, never trusted from frontend
+  weekendExclusion?: {
+    weekendDays: number[];
+    excludedDates: Date[];
+    excludedHolidays?: Date[];
+    totalCalendarDays: number;
+    actualDays: number;
   };
   // Apply on behalf feature
   appliedOnBehalf?: boolean;
@@ -65,6 +75,167 @@ export class WFHService extends BaseService {
   constructor(context: RequestContext) {
     super(context);
     this.leaveSummaryService = new LeaveSummaryService(context);
+  }
+
+  // ─── Weekend / Holiday helpers (mirrors LeaveService) ────────────────────
+
+  /**
+   * Get active shift assignment for a user within a date range.
+   */
+  private async getShiftAssignmentForDateRange(
+    userId: Types.ObjectId,
+    startDate: Date,
+    endDate: Date
+  ): Promise<IShiftAssignment | null> {
+    const startDateOnly = new Date(startDate);
+    startDateOnly.setUTCHours(0, 0, 0, 0);
+    const endDateOnly = new Date(endDate);
+    endDateOnly.setUTCHours(23, 59, 59, 999);
+
+    return ShiftAssignment.findOne({
+      userId,
+      isActive: true,
+      startDate: { $lte: endDateOnly },
+      $or: [
+        { endDate: { $gte: startDateOnly } },
+        { endDate: null },
+      ],
+    }).sort({ startDate: -1 });
+  }
+
+  /**
+   * Calculate total inclusive calendar days between startDate and endDate.
+   */
+  private calculateTotalCalendarDays(startDate: Date, endDate: Date): number {
+    const start = new Date(startDate);
+    start.setUTCHours(0, 0, 0, 0);
+    const end = new Date(endDate);
+    end.setUTCHours(23, 59, 59, 999);
+    const diffTime = end.getTime() - start.getTime();
+    return Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1; // inclusive
+  }
+
+  /**
+   * Fetch mandatory holidays from the user's assigned HolidayCalendar
+   * that fall within [startDate, endDate].
+   * Optional / restricted holidays are NOT excluded from WFH days.
+   */
+  private async getMandatoryHolidays(
+    userId: Types.ObjectId,
+    startDate: Date,
+    endDate: Date
+  ): Promise<Date[]> {
+    const user = await User.findById(userId)
+      .select('holidayCalendarId holidayCalendarHistory')
+      .lean();
+    if (!user) return [];
+
+    const start = new Date(startDate);
+    start.setUTCHours(0, 0, 0, 0);
+    const end = new Date(endDate);
+    end.setUTCHours(23, 59, 59, 999);
+    const startTime = start.getTime();
+    const endTime = end.getTime();
+    const year = new Date(startDate).getFullYear();
+
+    // Resolve calendar: year-specific history first, then default
+    let calendarId: Types.ObjectId | undefined;
+    const history = (user as any).holidayCalendarHistory;
+    if (history && Array.isArray(history)) {
+      const entry = history.find((e: any) => e.year === year && e.isActive === true);
+      if (entry?.calendarId) calendarId = entry.calendarId;
+    }
+    if (!calendarId && user.holidayCalendarId) {
+      calendarId = new Types.ObjectId(user.holidayCalendarId);
+    }
+    if (!calendarId) return [];
+
+    const holidayCalendar = await HolidayCalendar.findById(calendarId).lean();
+    if (!holidayCalendar?.holidays) return [];
+
+    const mandatoryList: Date[] = [];
+    for (const holiday of holidayCalendar.holidays) {
+      if (holiday.type === 'mandatory') {
+        const d = new Date(holiday.date);
+        d.setUTCHours(0, 0, 0, 0);
+        const t = d.getTime();
+        if (t >= startTime && t <= endTime) mandatoryList.push(d);
+      }
+    }
+    return mandatoryList;
+  }
+
+  /**
+   * Count working days excluding weekends and mandatory holidays.
+   */
+  private calculateWorkingDaysExcludingWeekendsAndHolidays(
+    startDate: Date,
+    endDate: Date,
+    weekendDays: number[],
+    mandatoryHolidays: Date[]
+  ): number {
+    const start = new Date(startDate);
+    start.setUTCHours(0, 0, 0, 0);
+    const end = new Date(endDate);
+    end.setUTCHours(23, 59, 59, 999);
+
+    const holidayDatesSet = new Set(
+      mandatoryHolidays.map(h => {
+        const d = new Date(h);
+        d.setUTCHours(0, 0, 0, 0);
+        return d.getTime();
+      })
+    );
+
+    let workingDays = 0;
+    const current = new Date(start);
+    while (current <= end) {
+      if (!weekendDays.includes(current.getDay()) && !holidayDatesSet.has(current.getTime())) {
+        workingDays++;
+      }
+      current.setDate(current.getDate() + 1);
+    }
+    return workingDays;
+  }
+
+  /**
+   * Collect the individual dates that are excluded (weekend dates + mandatory holidays).
+   */
+  private getExcludedDatesWithHolidays(
+    startDate: Date,
+    endDate: Date,
+    weekendDays: number[],
+    mandatoryHolidays: Date[]
+  ): { excludedDates: Date[]; excludedHolidays: Date[] } {
+    const start = new Date(startDate);
+    start.setUTCHours(0, 0, 0, 0);
+    const end = new Date(endDate);
+    end.setUTCHours(23, 59, 59, 999);
+
+    const holidayDatesSet = new Set(
+      mandatoryHolidays.map(h => {
+        const d = new Date(h);
+        d.setUTCHours(0, 0, 0, 0);
+        return d.getTime();
+      })
+    );
+
+    const excludedDates: Date[] = [];
+    const excludedHolidays: Date[] = [];
+    const current = new Date(start);
+
+    while (current <= end) {
+      const copy = new Date(current);
+      if (weekendDays.includes(current.getDay())) {
+        excludedDates.push(copy);
+      }
+      if (holidayDatesSet.has(current.getTime())) {
+        excludedDates.push(copy);
+        excludedHolidays.push(copy);
+      }
+      current.setDate(current.getDate() + 1);
+    }
+    return { excludedDates, excludedHolidays };
   }
 
   async findById(id: string | Types.ObjectId): Promise<IWFH> {
@@ -333,18 +504,21 @@ export class WFHService extends BaseService {
   }
 
   async create(wfhData: IWFHCreate): Promise<IWFH> {
+    // Always strip any weekendExclusion / noOfDays sent from the frontend –
+    // they will be computed authoritatively by the backend.
+    delete wfhData.weekendExclusion;
+    delete wfhData.noOfDays;
+
     const user = await User.findById(wfhData.userId).select('name email');
     if (!user) {
       throw new Error('User not found');
     }
 
     // VALIDATION: 3-day rule for employee self-application (excluding weekends)
-    // If employee is applying themselves (not admin on behalf), check if > 3 business days have passed
     const currentUser = this.context?.user;
     const isAdmin = currentUser && (currentUser.role === 'admin' || (currentUser as any).isSuperAdmin);
     const isApplyingForSelf = currentUser && currentUser._id.toString() === (typeof wfhData.userId === 'string' ? wfhData.userId : wfhData.userId.toString());
 
-    // Only validate 3-day rule if employee is applying for themselves (not admin applying on behalf)
     if (!wfhData.appliedOnBehalf && !isAdmin && isApplyingForSelf) {
       const wfhStartDate = new Date(wfhData.startDate);
       wfhStartDate.setUTCHours(0, 0, 0, 0);
@@ -352,27 +526,20 @@ export class WFHService extends BaseService {
       const today = new Date();
       today.setUTCHours(23, 59, 59, 999);
 
-      // Get shift assignment to determine weekend days
       const userIdObj = typeof wfhData.userId === 'string'
         ? new Types.ObjectId(wfhData.userId)
         : wfhData.userId;
 
-      // Find active shift assignment for the date range
-      const shiftAssignment = await ShiftAssignment.findOne({
-        userId: userIdObj,
-        isActive: true,
-        startDate: { $lte: today },
-        $or: [
-          { endDate: { $gte: wfhStartDate } },
-          { endDate: null },
-        ],
-      }).sort({ startDate: -1 });
+      const shiftAssignment = await this.getShiftAssignmentForDateRange(
+        userIdObj,
+        wfhStartDate,
+        wfhStartDate
+      );
 
       const weekendDays = shiftAssignment?.weekendDays && shiftAssignment.weekendDays.length > 0
         ? shiftAssignment.weekendDays
-        : [0, 6]; // Default: Sunday and Saturday
+        : [0, 6];
 
-      // Calculate business days from WFH start date to today (excluding weekends)
       const businessDaysPassed = calculateBusinessDays(wfhStartDate, today, weekendDays);
 
       if (businessDaysPassed > 3) {
@@ -389,7 +556,7 @@ export class WFHService extends BaseService {
       throw new Error('Only admins can apply for WFH on behalf of employees. Please use the regular WFH application endpoint.');
     }
 
-    // If applied on behalf, set the appliedBy information
+    // Set appliedBy
     if (wfhData.appliedOnBehalf && isAdmin && currentUser) {
       wfhData.appliedBy = {
         _id: currentUser._id,
@@ -397,7 +564,6 @@ export class WFHService extends BaseService {
         email: currentUser.email || ''
       };
     } else if (!wfhData.appliedOnBehalf && currentUser) {
-      // If not applied on behalf, set appliedBy to the employee themselves
       wfhData.appliedBy = {
         _id: currentUser._id,
         name: currentUser.name,
@@ -405,11 +571,78 @@ export class WFHService extends BaseService {
       };
     }
 
-    // Calculate number of days
+    // ── Weekend & mandatory-holiday exclusion (same logic as LeaveService) ──
+    const userIdObj = typeof wfhData.userId === 'string'
+      ? new Types.ObjectId(wfhData.userId)
+      : wfhData.userId;
+
     const startDate = new Date(wfhData.startDate);
-    const endDate = new Date(wfhData.endDate);
-    const timeDiff = endDate.getTime() - startDate.getTime();
-    const daysDiff = Math.ceil(timeDiff / (1000 * 60 * 60 * 24)) + 1; // Include both start and end dates
+    const endDate   = new Date(wfhData.endDate);
+
+    // Resolve weekendDays from the user's active ShiftAssignment
+    const shiftAssignment = await this.getShiftAssignmentForDateRange(
+      userIdObj,
+      startDate,
+      endDate
+    );
+    const weekendDays = shiftAssignment?.weekendDays && shiftAssignment.weekendDays.length > 0
+      ? shiftAssignment.weekendDays
+      : [0, 6]; // Default: Sunday (0) and Saturday (6)
+
+    // Fetch mandatory holidays only (optional holidays do NOT block WFH days)
+    const mandatoryHolidays = await this.getMandatoryHolidays(
+      userIdObj,
+      startDate,
+      endDate
+    );
+
+    // Count actual working days after exclusions
+    const workingDays = this.calculateWorkingDaysExcludingWeekendsAndHolidays(
+      startDate,
+      endDate,
+      weekendDays,
+      mandatoryHolidays
+    );
+
+    if (workingDays <= 0) {
+      const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+      const weekendNames = weekendDays.map(d => dayNames[d]).join(', ');
+      const holidayText = mandatoryHolidays.length > 0
+        ? ` and ${mandatoryHolidays.length} mandatory holiday(s)`
+        : '';
+      throw new Error(
+        `All days in the requested WFH date range fall on weekends (${weekendNames})${holidayText}. ` +
+        `Please select dates that include at least one working day.`
+      );
+    }
+
+    // Collect excluded dates for storage in weekendExclusion
+    const { excludedDates, excludedHolidays } = this.getExcludedDatesWithHolidays(
+      startDate,
+      endDate,
+      weekendDays,
+      mandatoryHolidays
+    );
+    const totalCalendarDays = this.calculateTotalCalendarDays(startDate, endDate);
+
+    // Store computed exclusion metadata and set noOfDays
+    wfhData.weekendExclusion = {
+      weekendDays,
+      excludedDates,
+      excludedHolidays,
+      totalCalendarDays,
+      actualDays: workingDays,
+    };
+    wfhData.noOfDays = workingDays;
+
+    console.log(
+      `✅ [WFH Weekend & Holiday Exclusion] ${workingDays} working day(s) ` +
+      `(excluded weekends: [${weekendDays.join(', ')}], mandatory holidays: ${mandatoryHolidays.length}) ` +
+      `for ${startDate.toISOString().split('T')[0]} → ${endDate.toISOString().split('T')[0]}`
+    );
+
+    // ── daysDiff is now workingDays (used for balance check below) ──
+    const daysDiff = workingDays;
 
     // Check for overlapping WFH requests
     const overlappingWFH = await WFH.findOne({
@@ -473,10 +706,7 @@ export class WFHService extends BaseService {
     }
     // If alloted = 0, allow unlimited (no validation needed)
 
-    const wfh: IWFH = await WFH.create({
-      ...wfhData,
-      noOfDays: daysDiff,
-    });
+    const wfh: IWFH = await WFH.create(wfhData);
 
     // Track WFH request (don't deduct yet - will deduct on approval)
     await this.leaveSummaryService.createOrUpdateLeaveSummary(
