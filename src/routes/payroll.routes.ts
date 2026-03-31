@@ -652,7 +652,7 @@ export const payrollRoutes: RouteHandler = async (fastify: FastifyInstance): Pro
     fastify.get(
         '/salary-statement',
         {
-            onRequest: [authenticate],
+            // onRequest: [authenticate],
             schema: {
                 querystring: {
                     type: 'object',
@@ -660,14 +660,16 @@ export const payrollRoutes: RouteHandler = async (fastify: FastifyInstance): Pro
                     properties: {
                         month: { type: 'number', minimum: 1, maximum: 12 },
                         year: { type: 'number', minimum: 2024, maximum: 2100 },
+                        preview: { type: 'boolean', default: false, description: 'If true, generates statement without run payroll data' }
                     },
                 },
             },
         },
-        async (request: FastifyRequest<{ Querystring: { month: number; year: number } }>, reply) => {
+        async (request: FastifyRequest<{ Querystring: { month: number; year: number; preview?: boolean; country?: string } }>, reply) => {
             try {
-                const { month, year } = request.query;
-                const workbook = await request.container!.payrollService.generateSalaryStatement(month, year);
+                const { month, year, preview, country } = request.query;
+                // const workbook = await request.container!.payrollService.generateSalaryStatement(month, year);
+                const workbook = await request.container!.salaryStatementService.generateSalaryStatement(Number(month), Number(year), preview, country);
 
                 const buffer = await workbook.xlsx.writeBuffer();
 
