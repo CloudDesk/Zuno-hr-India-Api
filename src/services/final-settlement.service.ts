@@ -8,6 +8,8 @@ import { AttendanceRecord, Leave } from '../models';
 import { ShiftAssignment } from '../models/shift.model';
 import { HolidayCalendar } from '../models/holiday-calendar.model';
 import { Types } from 'mongoose';
+import { Storage } from '@google-cloud/storage';
+import path from 'path';
 
 import { emailService } from './email.service';
 import { generateFNFLetter } from './fnf-puppeteer.helper';
@@ -1482,6 +1484,74 @@ export async function unlockFinalSettlement(
     } catch (error: any) {
         request.log.error(error);
         return reply.code(500).send({ success: false, error: 'Internal server error', details: error.message });
+    }
+}
+
+/**
+ * Download Settlement File via Backend (GCP Streaming)
+ * GET /final-settlement/download-file?filePath=<encoded-path>
+ *
+ * Streams the file from GCP with Content-Disposition: attachment so
+ * the browser always downloads it rather than opening in a tab.
+ */
+export async function downloadSettlementFile(
+    request: FastifyRequest<{ Querystring: { filePath: string } }>,
+    reply: FastifyReply
+) {
+    try {
+        const { filePath } = request.query;
+
+        if (!filePath) {
+            return reply.code(400).send({ success: false, error: 'filePath query parameter is required' });
+        }
+
+        const bucketName = process.env.GCP_STORAGE_BUCKET;
+        if (!bucketName) {
+            return reply.code(500).send({ success: false, error: 'GCP bucket not configured' });
+        }
+
+        // Build GCP Storage client using same env-based credentials as gcpStorage utility
+        const serviceAccountJson = process.env.GCP_SERVICE_ACCOUNT_JSON;
+        const clientEmail = process.env.GCP_CLIENT_EMAIL;
+        const privateKey = process.env.GCP_PRIVATE_KEY?.replace(/\\n/g, '\n');
+        const projectId = process.env.PROJECT_ID;
+
+        let storageClient: Storage;
+        if (serviceAccountJson) {
+            const creds = JSON.parse(serviceAccountJson);
+            storageClient = new Storage({ projectId, credentials: { client_email: creds.client_email, private_key: creds.private_key } });
+        } else if (clientEmail && privateKey) {
+            storageClient = new Storage({ projectId, credentials: { client_email: clientEmail, private_key: privateKey } });
+        } else {
+            storageClient = new Storage({ projectId });
+        }
+
+        const bucket = storageClient.bucket(bucketName);
+        const file = bucket.file(filePath);
+
+        // Check file exists before streaming
+        const [exists] = await file.exists();
+        if (!exists) {
+            return reply.code(404).send({ success: false, error: 'File not found in storage' });
+        }
+
+        // Get file metadata to set correct content type
+        const [metadata] = await file.getMetadata();
+        const contentType = (metadata as any).contentType || 'application/octet-stream';
+        const fileName = path.basename(filePath);
+
+        // Set headers for forced download
+        reply.header('Content-Type', contentType);
+        reply.header('Content-Disposition', `attachment; filename="${fileName}"`);
+        reply.header('Cache-Control', 'no-store');
+
+        // Stream directly from GCP — no buffering in memory
+        const readStream = file.createReadStream();
+        return reply.send(readStream);
+
+    } catch (error: any) {
+        request.log.error(error, 'GCP File Download Error');
+        return reply.code(500).send({ success: false, error: 'Failed to download file', details: error.message });
     }
 }
 

@@ -8,7 +8,8 @@ import {
     confirmFinalSettlement,
     deleteFinalSettlement,
     calculateFinalSettlement,
-    unlockFinalSettlement
+    unlockFinalSettlement,
+    downloadSettlementFile
 } from '../services/final-settlement.service';
 
 export default async function finalSettlementRoutes(fastify: FastifyInstance) {
@@ -181,4 +182,23 @@ export default async function finalSettlementRoutes(fastify: FastifyInstance) {
             }
         }
     }, unlockFinalSettlement as any);
+
+    // Download Settlement File (GCP stream with forced download headers)
+    fastify.get('/final-settlement/download-file', {
+        onRequest: [authenticate],
+        schema: {
+            description: 'Download a settlement file (PDF) from GCP storage with forced download headers',
+            tags: ['Final Settlement'],
+            querystring: {
+                type: 'object',
+                required: ['filePath'],
+                properties: {
+                    filePath: {
+                        type: 'string',
+                        description: 'GCP object path, e.g. 69cb.../Settlement/FNF_EMP15_xxx.pdf'
+                    }
+                }
+            }
+        }
+    }, downloadSettlementFile as any);
 }
