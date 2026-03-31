@@ -3,7 +3,7 @@ import { Schema, model, Document, Types } from 'mongoose';
 // Interface for TypeScript
 export interface ISalaryAssignment extends Document {
     monthlyGross: number;
-    monthlyInsurance: number;
+    annualInsurance: number;
     reimbursement: number;
     travelAllowance: number; // ✅ Fixed amount for travel allowance (UAE specific)
     airTicketAllowance: number; // ✅ NEW: Annual air ticket allowance for UAE employees
@@ -24,7 +24,7 @@ const SalaryAssignmentSchema = new Schema<ISalaryAssignment>(
         employeeId: { type: Schema.Types.ObjectId, required: true, ref: 'User' },
         monthlyGross: { type: Number, required: true },
         reimbursement: { type: Number, required: true },
-        monthlyInsurance: { type: Number, required: true },
+        annualInsurance: { type: Number, required: true },
         travelAllowance: { 
             type: Number, 
             required: false, 

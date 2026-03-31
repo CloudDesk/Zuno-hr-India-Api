@@ -388,7 +388,7 @@ export class DataMigrationService extends BaseService {
       'Employee ID (Required)',
       'Salary Structure ID (Required)',
       'Monthly Gross (Required)',
-      'Monthly Insurance (Required)',
+      'Annual Insurance (Required)',
       'Reimbursement (Required)',
       'Travel Allowance (Optional - Default: 0)',
       'Air Ticket Allowance (Optional - Default: 0)',
@@ -405,7 +405,7 @@ export class DataMigrationService extends BaseService {
       1: { required: true, note: 'Valid User ID of employee' },
       2: { required: true, note: 'Valid Salary Structure ID' },
       3: { required: true, note: 'Monthly gross salary (must be >= 0)' },
-      4: { required: true, note: 'Monthly insurance amount (must be >= 0)' },
+      4: { required: true, note: 'Annual insurance amount (must be >= 0)' },
       5: { required: true, note: 'Reimbursement amount (must be >= 0)' },
       6: { required: false, note: 'Travel allowance (must be >= 0)' },
       7: { required: false, note: 'Air ticket allowance (must be >= 0)' },
@@ -757,7 +757,7 @@ export class DataMigrationService extends BaseService {
       'Employee ID',
       'Salary Structure ID',
       'Monthly Gross',
-      'Monthly Insurance',
+      'Annual Insurance',
       'Reimbursement',
       'Travel Allowance',
       'Air Ticket Allowance',
@@ -781,7 +781,7 @@ export class DataMigrationService extends BaseService {
         assignment.employeeId?.toString() || '',
         assignment.salaryStructureId?.toString() || '',
         assignment.monthlyGross || 0,
-        assignment.monthlyInsurance || 0,
+        assignment.annualInsurance || 0,
         assignment.reimbursement || 0,
         assignment.travelAllowance || 0,
         assignment.airTicketAllowance || 0,
@@ -1099,7 +1099,7 @@ export class DataMigrationService extends BaseService {
     rowData.employeeId = this.getCellValue(row, 1);
     rowData.salaryStructureId = this.getCellValue(row, 2);
     rowData.monthlyGross = this.getCellValue(row, 3);
-    rowData.monthlyInsurance = this.getCellValue(row, 4);
+    rowData.annualInsurance = this.getCellValue(row, 4);
     rowData.reimbursement = this.getCellValue(row, 5);
     rowData.travelAllowance = this.getCellValue(row, 6);
     rowData.airTicketAllowance = this.getCellValue(row, 7);
@@ -2630,7 +2630,7 @@ export class DataMigrationService extends BaseService {
       // Validate all numeric fields are non-negative
       const numericFields = [
         { field: 'monthlyGross', name: 'Monthly Gross' },
-        { field: 'monthlyInsurance', name: 'Monthly Insurance' },
+        { field: 'annualInsurance', name: 'Annual Insurance' },
         { field: 'reimbursement', name: 'Reimbursement' },
         { field: 'travelAllowance', name: 'Travel Allowance' },
         { field: 'airTicketAllowance', name: 'Air Ticket Allowance' },
@@ -3909,7 +3909,7 @@ export class DataMigrationService extends BaseService {
           employeeId: new Types.ObjectId(row.employeeId),
           salaryStructureId: new Types.ObjectId(row.salaryStructureId),
           monthlyGross: this.parseNumeric(row.monthlyGross),
-          monthlyInsurance: this.parseNumeric(row.monthlyInsurance),
+          annualInsurance: this.parseNumeric(row.annualInsurance),
           reimbursement: this.parseNumeric(row.reimbursement),
           travelAllowance: this.parseNumeric(row.travelAllowance),
           airTicketAllowance: this.parseNumeric(row.airTicketAllowance),

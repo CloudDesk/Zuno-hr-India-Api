@@ -1813,7 +1813,7 @@ export class PayrollService extends BaseService {
                 (monthlyComponents * 12) +              // Annualize monthly components
                 airTicketAllowanceFromAssignment +      // ✅ Annual allowance (not multiplied)
                 medicalAllowanceFromAssignment +        // ✅ Annual allowance (not multiplied)
-                ((salaryAssignment.monthlyInsurance || 0) * 12) // Insurance annualized
+                (salaryAssignment.annualInsurance || 0) // ✅ Annual insurance (stored as yearly)
             );
         } else {
             // India: Add employer contributions (travel allowance already in gross from structure percentage)

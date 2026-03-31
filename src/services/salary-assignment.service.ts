@@ -11,7 +11,7 @@ import { ITaxDeclarationUpdate, TaxDeclarationService } from "./tax-declaration.
 export interface ISalaryAssignmentCreate {
     employeeId: Types.ObjectId;
     monthlyGross: number;
-    monthlyInsurance: number;
+    annualInsurance: number;
     reimbursement: number;
     travelAllowance?: number; // ✅ Optional travel allowance (default: 0)
     airTicketAllowance?: number; // ✅ NEW: Optional air ticket allowance (default: 0)
@@ -26,7 +26,7 @@ export interface ISalaryAssignmentUpdate {
     _id: Types.ObjectId;
     employeeId: Types.ObjectId;
     monthlyGross: number;
-    monthlyInsurance: number;
+    annualInsurance: number;
     reimbursement: number;
     travelAllowance?: number; // ✅ Optional travel allowance (default: 0)
     airTicketAllowance?: number; // ✅ NEW: Optional air ticket allowance (default: 0)

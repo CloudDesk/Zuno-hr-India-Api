@@ -2085,7 +2085,7 @@ export async function confirmFinalSettlement(
                         (monthlyComponents * 12) +
                         (salaryAssignment.airTicketAllowance || 0) +
                         (salaryAssignment.medicalAllowance || 0) +
-                        ((salaryAssignment.monthlyInsurance || 0) * 12)
+                        (salaryAssignment.annualInsurance || 0) // ✅ Annual insurance (stored as yearly)
                     );
                 } else {
                     ctc = Math.round(

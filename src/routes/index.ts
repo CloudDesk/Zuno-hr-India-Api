@@ -12,7 +12,7 @@ import { trainingRoutes } from "./training.routes";
 import { trainingAttendanceRoutes } from "./training-attendance.routes";
 import { organizationRoutes } from "./organization.routes";
 import { salaryStructureRoutes } from "./salary-structure";
-import { salaryAssignmenteRoutes } from "./salary-assignment";
+import { salaryAssignmentRoutes } from "./salary-assignment";
 import { taxSlabRoutes } from "./tax-slab.routes";
 import { taxDeclarationRoutes } from "./tax-declaration";
 import { payrollRoutes } from "./payroll.routes";
@@ -74,7 +74,7 @@ export async function routes(fastify: FastifyInstance) {
   });
   fastify.register(organizationRoutes, { prefix: "/organizations" });
   fastify.register(salaryStructureRoutes, { prefix: "/salary-structure" });
-  fastify.register(salaryAssignmenteRoutes, { prefix: "/salary-assignment" });
+  fastify.register(salaryAssignmentRoutes, { prefix: "/salary-assignment" });
   fastify.register(taxSlabRoutes, { prefix: "/tax-slab" });
   fastify.register(taxDeclarationRoutes, { prefix: "/tax-declaration" });
   fastify.register(dataUnitRoutes, { prefix: "/data-units" });
