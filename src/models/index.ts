@@ -26,3 +26,7 @@ export * from './wfh-summary.model';
 export * from './shift-change-request.model';
 export * from './optional-holiday-request.model';
 export * from './final-settlement.model';
+export * from './vertical.model';
+export * from './domain.model';
+export * from './skill.model';
+export * from './employee-skill.model';
