@@ -712,6 +712,12 @@ export class DocumentService extends BaseService {
 
             if (category) {
                 query.category = category;
+
+                // Restriction for Payroll: Only show exported payslips for employees (access='own')
+                if (category === 'Payroll' && access === 'own') {
+                    query['metadata.payslip.isExport'] = true;
+                }
+
                 // Dynamic query enhancement for category 'Tax'
                 // Dynamic query enhancement for category 'Tax'
                 if (category === 'Tax' && (user.role.toLowerCase() !== 'admin' || access === 'own')) {
@@ -1381,6 +1387,7 @@ export class DocumentService extends BaseService {
                         payslipDoc._id,
                         {
                             status: 'Sent',
+                            'metadata.payslip.isExport': true,
                             $push: {
                                 auditLog: {
                                     action: 'Send',
