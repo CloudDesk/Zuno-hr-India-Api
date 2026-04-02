@@ -377,6 +377,7 @@ const userSchema = new Schema<IUser>(
     },
     dateOfBirth: {
       type: Date,
+      required: false,
     },
     fatherName: {
       type: String,

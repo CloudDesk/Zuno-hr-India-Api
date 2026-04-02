@@ -966,9 +966,7 @@ export class UserService extends BaseService {
     if (!data.joiningDate) {
       throw new Error('Joining date is required');
     }
-    if (!data.dateOfBirth) {
-      throw new Error('Date of birth is required');
-    }
+
 
     // Validate employeeCode uniqueness before creating
     if (data.employeeCode) {
@@ -1133,9 +1131,7 @@ export class UserService extends BaseService {
     if (data.joiningDate !== undefined && !data.joiningDate) {
       throw new Error('Joining date is required');
     }
-    if (data.dateOfBirth !== undefined && !data.dateOfBirth) {
-      throw new Error('Date of birth is required');
-    }
+
 
     // Validate employeeCode uniqueness if it's being updated
     if (data.employeeCode && data.employeeCode !== user.employeeCode) {
