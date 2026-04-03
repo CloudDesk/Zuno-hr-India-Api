@@ -652,7 +652,7 @@ export const payrollRoutes: RouteHandler = async (fastify: FastifyInstance): Pro
     fastify.get(
         '/salary-statement',
         {
-            // onRequest: [authenticate],
+            onRequest: [authenticate],
             schema: {
                 querystring: {
                     type: 'object',
