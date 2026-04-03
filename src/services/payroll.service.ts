@@ -919,6 +919,7 @@ export class PayrollService extends BaseService {
             { header: 'OTHER ALLOWANCE', key: 'otherAllowance', width: 20 },
             { header: 'GROSS', key: 'gross', width: 15 },
             { header: 'PF', key: 'pf', width: 12 },
+            { header: 'ESI', key: 'esi', width: 12 },
             { header: 'INCOME TAX', key: 'incomeTax', width: 15 },
             { header: 'Professional Tax', key: 'professionalTax', width: 18 },
             { header: 'TDS Amount', key: 'tdsAmount', width: 15 },
@@ -987,6 +988,7 @@ export class PayrollService extends BaseService {
             otherAllowance: 0,
             gross: 0,
             pf: 0,
+            esi: 0,
             incomeTax: 0,
             professionalTax: 0,
             tdsAmount: 0,
@@ -1009,17 +1011,18 @@ export class PayrollService extends BaseService {
                 status: user.employmentStatus || '',
                 daysInMonth: record.totalDaysInMonth || 0,
                 effectiveWorkdays: record.payableDays || 0,
-                basic: record.basic || 0,
-                hra: record.hra || 0,
-                consultancyFees: record.da || 0,
-                otherAllowance: record.otherAllowance || 0,
-                gross: record.monthlyGross || 0,
-                pf: record.epfEmployee || 0,
-                incomeTax: record.incomeTax || 0,
-                professionalTax: record.professionalTax || 0,
-                tdsAmount: record.tdsDeduction || 0,
-                totalDeductions: record.totalDeductions || 0,
-                netPay: record.netSalary || 0
+                basic: Math.round(record.basic || 0),
+                hra: Math.round(record.hra || 0),
+                consultancyFees: Math.round(record.da || 0),
+                otherAllowance: Math.round(record.otherAllowance || 0),
+                gross: Math.round(record.monthlyGross || 0),
+                pf: Math.round(record.epfEmployee || 0),
+                esi: Math.round(record.esiEmployee || 0),
+                incomeTax: Math.round(record.incomeTax || 0),
+                professionalTax: Math.round(record.professionalTax || 0),
+                tdsAmount: Math.round(record.tdsDeduction || 0),
+                totalDeductions: Math.round(record.totalDeductions || 0),
+                netPay: Math.round(record.netSalary || 0)
             };
 
             const row = worksheet.addRow(rowData);
@@ -1043,6 +1046,7 @@ export class PayrollService extends BaseService {
             grandTotals.otherAllowance += rowData.otherAllowance;
             grandTotals.gross += rowData.gross;
             grandTotals.pf += rowData.pf;
+            grandTotals.esi += rowData.esi;
             grandTotals.incomeTax += rowData.incomeTax;
             grandTotals.professionalTax += rowData.professionalTax;
             grandTotals.tdsAmount += rowData.tdsAmount;
@@ -1069,13 +1073,14 @@ export class PayrollService extends BaseService {
             hra: grandTotals.hra,
             consultancyFees: grandTotals.consultancyFees,
             otherAllowance: grandTotals.otherAllowance,
-            gross: grandTotals.gross,
-            pf: grandTotals.pf,
-            incomeTax: grandTotals.incomeTax,
-            professionalTax: grandTotals.professionalTax,
-            tdsAmount: grandTotals.tdsAmount,
-            totalDeductions: grandTotals.totalDeductions,
-            netPay: grandTotals.netPay
+            gross: Math.round(grandTotals.gross),
+            pf: Math.round(grandTotals.pf),
+            esi: Math.round(grandTotals.esi),
+            incomeTax: Math.round(grandTotals.incomeTax),
+            professionalTax: Math.round(grandTotals.professionalTax),
+            tdsAmount: Math.round(grandTotals.tdsAmount),
+            totalDeductions: Math.round(grandTotals.totalDeductions),
+            netPay: Math.round(grandTotals.netPay)
         });
 
         totalRow.font = { bold: true };
@@ -1109,7 +1114,7 @@ export class PayrollService extends BaseService {
             // Negative Total Row
             const negTotalRow = worksheet.addRow({
                 status: 'Total Negative Net Pay',
-                netPay: negativeNetPayTotal
+                netPay: Math.round(negativeNetPayTotal)
             });
             negTotalRow.font = { bold: true };
             negTotalRow.getCell('netPay').font = { color: { argb: 'FFFF0000' }, bold: true };
