@@ -6,6 +6,7 @@ import puppeteer from 'puppeteer';
 import handlebars from 'handlebars';
 import { formatCurrency } from '../utilis/currency';
 import { getPuppeteerLaunchOptions } from '../utilis/puppeteer';
+import { LOV } from '../models/lov.model';
 
 /**
  * Generate FNF Letter PDF via HTML to PDF (Puppeteer)
@@ -108,14 +109,41 @@ export async function generateFNFLetter(settlement: any, employee: any): Promise
         });
     }
 
+    // Resolve department name if it's currently an ID or N/A
+    let empDept = (employee as any).departmentName || (employee as any).departmentId?.name || (employee as any).department || 'N/A';
+    if (empDept === 'N/A' || empDept === (employee as any).departmentId) {
+        const deptLov = await LOV.findOne({ type: 'department', 'values.value': employee.departmentId });
+        if (deptLov) {
+            const deptVal = deptLov.values.find((v: any) => v.value === employee.departmentId);
+            if (deptVal) empDept = deptVal.label;
+        }
+    }
+
+    // Format lastPaidMonth to full name (e.g., "March 2026") for report display
+    const lastPaidDate = settlement.lastPaidMonthDate ? new Date(settlement.lastPaidMonthDate) : null;
+    const lastPaidMonthFormatted = (lastPaidDate && !isNaN(lastPaidDate.getTime()))
+        ? lastPaidDate.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })
+        : settlement.lastPaidMonth || 'N/A';
+
+    // Helper to capitalize first letter of each word
+    const capitalizeWords = (str: string | undefined | null): string => {
+        if (!str || str === 'N/A') return 'N/A';
+        return str
+            .toLowerCase()
+            .split(' ')
+            .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+            .join(' ');
+    };
+
     const templateData = {
         logoUrl: 'https://storage.googleapis.com/tendlylogo/cd_logo_2%20(1).png', // Official Cloud Desk Logo URLs URL
         empNo: settlement.employeeCode,
-        empName: settlement.employeeName,
-        empDept: (employee as any).departmentName || (employee as any).departmentId?.name || (employee as any).department || 'N/A',
-        empDesig: (employee as any).designation || (employee as any).specificRole || (employee as any).role || 'N/A',
-        empLocation: (employee as any).location || 'Chennai',
+        empName: capitalizeWords(settlement.employeeName),
+        empDept: capitalizeWords(empDept),
+        empDesig: capitalizeWords((employee as any).designation || (employee as any).specificRole || (employee as any).role || 'N/A'),
+        empLocation: capitalizeWords((employee as any).location || 'N/A'),
         joiningDate: formatDate((employee as any).joiningDate),
+        lastPaidMonth: lastPaidMonthFormatted,
         resignDate: formatDate(settlement.resignationSubmittedOn),
         leavingDate: formatDate(settlement.leavingDate),
         noticePeriod: settlement.noticePeriodDays || 0,
