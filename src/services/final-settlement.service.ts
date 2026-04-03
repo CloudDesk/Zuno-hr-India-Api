@@ -401,19 +401,18 @@ async function calculateUnpaidGaps(
         const daPerc = Number(structure.fixedEarnings?.daPercentage) || 0;
         const hraPerc = Number(structure.fixedEarnings?.hraPercentage) || 0;
         const conveyancePerc = Number(structure.fixedEarnings?.conveyancePercentage) || 0;
-        const otherAllowancePerc = Number(structure.fixedEarnings?.otherAllowancePercentage) || 0;
-
+        // removed otherAllowancePerc as it is now calculated via balancing logic below
+ 
         const fullBasic = currentMonthGross * (basicPerc / 100);
         const fullDA = daPerc === 0 ? 0 : fullBasic * (daPerc / 100);
         const fullHRA = currentMonthGross * (hraPerc / 100);
         const fullConveyance = currentMonthGross * (conveyancePerc / 100);
-        const fullOtherAllowances = currentMonthGross * (otherAllowancePerc / 100);
+        // removed fullOtherAllowances
 
         const proratedBasic = (fullBasic / daysInMonth) * payableDays;
         const proratedDA = (fullDA / daysInMonth) * payableDays;
         const proratedHRA = (fullHRA / daysInMonth) * payableDays;
         const proratedConveyance = (fullConveyance / daysInMonth) * payableDays;
-        const proratedOtherAllowances = (fullOtherAllowances / daysInMonth) * payableDays;
 
         // Note: Use rounded components and sum value to avoid 1-rupee rounding drift.
         const lopAmount = (currentMonthGross / daysInMonth) * lopDays;
@@ -448,15 +447,17 @@ async function calculateUnpaidGaps(
         const itAmount = await calculateIncomeTax(currentMonth, currentYear);
         const esiAmount = calculateESI();
 
+        const targetGross = Math.round(monthlySalary);
         const componentBasic = Math.round(proratedBasic + proratedDA);
         const componentHRA = Math.round(proratedHRA);
         const componentConveyance = Math.round(proratedConveyance);
-        const componentOtherAllowances = Math.round(proratedOtherAllowances);
-        const componentSum = componentBasic + componentHRA + componentConveyance + componentOtherAllowances;
-
-        // Align salary to rounded component sum to avoid 1-rupee extra discrepancies.
+        
+        // Internal Balancing Logic: Adjust 'Other Allowances' to ensure sum of components exactly matches rounded total gross.
+        const componentOtherAllowances = targetGross - (componentBasic + componentHRA + componentConveyance);
+        
+        const componentSum = targetGross;
         const componentGross = componentSum;
-        const componentOtherAllowancesAdjusted = componentOtherAllowances; // already in sum
+        const componentOtherAllowancesAdjusted = componentOtherAllowances;
 
         const roundedSalary = componentGross;
 
@@ -1150,18 +1151,25 @@ export async function saveFinalSettlement(
                     const proratedOtherAllowances = (fullOtherAllowances / daysInMonth) * payableDays;
 
                     const pg = (mGross / daysInMonth) * payableDays;
-                    const balancing = pg - (pb + pd + ph + ptAllo + proratedOtherAllowances); // Adjust balancing
+                    const targetGross = Math.round(pg);
+                    const roundedBasic = Math.round(pb + pd);
+                    const roundedHRA = Math.round(ph);
+                    const roundedConveyance = Math.round(ptAllo);
+                    const roundedOtherAllowances = Math.round(proratedOtherAllowances);
+
+                    // Re-calculate balancing allowance to ensure sum of components exactly matches targetGross.
+                    const roundedSpecialAllowance = targetGross - (roundedBasic + roundedHRA + roundedConveyance + roundedOtherAllowances);
 
                     m.components = {
-                        basic: Math.round(pb + pd),
-                        hra: Math.round(ph),
-                        conveyance: Math.round(ptAllo),
-                        specialAllowance: Math.round(balancing),
-                        otherAllowances: Math.round(proratedOtherAllowances),
-                        gross: Math.round(pg)
+                        basic: roundedBasic,
+                        hra: roundedHRA,
+                        conveyance: roundedConveyance,
+                        specialAllowance: roundedSpecialAllowance,
+                        otherAllowances: roundedOtherAllowances,
+                        gross: targetGross
                     };
 
-                    m.salary = Math.round(pg);
+                    m.salary = targetGross;
 
                     // ✅ PT Calculation Logic (Updated to Aggregate Cycle Logic for Manual Mode)
                     const lDate = leavingDate ? new Date(leavingDate) : new Date();
@@ -2098,18 +2106,6 @@ export async function confirmFinalSettlement(
                     ? Math.round((month.daysWorked / month.totalDays) * travelAllowanceFromAssignment)
                     : travelAllowanceFromPercentageProrated;
 
-                // Calculate other allowance based on country
-                let otherAllowance: number;
-                if (isUAE) {
-                    otherAllowance = Math.round(
-                        attendanceAdjustedGross - (basic + hra + da + travelAllowance)
-                    );
-                } else {
-                    otherAllowance = Math.round(
-                        (structure.fixedEarnings.otherAllowancePercentage / 100) * attendanceAdjustedGross
-                    );
-                }
-
                 const reimbursementAllowance = Math.round(
                     ((structure.fixedEarnings.reimbursementPercentage ?? 0) / 100) * attendanceAdjustedGross
                 );
@@ -2117,6 +2113,11 @@ export async function confirmFinalSettlement(
                 // Air ticket and medical allowances (UAE only, annual)
                 const airTicketAllowance = isUAE ? (salaryAssignment.airTicketAllowance || 0) : 0;
                 const medicalAllowance = isUAE ? (salaryAssignment.medicalAllowance || 0) : 0;
+
+                // ✅ Balancing Logic for Other Allowance (India & UAE)
+                const otherAllowance = Math.round(
+                    attendanceAdjustedGross - (basic + hra + da + travelAllowance + reimbursementAllowance + airTicketAllowance + medicalAllowance)
+                );
 
                 // Calculate assigned values (full month, not prorated)
                 const assignedBasic = Math.round((structure.fixedEarnings.basicPercentage / 100) * monthlyGross);
@@ -2242,22 +2243,29 @@ export async function confirmFinalSettlement(
                     bonus: 0,
 
                     // Assigned values (matching Payroll Service)
-                    assigned: {
-                        basic: Math.round((structure.fixedEarnings.basicPercentage / 100) * periodGross),
-                        hra: Math.round((structure.fixedEarnings.hraPercentage / 100) * periodGross),
-                        da: Math.round((structure.fixedEarnings.daPercentage / 100) * periodGross),
-                        otherAllowance: Math.round(
-                            (structure.fixedEarnings.otherAllowancePercentage / 100) * periodGross
-                        ),
-                        travelAllowance: Math.round(
-                            ((structure.fixedEarnings.travelAllowancePercentage ?? 0) / 100) * periodGross
-                        ),
-                        airTicketAllowance: isUAE ? (salaryAssignment.airTicketAllowance || 0) : 0,
-                        medicalAllowance: isUAE ? (salaryAssignment.medicalAllowance || 0) : 0,
-                        reimbursementAllowance: Math.round(
-                            ((structure.fixedEarnings.reimbursementPercentage ?? 0) / 100) * periodGross
-                        )
-                    },
+                    assigned: (() => {
+                        const aBasic = Math.round((structure.fixedEarnings.basicPercentage / 100) * periodGross);
+                        const aHra = Math.round((structure.fixedEarnings.hraPercentage / 100) * periodGross);
+                        const aDa = Math.round((structure.fixedEarnings.daPercentage / 100) * aBasic);
+                        const aTravel = Math.round(((structure.fixedEarnings.travelAllowancePercentage ?? 0) / 100) * periodGross);
+                        const aReimbursement = Math.round(((structure.fixedEarnings.reimbursementPercentage ?? 0) / 100) * periodGross);
+                        const aAir = isUAE ? (salaryAssignment.airTicketAllowance || 0) : 0;
+                        const aMedical = isUAE ? (salaryAssignment.medicalAllowance || 0) : 0;
+                        
+                        // Balancing Logic for Assigned Other Allowance
+                        const aOther = Math.round(periodGross - (aBasic + aHra + aDa + aTravel + aReimbursement + aAir + aMedical));
+
+                        return {
+                            basic: aBasic,
+                            hra: aHra,
+                            da: aDa,
+                            otherAllowance: aOther,
+                            travelAllowance: aTravel,
+                            airTicketAllowance: aAir,
+                            medicalAllowance: aMedical,
+                            reimbursementAllowance: aReimbursement
+                        };
+                    })(),
 
                     // Status fields (Set to Draft for admin review)
                     status: 'Draft',
@@ -2532,9 +2540,10 @@ export async function calculateFinalSettlement(
             const epf = structure?.statutoryDeductions?.epf;
             if (!epf) return 0;
             const wage = basic + da;
-            const rate = epf.employeeContribution / 100;
+            const rate = (epf.employeeContribution || 12) / 100;
             const limit = epf.maxLimit ?? 15000;
-            return wage >= limit ? (limit * rate) : (wage * rate);
+            const contribution = wage >= limit ? (limit * rate) : (wage * rate);
+            return Math.round(contribution);
         };
 
         // Helper: ESI Calculation
@@ -2604,38 +2613,43 @@ export async function calculateFinalSettlement(
                     const dP = (curMonthStructure.fixedEarnings?.daPercentage ?? 0) / 100;
                     const hP = (curMonthStructure.fixedEarnings?.hraPercentage ?? 0) / 100;
                     const tP = (curMonthStructure.fixedEarnings?.travelAllowancePercentage ?? 0) / 100;
-                    const oP = (curMonthStructure.fixedEarnings?.otherAllowancePercentage ?? 0) / 100;
-
+                    // removed oP as it is now calculated via balancing logic below
+ 
                     const fullB = curMonthGross * bP;
                     const fullD = fullB * dP;
                     const fullH = curMonthGross * hP;
                     const fullT = curMonthGross * tP;
-                    const fullOtherAllowances = curMonthGross * oP;
+                    // removed fullOtherAllowances
 
                     const proratedBasic = (fullB / daysInMonth) * payableDays;
                     const proratedDA = (fullD / daysInMonth) * payableDays;
                     const proratedHRA = (fullH / daysInMonth) * payableDays;
                     const proratedTravelAllowance = (fullT / daysInMonth) * payableDays;
-                    const proratedOtherAllowances = (fullOtherAllowances / daysInMonth) * payableDays;
 
                     const pg = (curMonthGross / daysInMonth) * payableDays;
-                    const balancing = pg - (proratedBasic + proratedDA + proratedHRA + proratedTravelAllowance + proratedOtherAllowances);
+                    const targetGross = Math.round(pg);
+                    const roundedBasic = Math.round(proratedBasic + proratedDA);
+                    const roundedHRA = Math.round(proratedHRA);
+                    const roundedConveyance = Math.round(proratedTravelAllowance);
+                    
+                    // Balancing Logic: Adjust 'Other Allowance' to ensure sum of components matches targetGross exactly.
+                    const roundedOtherAllowances = targetGross - (roundedBasic + roundedHRA + roundedConveyance);
 
                     const lopAmount = (curMonthGross / daysInMonth) * lopDays;
                     const pfAmount = calculatePF(proratedBasic, proratedDA);
                     const esiAmount = calculateESI();
 
                     month.components = {
-                        basic: Math.round(proratedBasic + proratedDA),
-                        hra: Math.round(proratedHRA),
-                        conveyance: Math.round(proratedTravelAllowance),
+                        basic: roundedBasic,
+                        hra: roundedHRA,
+                        conveyance: roundedConveyance,
                         specialAllowance: 0,
-                        otherAllowances: Math.round(proratedOtherAllowances + balancing),
-                        gross: Math.round(pg)
+                        otherAllowances: roundedOtherAllowances,
+                        gross: targetGross
                     };
 
                     month.lopAmount = Math.round(lopAmount);
-                    month.salary = Math.round(pg);
+                    month.salary = targetGross;
 
                     // ✅ PT Calculation Logic (Updated to Aggregate Cycle Logic for Manual recalculation)
                     const lDate = effectiveLeavingDate ? new Date(effectiveLeavingDate) : new Date();
