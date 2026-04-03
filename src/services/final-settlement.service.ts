@@ -414,11 +414,8 @@ async function calculateUnpaidGaps(
         const proratedHRA = (fullHRA / daysInMonth) * payableDays;
         const proratedConveyance = (fullConveyance / daysInMonth) * payableDays;
         const proratedOtherAllowances = (fullOtherAllowances / daysInMonth) * payableDays;
-        const proratedGross = proratedBasic + proratedDA + proratedHRA + proratedConveyance + proratedOtherAllowances;
 
-        // Note: If (proratedGross !== monthlySalary) due to rounding/residual, add difference to Other Allowance
-        const finalGross = proratedGross;
-
+        // Note: Use rounded components and sum value to avoid 1-rupee rounding drift.
         const lopAmount = (currentMonthGross / daysInMonth) * lopDays;
 
         // ✅ PT Calculation Logic (Updated to Aggregate Cycle Logic)
@@ -451,6 +448,18 @@ async function calculateUnpaidGaps(
         const itAmount = await calculateIncomeTax(currentMonth, currentYear);
         const esiAmount = calculateESI();
 
+        const componentBasic = Math.round(proratedBasic + proratedDA);
+        const componentHRA = Math.round(proratedHRA);
+        const componentConveyance = Math.round(proratedConveyance);
+        const componentOtherAllowances = Math.round(proratedOtherAllowances);
+        const componentSum = componentBasic + componentHRA + componentConveyance + componentOtherAllowances;
+
+        // Align salary to rounded component sum to avoid 1-rupee extra discrepancies.
+        const componentGross = componentSum;
+        const componentOtherAllowancesAdjusted = componentOtherAllowances; // already in sum
+
+        const roundedSalary = componentGross;
+
         unpaidMonths.push({
             month: currentMonth,
             year: currentYear,
@@ -464,21 +473,21 @@ async function calculateUnpaidGaps(
             lopDays: lopDays,
             lopAmount: Math.round(lopAmount),
             components: {
-                basic: Math.round(proratedBasic + proratedDA),
-                hra: Math.round(proratedHRA),
-                conveyance: Math.round(proratedConveyance),
+                basic: componentBasic,
+                hra: componentHRA,
+                conveyance: componentConveyance,
                 specialAllowance: 0,
-                otherAllowances: Math.round(proratedOtherAllowances),
-                gross: Math.round(finalGross)
+                otherAllowances: componentOtherAllowancesAdjusted,
+                gross: componentGross
             },
-            salary: Math.round(monthlySalary),
+            salary: roundedSalary,
             professionalTax: ptAmount,
             incomeTax: itAmount,
             providentFund: pfAmount,
             esi: esiAmount
         });
 
-        totalUnpaidSalary += Math.round(monthlySalary);
+        totalUnpaidSalary += roundedSalary;
         totalDaysWorked += payableDays;
         totalProfessionalTax += ptAmount;
         totalProvidentFund += pfAmount;
@@ -1365,6 +1374,7 @@ export async function saveFinalSettlement(
         // packSettlement helper now includes these fields in whitelist
         const enrichedData = {
             ...data,
+            unpaidMonths,
             totalHoldAmount: holdSalaries,
             totalUnpaidSalary: totalUnpaid,
             totalLeaveEncashment: totalLeaveAmt,
