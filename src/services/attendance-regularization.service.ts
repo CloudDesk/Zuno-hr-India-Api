@@ -346,6 +346,43 @@ export class AttendanceRegularizationService extends BaseService {
         }));
     }
 
+    async getRegularizationRecordById(id: string, user: any) {
+        if (!Types.ObjectId.isValid(id)) {
+            throw new Error('Invalid regularization record ID');
+        }
+
+        const record = await AttendanceRegularization.findById(id)
+            .populate('userId', '_id name')
+            .lean();
+
+        if (!record) {
+            throw new Error('Regularization record not found');
+        }
+
+        const isAdmin = user.role?.toLowerCase() === 'admin';
+        const isOwner = record.userId._id.toString() === user._id.toString();
+        const isApprover = record.approver.id.toString() === user._id.toString();
+
+        if (!isAdmin && !isOwner && !isApprover) {
+            throw new Error('Forbidden: You are not authorized to view this record');
+        }
+
+        return {
+            _id: record._id.toString(),
+            attendanceId: record.attendanceId?.toString(),
+            shiftDay: record.shiftDay.toISOString(),
+            from: record.from.toISOString(),
+            to: record.to.toISOString(),
+            reason: record.reason,
+            status: record.status,
+            approver: record.approver,
+            approvedDate: record.approvedDate ? record.approvedDate.toISOString() : null,
+            comments: record.comments || null,
+            userId: record.userId?._id?.toString() || '',
+            userName: (record.userId && typeof record.userId !== 'string' && 'name' in record.userId) ? record.userId.name : ''
+        };
+    }
+
 
     async createRegularization(data: Partial<IAttendanceRegularization>): Promise<IAttendanceRegularization> {
 

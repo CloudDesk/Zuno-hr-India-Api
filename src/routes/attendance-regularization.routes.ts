@@ -528,6 +528,101 @@ export const attendanceRegularizeRoutes: RouteHandler = async (
             }
         }
     );
+    // Get single regularization record by ID
+    fastify.get(
+        '/record/:id',
+        {
+            onRequest: [authenticate],
+            schema: {
+                tags: ['Attendance Regularization'],
+                summary: 'Get a single attendance regularization record by ID',
+                params: {
+                    type: 'object',
+                    required: ['id'],
+                    properties: {
+                        id: { type: 'string', description: 'Regularization record ID' }
+                    }
+                },
+                response: {
+                    200: {
+                        type: 'object',
+                        properties: {
+                            success: { type: 'boolean' },
+                            data: {
+                                type: 'object',
+                                properties: {
+                                    _id: { type: 'string' },
+                                    attendanceId: { type: 'string' },
+                                    shiftDay: { type: 'string', format: 'date-time' },
+                                    from: { type: 'string', format: 'date-time' },
+                                    to: { type: 'string', format: 'date-time' },
+                                    reason: { type: 'string' },
+                                    status: {
+                                        type: 'string',
+                                        enum: ['Approved', 'Rejected', 'Pending', 'Rejected-Absent', 'Rejected-Leave', 'Withdrawn']
+                                    },
+                                    approver: {
+                                        type: 'object',
+                                        properties: {
+                                            id: { type: 'string' },
+                                            name: { type: 'string' }
+                                        }
+                                    },
+                                    approvedDate: { type: 'string', format: 'date-time', nullable: true },
+                                    comments: { type: 'string', nullable: true },
+                                    userId: { type: 'string' },
+                                    userName: { type: 'string' }
+                                }
+                            }
+                        }
+                    },
+                    400: {
+                        type: 'object',
+                        properties: {
+                            success: { type: 'boolean', default: false },
+                            error: { type: 'object', properties: { message: { type: 'string' } } }
+                        }
+                    },
+                    403: {
+                        type: 'object',
+                        properties: {
+                            success: { type: 'boolean', default: false },
+                            error: { type: 'object', properties: { message: { type: 'string' } } }
+                        }
+                    },
+                    404: {
+                        type: 'object',
+                        properties: {
+                            success: { type: 'boolean', default: false },
+                            error: { type: 'object', properties: { message: { type: 'string' } } }
+                        }
+                    }
+                }
+            }
+        },
+        async (request, reply) => {
+            try {
+                const { id } = request.params as { id: string };
+                const user = request.user;
+                const result = await request.container!.attendanceRegularizationService.getRegularizationRecordById(id, user);
+
+                return reply.send({
+                    success: true,
+                    data: result
+                });
+            } catch (error: any) {
+                const errorMessage = error.message;
+                let statusCode = 400;
+                if (errorMessage.includes('Forbidden')) statusCode = 403;
+                else if (errorMessage.includes('not found')) statusCode = 404;
+
+                return reply.status(statusCode).send({
+                    success: false,
+                    error: { message: errorMessage }
+                });
+            }
+        }
+    );
 
     // Get Assigned Regularization Records
     fastify.get<{
