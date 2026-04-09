@@ -1798,8 +1798,10 @@ export class PayrollService extends BaseService {
         const finalAttendanceAdjustedGross = Number((basic + hra + da + otherAllowance + travelAllowance + reimbursementAllowance).toFixed(2));
         const finalTotalDeductions = Number((resolvedDeductions.totalDeductions + additionalDeduction).toFixed(2));
 
+        // Net salary uses full monthly gross, while LOP impact is captured in deductions.
+        // This avoids double LOP impact from both attendance-adjusted earnings and leave deduction.
         const netSalary = Number((
-            finalAttendanceAdjustedGross -
+            monthlyGross -
             finalTotalDeductions +
             overtimePay
         ).toFixed(2));
