@@ -34,6 +34,7 @@ import { ShiftChangeService } from '../services/shift-change.service';
 import { OptionalHolidayService } from '../services/optional-holiday.service';
 import { PayslipPdfService } from '../services/payslip-pdf.service';
 import { SalaryStatementService } from '../services/salary-statement.service';
+import { TaxSalaryContextService } from '../services/tax-salary-context.service';
 
 export class Container {
   private static instance: Container;
@@ -90,6 +91,7 @@ export class Container {
       optionalHolidayService: new OptionalHolidayService(context),
       payslipPdfService: new PayslipPdfService(context),
       salaryStatementService: new SalaryStatementService(context),
+      taxSalaryContextService: new TaxSalaryContextService(context),
     };
   }
 

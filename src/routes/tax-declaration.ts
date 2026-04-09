@@ -7,6 +7,37 @@ import * as xlsx from 'xlsx';
 import fs from 'fs';
 
 export async function taxDeclarationRoutes(fastify: FastifyInstance): Promise<void> {
+    fastify.get('/hra-context/:employeeId',
+        { preHandler: [authenticate] },
+        async (request, reply) => {
+            try {
+                const { employeeId } = request.params as { employeeId: string };
+                const { financialYear } = request.query as { financialYear?: string };
+
+                if (!financialYear) {
+                    return reply.status(400).send({
+                        success: false,
+                        error: { message: 'financialYear is required' },
+                    });
+                }
+
+                const data = await request.container!.taxSalaryContextService.getHraContext(
+                    employeeId,
+                    financialYear,
+                );
+
+                return reply.send({
+                    success: true,
+                    data,
+                });
+            } catch (error: any) {
+                return reply.status(400).send({
+                    success: false,
+                    error: { message: error.message },
+                });
+            }
+        }
+    )
     //get all tax declarations
     fastify.get('/', { preHandler: [authenticate] },
         async (request, reply) => {

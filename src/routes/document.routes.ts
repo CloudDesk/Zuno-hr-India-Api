@@ -96,6 +96,27 @@ interface IPreviewStatusRequest {
     Body: { isPreviewEnabled: boolean };
 }
 
+type GovernmentIdKey = 'pan' | 'aadhaar' | 'passport' | 'voterId' | 'drivingLicense' | 'pf';
+
+function mapIdTypeToGovernmentIdKey(idType?: string): GovernmentIdKey | null {
+    switch (idType) {
+        case 'PAN':
+            return 'pan';
+        case 'Aadhaar':
+            return 'aadhaar';
+        case 'Passport':
+            return 'passport';
+        case 'VoterID':
+            return 'voterId';
+        case 'DriverLicense':
+            return 'drivingLicense';
+        case 'PF':
+            return 'pf';
+        default:
+            return null;
+    }
+}
+
 export const documentRoutes = async (
     fastify: FastifyInstance
 ): Promise<void> => {
@@ -1617,6 +1638,40 @@ export const documentRoutes = async (
             }
 
             const updatedDocument = await request.container!.documentService.verifyDocument(id, status, comments, adminUser._id.toString());
+
+            if (status === 'Verified') {
+                const certificate = updatedDocument?.metadata?.certificate;
+                const idDetails = certificate?.idDetails;
+                const governmentIdKey = mapIdTypeToGovernmentIdKey(idDetails?.idType);
+
+                if (
+                    updatedDocument?.employeeId &&
+                    certificate?.certificateType === 'IdentityProof' &&
+                    governmentIdKey
+                ) {
+                    const governmentIdUpdate: Record<string, any> = {
+                        [`governmentIds.${governmentIdKey}.number`]: idDetails?.idNumber,
+                        [`governmentIds.${governmentIdKey}.country`]: idDetails?.country,
+                        [`governmentIds.${governmentIdKey}.documentUrl`]: updatedDocument.filePath,
+                        [`governmentIds.${governmentIdKey}.documentId`]: updatedDocument._id,
+                        [`governmentIds.${governmentIdKey}.verificationStatus`]: 'Verified'
+                    };
+
+                    if (governmentIdKey === 'pf') {
+                        governmentIdUpdate['governmentIds.pf.uan'] = idDetails?.uanNumber;
+                    }
+
+                    Object.keys(governmentIdUpdate).forEach((key) => {
+                        if (governmentIdUpdate[key] === undefined) {
+                            delete governmentIdUpdate[key];
+                        }
+                    });
+
+                    await User.findByIdAndUpdate(updatedDocument.employeeId, {
+                        $set: governmentIdUpdate
+                    });
+                }
+            }
 
             return reply.status(200).send({
                 success: true,
