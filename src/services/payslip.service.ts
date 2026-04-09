@@ -509,10 +509,18 @@ export class PayslipService extends BaseService {
       : (employee.specificRole || formatLabel(employee.role));
 
     const holdSalaryValue = isUaePayroll ? sanitizeAmount(payroll.holdSalary) : (payroll.holdSalary || 0);
+    const customReimbursementsTotal = (payroll.customReimbursements || []).reduce(
+      (sum, item) => sum + sanitizeAmount(item?.value),
+      0
+    );
+    const customDeductionsTotal = (payroll.customDeductions || []).reduce(
+      (sum, item) => sum + sanitizeAmount(item?.value),
+      0
+    );
 
-    // ✅ UPDATED: Total earnings = Monthly components + Hold Salary (Preserving existing logic for others)
+    // ✅ UPDATED: Total earnings = Monthly components + Hold Salary + Custom Reimbursements
     const totalEarnings =
-      basicValue + hraValue + otherAllowanceValue + daValue + travelAllowanceValue + holdSalaryValue;
+      basicValue + hraValue + otherAllowanceValue + daValue + travelAllowanceValue + holdSalaryValue + customReimbursementsTotal;
 
     console.log(activeBankData, "activeBankData")
 
@@ -591,7 +599,8 @@ export class PayslipService extends BaseService {
           assignedHraValue +
           assignedOtherAllowanceValue +
           assignedTravelAllowanceValue +
-          holdSalaryValue,
+          holdSalaryValue +
+          customReimbursementsTotal,
           payroll.country
           // ✅ Air Ticket & Medical NOT included in monthly total (annual only)
         )
@@ -600,7 +609,7 @@ export class PayslipService extends BaseService {
       // Deductions - Only include non-zero values (so template rows can be conditional)
       deduction: (() => {
         const deductionObj: any = {
-          total: formatCurrency(payroll.totalDeductions || 0, payroll.country)
+          total: formatCurrency((payroll.totalDeductions || 0) + customDeductionsTotal, payroll.country)
         };
 
         // Normalize values to numbers and only include if > 0
@@ -663,6 +672,15 @@ export class PayslipService extends BaseService {
           pushIfValid('MEDICAL ALLOWANCE', sanitizeAmount(payroll.medicalAllowance), sanitizeAmount(payroll.assigned?.medicalAllowance));
         }
 
+        // Add Dynamic Custom Reimbursements
+        if (payroll.customReimbursements && payroll.customReimbursements.length > 0) {
+          payroll.customReimbursements.forEach(item => {
+            if (item.value > 0) {
+              pushIfValid(item.name.toUpperCase(), item.value, item.value);
+            }
+          });
+        }
+
         return earningsArray;
       })(),
 
@@ -682,6 +700,16 @@ export class PayslipService extends BaseService {
         if (ptVal > 0) deductionsArray.push({ label: 'PROFESSIONAL TAX', amount: formatCurrency(ptVal, payroll.country) });
         if (tdsVal > 0) deductionsArray.push({ label: 'TDS (1%)', amount: formatCurrency(tdsVal, payroll.country) });
         if (noticeVal > 0) deductionsArray.push({ label: 'NOTICE PERIOD RECOVERY', amount: formatCurrency(noticeVal, payroll.country) });
+
+        // Add Dynamic Custom Deductions
+        if (payroll.customDeductions && payroll.customDeductions.length > 0) {
+          payroll.customDeductions.forEach(item => {
+            if (item.value > 0) {
+              deductionsArray.push({ label: item.name.toUpperCase(), amount: formatCurrency(item.value, payroll.country) });
+            }
+          });
+        }
+
         return deductionsArray;
       })(),
 
@@ -995,3 +1023,4 @@ export class PayslipService extends BaseService {
     }).populate('userId', 'name email');
   }
 }
+

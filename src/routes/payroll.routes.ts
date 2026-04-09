@@ -251,7 +251,27 @@ export const payrollRoutes: RouteHandler = async (fastify: FastifyInstance): Pro
                                                 overtimeHours: { type: 'number' },
                                                 overtimePay: { type: 'number' },
                                                 status: { type: 'string' },
-                                                type: { type: 'string', enum: ['Regular', 'FinalSettlement'] }
+                                                type: { type: 'string', enum: ['Regular', 'FinalSettlement'] },
+                                                customReimbursements: {
+                                                    type: 'array',
+                                                    items: {
+                                                        type: 'object',
+                                                        properties: {
+                                                            name: { type: 'string' },
+                                                            value: { type: 'number' }
+                                                        }
+                                                    }
+                                                },
+                                                customDeductions: {
+                                                    type: 'array',
+                                                    items: {
+                                                        type: 'object',
+                                                        properties: {
+                                                            name: { type: 'string' },
+                                                            value: { type: 'number' }
+                                                        }
+                                                    }
+                                                }
                                             }
                                         }
                                     }
@@ -804,6 +824,142 @@ export const payrollRoutes: RouteHandler = async (fastify: FastifyInstance): Pro
             }
         }
     );
+
+    // Update custom components for a draft payroll record
+    fastify.put(
+        '/record/:id/custom-components',
+        {
+            onRequest: [authenticate],
+            schema: {
+                params: {
+                    type: 'object',
+                    required: ['id'],
+                    properties: {
+                        id: { type: 'string' }
+                    }
+                },
+                body: {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                        customReimbursements: {
+                            type: 'array',
+                            maxItems: 25,
+                            items: {
+                                type: 'object',
+                                required: ['name', 'value'],
+                                additionalProperties: false,
+                                properties: {
+                                    name: { type: 'string', minLength: 1, maxLength: 100 },
+                                    value: { type: 'number', minimum: 0, maximum: 1000000 }
+                                }
+                            }
+                        },
+                        customDeductions: {
+                            type: 'array',
+                            maxItems: 25,
+                            items: {
+                                type: 'object',
+                                required: ['name', 'value'],
+                                additionalProperties: false,
+                                properties: {
+                                    name: { type: 'string', minLength: 1, maxLength: 100 },
+                                    value: { type: 'number', minimum: 0, maximum: 1000000 }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        async (request, reply) => {
+            try {
+                const { id } = request.params as { id: string };
+                const { customReimbursements, customDeductions } = request.body as any;
+                
+                const result = await request.container!.payrollService.updateCustomComponents(id, customReimbursements, customDeductions);
+                
+                return reply.send({
+                    success: true,
+                    data: result
+                });
+            } catch (error: any) {
+                return reply.status(400).send({
+                    success: false,
+                    error: { message: error.message }
+                });
+            }
+        }
+    );
+
+    fastify.put(
+        '/records/custom-components',
+        {
+            onRequest: [authenticate],
+            schema: {
+                body: {
+                    type: 'object',
+                    required: ['payrollIds'],
+                    additionalProperties: false,
+                    properties: {
+                        payrollIds: {
+                            type: 'array',
+                            minItems: 1,
+                            items: { type: 'string' }
+                        },
+                        customReimbursements: {
+                            type: 'array',
+                            maxItems: 25,
+                            items: {
+                                type: 'object',
+                                required: ['name', 'value'],
+                                additionalProperties: false,
+                                properties: {
+                                    name: { type: 'string', minLength: 1, maxLength: 100 },
+                                    value: { type: 'number', minimum: 0, maximum: 1000000 }
+                                }
+                            }
+                        },
+                        customDeductions: {
+                            type: 'array',
+                            maxItems: 25,
+                            items: {
+                                type: 'object',
+                                required: ['name', 'value'],
+                                additionalProperties: false,
+                                properties: {
+                                    name: { type: 'string', minLength: 1, maxLength: 100 },
+                                    value: { type: 'number', minimum: 0, maximum: 1000000 }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        async (request, reply) => {
+            try {
+                const { payrollIds, customReimbursements, customDeductions } = request.body as any;
+
+                const result = await request.container!.payrollService.updateCustomComponentsBulk(
+                    payrollIds,
+                    customReimbursements,
+                    customDeductions
+                );
+
+                return reply.send({
+                    success: true,
+                    data: result
+                });
+            } catch (error: any) {
+                return reply.status(400).send({
+                    success: false,
+                    error: { message: error.message }
+                });
+            }
+        }
+    );
+
     /*
         fastify.put(
             '/approval/status',

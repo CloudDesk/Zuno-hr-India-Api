@@ -101,6 +101,44 @@ export class SalaryStatementService extends BaseService {
             { header: 'NET PAY', key: 'netPay', width: 15 },
         ];
 
+        // --- NEW: DYNAMIC COLUMNS FOR CUSTOM COMPONENTS ---
+        const customEarningNames = new Set<string>();
+        const customDeductionNames = new Set<string>();
+
+        payrollRecords.forEach(record => {
+            (record.customReimbursements || []).forEach((r: any) => {
+                if (r.name) customEarningNames.add(r.name.trim().toUpperCase());
+            });
+            (record.customDeductions || []).forEach((d: any) => {
+                if (d.name) customDeductionNames.add(d.name.trim().toUpperCase());
+            });
+        });
+
+        const sortedCustomEarnings = Array.from(customEarningNames).sort();
+        const sortedCustomDeductions = Array.from(customDeductionNames).sort();
+
+        // Inject dynamic earnings after 'OTHER ALLOWANCE' (key: otherAllowance, index 10 in 0-based is index 11 in table)
+        // Actually, let's inject them just before 'GROSS'.
+        const grossIndex = columnDefinitions.findIndex(c => c.key === 'gross');
+        sortedCustomEarnings.forEach(name => {
+            columnDefinitions.splice(grossIndex, 0, {
+                header: `${name} (+)`,
+                key: `custom_earn_${name}`,
+                width: 15
+            });
+        });
+
+        // Inject dynamic deductions after 'PF' or before 'TOTAL DEDUCTIONS'
+        const totalDeductionsIndex = columnDefinitions.findIndex(c => c.key === 'totalDeductions');
+        sortedCustomDeductions.forEach(name => {
+            columnDefinitions.splice(totalDeductionsIndex, 0, {
+                header: `${name} (-)`,
+                key: `custom_ded_${name}`,
+                width: 15
+            });
+        });
+        // --- END DYNAMIC COLUMNS ---
+
         worksheet.columns = columnDefinitions.map(col => ({ key: col.key, width: col.width }));
         worksheet.getRow(1).values = [];
 
@@ -116,7 +154,8 @@ export class SalaryStatementService extends BaseService {
         createdOnCell.font = { size: 10, italic: true };
 
         // 2. Main Title (Row 2, Centered)
-        worksheet.mergeCells('A2:R2');
+        const lastColLetter = worksheet.getColumn(columnDefinitions.length).letter;
+        worksheet.mergeCells(`A2:${lastColLetter}2`);
         const titleCell = worksheet.getCell('A2');
         titleCell.value = `Salary Statement For The Month Of ${monthName} ${year}`;
         titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
@@ -157,12 +196,21 @@ export class SalaryStatementService extends BaseService {
             netPay: 0
         };
 
+        const customTotals: Record<string, number> = {};
+        [...sortedCustomEarnings.map(n => `custom_earn_${n}`), ...sortedCustomDeductions.map(n => `custom_ded_${n}`)].forEach(key => {
+            customTotals[key] = 0;
+        });
+
         let positiveNetPayTotal = 0;
         let negativeNetPayTotal = 0;
 
         payrollRecords.forEach((record: any) => {
             const user = record.employeeId;
             if (!user) return;
+            const customDeductionTotal = (record.customDeductions || []).reduce(
+                (sum: number, item: any) => sum + Math.round(item?.value || 0),
+                0
+            );
 
             const rowData = {
                 employeeNo: user.employeeCode || '',
@@ -182,9 +230,26 @@ export class SalaryStatementService extends BaseService {
                 incomeTax: Math.round(record.incomeTax || 0),
                 professionalTax: Math.round(record.professionalTax || 0),
                 tdsAmount: Math.round(record.tdsDeduction || 0),
-                totalDeductions: Math.round(record.totalDeductions || 0),
+                totalDeductions: Math.round((record.totalDeductions || 0) + customDeductionTotal),
                 netPay: Math.round(record.netSalary || 0)
             };
+
+            // Populate dynamic values
+            sortedCustomEarnings.forEach(name => {
+                const totalVal = (record.customReimbursements || [])
+                    .filter((r: any) => (r.name || "").trim().toUpperCase() === name)
+                    .reduce((sum: number, item: any) => sum + (item.value || 0), 0);
+                (rowData as any)[`custom_earn_${name}`] = Math.round(totalVal);
+                customTotals[`custom_earn_${name}`] += Math.round(totalVal);
+            });
+
+            sortedCustomDeductions.forEach(name => {
+                const totalVal = (record.customDeductions || [])
+                    .filter((d: any) => (d.name || "").trim().toUpperCase() === name)
+                    .reduce((sum: number, item: any) => sum + (item.value || 0), 0);
+                (rowData as any)[`custom_ded_${name}`] = Math.round(totalVal);
+                customTotals[`custom_ded_${name}`] += Math.round(totalVal);
+            });
 
             const row = worksheet.addRow(rowData);
             const netPayCell = row.getCell('netPay');
@@ -232,7 +297,8 @@ export class SalaryStatementService extends BaseService {
             professionalTax: Math.round(grandTotals.professionalTax),
             tdsAmount: Math.round(grandTotals.tdsAmount),
             totalDeductions: Math.round(grandTotals.totalDeductions),
-            netPay: Math.round(grandTotals.netPay)
+            netPay: Math.round(grandTotals.netPay),
+            ...customTotals
         });
         totalRow.font = { bold: true };
         totalRow.eachCell((cell) => {
@@ -284,6 +350,23 @@ export class SalaryStatementService extends BaseService {
 
         const users = await User.find(userQuery).sort({ name: 1 }).lean();
         console.log(`[VirtualPayroll] Found ${users.length} potential users matching joining/separation criteria`);
+
+        const existingPayrolls = await Payroll.find({
+            month,
+            year,
+            employeeId: { $in: users.map((user: any) => user._id) },
+            status: { $nin: [PayrollStatus.Cancelled] }
+        })
+            .sort({ updatedAt: -1 })
+            .lean();
+
+        const existingPayrollMap = new Map<string, any>();
+        existingPayrolls.forEach((payroll: any) => {
+            const employeeId = payroll.employeeId?.toString?.() || String(payroll.employeeId);
+            if (!existingPayrollMap.has(employeeId)) {
+                existingPayrollMap.set(employeeId, payroll);
+            }
+        });
 
         const payrollRecords: any[] = [];
         const monthName = MONTH_NAMES[month - 1];
@@ -340,11 +423,34 @@ export class SalaryStatementService extends BaseService {
                     0, daysInMonth, monthName, month, year
                 );
 
+                const existingPayroll = existingPayrollMap.get(user._id.toString());
+                const customReimbursements = existingPayroll?.customReimbursements || [];
+                const customDeductions = existingPayroll?.customDeductions || [];
+                const customReimbursementsTotal = customReimbursements.reduce(
+                    (sum: number, item: any) => sum + Math.round(item?.value || 0),
+                    0
+                );
+                const customDeductionsTotal = customDeductions.reduce(
+                    (sum: number, item: any) => sum + Math.round(item?.value || 0),
+                    0
+                );
+
                 let statusBadge = user.joiningDate > startDate ? "Joined Mid-Month" :
                     (user.separationDate && user.separationDate >= startDate && user.separationDate <= endDate) ? "Separated Mid-Month" :
                         (!user.active ? "Inactive" : "Active");
 
-                payrollRecords.push({ ...record, employeeId: user, status: statusBadge, totalDaysInMonth: daysInMonth, payableDays: payableDays });
+                payrollRecords.push({
+                    ...record,
+                    customReimbursements,
+                    customDeductions,
+                    totalCustomReimbursements: customReimbursementsTotal,
+                    totalCustomDeductions: customDeductionsTotal,
+                    netSalary: Math.round((record.netSalary || 0) + customReimbursementsTotal - customDeductionsTotal),
+                    employeeId: user,
+                    status: statusBadge,
+                    totalDaysInMonth: daysInMonth,
+                    payableDays: payableDays
+                });
             } catch (error) {
                 console.error(`[VirtualPayroll] Error calculating for ${user.name}:`, error);
             }

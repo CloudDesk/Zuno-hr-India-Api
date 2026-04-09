@@ -427,7 +427,7 @@ export const documentRoutes = async (
                 const file = files[0];
 
                 // Extract form data
-                const { employeeId, month, year, netSalary } = body;
+                const { employeeId, month, year, netSalary, isExport } = body;
 
                 // Validate required fields
                 if (!employeeId || !month || !year) {
@@ -457,6 +457,7 @@ export const documentRoutes = async (
 
                 // Parse netSalary if provided
                 const netSalaryNum = netSalary ? parseFloat(netSalary as string) : undefined;
+                const isExportFlag = String(isExport).toLowerCase() === 'true';
 
                 const documentService = request.container!.documentService;
 
@@ -466,7 +467,8 @@ export const documentRoutes = async (
                     monthNum,
                     yearNum,
                     file,
-                    netSalaryNum
+                    netSalaryNum,
+                    isExportFlag
                 );
 
                 const employee = await User.findById(employeeId as string);
@@ -514,7 +516,7 @@ export const documentRoutes = async (
                 const { body, files } = await parseMultipartForm(request);
 
                 // Extract required fields
-                const { employeeId, year } = body;
+                const { employeeId, year, isExport } = body;
 
                 // Pre-validation (fail-fast)
                 if (!employeeId) {
@@ -532,6 +534,7 @@ export const documentRoutes = async (
                 }
 
                 const yearNum = parseInt(year as string);
+                const isExportFlag = String(isExport).toLowerCase() === 'true';
                 if (isNaN(yearNum) || yearNum < 2000 || yearNum > 2100) {
                     return reply.status(400).send({
                         success: false,
@@ -664,7 +667,8 @@ export const documentRoutes = async (
                 const result = await documentService.adminUploadPayslipsForYear(
                     employeeId as string,
                     yearNum,
-                    filesMap
+                    filesMap,
+                    isExportFlag
                 );
 
                 // Format response

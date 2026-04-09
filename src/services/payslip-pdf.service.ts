@@ -272,8 +272,17 @@ export class PayslipPdfService extends BaseService {
             ? (sanitizeText(employee.specificRole) || formatLabel(employee.role))
             : (employee.specificRole || formatLabel(employee.role));
 
-        // Matching old service totalEarnings calculation
-        const totalEarnings = basicValue + hraValue + otherAllowanceValue + daValue + travelAllowanceValue + holdSalaryValue;
+        const customReimbursementsTotal = (payroll.customReimbursements || []).reduce(
+            (sum: number, item: any) => sum + sanitizeAmount(item?.value),
+            0
+        );
+        const customDeductionsTotal = (payroll.customDeductions || []).reduce(
+            (sum: number, item: any) => sum + sanitizeAmount(item?.value),
+            0
+        );
+
+        const totalEarnings =
+            basicValue + hraValue + otherAllowanceValue + daValue + travelAllowanceValue + holdSalaryValue + customReimbursementsTotal;
 
         const netSalaryValue = isUaePayroll ? sanitizeAmount(payroll.netSalary) : (payroll.netSalary || 0);
         const netPayNumeric = Math.round(netSalaryValue);
@@ -316,7 +325,8 @@ export class PayslipPdfService extends BaseService {
                 assignedHraValue +
                 assignedOtherAllowanceValue +
                 assignedTravelAllowanceValue +
-                holdSalaryValue,
+                holdSalaryValue +
+                customReimbursementsTotal,
                 payroll.country
             )
         };
@@ -330,7 +340,7 @@ export class PayslipPdfService extends BaseService {
             const notice = Number(payroll.noticePeriodRecovery || 0);
 
             const obj: any = {
-                total: formatCurrency(payroll.totalDeductions || 0, payroll.country)
+                total: formatCurrency((payroll.totalDeductions || 0) + customDeductionsTotal, payroll.country)
             };
             if (pf > 0) obj.pf = formatCurrency(pf, payroll.country);
             if (lop > 0) obj.lop = formatCurrency(lop, payroll.country);
@@ -390,6 +400,13 @@ export class PayslipPdfService extends BaseService {
                 pushIfValid('REIMBURSEMENT', reimbursementValue, assignedReimbursementValue);
                 pushIfValid('AIR TICKET ALLOWANCE', airTicketAllowanceValue, assignedAirTicketValue);
                 pushIfValid('MEDICAL ALLOWANCE', medicalAllowanceValue, assignedMedicalValue);
+                if (payroll.customReimbursements && payroll.customReimbursements.length > 0) {
+                    payroll.customReimbursements.forEach((item: any) => {
+                        if (sanitizeAmount(item?.value) > 0) {
+                            pushIfValid(String(item.name || '').toUpperCase(), sanitizeAmount(item.value), sanitizeAmount(item.value));
+                        }
+                    });
+                }
 
                 return arr;
             })(),
@@ -409,6 +426,13 @@ export class PayslipPdfService extends BaseService {
                 if (pt > 0) arr.push({ label: 'PROFESSIONAL TAX', amount: formatCurrency(pt, payroll.country) });
                 if (tds > 0) arr.push({ label: 'TDS (1%)', amount: formatCurrency(tds, payroll.country) });
                 if (notice > 0) arr.push({ label: 'NOTICE PERIOD RECOVERY', amount: formatCurrency(notice, payroll.country) });
+                if (payroll.customDeductions && payroll.customDeductions.length > 0) {
+                    payroll.customDeductions.forEach((item: any) => {
+                        if (sanitizeAmount(item?.value) > 0) {
+                            arr.push({ label: String(item.name || '').toUpperCase(), amount: formatCurrency(sanitizeAmount(item.value), payroll.country) });
+                        }
+                    });
+                }
 
                 return arr;
             })(),
@@ -542,3 +566,4 @@ export class PayslipPdfService extends BaseService {
         }
     };
 }
+

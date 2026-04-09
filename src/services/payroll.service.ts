@@ -5,6 +5,7 @@ import {
     Leave,
     Overtime,
     Payroll,
+    IPayroll,
     SalaryAssignment,
     ShiftAssignment,
     User,
@@ -54,6 +55,10 @@ const MONTH_SHORT_NAMES: Record<string, string> = {
     November: 'Nov',
     December: 'Dec',
 };
+
+const MAX_CUSTOM_COMPONENTS_PER_TYPE = 25;
+const MAX_CUSTOM_COMPONENT_NAME_LENGTH = 100;
+const MAX_CUSTOM_COMPONENT_VALUE = 1000000;
 
 interface PayrollRecord {
     employeeId: Types.ObjectId;
@@ -145,6 +150,53 @@ interface ValidatedRow {
 */
 
 export class PayrollService extends BaseService {
+    private normalizeCustomComponents(
+        components: Array<{ name: string; value: number }> = []
+    ): Array<{ name: string; value: number }> {
+        if (components.length > MAX_CUSTOM_COMPONENTS_PER_TYPE) {
+            throw new Error(`A maximum of ${MAX_CUSTOM_COMPONENTS_PER_TYPE} custom components is allowed per type.`);
+        }
+
+        const normalized = new Map<string, { name: string; value: number }>();
+
+        components.forEach((component) => {
+            const name = String(component?.name || '')
+                .trim()
+                .replace(/\s+/g, ' ');
+            if (!name) return;
+            if (name.length > MAX_CUSTOM_COMPONENT_NAME_LENGTH) {
+                throw new Error(`Custom component names cannot exceed ${MAX_CUSTOM_COMPONENT_NAME_LENGTH} characters.`);
+            }
+
+            const rawValue = Number(component?.value);
+            if (!Number.isFinite(rawValue)) {
+                throw new Error('Custom component values must be valid numbers.');
+            }
+
+            const value = Math.round(rawValue);
+            if (value < 0) {
+                throw new Error('Custom component values cannot be negative.');
+            }
+            if (value > MAX_CUSTOM_COMPONENT_VALUE) {
+                throw new Error(`Custom component values cannot exceed ${MAX_CUSTOM_COMPONENT_VALUE}.`);
+            }
+
+            const key = name.toLowerCase();
+            const existing = normalized.get(key);
+
+            if (existing) {
+                existing.value += value;
+                if (existing.value > MAX_CUSTOM_COMPONENT_VALUE) {
+                    throw new Error(`Merged custom component values cannot exceed ${MAX_CUSTOM_COMPONENT_VALUE}.`);
+                }
+            } else {
+                normalized.set(key, { name, value });
+            }
+        });
+
+        return Array.from(normalized.values());
+    }
+
     protected context: RequestContext;
 
     constructor(context: RequestContext) {
@@ -394,7 +446,7 @@ export class PayrollService extends BaseService {
 
     async deletePayroll(month: number, year: number, country?: string) {
         console.log(`Deleting payroll records for ${month}-${year}${country ? ` for country ${country}` : ''}`);
-        
+
         const monthName = MONTH_NAMES[month - 1];
         const monthShort = MONTH_SHORT_NAMES[monthName];
         // Financial Year: e.g., for April 2024, FY is 2024-2025; for Jan 2025, FY is 2024-2025.
@@ -424,16 +476,16 @@ export class PayrollService extends BaseService {
         // 2. REVERT TAX DEDUCTION FLAGS (Only for affected users)
         try {
             await TaxDeclaration.updateMany(
-                { 
+                {
                     employeeId: { $in: affectedUserIds },
-                    financialYear, 
-                    'monthlyDeductions.month': monthShort 
+                    financialYear,
+                    'monthlyDeductions.month': monthShort
                 },
-                { 
-                    $set: { 
+                {
+                    $set: {
                         'monthlyDeductions.$.isProcessed': false,
-                        'monthlyDeductions.$.actualDeduction': 0 
-                    } 
+                        'monthlyDeductions.$.actualDeduction': 0
+                    }
                 }
             );
             console.log(`Reverted tax flags for up to ${affectedUserIds.length} employees.`);
@@ -473,7 +525,7 @@ export class PayrollService extends BaseService {
         // 4. DELETE PAYROLL RECORDS
         const result = await Payroll.deleteMany(query);
         console.log(`Deleted ${result.deletedCount} payroll records.`);
-        
+
         return result.deletedCount > 0;
     }
 
@@ -505,7 +557,7 @@ export class PayrollService extends BaseService {
         // If it was COMPLETED, we must perform SAFE REVERSE logic for this specific employee
         if (payroll.status === PayrollStatus.Completed) {
             console.log(`Performing surgical safe reverse for single record: ${id} (Employee: ${payroll.employeeId})`);
-            
+
             const { month, year, employeeId } = payroll;
             const monthName = MONTH_NAMES[month - 1];
             const monthShort = MONTH_SHORT_NAMES[monthName];
@@ -514,16 +566,16 @@ export class PayrollService extends BaseService {
             // 1. REVERT TAX FLAG
             try {
                 await TaxDeclaration.updateOne(
-                    { 
+                    {
                         employeeId: employeeId,
-                        financialYear, 
-                        'monthlyDeductions.month': monthShort 
+                        financialYear,
+                        'monthlyDeductions.month': monthShort
                     },
-                    { 
-                        $set: { 
+                    {
+                        $set: {
                             'monthlyDeductions.$.isProcessed': false,
-                            'monthlyDeductions.$.actualDeduction': 0 
-                        } 
+                            'monthlyDeductions.$.actualDeduction': 0
+                        }
                     }
                 );
             } catch (error) {
@@ -700,6 +752,7 @@ export class PayrollService extends BaseService {
         totalPresentDays: number;
         totalLOPDays: number;
         totalPayableDays: number;
+        totalCustomReimbursements: number;
         statusBreakdown: Record<PayrollStatus, number>;
         failedRecords?: Array<{ employeeId: Types.ObjectId; failureReason?: string; retryCount?: number }>;
         exportableDetails: Array<{
@@ -741,7 +794,33 @@ export class PayrollService extends BaseService {
                     _id: null,
                     totalEmployees: { $sum: 1 },
                     totalGrossSalary: { $sum: "$monthlyGross" },
-                    totalDeductions: { $sum: "$totalDeductions" },
+                    totalCustomReimbursements: {
+                        $sum: {
+                            $sum: {
+                                $map: {
+                                    input: { $ifNull: ["$customReimbursements", []] },
+                                    as: "reimbursement",
+                                    in: { $ifNull: ["$$reimbursement.value", 0] }
+                                }
+                            }
+                        }
+                    },
+                    totalDeductions: {
+                        $sum: {
+                            $add: [
+                                { $ifNull: ["$totalDeductions", 0] },
+                                {
+                                    $sum: {
+                                        $map: {
+                                            input: { $ifNull: ["$customDeductions", []] },
+                                            as: "deduction",
+                                            in: { $ifNull: ["$$deduction.value", 0] }
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
                     totalNetSalary: { $sum: "$netSalary" },
                     totalPresentDays: { $sum: "$presentDays" },
                     totalLOPDays: { $sum: "$LOPDays" },
@@ -773,6 +852,7 @@ export class PayrollService extends BaseService {
                     _id: 0,
                     totalEmployees: 1,
                     totalGrossSalary: { $round: ["$totalGrossSalary", 0] },
+                    totalCustomReimbursements: { $round: ["$totalCustomReimbursements", 0] },
                     totalDeductions: { $round: ["$totalDeductions", 0] },
                     totalNetSalary: { $round: ["$totalNetSalary", 0] },
                     totalPresentDays: 1,
@@ -814,7 +894,7 @@ export class PayrollService extends BaseService {
             throw new Error(`No payroll records found for ${month}-${year}${status ? ` with status ${status.join(', ')}` : ''}`);
         }
 
-        const { totalEmployees, totalGrossSalary, totalDeductions, totalNetSalary, totalPresentDays, totalLOPDays, totalPayableDays, statusBreakdown, failedRecords, records } = payrollAggregation[0];
+        const { totalEmployees, totalGrossSalary, totalCustomReimbursements, totalDeductions, totalNetSalary, totalPresentDays, totalLOPDays, totalPayableDays, statusBreakdown, failedRecords, records } = payrollAggregation[0];
 
         // Step 2: Retrieve employee bank details for export
         const employeeIds = records.map((record: any) => record.employeeId);
@@ -843,7 +923,9 @@ export class PayrollService extends BaseService {
                 overtimeHours: record.overtimeHours || 0,
                 overtimePay: Math.round(record.overtimePay || 0),
                 status: record.status,
-                type: record.type
+                type: record.type,
+                customReimbursements: record.customReimbursements || [],
+                customDeductions: record.customDeductions || []
             };
         });
 
@@ -856,6 +938,7 @@ export class PayrollService extends BaseService {
             totalPresentDays,
             totalLOPDays,
             totalPayableDays,
+            totalCustomReimbursements,
             statusBreakdown,
             failedRecords: failedRecords || [],
             exportableDetails
@@ -3022,8 +3105,122 @@ export class PayrollService extends BaseService {
         return { workingDays, weekendDays: weekendDaysCount, holidayDays };
     }
 
+    /**
+     * Update custom components (reimbursements and deductions) for a draft payroll
+     * @param payrollId - ID of the payroll record
+     * @param customReimbursements - Array of custom reimbursements
+     * @param customDeductions - Array of custom deductions
+     */
+    async updateCustomComponents(
+        payrollId: string,
+        customReimbursements: Array<{ name: string; value: number }> = [],
+        customDeductions: Array<{ name: string; value: number }> = []
+    ): Promise<IPayroll> {
+        const payroll = await Payroll.findById(payrollId);
+        if (!payroll) {
+            throw new Error(`Payroll record not found for id: ${payrollId}`);
+        }
 
+        if (payroll.status !== PayrollStatus.Draft) {
+            throw new Error('Custom components can only be updated when payroll is in Draft status.');
+        }
 
+        // Add defensive checks to ensure arrays are valid
+        if (!Array.isArray(customReimbursements)) customReimbursements = [];
+        if (!Array.isArray(customDeductions)) customDeductions = [];
+
+        const parsedReimbursements = this.normalizeCustomComponents(customReimbursements);
+        const parsedDeductions = this.normalizeCustomComponents(customDeductions);
+
+        // Calculate new custom sums
+        const newReimbursementsSum = parsedReimbursements.reduce((acc, curr) => acc + (curr.value || 0), 0);
+        const newDeductionsSum = parsedDeductions.reduce((acc, curr) => acc + (curr.value || 0), 0);
+
+        // ✅ Best practice structure: separate-adjustment model
+        payroll.netSalary = Math.round(
+            (payroll.monthlyGross || 0) +
+            (payroll.overtimePay || 0) +
+            newReimbursementsSum -
+            (payroll.totalDeductions || 0) -
+            newDeductionsSum
+        );
+
+        // Update arrays
+        payroll.customReimbursements = parsedReimbursements;
+        payroll.customDeductions = parsedDeductions;
+        payroll.totalCustomReimbursements = newReimbursementsSum;
+        payroll.totalCustomDeductions = newDeductionsSum;
+
+        const appliedByUserId = this.context.user?._id
+            ? (this.context.user._id instanceof Types.ObjectId
+                ? this.context.user._id
+                : new Types.ObjectId(this.context.user._id))
+            : undefined;
+
+        payroll.customComponentAuditTrail = payroll.customComponentAuditTrail || [];
+
+        const auditEntry: NonNullable<IPayroll['customComponentAuditTrail']>[number] = {
+            appliedAt: new Date(),
+            employeeId: payroll.employeeId,
+            month: payroll.month,
+            year: payroll.year,
+            monthYear: payroll.monthYear,
+            customReimbursements: parsedReimbursements,
+            customDeductions: parsedDeductions,
+        };
+
+        if (this.context.user && appliedByUserId) {
+            auditEntry.appliedBy = {
+                userId: appliedByUserId,
+                name: this.context.user.name,
+                email: this.context.user.email || '',
+            };
+        }
+
+        payroll.customComponentAuditTrail.push(auditEntry);
+
+        await payroll.save();
+        return payroll;
+    }
+
+    async updateCustomComponentsBulk(
+        payrollIds: string[],
+        customReimbursements: Array<{ name: string; value: number }> = [],
+        customDeductions: Array<{ name: string; value: number }> = []
+    ): Promise<{ updatedCount: number; failedRecords: Array<{ id: string; reason: string }> }> {
+        const uniquePayrollIds = Array.from(new Set((payrollIds || []).filter(Boolean)));
+
+        if (!uniquePayrollIds.length) {
+            throw new Error('At least one payroll record is required for bulk component update.');
+        }
+
+        const normalizedReimbursements = this.normalizeCustomComponents(customReimbursements);
+        const normalizedDeductions = this.normalizeCustomComponents(customDeductions);
+
+        const failedRecords: Array<{ id: string; reason: string }> = [];
+        let updatedCount = 0;
+
+        for (const payrollId of uniquePayrollIds) {
+            try {
+                await this.updateCustomComponents(
+                    payrollId,
+                    normalizedReimbursements,
+                    normalizedDeductions
+                );
+                updatedCount++;
+            } catch (error: any) {
+                failedRecords.push({
+                    id: payrollId,
+                    reason: error.message || 'Failed to update custom components'
+                });
+            }
+        }
+
+        return {
+            updatedCount,
+            failedRecords
+        };
+    }
 }
 
 // export const payrollService = new PayrollService();

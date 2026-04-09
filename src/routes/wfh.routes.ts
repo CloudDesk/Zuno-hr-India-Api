@@ -127,9 +127,16 @@ export const wfhRoutes: RouteHandler = async (
         const fileErrors: string[] = [];
         
         if (files && files.length > 0) {
+          if (files.length > 1) {
+            return reply.status(400).send({
+              success: false,
+              error: { message: 'Maximum 1 supporting document is allowed' },
+            });
+          }
+
           // File validation constants
-          const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
-          const ALLOWED_EXTENSIONS = ['.pdf', '.jpg', '.jpeg', '.png', '.doc', '.docx', '.xls', '.xlsx'];
+          const MAX_FILE_SIZE = 1 * 1024 * 1024; // 1MB
+          const ALLOWED_EXTENSIONS = ['.pdf', '.jpg', '.jpeg', '.png', '.doc', '.docx'];
 
           for (const file of files) {
             try {
@@ -143,7 +150,7 @@ export const wfhRoutes: RouteHandler = async (
               // Validate file size
               const buffer = await file.toBuffer();
               if (buffer.length > MAX_FILE_SIZE) {
-                fileErrors.push(`File "${file.filename}" exceeds maximum size of 10MB`);
+                fileErrors.push(`File "${file.filename}" exceeds maximum size of 1MB`);
                 continue;
               }
 
@@ -165,7 +172,8 @@ export const wfhRoutes: RouteHandler = async (
                 fileName: newFileName,
                 employeeId: userId,
                 category: 'EmployeeLifecycle',
-                type: 'OfferLetter' // Using OfferLetter type for WFH documents
+                type: 'OfferLetter', // Using OfferLetter type for WFH documents
+                public: true,
               });
 
               // Clean up temp file

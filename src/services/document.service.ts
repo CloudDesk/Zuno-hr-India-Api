@@ -1165,7 +1165,7 @@ export class DocumentService extends BaseService {
                 status: doc.status,
                 payslipUrl: doc.filePath,
                 accessLevel: doc.accessLevel,
-                isExport: doc.status === 'Sent' || doc.status === 'Exported',
+                isExport: doc.metadata.payslip?.isExport ?? (doc.status === 'Sent' || doc.status === 'Exported'),
                 monthYear: doc.metadata.payslip?.monthYear,
                 month: doc.metadata.payslip?.month,
                 year: doc.metadata.payslip?.year,
@@ -1659,8 +1659,17 @@ export class DocumentService extends BaseService {
 
         const holdSalaryValue = isUaePayroll ? sanitizeAmount(payroll.holdSalary) : (payroll.holdSalary || 0);
 
+        const customReimbursementsTotal = (payroll.customReimbursements || []).reduce(
+            (sum: number, item: any) => sum + sanitizeAmount(item?.value),
+            0
+        );
+        const customDeductionsTotal = (payroll.customDeductions || []).reduce(
+            (sum: number, item: any) => sum + sanitizeAmount(item?.value),
+            0
+        );
+
         const totalEarnings =
-            basicValue + hraValue + otherAllowanceValue + daValue + travelAllowanceValue + holdSalaryValue;
+            basicValue + hraValue + otherAllowanceValue + daValue + travelAllowanceValue + holdSalaryValue + customReimbursementsTotal;
 
         const netSalaryValue = sanitizeAmount(payroll.netSalary);
         const netPayNumeric = Math.round(netSalaryValue);
@@ -1730,7 +1739,8 @@ export class DocumentService extends BaseService {
                     assignedHraValue +
                     assignedOtherAllowanceValue +
                     assignedTravelAllowanceValue +
-                    (payroll.holdSalary || 0), // ✅ Add Hold Salary to numeric sum
+                    (payroll.holdSalary || 0) +
+                    customReimbursementsTotal, // Keep Full total aligned with displayed custom reimbursement rows
                     normalizedCountry
                 )
             },
@@ -1738,7 +1748,7 @@ export class DocumentService extends BaseService {
             // Deductions - Only include non-zero values (so template rows can be conditional)
             deduction: (() => {
                 const deductionObj: any = {
-                    total: formatCurrency(Number(payroll.totalDeductions || 0), normalizedCountry),
+                    total: formatCurrency(Number(payroll.totalDeductions || 0) + customDeductionsTotal, normalizedCountry),
                 };
 
                 const pfVal = Number((payroll as any).epfEmployee ?? 0);
@@ -1799,6 +1809,13 @@ export class DocumentService extends BaseService {
                 if (sanitizeAmount(payroll.medicalAllowance) > 0 || sanitizeAmount(payroll.assigned?.medicalAllowance) > 0) {
                     pushIfValid('MEDICAL ALLOWANCE', sanitizeAmount(payroll.medicalAllowance), sanitizeAmount(payroll.assigned?.medicalAllowance));
                 }
+                if (payroll.customReimbursements && payroll.customReimbursements.length > 0) {
+                    payroll.customReimbursements.forEach((item: any) => {
+                        if (sanitizeAmount(item?.value) > 0) {
+                            pushIfValid(String(item.name || '').toUpperCase(), sanitizeAmount(item.value), sanitizeAmount(item.value));
+                        }
+                    });
+                }
 
                 return earningsArray;
             })(),
@@ -1819,6 +1836,13 @@ export class DocumentService extends BaseService {
                 if (ptVal > 0) deductionsArray.push({ label: 'PROFESSIONAL TAX', amount: formatCurrency(ptVal, normalizedCountry) });
                 if (tdsVal > 0) deductionsArray.push({ label: 'TDS (1%)', amount: formatCurrency(tdsVal, normalizedCountry) });
                 if (noticeVal > 0) deductionsArray.push({ label: 'NOTICE PERIOD RECOVERY', amount: formatCurrency(noticeVal, normalizedCountry) });
+                if (payroll.customDeductions && payroll.customDeductions.length > 0) {
+                    payroll.customDeductions.forEach((item: any) => {
+                        if (sanitizeAmount(item?.value) > 0) {
+                            deductionsArray.push({ label: String(item.name || '').toUpperCase(), amount: formatCurrency(sanitizeAmount(item.value), normalizedCountry) });
+                        }
+                    });
+                }
 
                 return deductionsArray;
             })(),
@@ -2974,7 +2998,8 @@ export class DocumentService extends BaseService {
         month: number,
         year: number,
         uploadedFile: any,
-        netSalary?: number
+        netSalary?: number,
+        isExport: boolean = true
     ): Promise<IDocument> {
         // Validate employee exists
         const employee = await User.findById(employeeId);
@@ -3091,7 +3116,7 @@ export class DocumentService extends BaseService {
                     presentDays: 0,
                     totalDays: 0,
                     payableDays: 0,
-                    isExport: false,
+                    isExport,
                 },
             },
             auditLog: [
@@ -3195,7 +3220,8 @@ export class DocumentService extends BaseService {
     async adminUploadPayslipsForYear(
         employeeId: string,
         year: number,
-        filesMap: Map<number, { file: any; netSalary?: number }>
+        filesMap: Map<number, { file: any; netSalary?: number }>,
+        isExport: boolean = true
     ): Promise<{
         success: number;
         failed: number;
@@ -3310,7 +3336,8 @@ export class DocumentService extends BaseService {
                     month,
                     year,
                     file,
-                    netSalary
+                    netSalary,
+                    isExport
                 );
 
                 results.success++;
@@ -3719,3 +3746,4 @@ export class DocumentService extends BaseService {
 
 
 }
+
