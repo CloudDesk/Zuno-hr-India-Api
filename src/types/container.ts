@@ -33,6 +33,7 @@ import { ShiftChangeService } from '../services/shift-change.service';
 import { OptionalHolidayService } from '../services/optional-holiday.service';
 import { PayslipPdfService } from '../services/payslip-pdf.service';
 import { SalaryStatementService } from '../services/salary-statement.service';
+import { TaxSalaryContextService } from '../services/tax-salary-context.service';
 
 export interface ServiceContainer {
   requestContext: RequestContext;
@@ -70,4 +71,5 @@ export interface ServiceContainer {
   optionalHolidayService: OptionalHolidayService;
   payslipPdfService: PayslipPdfService;
   salaryStatementService: SalaryStatementService;
+  taxSalaryContextService: TaxSalaryContextService;
 } 
