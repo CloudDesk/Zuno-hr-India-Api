@@ -3,15 +3,50 @@ import { config } from './index';
 
 const DB_CONNECT_MAX_RETRIES = Math.max(
   1,
-  Number(process.env.DB_CONNECT_MAX_RETRIES || 5),
+  Number(process.env.DB_CONNECT_MAX_RETRIES || 3),
 );
 const DB_CONNECT_RETRY_DELAY_MS = Math.max(
   1000,
-  Number(process.env.DB_CONNECT_RETRY_DELAY_MS || 5000),
+  Number(process.env.DB_CONNECT_RETRY_DELAY_MS || 2000),
 );
+const DB_SERVER_SELECTION_TIMEOUT_MS = Math.max(
+  1000,
+  Number(process.env.DB_SERVER_SELECTION_TIMEOUT_MS || 5000),
+);
+const DB_CONNECT_TIMEOUT_MS = Math.max(
+  1000,
+  Number(process.env.DB_CONNECT_TIMEOUT_MS || 10000),
+);
+const DB_SOCKET_TIMEOUT_MS = Math.max(
+  1000,
+  Number(process.env.DB_SOCKET_TIMEOUT_MS || 45000),
+);
+
+let connectionListenersRegistered = false;
+let connectionPromise: Promise<void> | null = null;
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function registerConnectionListeners(): void {
+  if (connectionListenersRegistered) {
+    return;
+  }
+
+  mongoose.connection.on('error', (err) => {
+    console.error('[DB] MongoDB connection error:', err);
+  });
+
+  mongoose.connection.on('disconnected', () => {
+    console.warn('[DB] MongoDB disconnected.');
+  });
+
+  mongoose.connection.on('reconnected', () => {
+    console.log('[DB] MongoDB reconnected');
+  });
+
+  connectionListenersRegistered = true;
 }
 
 /**
@@ -39,53 +74,81 @@ export const connectDB = async (): Promise<void> => {
     return;
   }
 
-  let lastError: unknown;
-
-  for (let attempt = 1; attempt <= DB_CONNECT_MAX_RETRIES; attempt += 1) {
-    try {
-      console.log(
-        `[DB] Connecting to MongoDB (attempt ${attempt}/${DB_CONNECT_MAX_RETRIES})...`,
-      );
-      await mongoose.connect(config.mongoUri);
-      console.log('MongoDB connected successfully');
-
-      await migrateEmailIndexIfNeeded();
-
-      // Add event listeners for connection status once after a successful connect.
-      if (attempt === 1 || mongoose.connection.listeners('error').length === 0) {
-        mongoose.connection.on('error', (err) => {
-          console.error('MongoDB connection error:', err);
-        });
-
-        mongoose.connection.on('disconnected', () => {
-          console.warn('MongoDB disconnected. Attempting to reconnect...');
-        });
-
-        mongoose.connection.on('reconnected', () => {
-          console.log('MongoDB reconnected');
-        });
-      }
-
-      return;
-    } catch (error) {
-      lastError = error;
-      console.error(
-        `[DB] MongoDB connection attempt ${attempt} failed:`,
-        error,
-      );
-
-      if (attempt < DB_CONNECT_MAX_RETRIES) {
-        console.warn(
-          `[DB] Retrying MongoDB connection in ${DB_CONNECT_RETRY_DELAY_MS}ms...`,
-        );
-        await wait(DB_CONNECT_RETRY_DELAY_MS);
-      }
-    }
+  if (connectionPromise) {
+    return connectionPromise;
   }
 
-  throw new Error(
-    `[DB] Failed to connect to MongoDB after ${DB_CONNECT_MAX_RETRIES} attempts: ${
-      lastError instanceof Error ? lastError.message : String(lastError)
-    }`,
-  );
-}; 
+  connectionPromise = (async () => {
+    let lastError: unknown;
+    const startedAt = Date.now();
+
+    for (let attempt = 1; attempt <= DB_CONNECT_MAX_RETRIES; attempt += 1) {
+      try {
+        console.log(
+          `[DB] Connecting to MongoDB (attempt ${attempt}/${DB_CONNECT_MAX_RETRIES}, serverSelectionTimeoutMS=${DB_SERVER_SELECTION_TIMEOUT_MS}, connectTimeoutMS=${DB_CONNECT_TIMEOUT_MS})...`,
+        );
+        await mongoose.connect(config.mongoUri, {
+          serverSelectionTimeoutMS: DB_SERVER_SELECTION_TIMEOUT_MS,
+          connectTimeoutMS: DB_CONNECT_TIMEOUT_MS,
+          socketTimeoutMS: DB_SOCKET_TIMEOUT_MS,
+        });
+        console.log(
+          `[DB] MongoDB connected successfully in ${Date.now() - startedAt}ms`,
+        );
+
+        await migrateEmailIndexIfNeeded();
+        registerConnectionListeners();
+
+        return;
+      } catch (error) {
+        lastError = error;
+        console.error(
+          `[DB] MongoDB connection attempt ${attempt} failed:`,
+          error,
+        );
+
+        if (attempt < DB_CONNECT_MAX_RETRIES) {
+          console.warn(
+            `[DB] Retrying MongoDB connection in ${DB_CONNECT_RETRY_DELAY_MS}ms...`,
+          );
+          await wait(DB_CONNECT_RETRY_DELAY_MS);
+        }
+      }
+    }
+
+    throw new Error(
+      `[DB] Failed to connect to MongoDB after ${DB_CONNECT_MAX_RETRIES} attempts: ${lastError instanceof Error ? lastError.message : String(lastError)
+      }`,
+    );
+  })();
+
+  try {
+    await connectionPromise;
+  } finally {
+    connectionPromise = null;
+  }
+};
+
+export function getDatabaseHealth() {
+  const stateMap: Record<number, string> = {
+    0: 'disconnected',
+    1: 'connected',
+    2: 'connecting',
+    3: 'disconnecting',
+  };
+
+  return {
+    ready: mongoose.connection.readyState === 1,
+    state: stateMap[mongoose.connection.readyState] || 'unknown',
+  };
+}
+
+export function startDBConnection(): void {
+  if (mongoose.connection.readyState === 1 || connectionPromise) {
+    return;
+  }
+
+  void connectDB().catch((error) => {
+    console.error('[DB] Background MongoDB connection failed:', error);
+  });
+}
