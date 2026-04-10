@@ -38,7 +38,7 @@ export const connectDB = async (): Promise<void> => {
   if (mongoose.connection.readyState === 1) {
     return;
   }
-
+  console.log("connectDB")
   let lastError: unknown;
 
   for (let attempt = 1; attempt <= DB_CONNECT_MAX_RETRIES; attempt += 1) {
@@ -84,8 +84,7 @@ export const connectDB = async (): Promise<void> => {
   }
 
   throw new Error(
-    `[DB] Failed to connect to MongoDB after ${DB_CONNECT_MAX_RETRIES} attempts: ${
-      lastError instanceof Error ? lastError.message : String(lastError)
+    `[DB] Failed to connect to MongoDB after ${DB_CONNECT_MAX_RETRIES} attempts: ${lastError instanceof Error ? lastError.message : String(lastError)
     }`,
   );
 }; 
