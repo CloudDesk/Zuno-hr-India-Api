@@ -5,7 +5,7 @@ import puppeteer, { Browser } from 'puppeteer';
 import handlebars from 'handlebars';
 import { RequestContext } from "../types/context";
 import { BaseService } from "./base.service";
-import { User, Payroll } from "../models";
+import { User, Payroll, LOV } from "../models";
 import { Document } from "../models/document.model";
 import { uploadFileToGCP, deleteFileFromGCP } from "../utilis/gcpStorage";
 import { formatCurrency } from "../utilis/currency";
@@ -74,6 +74,18 @@ export class PayslipPdfService extends BaseService {
             throw new Error('No payroll data found for the specified users.');
         }
 
+        // Fetch LOV labels for department and location once per batch
+        const [departmentLov, locationLov] = await Promise.all([
+            LOV.findOne({ type: 'department' }).lean(),
+            LOV.findOne({ type: 'location' }).lean()
+        ]);
+
+        const departmentMap: Record<string, string> = {};
+        const locationMap: Record<string, string> = {};
+
+        departmentLov?.values?.forEach(v => { departmentMap[v.value] = v.label; });
+        locationLov?.values?.forEach(v => { locationMap[v.value] = v.label; });
+
         const browser = await puppeteer.launch(getPuppeteerLaunchOptions());
 
         try {
@@ -97,7 +109,7 @@ export class PayslipPdfService extends BaseService {
                     await fsPromises.mkdir(path.dirname(tempFilePath), { recursive: true });
 
                     // Generate PDF via HTML using shared browser
-                    await this.generatePayslipHtmlToPdf(browser, employee, payroll, tempFilePath);
+                    await this.generatePayslipHtmlToPdf(browser, employee, payroll, tempFilePath, { departmentMap, locationMap });
 
                     // Upload to GCP Cloud Storage
                     const gcpResult = await uploadFileToGCP({
@@ -216,7 +228,13 @@ export class PayslipPdfService extends BaseService {
         }
     }
 
-    private async generatePayslipHtmlToPdf(browser: Browser, employee: any, payroll: any, outputPath: string): Promise<void> {
+    private async generatePayslipHtmlToPdf(
+        browser: Browser,
+        employee: any,
+        payroll: any,
+        outputPath: string,
+        lovMaps: { departmentMap: Record<string, string>; locationMap: Record<string, string> }
+    ): Promise<void> {
         const normalizedCountry = (payroll.country as string)?.toUpperCase() || 'IN';
         const isUaePayroll = normalizedCountry === 'AE';
 
@@ -227,10 +245,16 @@ export class PayslipPdfService extends BaseService {
             return text;
         };
 
-        const formatLabel = (input: any): string => {
+        const formatLabel = (input: any, type?: 'department' | 'location'): string => {
             if (typeof input === 'object' && input?.name) return input.name;
+
             const sanitized = sanitizeText(input);
             if (!sanitized) return '-';
+
+            // Check LOV mapping first
+            if (type === 'department' && lovMaps.departmentMap[sanitized]) return lovMaps.departmentMap[sanitized];
+            if (type === 'location' && lovMaps.locationMap[sanitized]) return lovMaps.locationMap[sanitized];
+
             return sanitized
                 .split('_')
                 .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
@@ -279,7 +303,7 @@ export class PayslipPdfService extends BaseService {
         const netPayNumeric = Math.round(netSalaryValue);
         const absoluteNetPay = Math.abs(netPayNumeric);
         const netPayWordsRaw = await this.numberToWords(absoluteNetPay);
-        
+
         let netPayWords = "";
         if (netPayNumeric === 0) {
             netPayWords = `${isUaePayroll ? 'Dirhams' : 'Rupees'} zero only`;
@@ -347,8 +371,8 @@ export class PayslipPdfService extends BaseService {
             empJoinDate: formatDateToDDMMYYYY(employee.joiningDate),
             empRole: employeeDesignation,
             empDes: employeeDesignation || '-',
-            empDept: formatLabel(employee.departmentId),
-            empLocation: formatLabel(employee.location),
+            empDept: formatLabel(employee.departmentId, 'department'),
+            empLocation: formatLabel(employee.location, 'location'),
             empNo: sanitizeText(employee.employeeCode) || sanitizeText(employee.biometricId) || '-',
             bankName: sanitizeText(activeBankData?.bankName) || '-',
             bankAccNo: sanitizeText(activeBankData?.accountNumber) || '-',

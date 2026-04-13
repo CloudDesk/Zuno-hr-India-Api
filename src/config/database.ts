@@ -117,8 +117,7 @@ export const connectDB = async (): Promise<void> => {
     }
 
     throw new Error(
-      `[DB] Failed to connect to MongoDB after ${DB_CONNECT_MAX_RETRIES} attempts: ${
-        lastError instanceof Error ? lastError.message : String(lastError)
+      `[DB] Failed to connect to MongoDB after ${DB_CONNECT_MAX_RETRIES} attempts: ${lastError instanceof Error ? lastError.message : String(lastError)
       }`,
     );
   })();
