@@ -23,7 +23,7 @@ import swaggerUi from '@fastify/swagger-ui';
 import { routes } from './routes';
 import { Container } from './container';
 import { ServiceContainer } from './types/container';
-import { connectDB } from './config/database';
+import { getDatabaseHealth, startDBConnection } from './config/database';
 import { config } from './config';
 import fastifyMultipart from '@fastify/multipart';
 import { fileURLToPath } from 'url';
@@ -60,11 +60,36 @@ declare module 'fastify' {
 }
 
 export async function createApp(): Promise<FastifyInstance> {
-  // Connect to MongoDB
-  await connectDB();
   const app = fastify({
     logger: true,
   });
+
+  app.get('/health/live', async () => ({
+    status: 'ok',
+    service: 'hrms-api',
+    timestamp: new Date().toISOString(),
+  }));
+
+  app.get('/health/ready', async (_request, reply) => {
+    const db = getDatabaseHealth();
+
+    if (!db.ready) {
+      return reply.code(503).send({
+        status: 'degraded',
+        service: 'hrms-api',
+        database: db,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    return {
+      status: 'ready',
+      service: 'hrms-api',
+      database: db,
+      timestamp: new Date().toISOString(),
+    };
+  });
+  startDBConnection();
 
 
   // Register plugins in order: cookie -> jwt -> cors
@@ -140,6 +165,29 @@ export async function createApp(): Promise<FastifyInstance> {
 
   app.register(fastifyStatic, {
     root: join(parentDir, "/uploads"),
+  });
+
+  app.addHook('onRequest', async (request, reply) => {
+    const healthPaths = new Set(['/health/live', '/health/ready']);
+    const requestPath = request.raw.url?.split('?')[0] || request.url;
+    const isHealthRoute = healthPaths.has(requestPath);
+
+    if (isHealthRoute) {
+      return;
+    }
+
+    const db = getDatabaseHealth();
+    if (db.ready) {
+      return;
+    }
+
+    startDBConnection();
+    return reply.code(503).send({
+      success: false,
+      error: 'Service temporarily unavailable. Database connection is not ready yet.',
+      database: db,
+      retryable: true,
+    });
   });
 
   // app.register(fastifyStatic, {
