@@ -219,6 +219,7 @@ export class PayslipPdfService extends BaseService {
     private async generatePayslipHtmlToPdf(browser: Browser, employee: any, payroll: any, outputPath: string): Promise<void> {
         const normalizedCountry = (payroll.country as string)?.toUpperCase() || 'IN';
         const isUaePayroll = normalizedCountry === 'AE';
+        const isConsultant = payroll.isConsultancy === true || employee.isConsultancy === true;
 
         const sanitizeText = (value: unknown): string | undefined => {
             if (value === undefined || value === null) return undefined;
