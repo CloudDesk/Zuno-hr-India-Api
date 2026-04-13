@@ -1395,7 +1395,9 @@ export class BiometricAttendanceService extends BaseService {
             lateDays: 0,
             presentDays: 0,
             regularisedDays: 0,
-            leaveDays: 0
+            leaveDays: 0,
+            totalWorkHours: 0,
+            averageWorkHours: '00:00'
           }
         });
       }
@@ -1441,8 +1443,16 @@ export class BiometricAttendanceService extends BaseService {
       userRecord.records.push(processedRecord);
 
       // Update summary - now including all status types accurately
-      if (record.attendanceStatus?.includes('Present')) {
+      const isActuallyPresent = record.attendanceStatus?.some(s => 
+        ['Present', 'Late', 'On-Time', 'Early-Exit', 'Regularized', 'OT', 'Override'].includes(s)
+      ) || (record.totalWorkHours && record.totalWorkHours !== '00:00:00' && record.totalWorkHours !== '0:00:00');
+
+      if (isActuallyPresent) {
         userRecord.summary.presentDays++;
+        // Add to total work hours for average calculation
+        if (record.totalWorkHours) {
+          userRecord.summary.totalWorkHours += this.timeStringToHours(record.totalWorkHours);
+        }
       }
       
       if (record.attendanceStatus?.includes('Late')) {
@@ -1459,6 +1469,16 @@ export class BiometricAttendanceService extends BaseService {
       }
 
     }
+
+    // Calculate average work hours for each user
+    userRecords.forEach(userRecord => {
+      if (userRecord.summary.presentDays > 0) {
+        const avgHours = userRecord.summary.totalWorkHours / userRecord.summary.presentDays;
+        userRecord.summary.averageWorkHours = this.hoursToTimeString(avgHours);
+      }
+      // Remove totalWorkHours from summary before sending to frontend if not needed, 
+      // but keeping it doesn't hurt.
+    });
 
     console.log('Users processed:', userRecords.size);
 
@@ -1771,6 +1791,23 @@ export class BiometricAttendanceService extends BaseService {
     }
   }
 
+  private timeStringToHours(timeStr: string): number {
+    if (!timeStr || timeStr === '0:00:00' || timeStr === '00:00:00') return 0;
+    const parts = timeStr.split(':').map(Number);
+    if (parts.length === 3) {
+      return parts[0] + (parts[1] / 60) + (parts[2] / 3600);
+    } else if (parts.length === 2) {
+      return parts[0] + (parts[1] / 60);
+    }
+    return parseFloat(timeStr) || 0;
+  }
+
+  private hoursToTimeString(hours: number): string {
+    const h = Math.floor(hours);
+    const m = Math.round((hours - h) * 60);
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  }
+
   /**
    * Generate Weekly Report as Excel based on month
    * Calculates all weeks in the month (including overlapping weeks) and generates report with color coding
@@ -1949,20 +1986,6 @@ export class BiometricAttendanceService extends BaseService {
         return false;
       };
 
-      // Helper function to convert time string (HH:mm:ss) to hours
-      const timeStringToHours = (timeStr: string): number => {
-        if (!timeStr || timeStr === '0:00:00') return 0;
-        const parts = timeStr.split(':').map(Number);
-        return parts[0] + (parts[1] / 60) + (parts[2] / 3600);
-      };
-
-      // Helper function to format hours to HH:mm
-      const hoursToTimeString = (hours: number): string => {
-        const h = Math.floor(hours);
-        const m = Math.round((hours - h) * 60);
-        return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-      };
-
       // Helper function to format date
       const formatDate = (date: Date): string => {
         const d = new Date(date);
@@ -2000,7 +2023,7 @@ export class BiometricAttendanceService extends BaseService {
           weekData.records.push(record);
 
           // Add hours to total - use totalWorkHours (not actualWorkHours) for cumulative calculation
-          const hours = timeStringToHours(record.totalWorkHours || '0:00:00');
+          const hours = this.timeStringToHours(record.totalWorkHours || '0:00:00');
           weekData.totalHours += hours;
         }
       });
@@ -2029,7 +2052,7 @@ export class BiometricAttendanceService extends BaseService {
           const userId = user._id.toString();
           const userWeekDataForWeek = userWeekData.get(userId)?.get(week.weekNumber);
           const totalHours = userWeekDataForWeek?.totalHours || 0;
-          const hoursString = hoursToTimeString(totalHours);
+          const hoursString = this.hoursToTimeString(totalHours);
 
           // Get weekend days for this week
           const weekendDays = getWeekendDaysForWeek(userId, week.startDate);

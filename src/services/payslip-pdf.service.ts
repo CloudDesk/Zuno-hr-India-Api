@@ -386,20 +386,33 @@ export class PayslipPdfService extends BaseService {
 
             allEarnings: (() => {
                 const arr: any[] = [];
+                
                 const pushIfValid = (label: string, actual: number, full: number) => {
                     if (actual > 0 || full > 0) {
                         arr.push({ label, fullAmount: formatCurrency(full, payroll.country), actualAmount: formatCurrency(actual, payroll.country) });
                     }
                 };
-                pushIfValid('BASIC', basicValue, assignedBasicValue);
-                pushIfValid('HRA', hraValue, assignedHraValue);
-                pushIfValid('DEARNESS ALLOWANCE', daValue, 0);
-                pushIfValid('OTHER ALLOWANCE', otherAllowanceValue, assignedOtherAllowanceValue);
+
+                if (isConsultant) {
+                    // Consultants: Group Basic, HRA, and Other Allowance into "CONSULTANCY FEES"
+                    const consolidatedFeesActual = basicValue + hraValue + otherAllowanceValue;
+                    const consolidatedFeesFull = assignedBasicValue + assignedHraValue + assignedOtherAllowanceValue;
+                    pushIfValid('CONSULTANCY FEES', consolidatedFeesActual, consolidatedFeesFull);
+                } else {
+                    // Regular Employees: Existing logic (Basic, HRA, DA, Other)
+                    pushIfValid('BASIC', basicValue, assignedBasicValue);
+                    pushIfValid('HRA', hraValue, assignedHraValue);
+                    pushIfValid('DEARNESS ALLOWANCE', daValue, 0);
+                    pushIfValid('OTHER ALLOWANCE', otherAllowanceValue, assignedOtherAllowanceValue);
+                }
+
+                // Shared components (Travel, Reimbursement, etc. - usually consultants don't have these but handled for safety)
                 pushIfValid('TRAVEL ALLOWANCE', travelAllowanceValue, assignedTravelAllowanceValue);
                 pushIfValid('HOLD SALARY', holdSalaryValue, holdSalaryValue);
                 pushIfValid('REIMBURSEMENT', reimbursementValue, assignedReimbursementValue);
                 pushIfValid('AIR TICKET ALLOWANCE', airTicketAllowanceValue, assignedAirTicketValue);
                 pushIfValid('MEDICAL ALLOWANCE', medicalAllowanceValue, assignedMedicalValue);
+                
                 if (payroll.customReimbursements && payroll.customReimbursements.length > 0) {
                     payroll.customReimbursements.forEach((item: any) => {
                         if (sanitizeAmount(item?.value) > 0) {
@@ -420,12 +433,21 @@ export class PayslipPdfService extends BaseService {
                 const tds = Number(payroll.tdsDeduction || 0);
                 const notice = Number(payroll.noticePeriodRecovery || 0);
 
-                if (pf > 0) arr.push({ label: 'PROVIDENT FUND', amount: formatCurrency(pf, payroll.country) });
-                if (lop > 0) arr.push({ label: 'LOSS OF PAY', amount: formatCurrency(lop, payroll.country) });
-                if (it > 0) arr.push({ label: 'INCOME TAX', amount: formatCurrency(it, payroll.country) });
-                if (pt > 0) arr.push({ label: 'PROFESSIONAL TAX', amount: formatCurrency(pt, payroll.country) });
-                if (tds > 0) arr.push({ label: 'TDS (1%)', amount: formatCurrency(tds, payroll.country) });
-                if (notice > 0) arr.push({ label: 'NOTICE PERIOD RECOVERY', amount: formatCurrency(notice, payroll.country) });
+                if (isConsultant) {
+                    // Consultants: Show TDS value as "INCOME TAX"
+                    if (tds > 0) arr.push({ label: 'INCOME TAX', amount: formatCurrency(tds, payroll.country) });
+                    if (lop > 0) arr.push({ label: 'LOSS OF PAY', amount: formatCurrency(lop, payroll.country) });
+                    if (notice > 0) arr.push({ label: 'NOTICE PERIOD RECOVERY', amount: formatCurrency(notice, payroll.country) });
+                } else {
+                    // Regular Employees: Existing logic
+                    if (pf > 0) arr.push({ label: 'PROVIDENT FUND', amount: formatCurrency(pf, payroll.country) });
+                    if (lop > 0) arr.push({ label: 'LOSS OF PAY', amount: formatCurrency(lop, payroll.country) });
+                    if (it > 0) arr.push({ label: 'INCOME TAX', amount: formatCurrency(it, payroll.country) });
+                    if (pt > 0) arr.push({ label: 'PROFESSIONAL TAX', amount: formatCurrency(pt, payroll.country) });
+                    if (tds > 0) arr.push({ label: 'TDS (1%)', amount: formatCurrency(tds, payroll.country) });
+                    if (notice > 0) arr.push({ label: 'NOTICE PERIOD RECOVERY', amount: formatCurrency(notice, payroll.country) });
+                }
+
                 if (payroll.customDeductions && payroll.customDeductions.length > 0) {
                     payroll.customDeductions.forEach((item: any) => {
                         if (sanitizeAmount(item?.value) > 0) {
@@ -438,7 +460,10 @@ export class PayslipPdfService extends BaseService {
             })(),
 
             netPay: formatCurrency(payroll.netSalary || 0, payroll.country),
-            netPayWords: netPayWords
+            netPayWords: netPayWords,
+            isConsultant: isConsultant,
+            isUae: isUaePayroll,
+            currencyCode: isUaePayroll ? 'AED' : 'INR'
         };
 
         // Use __dirname so the path resolves correctly in BOTH environments:

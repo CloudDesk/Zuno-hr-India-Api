@@ -377,7 +377,8 @@ export const biometricAttendanceRoutes: RouteHandler = async (
                         lateDays: { type: 'number' },
                         presentDays: { type: 'number' },
                         regularisedDays: { type: 'number' },
-                        leaveDays: { type: 'number' }
+                        leaveDays: { type: 'number' },
+                        averageWorkHours: { type: 'string' }
                       }
                     }
                   }
@@ -527,7 +528,8 @@ export const biometricAttendanceRoutes: RouteHandler = async (
                         lateDays: { type: 'number' },
                         presentDays: { type: 'number' },
                         regularisedDays: { type: 'number' },
-                        leaveDays: { type: 'number' }
+                        leaveDays: { type: 'number' },
+                        averageWorkHours: { type: 'string' }
                       }
                     }
                   }
