@@ -14,7 +14,7 @@ async function migrate() {
         // monthYear: 2026-01
         console.log('--- STARTING MANUAL PAYSLIP EXPORT BACKFILL ---');
 
-        // Target all 'Payslip' documents where 'payrollId' is null or 'isManual' is true
+        //get
         const query = {
             type: 'Payslip',
             $or: [
@@ -25,6 +25,9 @@ async function migrate() {
             ]
         };
 
+        // -------
+
+        //update
         console.log('Searching for manual payslips...');
         const manualCount = await Document.countDocuments(query);
         
@@ -49,6 +52,7 @@ async function migrate() {
         );
 
         console.log(`Successfully updated ${result.modifiedCount} documents.`);
+
 
         console.log('--- MIGRATION COMPLETED ---');
 
