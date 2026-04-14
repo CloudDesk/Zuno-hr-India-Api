@@ -25,22 +25,13 @@ async function migrate() {
             ]
         };
 
+        const docsCount = await Document.countDocuments(query);
+        console.log(`Searching for manual payslips... Found ${docsCount} records.`);
+
         // -------
 
         //update
-        console.log('Searching for manual payslips...');
-        const manualCount = await Document.countDocuments(query);
-        
-        // Count regular records for user's peace of mind
-        const regularCount = await Document.countDocuments({ 
-            type: 'Payslip', 
-            'metadata.payslip.payrollId': { $exists: true, $ne: null } 
-        });
-
-        console.log(`Found ${manualCount} manual payslip records to update.`);
-        console.log(`Verified ${regularCount} regular payroll records that WILL NOT be affected.`);
-
-        if (manualCount === 0) {
+        if (docsCount === 0) {
             console.log('No manual records found to update.');
             await mongoose.connection.close();
             process.exit(0);
@@ -52,6 +43,7 @@ async function migrate() {
         );
 
         console.log(`Successfully updated ${result.modifiedCount} documents.`);
+        console.log(`Backfill complete. Documents processed: ${result.modifiedCount}`);
 
 
         console.log('--- MIGRATION COMPLETED ---');

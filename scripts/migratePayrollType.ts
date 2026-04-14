@@ -13,6 +13,10 @@ export async function migratePayrollType() {
         const fnfQuery = { isFinalSettlement: true };
         const regularQuery = { isFinalSettlement: { $ne: true } };
 
+        const fnfCount = await Payroll.countDocuments(fnfQuery);
+        const regularCount = await Payroll.countDocuments(regularQuery);
+        console.log(`Found ${fnfCount} FnF records and ${regularCount} Regular records.`);
+
         // -------
 
         //update
@@ -22,16 +26,15 @@ export async function migratePayrollType() {
             fnfQuery,
             { $set: { type: 'FinalSettlement' } }
         );
-        console.log(`Updated ${fnfResult.modifiedCount} records to 'FinalSettlement'`);
 
         // 2. Update Regular records
         const regularResult = await Payroll.updateMany(
             regularQuery,
             { $set: { type: 'Regular' } }
         );
-        console.log(`Updated ${regularResult.modifiedCount} records to 'Regular'`);
 
-        console.log('Payroll Type migration completed successfully.');
+        const totalUpdated = fnfResult.modifiedCount + regularResult.modifiedCount;
+        console.log(`Payroll Type migration complete. Records processed: ${totalUpdated}`);
     } catch (error) {
         console.error('Migration failed:', error);
     }

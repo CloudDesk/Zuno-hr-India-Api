@@ -17,14 +17,11 @@ async function backfillEpfSplit() {
             ]
         };
 
-        // 1. DATA CLEANUP (ALWAYS RUN FIRST): Reset any records with negative EPF (Consultancy/Interns affected by previous run)
-        const cleanupResult = await Payroll.updateMany(
+        // 1. DATA CLEANUP: Reset any records with negative EPF (affected by previous runs)
+        await Payroll.updateMany(
             { country: 'IN', epfEmployerEpf: { $lt: 0 } },
             { $set: { epfEmployerEps: 0, epfEmployerEpf: 0 } }
         );
-        if (cleanupResult.modifiedCount > 0) {
-            console.log(`🧹 Cleaned up ${cleanupResult.modifiedCount} records with incorrect negative values.`);
-        }
 
         const totalToUpdate = await Payroll.countDocuments(query);
         console.log(`Found ${totalToUpdate} Indian payroll records needing EPF/EPS split backfill.`);
@@ -48,7 +45,6 @@ async function backfillEpfSplit() {
             let epsValue = 0;
             let epfValue = 0;
 
-            // Logic: Skip calculation if employer contribution is 0 or less (Consultancy/Interns)
             if (epfTotal > 0) {
                 const epsPercentage = 8.33;
                 const epsWageCap = 15000;
@@ -59,23 +55,14 @@ async function backfillEpfSplit() {
 
             await Payroll.updateOne(
                 { _id: record._id },
-                { 
-                    $set: { 
-                        epfEmployerEps: epsValue,
-                        epfEmployerEpf: epfValue
-                    } 
-                }
+                { $set: { epfEmployerEps: epsValue, epfEmployerEpf: epfValue } }
             );
 
             updatedCount++;
-            if (updatedCount % 50 === 0) {
-                console.log(`Processed ${updatedCount}/${totalToUpdate} records...`);
-            }
         }
 
+        console.log(`Backfill complete. Records processed: ${updatedCount}`);
 
-        console.log(`\nSuccessfully backfilled EPF split for ${updatedCount} records.`);
-        console.log('--- BACKFILL COMPLETED ---');
         
         await mongoose.connection.close();
         process.exit(0);
