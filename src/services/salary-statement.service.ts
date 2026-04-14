@@ -45,7 +45,7 @@ export class SalaryStatementService extends BaseService {
     async generateSalaryStatement(month: number, year: number, isPreview: boolean = false, country?: string) {
         let payrollRecords: any[];
         console.log(`[SalaryStatementService] Generating statement for ${month}/${year}, preview=${isPreview}, country=${country || 'All'}`);
-        
+
         if (isPreview) {
             // Generate virtual payroll data in-memory without saving to DB
             payrollRecords = await this.getVirtualPayrollData(month, year, country);
@@ -55,12 +55,12 @@ export class SalaryStatementService extends BaseService {
                 year,
                 status: { $nin: [PayrollStatus.Cancelled] }
             };
-            
+
             // If country is provided, we need to filter by employee's country
             // This requires a join/lookup or fetching IDs first.
             // For now, let's keep it simple or assume records have country field if needed.
             // Actually, Payroll model usually has employeeId populated.
-            
+
             payrollRecords = await Payroll.find(query)
                 .populate('employeeId')
                 .lean();
@@ -374,13 +374,13 @@ export class SalaryStatementService extends BaseService {
         for (const user of users) {
             try {
                 // Find latest salary assignment that started before or during this month
-                const sa = await SalaryAssignment.findOne({ 
-                    employeeId: user._id, 
-                    effectiveFrom: { $lte: endDate } 
+                const sa = await SalaryAssignment.findOne({
+                    employeeId: user._id,
+                    effectiveFrom: { $lte: endDate }
                 })
-                .sort({ effectiveFrom: -1 })
-                .populate('salaryStructureId')
-                .lean();
+                    .sort({ effectiveFrom: -1 })
+                    .populate('salaryStructureId')
+                    .lean();
 
                 if (!sa) {
                     console.log(`[VirtualPayroll] Skipping ${user.name} (${user.employeeCode}): No salary assignment found starting on or before ${endDate.toLocaleDateString()}`);
@@ -395,7 +395,7 @@ export class SalaryStatementService extends BaseService {
                 // Calculate Simulation Payable Days
                 // If they joined mid-month, pay from joining date
                 const effectiveJoin = user.joiningDate > startDate ? user.joiningDate : startDate;
-                
+
                 // If they separated mid-month, or their salary assignment ends mid-month
                 // We only respect separationDate if it's on or after joiningDate (avoiding stale data)
                 // and only if it falls within or after the current month.
@@ -405,17 +405,17 @@ export class SalaryStatementService extends BaseService {
                         effectiveSeparation = user.separationDate;
                     } else if (user.separationDate < startDate && !user.active) {
                         // Truly inactive and separated before this month
-                        effectiveSeparation = new Date(startDate.getTime() - 1); 
+                        effectiveSeparation = new Date(startDate.getTime() - 1);
                     }
                 }
-                
+
                 // Also respect the assignment's effectiveTo date
                 if (sa.effectiveTo && sa.effectiveTo < effectiveSeparation) {
                     effectiveSeparation = sa.effectiveTo;
                 }
-                
+
                 const payableDays = Math.max(0, Math.floor((effectiveSeparation.getTime() - effectiveJoin.getTime()) / (1000 * 60 * 60 * 24)) + 1);
-                
+
                 console.log(`[VirtualPayroll] Processing ${user.name}: payableDays=${payableDays} (Join: ${user.joiningDate.toLocaleDateString()}, Sep: ${user.separationDate?.toLocaleDateString() || 'N/A'})`);
 
                 const record = await this.calculatePayrollRecordLocally(
@@ -455,7 +455,7 @@ export class SalaryStatementService extends BaseService {
                 console.error(`[VirtualPayroll] Error calculating for ${user.name}:`, error);
             }
         }
-        
+
         console.log(`[VirtualPayroll] Total records generated: ${payrollRecords.length}`);
         return payrollRecords;
     }
@@ -485,13 +485,14 @@ export class SalaryStatementService extends BaseService {
         const resDeductions = await this.calculateDeductionsLocally(basic, da, struct, monthName, month, year, employee._id, payableDays, daysInMonth, monthlyGross, country, employee.isConsultancy, employee.isIntern);
 
         return {
-            basic, hra, da, 
-            otherAllowance: Math.round(other), 
-            travelAllowance: travel, 
+            basic, hra, da,
+            otherAllowance: Math.round(other),
+            travelAllowance: travel,
             reimbursementAllowance: reim,
             monthlyGross: adjGross,
-            epfEmployee: Math.round(resDeductions.epfEmployee),
-            esiEmployee: Math.round(resDeductions.esiEmployee),
+            epfEmployee: Math.round(resDeductions.epfEmployee || 0),
+            epfEmployer: Math.round(resDeductions.epfEmployer || 0),
+            esiEmployee: Math.round(resDeductions.esiEmployee || 0),
             professionalTax: Math.round(resDeductions.professionalTax),
             incomeTax: Math.round(resDeductions.incomeTax),
             tdsDeduction: Math.round(resDeductions.tdsDeduction),
@@ -507,21 +508,28 @@ export class SalaryStatementService extends BaseService {
             return { epfEmployee: 0, esiEmployee: 0, professionalTax: 0, incomeTax: 0, tdsDeduction: 0, totalDeductions: 0, leaveDeductions: leaveDed };
         }
 
-        let epf = 0;
-        let esi = 0;
+        let epfEmployee = 0;
+        let epfEmployer = 0;
+        let esiEmployee = 0;
         if (!isConsultancy && !isIntern) {
-            // EPF: 12% of (Basic + DA), capped at 15000 ceiling
+            // EPF: Decoupled logic (12% Employee, 13% Employer)
             const epfConfig = struct.statutoryDeductions.epf;
             const basicForEpf = basic + da;
-            const epfRaw = (epfConfig.employeeContribution / 100) * basicForEpf;
-            const epfCap = (epfConfig.employeeContribution / 100) * epfConfig.maxLimit;
-            epf = Number((basicForEpf >= epfConfig.maxLimit ? epfCap : epfRaw).toFixed(2));
+            const maxLimit = epfConfig.maxLimit || 15000;
+
+            const epfRawEmployee = (epfConfig.employeeContribution / 100) * basicForEpf;
+            const epfCapEmployee = (epfConfig.employeeContribution / 100) * maxLimit;
+            epfEmployee = Number((basicForEpf >= maxLimit ? epfCapEmployee : epfRawEmployee).toFixed(2));
+
+            const epfRawEmployer = (epfConfig.employerContribution / 100) * basicForEpf;
+            const epfCapEmployer = (epfConfig.employerContribution / 100) * maxLimit;
+            epfEmployer = Number((basicForEpf >= maxLimit ? epfCapEmployer : epfRawEmployer).toFixed(2));
 
             // ESI: 0.75% of actual Gross if actual Gross <= 21000
             const esiConfig = struct.statutoryDeductions.esi || { applicabilityLimit: 21000, employeeContribution: 0.75 };
             const actualGross = basic + da + (struct.fixedEarnings.hraPercentage / 100 * monthlyGross * (payableDays / daysInMonth)); // Simplified estimate
             if (actualGross <= esiConfig.applicabilityLimit) {
-                esi = Number(((esiConfig.employeeContribution / 100) * actualGross).toFixed(2));
+                esiEmployee = Number(((esiConfig.employeeContribution / 100) * actualGross).toFixed(2));
             }
         }
 
@@ -537,14 +545,15 @@ export class SalaryStatementService extends BaseService {
 
         // NOTE: totalDeductions here only includes statutory items because the base 'adjGross' 
         // in calculatePayrollRecordLocally already accounts for 'leaveDed'.
-        return { 
-            epfEmployee: epf, 
-            esiEmployee: esi,
-            professionalTax: pt, 
-            incomeTax: it, 
-            tdsDeduction: tds, 
-            totalDeductions: Number((epf + esi + pt + it + tds).toFixed(2)),
-            leaveDeductions: leaveDed 
+        return {
+            epfEmployee,
+            epfEmployer,
+            esiEmployee,
+            professionalTax: pt,
+            incomeTax: it,
+            tdsDeduction: tds,
+            totalDeductions: Number((epfEmployee + esiEmployee + pt + it + tds).toFixed(2)),
+            leaveDeductions: leaveDed
         };
     }
 

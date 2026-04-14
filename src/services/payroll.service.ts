@@ -77,6 +77,8 @@ interface PayrollRecord {
     reimbursementAllowance: number;
     epfEmployee: number;
     epfEmployer: number;
+    epfEmployerEps: number;
+    epfEmployerEpf: number;
     esiEmployee: number;
     esiEmployer: number;
     professionalTax: number;
@@ -1932,6 +1934,8 @@ export class PayrollService extends BaseService {
             reimbursementAllowance,
             epfEmployee: resolvedDeductions.epfEmployee,
             epfEmployer: resolvedDeductions.epfEmployer,
+            epfEmployerEps: resolvedDeductions.epfEmployerEps,
+            epfEmployerEpf: resolvedDeductions.epfEmployerEpf,
             esiEmployee: resolvedDeductions.esiEmployee,
             esiEmployer: resolvedDeductions.esiEmployer,
             professionalTax: resolvedDeductions.professionalTax,
@@ -1995,6 +1999,8 @@ export class PayrollService extends BaseService {
             return {
                 epfEmployee: 0,
                 epfEmployer: 0,
+                epfEmployerEps: 0,
+                epfEmployerEpf: 0,
                 esiEmployee: 0,
                 esiEmployer: 0,
                 professionalTax: 0,
@@ -2017,47 +2023,53 @@ export class PayrollService extends BaseService {
         // Intern: No PF deduction
         let finalEpfEmployee = 0;
         let finalEpfEmployer = 0;
+        let finalEpfEmployerEps = 0;
+        let finalEpfEmployerEpf = 0;
 
         if (!isConsultancy && !isIntern) {
-            // When Basic >= ₹15,000, cap EPF at 12% of ₹15,000 = ₹1,800 (not 15000/12 = ₹1,250)
+            // Use configured split or defaults
+            const epsPercentage = salaryStructure.statutoryDeductions.employerSplit?.epsPercentage ?? 8.33;
+            const epsWageCap = salaryStructure.statutoryDeductions.employerSplit?.epsWageCap ?? 15000;
+
+            // When Basic >= ₹15,000, cap EPF at 12% of ₹15,000 = ₹1,800
             const epfEmployee =
                 (salaryStructure.statutoryDeductions.epf.employeeContribution / 100) * (basic + da);
-            const epfEmployer =
+            const epfEmployerTotal =
                 (salaryStructure.statutoryDeductions.epf.employerContribution / 100) * (basic + da);
 
-            // Calculate max EPF contribution (12% of ₹15,000 ceiling)
-            const maxEpfContribution =
+            // Separate EPF contribution caps for Employee and Employer
+            const maxEpfEmployee =
                 (salaryStructure.statutoryDeductions.epf.employeeContribution / 100) *
+                salaryStructure.statutoryDeductions.epf.maxLimit;
+
+            const maxEpfEmployerTotal =
+                (salaryStructure.statutoryDeductions.epf.employerContribution / 100) *
                 salaryStructure.statutoryDeductions.epf.maxLimit;
 
             // Apply ceiling if basic >= maxLimit
             finalEpfEmployee =
                 Number((basic >= salaryStructure.statutoryDeductions.epf.maxLimit
-                    ? maxEpfContribution  // 12% × ₹15,000 = ₹1,800
+                    ? maxEpfEmployee
                     : epfEmployee).toFixed(2));
 
-            // Employer contribution should also be capped (EPF compliance)
+            // Total Employer contribution (e.g. 13%)
             finalEpfEmployer =
                 Number((basic >= salaryStructure.statutoryDeductions.epf.maxLimit
-                    ? maxEpfContribution  // 12% × ₹15,000 = ₹1,800
-                    : epfEmployer).toFixed(2));
+                    ? maxEpfEmployerTotal
+                    : epfEmployerTotal).toFixed(2));
 
-            /*
-                CORRECTED EPF CALCULATION:
-                Example: Basic = ₹18,030
-                - epfEmployee = (12/100) * 18030 = ₹2,163.60
-                - maxEpfContribution = (12/100) * 15000 = ₹1,800
-                - Since 18030 >= 15000: finalEpfEmployee = ₹1,800 ✓
-                
-                Example: Basic = ₹8,000
-                - epfEmployee = (12/100) * 8000 = ₹960
-                - Since 8000 < 15000: finalEpfEmployee = ₹960 ✓
-            */
-            console.log(epfEmployee, 'epfEmployee');
-            console.log(epfEmployer, 'epfEmployer');
-            console.log(maxEpfContribution, 'maxEpfContribution');
+            // EPS (Pension) Calculation: 8.33% capped at ₹15,000 wage
+            // Standard rule: EPS uses a fixed cap of 15000 regardless of structural maxLimit for total PF
+            const currentWageForEps = Math.min((basic + da), epsWageCap);
+            finalEpfEmployerEps = Number(((epsPercentage / 100) * currentWageForEps).toFixed(2));
+
+            // EPF (Employer Share) = Total Employer - EPS
+            finalEpfEmployerEpf = Number((finalEpfEmployer - finalEpfEmployerEps).toFixed(2));
+
             console.log(finalEpfEmployee, 'finalEpfEmployee');
-            console.log(finalEpfEmployer, 'finalEpfEmployer');
+            console.log(finalEpfEmployer, 'finalEpfEmployer (Total)');
+            console.log(finalEpfEmployerEps, 'finalEpfEmployerEps (Pension)');
+            console.log(finalEpfEmployerEpf, 'finalEpfEmployerEpf (Share)');
         } else if (isConsultancy) {
             console.log('Consultancy staff - No PF deduction');
         } else if (isIntern) {
@@ -2153,6 +2165,8 @@ export class PayrollService extends BaseService {
         return {
             epfEmployee: finalEpfEmployee,
             epfEmployer: finalEpfEmployer,
+            epfEmployerEps: finalEpfEmployerEps,
+            epfEmployerEpf: finalEpfEmployerEpf,
             esiEmployee,
             esiEmployer,
             professionalTax,

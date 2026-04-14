@@ -34,6 +34,10 @@ export interface ISalaryStructure extends Document {
                 amount: number;
             }[];
         };
+        employerSplit?: {
+            epsPercentage: number;
+            epsWageCap: number;
+        };
     };
     createdAt?: Date;
     updatedAt?: Date;
@@ -96,6 +100,10 @@ const SalaryStructureSchema = new Schema<ISalaryStructure>(
                         taxAmount: { type: Number, required: true }   // PT Amount
                     }
                 ]
+            },
+            employerSplit: {
+                epsPercentage: { type: Number, default: 8.33 },
+                epsWageCap: { type: Number, default: 15000 }
             }
         }
     },
