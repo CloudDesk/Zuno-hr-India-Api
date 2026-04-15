@@ -4,6 +4,7 @@ import SMTPTransport from 'nodemailer/lib/smtp-transport';
 import { join } from 'path';
 import { config } from '../config';
 import axios from 'axios';
+import { downloadFileFromGCP } from '../utilis/gcpStorage';
 
 
 
@@ -128,13 +129,25 @@ export class EmailService {
         }
     }
     public async fetchPdfBuffer(url: string): Promise<Buffer> {
-        const response = await axios.get(url, {
-            responseType: 'arraybuffer',
-            timeout: 30000,
-            maxContentLength: 25 * 1024 * 1024,
-            maxBodyLength: 25 * 1024 * 1024,
-        });
-        return Buffer.from(response.data);
+        try {
+            const response = await axios.get(url, {
+                responseType: 'arraybuffer',
+                timeout: 30000,
+                maxContentLength: 25 * 1024 * 1024,
+                maxBodyLength: 25 * 1024 * 1024,
+            });
+            return Buffer.from(response.data);
+        } catch (error: any) {
+            const status = error?.response?.status;
+            const isGcpStorageUrl = typeof url === 'string' && url.includes('storage.googleapis.com');
+
+            if (isGcpStorageUrl && (status === 403 || status === 404)) {
+                console.warn(`HTTP fetch failed for GCP URL (${status}). Falling back to direct GCP download: ${url}`);
+                return downloadFileFromGCP(url);
+            }
+
+            throw error;
+        }
     }
     public async sendPayslipEmails(
         month: number,
