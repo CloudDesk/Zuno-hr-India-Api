@@ -56,35 +56,6 @@ export interface IGCPUploadResult {
   error?: string;
 }
 
-export async function downloadFileFromGCP(fileUrl: string): Promise<Buffer> {
-  const url = new URL(fileUrl);
-  const hostParts = url.hostname.split('.');
-
-  let resolvedBucket = bucketName || '';
-  let filePath = '';
-
-  if (url.hostname === 'storage.googleapis.com') {
-    const pathname = url.pathname.replace(/^\/+/, '');
-    const [bucket, ...rest] = pathname.split('/');
-    resolvedBucket = bucket;
-    filePath = rest.join('/');
-  } else if (hostParts.length > 3 && hostParts[1] === 'storage' && hostParts[2] === 'googleapis' && hostParts[3] === 'com') {
-    resolvedBucket = hostParts[0];
-    filePath = url.pathname.replace(/^\/+/, '');
-  } else {
-    throw new Error(`Unsupported GCP file URL: ${fileUrl}`);
-  }
-
-  if (!resolvedBucket || !filePath) {
-    throw new Error(`Invalid GCP file URL: ${fileUrl}`);
-  }
-
-  const decodedPath = decodeURIComponent(filePath);
-  const file = storage.bucket(resolvedBucket).file(decodedPath);
-  const [contents] = await file.download();
-  return contents;
-}
-
 /**
  * Upload file to GCP Cloud Storage with organized folder structure
  */
