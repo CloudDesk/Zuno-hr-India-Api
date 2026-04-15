@@ -1,5 +1,6 @@
 import { FastifyReply } from 'fastify';
 import nodemailer from 'nodemailer';
+import SMTPTransport from 'nodemailer/lib/smtp-transport';
 import { join } from 'path';
 import { config } from '../config';
 import axios from 'axios';
@@ -40,18 +41,41 @@ export class EmailService {
 
     constructor() {
         this.parentDir = process.cwd();
-
-        // Initialize nodemailer transporter with env variables
-        this.transporter = nodemailer.createTransport({
-            service: config.GMAIL_SERVICE,
+        const port = Number(config.GMAIL_PORT);
+        const hasCustomService =
+            Boolean(config.GMAIL_SERVICE) &&
+            !config.GMAIL_SERVICE.startsWith('default-');
+        const transportOptions: SMTPTransport.Options = {
             host: config.GMAIL_HOST,
-            port: Number(config.GMAIL_PORT),
-            secure: true,
+            port,
+            secure: port === 465,
             auth: {
                 user: config.GMAIL_AUTH_USER,
                 pass: config.GMAIL_AUTH_PASSWORD,
             },
-        });
+            connectionTimeout: 30000,
+            greetingTimeout: 30000,
+            socketTimeout: 60000,
+            tls: {
+                servername: config.GMAIL_HOST,
+                minVersion: 'TLSv1.2',
+            },
+        };
+
+        if (hasCustomService) {
+            transportOptions.service = config.GMAIL_SERVICE;
+        }
+
+        // Initialize nodemailer transporter with env variables
+        this.transporter = nodemailer.createTransport(transportOptions);
+    }
+
+    private getMailErrorMessage(error: any): string {
+        if (error?.code === 'ETIMEDOUT' || /timeout/i.test(error?.message || '')) {
+            return 'Connection timeout';
+        }
+
+        return error?.message || 'Unknown email error';
     }
 
     public async sendEmail(request: EmailRequest, reply?: FastifyReply): Promise<string> {
@@ -90,20 +114,26 @@ export class EmailService {
             return "Email sent successfully";
         } catch (error: any) {
             console.error('Error sending email:', error);
+            const message = this.getMailErrorMessage(error);
 
             if (reply) {
                 return reply.status(500).send({
                     success: false,
                     message: "Error sending email",
-                    error: error.message
+                    error: message
                 });
             }
 
-            throw new Error(`Failed to send email: ${error.message}`);
+            throw new Error(`Failed to send email: ${message}`);
         }
     }
     public async fetchPdfBuffer(url: string): Promise<Buffer> {
-        const response = await axios.get(url, { responseType: 'arraybuffer' });
+        const response = await axios.get(url, {
+            responseType: 'arraybuffer',
+            timeout: 30000,
+            maxContentLength: 25 * 1024 * 1024,
+            maxBodyLength: 25 * 1024 * 1024,
+        });
         return Buffer.from(response.data);
     }
     public async sendPayslipEmails(
@@ -134,8 +164,8 @@ export class EmailService {
             }
 
             // Send individual emails to each recipient
-            const emailPromises = selectedPayslips.map(async (payslip) => {
-
+            const results = [];
+            for (const payslip of selectedPayslips) {
                 const pdfBuffer = await this.fetchPdfBuffer(payslip.payslipUrl);
                 console.log(pdfBuffer, "pdfBuffer service");
                 const mailOptions: nodemailer.SendMailOptions = {
@@ -162,10 +192,9 @@ export class EmailService {
                     ]
                 };
 
-                return this.transporter.sendMail(mailOptions);
-            });
-            console.log(emailPromises, "emailPromises")
-            const results = await Promise.all(emailPromises);
+                const info = await this.transporter.sendMail(mailOptions);
+                results.push(info);
+            }
             console.log(results, "results sendPayslipEmails")
             return {
                 success: true,
@@ -174,7 +203,7 @@ export class EmailService {
             };
         } catch (error: any) {
             console.error('Error sending payslip emails:', error);
-            throw new Error(`Failed to send payslip emails: ${error.message}`);
+            throw new Error(`Failed to send payslip emails: ${this.getMailErrorMessage(error)}`);
         }
     }
 
