@@ -1,7 +1,5 @@
 import { Types } from "mongoose";
 import * as fsPromises from "fs/promises";
-import path from 'path';
-import puppeteer, { Browser } from 'puppeteer';
 import handlebars from 'handlebars';
 import { RequestContext } from "../types/context";
 import { BaseService } from "./base.service";
@@ -10,7 +8,7 @@ import { Document } from "../models/document.model";
 import { uploadFileToGCP, deleteFileFromGCP } from "../utilis/gcpStorage";
 import { formatCurrency } from "../utilis/currency";
 import { formatDateToDDMMYYYY } from "../utilis/dates";
-import { getPuppeteerLaunchOptions } from "../utilis/puppeteer";
+import { cleanupPayslipTempFile, getPayslipTempFilePath, logPayslipTempFileStats, renderPayslipPdf } from "./payslip-pdf-runtime";
 
 interface IPayslipGenerationResult {
     userId: string;
@@ -37,6 +35,12 @@ interface IdentityDocumentResult {
     pfUan?: string;
 }
 
+interface PayslipLogContext {
+    userId: string;
+    month: number;
+    year: number;
+}
+
 export class PayslipPdfService extends BaseService {
     protected context: RequestContext;
 
@@ -46,39 +50,49 @@ export class PayslipPdfService extends BaseService {
     }
 
     async generatePayslip(month: number, year: number, userIds: string[]): Promise<IBulkGenerationResult> {
-
-        console.log(month, year, userIds, "generatePayslip");
         if (month < 1 || month > 12 || year < 2000 || year > 2100) {
             throw new Error('Invalid month (1-12) or year (2000-2100).');
         }
 
         const lastDayOfMonth = new Date(year, month, 0);
-
-        const employees = await User.find({
-            _id: { $in: userIds.map((id) => new Types.ObjectId(id)) },
-            joiningDate: { $lt: lastDayOfMonth },
-        }).populate('departmentId').lean();
+        const baseLogContext = { month, year };
+        const employees = await this.measureStep(
+            baseLogContext,
+            'fetch_employee_data',
+            async () => User.find({
+                _id: { $in: userIds.map((id) => new Types.ObjectId(id)) },
+                joiningDate: { $lt: lastDayOfMonth },
+            }).populate('departmentId').lean()
+        );
 
         if (!employees.length) {
             throw new Error('No eligible employees found for payslip generation.');
         }
 
-        const payrolls = await Payroll.find({
-            month,
-            year,
-            employeeId: { $in: userIds.map((id) => new Types.ObjectId(id)) },
-            status: 'Completed',
-        }).lean();
+        const payrolls = await this.measureStep(
+            baseLogContext,
+            'fetch_payroll_data',
+            async () => Payroll.find({
+                month,
+                year,
+                employeeId: { $in: userIds.map((id) => new Types.ObjectId(id)) },
+                status: 'Completed',
+            }).lean()
+        );
 
         if (!payrolls.length) {
             throw new Error('No payroll data found for the specified users.');
         }
 
         // Fetch LOV labels for department and location once per batch
-        const [departmentLov, locationLov] = await Promise.all([
-            LOV.findOne({ type: 'department' }).lean(),
-            LOV.findOne({ type: 'location' }).lean()
-        ]);
+        const [departmentLov, locationLov] = await this.measureStep(
+            baseLogContext,
+            'fetch_lov_mappings',
+            async () => Promise.all([
+                LOV.findOne({ type: 'department' }).lean(),
+                LOV.findOne({ type: 'location' }).lean()
+            ])
+        );
 
         const departmentMap: Record<string, string> = {};
         const locationMap: Record<string, string> = {};
@@ -86,39 +100,52 @@ export class PayslipPdfService extends BaseService {
         departmentLov?.values?.forEach(v => { departmentMap[v.value] = v.label; });
         locationLov?.values?.forEach(v => { locationMap[v.value] = v.label; });
 
-        const browser = await puppeteer.launch(getPuppeteerLaunchOptions());
+        const results: IPayslipGenerationResult[] = [];
 
-        try {
-            const results: IPayslipGenerationResult[] = [];
+        for (const employee of employees) {
+            const logContext: PayslipLogContext = {
+                userId: employee._id.toString(),
+                month,
+                year
+            };
 
-            // Process payslips sequentially to avoid memory spikes and browser crashes
-            for (const employee of employees) {
+            try {
+                const payroll = payrolls.find((p) => p.employeeId.toString() === employee._id.toString());
+                if (!payroll) {
+                    this.logInfo(logContext, 'fetch_payroll_data', { status: 'No Payroll Found' });
+                    results.push({ userId: employee._id.toString(), status: 'No Payroll Found' });
+                    continue;
+                }
+
+                const monthStr = month <= 9 ? `0${month}` : `${month}`;
+                const cleanName = employee.name.replace(/[^a-zA-Z0-9]/g, '_');
+                const filename = `Doc_Payslip_${employee._id.toString().slice(-5)}_${cleanName}_${year}_${monthStr}.pdf`;
+                const tempFilePath = await this.measureStep(
+                    logContext,
+                    'prepare_temp_file',
+                    async () => getPayslipTempFilePath(filename)
+                );
+
                 try {
-                    const payroll = payrolls.find((p) => p.employeeId.toString() === employee._id.toString());
-                    if (!payroll) {
-                        results.push({ userId: employee._id.toString(), status: 'No Payroll Found' });
-                        continue;
-                    }
+                    await this.generatePayslipHtmlToPdf(employee, payroll, tempFilePath, { departmentMap, locationMap }, logContext);
 
-                    const monthStr = month <= 9 ? `0${month}` : `${month}`;
-                    const cleanName = employee.name.replace(/[^a-zA-Z0-9]/g, '_');
-                    const filename = `Doc_Payslip_${employee._id.toString().slice(-5)}_${cleanName}_${year}_${monthStr}.pdf`;
-                    const tempFilePath = path.resolve(process.cwd(), 'uploads', filename);
+                    await this.measureStep(
+                        logContext,
+                        'temp_file_stats',
+                        async () => logPayslipTempFileStats(tempFilePath, logContext)
+                    );
 
-                    // Ensure uploads directory exists
-                    await fsPromises.mkdir(path.dirname(tempFilePath), { recursive: true });
-
-                    // Generate PDF via HTML using shared browser
-                    await this.generatePayslipHtmlToPdf(browser, employee, payroll, tempFilePath, { departmentMap, locationMap });
-
-                    // Upload to GCP Cloud Storage
-                    const gcpResult = await uploadFileToGCP({
-                        filePath: tempFilePath,
-                        fileName: filename,
-                        employeeId: employee._id.toString(),
-                        category: 'Payroll',
-                        type: 'Payslip'
-                    });
+                    const gcpResult = await this.measureStep(
+                        logContext,
+                        'upload_to_gcp',
+                        async () => uploadFileToGCP({
+                            filePath: tempFilePath,
+                            fileName: filename,
+                            employeeId: employee._id.toString(),
+                            category: 'Payroll',
+                            type: 'Payslip'
+                        })
+                    );
 
                     if (!gcpResult.success) {
                         throw new Error(`Failed to upload payslip to GCP: ${gcpResult.error}`);
@@ -126,114 +153,123 @@ export class PayslipPdfService extends BaseService {
 
                     const fileUrl = gcpResult.fileUrl!;
 
-                    let document = await Document.findOne({
-                        employeeId: new Types.ObjectId(employee._id),
-                        type: 'Payslip',
-                        'metadata.payslip.month': month,
-                        'metadata.payslip.year': year,
-                    });
+                    let document = await this.measureStep(
+                        logContext,
+                        'save_document',
+                        async () => {
+                            let existingDocument = await Document.findOne({
+                                employeeId: new Types.ObjectId(employee._id),
+                                type: 'Payslip',
+                                'metadata.payslip.month': month,
+                                'metadata.payslip.year': year,
+                            });
 
-                    const documentData = {
-                        employeeId: new Types.ObjectId(employee._id),
-                        type: 'Payslip' as const,
-                        category: 'Payroll' as const,
-                        fileName: filename,
-                        filePath: fileUrl,
-                        tags: ['Payslip', `${year}`, `month-${month}`],
-                        uploadDate: new Date(),
-                        uploadedBy: new Types.ObjectId(this.context.user?._id || (employee._id as string)),
-                        version: document ? (document.version || 1) + 1 : 1,
-                        accessLevel: 'Private' as const,
-                        status: 'Generated' as const,
-                        metadata: {
-                            payslip: {
-                                payrollId: payroll._id,
-                                monthYear: `${year}-${monthStr}`,
-                                month,
-                                year,
-                                netSalary: payroll.netSalary,
-                                paySummary: {
-                                    gross: payroll.monthlyGross,
-                                    net: payroll.netSalary,
-                                    deductions: payroll.totalDeductions,
-                                    bonus: payroll.bonus || 0,
-                                    reimbursement: payroll.reimbursement || 0,
+                            const documentData = {
+                                employeeId: new Types.ObjectId(employee._id),
+                                type: 'Payslip' as const,
+                                category: 'Payroll' as const,
+                                fileName: filename,
+                                filePath: fileUrl,
+                                tags: ['Payslip', `${year}`, `month-${month}`],
+                                uploadDate: new Date(),
+                                uploadedBy: new Types.ObjectId(this.context.user?._id || (employee._id as string)),
+                                version: existingDocument ? (existingDocument.version || 1) + 1 : 1,
+                                accessLevel: 'Private' as const,
+                                status: 'Generated' as const,
+                                metadata: {
+                                    payslip: {
+                                        payrollId: payroll._id,
+                                        monthYear: `${year}-${monthStr}`,
+                                        month,
+                                        year,
+                                        netSalary: payroll.netSalary,
+                                        paySummary: {
+                                            gross: payroll.monthlyGross,
+                                            net: payroll.netSalary,
+                                            deductions: payroll.totalDeductions,
+                                            bonus: payroll.bonus || 0,
+                                            reimbursement: payroll.reimbursement || 0,
+                                        },
+                                        presentDays: payroll.presentDays,
+                                        totalDays: payroll.totalDaysInMonth,
+                                        payableDays: payroll.payableDays,
+                                        isExport: false,
+                                    },
                                 },
-                                presentDays: payroll.presentDays,
-                                totalDays: payroll.totalDaysInMonth,
-                                payableDays: payroll.payableDays,
-                                isExport: false,
-                            },
-                        },
-                        auditLog: [
-                            ...(document?.auditLog || []),
-                            {
-                                action: 'Generate' as const,
-                                performedBy: new Types.ObjectId(this.context.user?._id || (employee._id as string)),
-                                timestamp: new Date(),
-                                details: `Payslip generated using HTML-to-PDF for ${employee.name} for ${month}-${year}`,
-                            },
-                        ],
-                    };
+                                auditLog: [
+                                    ...(existingDocument?.auditLog || []),
+                                    {
+                                        action: 'Generate' as const,
+                                        performedBy: new Types.ObjectId(this.context.user?._id || (employee._id as string)),
+                                        timestamp: new Date(),
+                                        details: `Payslip generated using HTML-to-PDF for ${employee.name} for ${month}-${year}`,
+                                    },
+                                ],
+                            };
 
-                    if (document) {
-                        if (document.filePath) {
-                            try {
-                                await deleteFileFromGCP(document.filePath);
-                            } catch (err) {
-                                console.warn(`Failed to delete old file from GCP: ${document.filePath}`, err);
+                            if (existingDocument) {
+                                if (existingDocument.filePath) {
+                                    try {
+                                        await deleteFileFromGCP(existingDocument.filePath);
+                                    } catch (err) {
+                                        const message = err instanceof Error ? err.message : String(err);
+                                        this.logWarn(logContext, 'delete_old_gcp_file', {
+                                            filePath: existingDocument.filePath,
+                                            message
+                                        });
+                                    }
+                                }
+                                Object.assign(existingDocument, documentData);
+                            } else {
+                                existingDocument = new Document(documentData);
                             }
+
+                            await existingDocument.save();
+                            return existingDocument;
                         }
-                        Object.assign(document, documentData);
-                    } else {
-                        document = new Document(documentData);
-                    }
-
-                    await document.save();
-
-                    // Clean up local temp file
-                    try {
-                        await fsPromises.unlink(tempFilePath);
-                    } catch (e) {
-                        console.warn('Cleanup of temp PDF failed', e);
-                    }
+                    );
 
                     results.push({
                         userId: employee._id.toString(),
                         status: 'Generated',
                         documentId: document._id.toString(),
                     });
-                } catch (error: any) {
-                    console.error(`Error generating payslip for ${employee._id}:`, error);
-                    results.push({
-                        userId: employee._id.toString(),
-                        status: 'Error',
-                        error: error.message,
-                    });
+                } finally {
+                    await this.measureStep(
+                        logContext,
+                        'cleanup',
+                        async () => cleanupPayslipTempFile(tempFilePath, logContext)
+                    );
                 }
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                this.logError(logContext, 'generate_payslip', message);
+                results.push({
+                    userId: employee._id.toString(),
+                    status: 'Error',
+                    error: message,
+                });
             }
-
-            return {
-                success: true,
-                payslips: results,
-                summary: {
-                    total: userIds.length,
-                    generated: results.filter((r) => r.status === 'Generated').length,
-                    failed: results.filter((r) => r.status === 'Error').length,
-                    updated: results.filter((r) => r.status === 'Generated' && r.documentId).length,
-                },
-            };
-        } finally {
-            await browser.close();
         }
+
+        return {
+            success: true,
+            payslips: results,
+            summary: {
+                total: userIds.length,
+                generated: results.filter((r) => r.status === 'Generated').length,
+                failed: results.filter((r) => r.status === 'Error').length,
+                updated: results.filter((r) => r.status === 'Generated' && r.documentId).length,
+            },
+        };
     }
 
     private async generatePayslipHtmlToPdf(
-        browser: Browser,
         employee: any,
         payroll: any,
         outputPath: string,
-        lovMaps: { departmentMap: Record<string, string>; locationMap: Record<string, string> }
+        lovMaps: { departmentMap: Record<string, string>; locationMap: Record<string, string> },
+        logContext: PayslipLogContext
     ): Promise<void> {
         const normalizedCountry = (payroll.country as string)?.toUpperCase() || 'IN';
         const isUaePayroll = normalizedCountry === 'AE';
@@ -446,50 +482,106 @@ export class PayslipPdfService extends BaseService {
         //   Prod (compiled): __dirname = dist/services/ → dist/emails/templates/payslip.hbs ✅
         // Using process.cwd() + 'src' breaks in Docker because the src/ folder
         // does not exist in the container — only dist/ does.
-        const templatePath = path.join(__dirname, '..', 'emails', 'templates', 'payslip.hbs');
-        console.log(`[PAYSLIP_DEBUG] Loading template from: ${templatePath}`);
+        const html = await this.measureStep(
+            logContext,
+            'prepare_template',
+            async () => {
+                const templatePath = `${__dirname}/../emails/templates/payslip.hbs`;
+                const templateHtml = await fsPromises.readFile(templatePath, 'utf-8');
+                const compiledTemplate = handlebars.compile(templateHtml);
+                return compiledTemplate(templateData);
+            }
+        );
 
-        const templateHtml = await fsPromises.readFile(templatePath, 'utf-8');
-        console.log(`[PAYSLIP_DEBUG] Template content begins with: ${templateHtml.substring(0, 100).replace(/\n/g, ' ')}...`);
-        const compiledTemplate = handlebars.compile(templateHtml);
-        const html = compiledTemplate(templateData);
+        await renderPayslipPdf({
+            logContext,
+            outputPath,
+            renderPage: async (page) => {
+                await this.measureStep(
+                    logContext,
+                    'set_page_viewport',
+                    async () => page.setViewport({ width: 718, height: 5000, deviceScaleFactor: 1 })
+                );
 
-        const page = await browser.newPage();
+                await this.measureStep(
+                    logContext,
+                    'set_page_content',
+                    async () => page.setContent(html, { waitUntil: 'networkidle0' })
+                );
+
+                const contentHeightPx = await page.evaluate((): number => {
+                    const slip = document.querySelector('.slip') as HTMLElement | null;
+                    const footer = document.querySelector('.footer-note') as HTMLElement | null;
+                    if (footer) {
+                        const rect = footer.getBoundingClientRect();
+                        return Math.ceil(rect.bottom) + 16;
+                    }
+                    if (slip) {
+                        const rect = slip.getBoundingClientRect();
+                        return Math.ceil(rect.bottom) + 16;
+                    }
+                    return document.body.scrollHeight;
+                });
+
+                const heightMm = Math.ceil(contentHeightPx * 0.264583) + 12;
+                return {
+                    width: '210mm',
+                    height: `${heightMm}mm`,
+                    printBackground: true,
+                    margin: { top: '8mm', right: '10mm', bottom: '8mm', left: '10mm' }
+                };
+            }
+        });
+    }
+
+    private logInfo(context: Partial<PayslipLogContext>, step: string, extra?: Record<string, unknown>): void {
+        console.log(JSON.stringify({
+            scope: 'payslip_pdf_service',
+            level: 'info',
+            step,
+            ...context,
+            ...(extra || {})
+        }));
+    }
+
+    private logWarn(context: Partial<PayslipLogContext>, step: string, extra?: Record<string, unknown>): void {
+        console.warn(JSON.stringify({
+            scope: 'payslip_pdf_service',
+            level: 'warn',
+            step,
+            ...context,
+            ...(extra || {})
+        }));
+    }
+
+    private logError(context: Partial<PayslipLogContext>, step: string, message: string): void {
+        console.error(JSON.stringify({
+            scope: 'payslip_pdf_service',
+            level: 'error',
+            step,
+            ...context,
+            message
+        }));
+    }
+
+    private async measureStep<T>(context: Partial<PayslipLogContext>, step: string, operation: () => Promise<T>): Promise<T> {
+        const startedAt = Date.now();
 
         try {
-            // ── Viewport width MUST match the PDF content area ──────────────
-            // PDF page = 210mm, margins = 10mm each side → content = 190mm
-            // 190mm × (96dpi / 25.4) = 718px
-            await page.setViewport({ width: 718, height: 5000, deviceScaleFactor: 1 });
-            await page.setContent(html, { waitUntil: 'networkidle0' });
-
-            // ── Measure ACTUAL content height ──────────────────────────
-            const contentHeightPx = await page.evaluate((): number => {
-                const slip = document.querySelector('.slip') as HTMLElement | null;
-                const footer = document.querySelector('.footer-note') as HTMLElement | null;
-                if (footer) {
-                    const rect = footer.getBoundingClientRect();
-                    return Math.ceil(rect.bottom) + 16; // 16px bottom buffer
-                }
-                if (slip) {
-                    const rect = slip.getBoundingClientRect();
-                    return Math.ceil(rect.bottom) + 16;
-                }
-                return document.body.scrollHeight;
-            });
-
-            // Convert px → mm  (1px = 0.264583mm at 96dpi)
-            const heightMm = Math.ceil(contentHeightPx * 0.264583) + 12;
-
-            await page.pdf({
-                path: outputPath,
-                width: '210mm',
-                height: `${heightMm}mm`,
-                printBackground: true,
-                margin: { top: '8mm', right: '10mm', bottom: '8mm', left: '10mm' }
-            });
-        } finally {
-            await page.close();
+            const result = await operation();
+            this.logInfo(context, step, { durationMs: Date.now() - startedAt });
+            return result;
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            console.error(JSON.stringify({
+                scope: 'payslip_pdf_service',
+                level: 'error',
+                step,
+                ...context,
+                durationMs: Date.now() - startedAt,
+                message
+            }));
+            throw error;
         }
     }
 
