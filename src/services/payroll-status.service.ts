@@ -16,7 +16,7 @@ interface PayrollRecord {
     employeeId: Types.ObjectId;
     salaryAssignmentId: Types.ObjectId;
     monthlyGross: number;
-    attendanceAdjustGross: number;
+    attendanceAdjustedGross: number;
     totalDaysInMonth: number;
     payableDays: number;
     basic: number;

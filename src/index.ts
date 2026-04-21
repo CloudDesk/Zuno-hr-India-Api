@@ -13,7 +13,7 @@ export const handler = async (event: any, context: any) => {
     fastifyApp = await createApp();
     proxy = awsLambdaFastify(fastifyApp);
   }
-
+  console.log('process.env.PROJECT_ID')
   // Handle the request
   const response = await proxy(event, context);
   return response;

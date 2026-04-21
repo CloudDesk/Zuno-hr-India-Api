@@ -193,10 +193,8 @@ export class OptionalHolidayService extends BaseService {
       // Escape special regex characters in search string
       const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-      // Search in holidayName, reason, status, user name and email (stored in document)
+      // Search in holidayName, reason, and status (stored in document)
       const searchFilter: any[] = [
-        { 'user.name': { $regex: escapedSearch, $options: 'i' } },
-        { 'user.email': { $regex: escapedSearch, $options: 'i' } },
         { 'holidayName': { $regex: escapedSearch, $options: 'i' } },
         { 'reason': { $regex: escapedSearch, $options: 'i' } },
         { 'status': { $regex: escapedSearch, $options: 'i' } },
@@ -327,11 +325,10 @@ export class OptionalHolidayService extends BaseService {
       const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
       const searchConditions: any[] = [
-        { 'user.name': { $regex: escapedSearch, $options: 'i' } },
-        { 'user.email': { $regex: escapedSearch, $options: 'i' } },
         { holidayName: { $regex: escapedSearch, $options: 'i' } },
         { reason: { $regex: escapedSearch, $options: 'i' } },
         { status: { $regex: escapedSearch, $options: 'i' } },
+        { 'appliedTo.name': { $regex: escapedSearch, $options: 'i' } },
       ];
 
       const userSearchFilter: any = {

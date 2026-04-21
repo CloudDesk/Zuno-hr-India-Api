@@ -289,8 +289,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
       // Search conditions for fields stored in the document
       const documentSearchConditions: any[] = [
         { reason: { $regex: escapedSearch, $options: 'i' } },
-        { 'user.name': { $regex: escapedSearch, $options: 'i' } },
-        { 'user.email': { $regex: escapedSearch, $options: 'i' } },
+        { 'appliedTo.name': { $regex: escapedSearch, $options: 'i' } },
         { status: { $regex: escapedSearch, $options: 'i' } },
       ];
 
@@ -670,8 +669,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
       // Search conditions for fields stored in the document
       const documentSearchConditions: any[] = [
         { reason: { $regex: escapedSearch, $options: 'i' } },
-        { 'user.name': { $regex: escapedSearch, $options: 'i' } },
-        { 'user.email': { $regex: escapedSearch, $options: 'i' } },
+        { 'appliedTo.name': { $regex: escapedSearch, $options: 'i' } },
         { status: { $regex: escapedSearch, $options: 'i' } },
       ];
 

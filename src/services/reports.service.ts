@@ -175,59 +175,11 @@ export class ReportService extends BaseService {
             const skip = Number(parameters?.skip) || 0;
             const limit = queryConfig.limit || 100;
 
-            const initialStages: any[] = [
-                { $match: queryConfig.filter }
-            ];
-
-            // 1. Auto-resolve standard User reference depending on 'targetCollection'
-            const hasUserId = ['leaves', 'permissions', 'wfhs', 'attendancerecords', 'attendanceregularizations', 'shiftassignments'].includes(targetCollection.toLowerCase()) || targetCollection === 'document';
-            const hasEmployeeId = ['documents', 'taxdeclarations', 'form12bs', 'form12bbs', 'payslips', 'payrolls', 'salaryassignments', 'salarystructures'].includes(targetCollection.toLowerCase());
-            
-            if (hasUserId || hasEmployeeId) {
-                // This lookup retrieves the user details into a temporary array
-                initialStages.push({
-                    $lookup: {
-                        from: 'users',
-                        localField: hasUserId ? 'userId' : 'employeeId',
-                        foreignField: '_id',
-                        as: '_populatedUser'
-                    }
-                });
-                initialStages.push({
-                    $unwind: { path: '$_populatedUser', preserveNullAndEmptyArrays: true }
-                });
-
-                // Attach 'user' and 'employee' generic structures just in case they're queried
-                initialStages.push({
-                    $addFields: {
-                        user: {
-                            name: '$_populatedUser.name',
-                            email: '$_populatedUser.email',
-                            employeeCode: '$_populatedUser.employeeCode'
-                        },
-                        employee: {
-                            name: '$_populatedUser.name',
-                            email: '$_populatedUser.email',
-                            employeeCode: '$_populatedUser.employeeCode'
-                        }
-                    }
-                });
-            }
-
-            // 2. Patch native booleans so they avoid 'undefined' inside aggregations
-            if (targetCollection.toLowerCase() === 'leaves' || targetCollection.toLowerCase() === 'wfhs' || targetCollection.toLowerCase() === 'permissions') {
-                 initialStages.push({
-                    $addFields: {
-                        managerApproved: { $ifNull: [ "$managerApproved", false ] },
-                        adminApproved: { $ifNull: [ "$adminApproved", false ] },
-                        appliedOnBehalf: { $ifNull: [ "$appliedOnBehalf", false ] }
-                    }
-                 });
-            }
-
             // Execute query with aggregation
             const pipeline = [
-                ...initialStages,
+                // Apply filters
+                { $match: queryConfig.filter },
+
                 // Get total count and data
                 {
                     $facet: {

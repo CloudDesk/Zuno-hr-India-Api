@@ -12,9 +12,8 @@ import { Storage } from '@google-cloud/storage';
 import path from 'path';
 
 import { emailService } from './email.service';
-import { generateFNFLetter } from './fnf-puppeteer.helper';
 import { TaxDeclaration } from '../models/tax-declaration';
-import { Document } from '../models/document.model';
+import { generateFNFLetter } from './fnf-puppeteer.helper';
 
 const MONTH_NAMES = [
     'January', 'February', 'March', 'April', 'May', 'June',
@@ -1999,37 +1998,6 @@ export async function confirmFinalSettlement(
 
             await settlement.save({ session });
 
-            // ✅ REGISTER AS DOCUMENT FOR DASHBOARD VISIBILITY
-            const fileName = pdfUrl.split('/').pop() || `FNF_Letter_${settlement.employeeCode}.pdf`;
-
-            await Document.findOneAndUpdate(
-                {
-                    employeeId: new Types.ObjectId(employeeId),
-                    type: 'FNF Letter'
-                },
-                {
-                    $set: {
-                        category: 'Settlement',
-                        fileName: fileName,
-                        filePath: pdfUrl,
-                        uploadDate: new Date(),
-                        uploadedBy: new Types.ObjectId(confirmedBy),
-                        accessLevel: 'Private',
-                        status: 'Generated'
-                    },
-                    $inc: { version: 1 },
-                    $push: {
-                        auditLog: {
-                            action: 'Generate',
-                            performedBy: new Types.ObjectId(confirmedBy),
-                            timestamp: new Date(),
-                            details: 'Final Settlement PDF generated on confirmation'
-                        }
-                    }
-                },
-                { upsert: true, session }
-            );
-
             // 2.3 Release hold payrolls
             // DISABLED: User requested to keep original hold payrolls as 'Hold' status
             // They are paid out via the Final Settlement PDF/Calculations, but the original record remains unchanged.
@@ -2224,8 +2192,8 @@ export async function confirmFinalSettlement(
                     leaveDeductions: month.lopAmount || 0,
 
                     // Salary calculations
-                    monthlyGross: attendanceAdjustedGross,
-                    attendanceAdjustGross: attendanceAdjustedGross,
+                    monthlyGross,
+                    attendanceAdjustedGross,
                     netSalary,
                     ctc,
 
