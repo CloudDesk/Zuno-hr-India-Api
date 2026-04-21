@@ -23,8 +23,8 @@ const SalaryAssignmentSchema = new Schema<ISalaryAssignment>(
         salaryStructureId: { type: Schema.Types.ObjectId, required: true, ref: 'SalaryStructure' },
         employeeId: { type: Schema.Types.ObjectId, required: true, ref: 'User' },
         monthlyGross: { type: Number, required: true },
-        reimbursement: { type: Number, required: true },
-        annualInsurance: { type: Number, required: true },
+        reimbursement: { type: Number, required: false, default: 0 },
+        annualInsurance: { type: Number, required: false, default: 0 },
         travelAllowance: { 
             type: Number, 
             required: false, 
