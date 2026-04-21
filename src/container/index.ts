@@ -35,6 +35,7 @@ import { OptionalHolidayService } from '../services/optional-holiday.service';
 import { PayslipPdfService } from '../services/payslip-pdf.service';
 import { SalaryStatementService } from '../services/salary-statement.service';
 import { TaxSalaryContextService } from '../services/tax-salary-context.service';
+import { CommunicationService } from '../services/communication.service';
 
 export class Container {
   private static instance: Container;
@@ -92,6 +93,7 @@ export class Container {
       payslipPdfService: new PayslipPdfService(context),
       salaryStatementService: new SalaryStatementService(context),
       taxSalaryContextService: new TaxSalaryContextService(context),
+      communicationService: new CommunicationService(context),
     };
   }
 

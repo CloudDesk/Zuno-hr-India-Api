@@ -9,6 +9,19 @@ export interface IEmployeeAverage {
     department?: string;
 }
 
+export interface ISocialEventSummary {
+    _id: string;
+    type: string;
+    subject: string;
+    message: string;
+    bannerImage?: string;
+    attachments?: string[];
+    eventDate: Date;
+    postedBy: string;
+    employeeId?: any;
+    metadata?: any;
+}
+
 export interface IDashboardMetrics {
     totalEmployees: number;
     individualAverageHours?: IEmployeeAverage[];
@@ -77,6 +90,7 @@ export interface IDashboardMetrics {
         pending: number;
         approved: number;
     }>;
+    socialEvents?: ISocialEventSummary[];
 }
 
 export interface IUserDashboardMetrics {
@@ -86,6 +100,7 @@ export interface IUserDashboardMetrics {
         presentDays: number;
         totalWorkingDays: number;
     };
+    socialEvents?: ISocialEventSummary[];
 }
 
 // This is a virtual model for aggregation purposes only

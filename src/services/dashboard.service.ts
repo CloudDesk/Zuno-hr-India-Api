@@ -10,6 +10,7 @@ import { IDashboardMetrics, IEmployeeAverage, IUserDashboardMetrics } from '../m
 import { startOfDay, endOfDay, startOfMonth, addMonths, getYear } from 'date-fns';
 import { LeaveSummary } from '../models/leave-summary.model';
 import { WFH } from '../models/wfh.model';
+import { CommunicationService } from './communication.service';
 
 export class DashboardService extends BaseService {
     async getDashboardMetrics(): Promise<IDashboardMetrics> {
@@ -654,18 +655,26 @@ export class DashboardService extends BaseService {
         console.log('📅 Today Attendance:', todayAttendanceData);
         console.log('🎉 Upcoming Holidays:', upcomingHolidaysData.length, 'holidays');
         console.log('📤 Resignation Status:', resignationStatus.length, 'months');
-        
+
         // --- NEW: Individual Average Working Hours for Current Month ---
         const startOfMonthDate = startOfMonth(today);
         const endOfMonthDate = endOfDay(today); // Up to now
         const allActiveUsers = await User.find({ active: true }).select('_id name departmentId');
-        
+
         const individualAverages = await this.getIndividualAverages(allActiveUsers, startOfMonthDate, endOfMonthDate);
-        
+
         // For Admin Dashboard, sort and maybe just send Top Performers or a curated list
         // High level overview
         dashboardMetrics.individualAverageHours = individualAverages
             .sort((a, b) => b.attendancePercentage - a.attendancePercentage);
+
+        // Fetch Social Wall Events
+        const communicationService = new CommunicationService(this.context);
+        dashboardMetrics.socialEvents = await communicationService.getSocialWall({
+            limit: 10,
+            viewerId: this.context.user?._id.toString(),
+            viewerRole: this.context.user?.role
+        }) as any;
 
         console.log('🔍 COMPLETE ADMIN DATA:', JSON.stringify(dashboardMetrics, null, 2));
 
@@ -693,7 +702,12 @@ export class DashboardService extends BaseService {
                 attendancePercentage: userStats?.attendancePercentage || 0,
                 presentDays: userStats?.presentDays || 0,
                 totalWorkingDays: totalWorkingDays
-            }
+            },
+            socialEvents: await (new CommunicationService(this.context)).getSocialWall({
+                limit: 10,
+                viewerId: this.context.user?._id.toString(),
+                viewerRole: this.context.user?.role
+            }) as any
         };
     }
 
@@ -918,8 +932,15 @@ export class DashboardService extends BaseService {
                 regularizations: pendingRegularizations,
                 overtime: pendingOvertime,
                 wfh: pendingWFH,
-                resignations: pendingResignations
+                resignations: pendingResignations,
+                total: pendingLeaves + pendingRegularizations + pendingOvertime + pendingWFH + pendingResignations
             },
+            socialEvents: await (new CommunicationService(this.context)).getSocialWall({
+                limit: 10,
+                viewerId: this.context.user?._id.toString(),
+                viewerRole: this.context.user?.role,
+                teamOnly: true
+            }) as any,
             individualAverageHours,
             employees: Array.from(attendanceMap.values())
         };
@@ -989,12 +1010,12 @@ export class DashboardService extends BaseService {
 
         // Initialize with all users
         for (const user of users) {
-             userMaps.set(user._id.toString(), {
+            userMaps.set(user._id.toString(), {
                 totalHours: 0,
                 presentDays: 0,
                 name: user.name,
                 dept: user.departmentId
-             });
+            });
         }
 
         // Days in period for percentage calculation - Using WORKING DAYS for more accurate "Record"
@@ -1004,14 +1025,14 @@ export class DashboardService extends BaseService {
             const userId = record.userId.toString();
             const stats = userMaps.get(userId);
             if (!stats) continue;
-            
+
             // Logic derived from BiometricAttendanceService for consistency, but expanded for dashboard
-            const isActuallyPresent = record.attendanceStatus?.some((s: string) => 
+            const isActuallyPresent = record.attendanceStatus?.some((s: string) =>
                 ['Present', 'Late', 'On-Time', 'Early-Exit', 'Regularized', 'OT', 'Override'].includes(s)
-            ) || 
-            (record.totalWorkHours && record.totalWorkHours !== '00:00:00' && record.totalWorkHours !== '0:00:00') ||
-            (record.swipes && record.swipes.length > 0) ||
-            (record.firstIn);
+            ) ||
+                (record.totalWorkHours && record.totalWorkHours !== '00:00:00' && record.totalWorkHours !== '0:00:00') ||
+                (record.swipes && record.swipes.length > 0) ||
+                (record.firstIn);
 
             if (isActuallyPresent) {
                 stats.presentDays++;
@@ -1054,7 +1075,7 @@ export class DashboardService extends BaseService {
         let count = 0;
         let cur = new Date(start);
         const finish = new Date(end);
-        
+
         while (cur <= finish) {
             const dayOfWeek = cur.getDay(); // 0 is Sunday, 6 is Saturday
             if (dayOfWeek !== 0 && dayOfWeek !== 6) {

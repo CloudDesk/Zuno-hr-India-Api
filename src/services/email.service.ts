@@ -3,6 +3,7 @@ import nodemailer from 'nodemailer';
 import { join } from 'path';
 import { config } from '../config';
 import axios from 'axios';
+import fs from 'fs';
 
 
 
@@ -71,7 +72,16 @@ export class EmailService {
             // Add attachments if files are present
             if (request.files && request.files.length > 0) {
                 mailOptions.attachments = request.files.map((file) => {
-                    const filepath = join(this.parentDir, "../uploads", file.filename);
+                    // Safety logic to support new absolute paths, local uploads, and legacy parent-folder uploads
+                    let filepath = file.path || join(this.parentDir, "uploads", file.filename);
+                    
+                    if (!file.path && !fs.existsSync(filepath)) {
+                        const legacyPath = join(this.parentDir, "../uploads", file.filename);
+                        if (fs.existsSync(legacyPath)) {
+                            filepath = legacyPath;
+                        }
+                    }
+                    
                     return { filename: file.filename, path: filepath };
                 });
             }

@@ -38,5 +38,12 @@ import { pipeline } from 'stream/promises';
 
 export async function saveMultipartFile(filePart: any, targetPath: string) {
     await fs.promises.mkdir(path.dirname(targetPath), { recursive: true });
-    await pipeline(filePart.file, fs.createWriteStream(targetPath));
+    
+    // If parseMultipartForm already consumed the stream into a buffer, write that buffer
+    if (filePart.__cachedBuffer) {
+        await fs.promises.writeFile(targetPath, filePart.__cachedBuffer);
+    } else {
+        // Fallback for direct stream handling
+        await pipeline(filePart.file, fs.createWriteStream(targetPath));
+    }
 }

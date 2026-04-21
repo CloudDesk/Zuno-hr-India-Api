@@ -75,15 +75,29 @@ export interface IDocument extends DocumentM {
             tdsPaid: number; // Total TDS paid for the financial year
         };
         offerLetter?: {
-            offerDate: Date; // Date the offer was issued
-            joiningDate: Date; // Expected joining date
-            designation: string; // e.g., 'Software Engineer'
-            ctc: number; // Cost to Company
+            offerDate?: Date; // Date the offer was issued
+            joiningDate?: Date; // Expected joining date
+            designation?: string; // e.g., 'Software Engineer'
+            ctc?: number; // Cost to Company
+            candidateName?: string; // For manual offer letter dispatch
+            candidateEmail?: string; // For manual offer letter dispatch
+            dispatchId?: string; // Links multiple files in one dispatch
+            isAnnexure?: boolean; // Flag for annexure files
         };
         hikeLetter?: {
             effectiveDate: Date; // Date the hike takes effect
+            monthlyGross?: number; // Cache monthly gross at time of hike
             newCtc: number; // Updated CTC
             percentageIncrease: number; // e.g., 10 for 10%
+            dispatchId?: string; // Links multiple files in one dispatch
+            batchName?: string; // User-defined name for the hike cycle
+            isAnnexure?: boolean; // Flag for annexure files
+            employeeCode?: string; // Cache employee code for robustness
+            employeeName?: string; // Cache employee name for robustness
+            employeeEmail?: string; // Cache employee email for robustness
+            signatoryName?: string; // Cache signatory name natively for easy re-dispatch
+            signatoryDesignation?: string; // Cache signatory designation natively
+            signatureBase64?: string; // Secret cached string to persist signature image
         };
         certificate?: {
             certificateType: 'Academic' | 'Experience' | 'Skill' | 'IdentityProof'; // Added IdentityProof
@@ -246,7 +260,10 @@ const documentSchema = new Schema<IDocument>(
                         return value.form16 && value.form16.financialYear && value.form16.pan;
                     }
                     if (docType === 'OfferLetter') {
-                        return value.offerLetter && value.offerLetter.offerDate && value.offerLetter.joiningDate;
+                        return value.offerLetter && (
+                            (value.offerLetter.offerDate && value.offerLetter.joiningDate) ||
+                            (value.offerLetter.candidateName)
+                        );
                     }
                     if (docType === 'HikeLetter') {
                         return value.hikeLetter && value.hikeLetter.effectiveDate && value.hikeLetter.newCtc;

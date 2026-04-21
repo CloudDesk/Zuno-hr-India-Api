@@ -658,7 +658,7 @@ export class BiometricAttendanceService extends BaseService {
         status: 'Approved',
         leaveDuration: 'half-day',
       });
-      
+
       if (approvedHalfDayLeave) {
         // Preserve 'On-Leave' status for half-day leave
         record.attendanceStatus.push('On-Leave');
@@ -771,7 +771,7 @@ export class BiometricAttendanceService extends BaseService {
         status: 'Approved',
         leaveDuration: 'half-day',
       });
-      
+
       if (approvedHalfDayLeave) {
         // Preserve 'On-Leave' status for half-day leave
         record.attendanceStatus.push('On-Leave');
@@ -1443,7 +1443,7 @@ export class BiometricAttendanceService extends BaseService {
       userRecord.records.push(processedRecord);
 
       // Update summary - now including all status types accurately
-      const isActuallyPresent = record.attendanceStatus?.some(s => 
+      const isActuallyPresent = record.attendanceStatus?.some(s =>
         ['Present', 'Late', 'On-Time', 'Early-Exit', 'Regularized', 'OT', 'Override'].includes(s)
       ) || (record.totalWorkHours && record.totalWorkHours !== '00:00:00' && record.totalWorkHours !== '0:00:00');
 
@@ -1454,7 +1454,7 @@ export class BiometricAttendanceService extends BaseService {
           userRecord.summary.totalWorkHours += this.timeStringToHours(record.totalWorkHours);
         }
       }
-      
+
       if (record.attendanceStatus?.includes('Late')) {
         userRecord.summary.lateDays++;
       }

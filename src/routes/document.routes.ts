@@ -4,7 +4,7 @@ import { filesUpload, zipFileUpload } from "../config/multer";
 import unzipper from "unzipper";
 import { User, IUser } from "../models/user.model";
 import path from "path";
-import { parseMultipartForm } from "../utilis/parseMultiPartForm";
+import { parseMultipartForm, saveMultipartFile } from "../utilis/parseMultiPartForm";
 import { Document } from "../models/document.model";
 import { Types } from "mongoose";
 
@@ -1177,7 +1177,17 @@ export const documentRoutes = async (
                                                         offerDate: { type: 'string', format: 'date-time' },
                                                         joiningDate: { type: 'string', format: 'date-time' },
                                                         designation: { type: 'string' },
-                                                        ctc: { type: 'number' }
+                                                        ctc: { type: 'number' },
+                                                        candidateName: { type: 'string' },
+                                                        candidateEmail: { type: 'string' },
+                                                        dispatchId: { type: 'string' },
+                                                        annexure: {
+                                                            type: 'object',
+                                                            properties: {
+                                                                fileName: { type: 'string' },
+                                                                filePath: { type: 'string' }
+                                                            }
+                                                        }
                                                     }
                                                 },
                                                 hikeLetter: {
@@ -1185,7 +1195,17 @@ export const documentRoutes = async (
                                                     properties: {
                                                         effectiveDate: { type: 'string', format: 'date-time' },
                                                         newCtc: { type: 'number' },
-                                                        percentageIncrease: { type: 'number' }
+                                                        percentageIncrease: { type: 'number' },
+                                                        employeeName: { type: 'string' },
+                                                        employeeEmail: { type: 'string' },
+                                                        employeeCode: { type: 'string' },
+                                                        dispatchId: { type: 'string' },
+                                                        batchName: { type: 'string' },
+                                                        isAnnexure: { type: 'boolean' },
+                                                        monthlyGross: { type: 'number' },
+                                                        signatoryName: { type: 'string' },
+                                                        signatoryDesignation: { type: 'string' },
+                                                        signatureBase64: { type: 'string' }
                                                     }
                                                 },
                                                 certificate: {
@@ -2642,6 +2662,216 @@ export const documentRoutes = async (
             }
         }
     );
+
+    /**
+     * Send Offer Letter
+     */
+    fastify.post("/offer-letter/send", { preHandler: [authenticate] }, async (request, reply) => {
+        try {
+            const { body, files } = await parseMultipartForm(request);
+            if (!files || files.length === 0) {
+                return reply.code(400).send({ success: false, error: "No file uploaded" });
+            }
+
+            const { uploadFileToGCP } = await import("../utilis/gcpStorage");
+            const { promises: fsPromises } = await import("fs");
+            const path = await import("path");
+
+            const attachments = [];
+            const tempPaths: string[] = [];
+
+            for (const file of files) {
+                const fileName = `OfferLetter_${Date.now()}_${file.filename}`;
+                const tempPath = path.join(process.cwd(), "uploads", fileName);
+                tempPaths.push(tempPath);
+
+                await saveMultipartFile(file, tempPath);
+
+                const gcpResult = await uploadFileToGCP({
+                    filePath: tempPath,
+                    fileName,
+                    employeeId: "Offer",
+                    category: "EmployeeLifecycle",
+                    type: "OfferLetter"
+                });
+
+                if (gcpResult.success) {
+                    attachments.push({
+                        fileName: file.filename,
+                        filePath: gcpResult.fileUrl!,
+                        localPath: tempPath,
+                        fieldname: file.fieldname
+                    });
+                }
+            }
+
+            const { documentService } = request.container!;
+            const document = await documentService.sendOfferLetter({
+                name: body.name,
+                email: body.email,
+                attachments,
+                uploadedBy: (request as any).user._id
+            });
+
+            // Cleanup
+            for (const p of tempPaths) {
+                try { await fsPromises.unlink(p); } catch (e) { }
+            }
+
+            return { success: true, data: document };
+        } catch (error: any) {
+            return reply.code(500).send({ success: false, error: error.message });
+        }
+    });
+
+    /**
+     * Preview Hike Letter
+     */
+    fastify.post("/hike-letter/preview", { preHandler: [authenticate] }, async (request, reply) => {
+        try {
+            const { parseMultipartForm, saveMultipartFile } = await import("../utilis/parseMultiPartForm");
+            const { body, files } = await parseMultipartForm(request);
+            const { documentService } = request.container!;
+
+            const employeeId = body.employeeId || (Array.isArray(body.employeeIds) ? body.employeeIds[0] : JSON.parse(body.employeeIds || '[]')[0]);
+            if (!employeeId) throw new Error("No employee selected for preview");
+
+            const signatureFile = files.find(f => f.fieldname === 'signature');
+
+            const tempFiles: string[] = [];
+            let signaturePath: string | undefined;
+
+            const { promises: fsPromises } = await import("fs");
+            const path = await import("path");
+            const uploadsDir = path.resolve(process.cwd(), "uploads");
+
+            if (signatureFile) {
+                signaturePath = path.join(uploadsDir, `sig_prev_${Date.now()}_${signatureFile.filename}`);
+                await saveMultipartFile(signatureFile, signaturePath);
+                tempFiles.push(signaturePath);
+            }
+
+            const result = await documentService.previewHikeLetter({
+                employeeId,
+                signatory: {
+                    name: body.signatoryName,
+                    designation: body.signatoryDesignation,
+                    signaturePath
+                }
+            });
+
+            // Cleanup
+            for (const f of tempFiles) {
+                try { await fsPromises.unlink(f); } catch (e) { }
+            }
+
+            return { success: true, data: result };
+        } catch (error: any) {
+            return reply.code(500).send({ success: false, error: error.message });
+        }
+    });
+
+    /**
+     * Generate and Send Hike Letter
+     */
+    fastify.post("/hike-letter/generate-send", { preHandler: [authenticate] }, async (request, reply) => {
+        try {
+            const { parseMultipartForm, saveMultipartFile } = await import("../utilis/parseMultiPartForm");
+            const { body, files } = await parseMultipartForm(request);
+            const { documentService } = request.container!;
+
+            // Handle both single employeeId and multiple employeeIds
+            let employeeIds: string[] = [];
+            if (body.employeeIds) {
+                employeeIds = Array.isArray(body.employeeIds) ? body.employeeIds : JSON.parse(body.employeeIds);
+            } else if (body.employeeId) {
+                employeeIds = [body.employeeId];
+            }
+
+            if (employeeIds.length === 0) {
+                throw new Error("No employees selected");
+            }
+
+            const signatureFile = files.find(f => f.fieldname === 'signature');
+
+            const tempFiles: string[] = [];
+            let signaturePath: string | undefined;
+            let signatureBase64ForDb: string | undefined = body.signatureBase64;
+
+            const { promises: fsPromises } = await import("fs");
+            const path = await import("path");
+            const uploadsDir = path.resolve(process.cwd(), "uploads");
+
+            if (signatureFile) {
+                signaturePath = path.join(uploadsDir, `sig_${Date.now()}_${signatureFile.filename}`);
+                await saveMultipartFile(signatureFile, signaturePath);
+                tempFiles.push(signaturePath);
+
+                // Convert newly uploaded signature into Base64 for the database cache natively
+                const sigBuffer = await fsPromises.readFile(signaturePath);
+                const ext = path.extname(signatureFile.filename).slice(1) || 'png';
+                signatureBase64ForDb = `data:image/${ext};base64,${sigBuffer.toString('base64')}`;
+            } else if (body.signatureBase64) {
+                // If a cached base64 signature was provided, rehydrate it into a physical temp file for the PDF Generator
+                const match = body.signatureBase64.match(/^data:image\/([a-zA-Z0-9]+);base64,(.+)$/);
+                if (match) {
+                    const ext = match[1];
+                    const base64Data = match[2];
+                    const buffer = Buffer.from(base64Data, 'base64');
+                    signaturePath = path.join(uploadsDir, `sig_cached_${Date.now()}.${ext}`);
+                    await fsPromises.writeFile(signaturePath, buffer);
+                    tempFiles.push(signaturePath);
+                }
+            }
+
+            // 1. Handle Dispatch ID for Campaign Grouping
+            let dispatchId = body.dispatchId;
+            if (!dispatchId) {
+                dispatchId = `Hike_Batch_${Date.now()}`;
+            }
+
+            const results = [];
+
+            for (const empId of employeeIds) {
+                try {
+                    console.error("DEBUG_HIKE_ROUTE: body is", body);
+                    console.error("DEBUG_HIKE_ROUTE: batchName is", body.batchName);
+                    const result = await documentService.generateAndSendHikeLetter({
+                        employeeId: empId,
+                        signatory: {
+                            name: body.signatoryName,
+                            designation: body.signatoryDesignation,
+                            signaturePath
+                        },
+                        adminId: (request as any).user._id,
+                        dispatchId,
+                        batchName: body.batchName,
+                        percentageIncrease: body.percentageIncrease ? Number(body.percentageIncrease) : undefined,
+                        signatureBase64: signatureBase64ForDb
+                    });
+                    results.push({ employeeId: empId, success: true, document: result });
+                } catch (err: any) {
+                    results.push({ employeeId: empId, success: false, error: err.message });
+                }
+            }
+
+            // Cleanup
+            for (const f of tempFiles) {
+                try { await fsPromises.unlink(f); } catch (e) { }
+            }
+
+            return {
+                success: true,
+                data: {
+                    total: employeeIds.length,
+                    successful: results.filter(r => r.success).length,
+                    results
+                }
+            };
+        } catch (error: any) {
+            return reply.code(500).send({ success: false, error: error.message });
+        }
+    });
 
 }
 
