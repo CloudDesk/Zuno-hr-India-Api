@@ -220,7 +220,7 @@ export const trainingAttendanceRoutes: RouteHandler = async (
             limit: { 
               type: 'number', 
               minimum: 1, 
-              maximum: 100, 
+              maximum: 1000, 
               default: 10,
               description: 'Number of records per page'
             }
@@ -368,7 +368,7 @@ export const trainingAttendanceRoutes: RouteHandler = async (
             limit: { 
               type: 'number', 
               minimum: 1, 
-              maximum: 100, 
+              maximum: 1000, 
               default: 10,
               description: 'Number of records per page'
             }
