@@ -103,10 +103,13 @@ export const dashboardRoutes: RouteHandler = async (fastify: FastifyInstance): P
                 } else if (userRole === 'manager') {
                     const managerId = request.user._id;
                     data = await request.container!.dashboardService.getManagerDashboardData(managerId);
+                } else if (userRole === 'user' || userRole === 'employee') {
+                    const userId = request.user._id.toString();
+                    data = await request.container!.dashboardService.getUserDashboardData(userId);
                 } else {
                     return reply.status(403).send({
                         success: false,
-                        error: { message: 'Access denied. Admin or Manager role required.' }
+                        error: { message: 'Access denied. Admin, Manager or User role required.' }
                     });
                 }
 
@@ -117,6 +120,36 @@ export const dashboardRoutes: RouteHandler = async (fastify: FastifyInstance): P
                 });
             } catch (error: any) {
                 console.error('Dashboard Error:', error);
+                return reply.status(500).send({
+                    success: false,
+                    error: { message: error.message || 'Internal server error' }
+                });
+            }
+        }
+    );
+    // Get personal stats for the current user (regardless of role)
+    fastify.get(
+        '/my-stats',
+        {
+            onRequest: [authenticate],
+            schema: {
+                tags: ['Dashboard'],
+                summary: 'Get personal dashboard analytics',
+                description: 'Retrieve individual average working hours and presence for the current user',
+                security: [{ bearerAuth: [] }]
+            }
+        },
+        async (request, reply) => {
+            try {
+                const userId = request.user._id.toString();
+                const data = await request.container!.dashboardService.getUserDashboardData(userId);
+
+                return reply.send({
+                    success: true,
+                    data
+                });
+            } catch (error: any) {
+                console.error('User Stats Error:', error);
                 return reply.status(500).send({
                     success: false,
                     error: { message: error.message || 'Internal server error' }

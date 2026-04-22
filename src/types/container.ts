@@ -35,6 +35,7 @@ import { PayslipPdfService } from '../services/payslip-pdf.service';
 import { SalaryStatementService } from '../services/salary-statement.service';
 import { TaxSalaryContextService } from '../services/tax-salary-context.service';
 import { SkillsService } from '../services/skills.service';
+import { CommunicationService } from '../services/communication.service';
 
 export interface ServiceContainer {
   requestContext: RequestContext;
@@ -73,6 +74,7 @@ export interface ServiceContainer {
   payslipPdfService: PayslipPdfService;
   salaryStatementService: SalaryStatementService;
   taxSalaryContextService: TaxSalaryContextService;
-} 
+  communicationService: CommunicationService;
   skillsService: SkillsService;
-}
+} 
+ 

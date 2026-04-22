@@ -42,6 +42,9 @@ async function calculateUnpaidGaps(
     let totalDaysWorked = 0;
     let totalProfessionalTax = 0;
     let totalProvidentFund = 0;
+    let totalEpfEmployer = 0;     // ✅ Added
+    let totalEpfEmployerEps = 0;  // ✅ Added
+    let totalEpfEmployerEpf = 0;  // ✅ Added
     let totalIncomeTax = 0;
     let totalESI = 0;
     let totalLOPAmount = 0; // Track total LOP
@@ -107,13 +110,42 @@ async function calculateUnpaidGaps(
     };
 
     const calculatePF = (basic: number, da: number) => {
-        const epfConfig = salaryAssignment?.salaryStructureId?.statutoryDeductions?.epf;
-        if (!epfConfig) return 0;
-        const rate = epfConfig.employeeContribution ?? 12;
+        const structure = salaryAssignment?.salaryStructureId;
+        const epfConfig = structure?.statutoryDeductions?.epf;
+        const employerSplit = structure?.statutoryDeductions?.employerSplit;
+        
+        if (!epfConfig) return { epfEmployee: 0, epfEmployer: 0, epfEmployerEps: 0, epfEmployerEpf: 0 };
+
+        const empRate = epfConfig.employeeContribution ?? 12;
+        const employerRate = epfConfig.employerContribution ?? 13;
+        const epsPercentage = employerSplit?.epsPercentage ?? 8.33;
+        const epsWageCap = employerSplit?.epsWageCap ?? 15000;
+        
         const wage = basic + (da || 0);
-        const maxEpfContribution = (rate / 100) * (epfConfig.maxLimit ?? 15000);
-        const capped = (epfConfig.maxLimit != null) && basic >= epfConfig.maxLimit;
-        return Math.round(capped ? maxEpfContribution : wage * (rate / 100));
+        const maxLimit = epfConfig.maxLimit ?? 15000;
+
+        // Separate caps for employee and employer
+        const maxEpfEmployee = (empRate / 100) * maxLimit;
+        const maxEpfEmployer = (employerRate / 100) * maxLimit;
+
+        const isCapped = basic >= maxLimit;
+
+        const finalEpfEmployee = Math.round(isCapped ? maxEpfEmployee : wage * (empRate / 100));
+        const finalEpfEmployer = Math.round(isCapped ? maxEpfEmployer : wage * (employerRate / 100));
+
+        // EPS (Pension) Calculation
+        const currentWageForEps = Math.min(wage, epsWageCap);
+        const finalEpfEmployerEps = Math.round((epsPercentage / 100) * currentWageForEps);
+
+        // EPF (Employer Share) = Total Employer - EPS
+        const finalEpfEmployerEpf = Math.max(0, finalEpfEmployer - finalEpfEmployerEps);
+
+        return {
+            epfEmployee: finalEpfEmployee,
+            epfEmployer: finalEpfEmployer,
+            epfEmployerEps: finalEpfEmployerEps,
+            epfEmployerEpf: finalEpfEmployerEpf
+        };
     };
 
     const calculateESI = () => 0;
@@ -401,7 +433,7 @@ async function calculateUnpaidGaps(
         const hraPerc = Number(structure.fixedEarnings?.hraPercentage) || 0;
         const conveyancePerc = Number(structure.fixedEarnings?.conveyancePercentage) || 0;
         // removed otherAllowancePerc as it is now calculated via balancing logic below
- 
+
         const fullBasic = currentMonthGross * (basicPerc / 100);
         const fullDA = daPerc === 0 ? 0 : fullBasic * (daPerc / 100);
         const fullHRA = currentMonthGross * (hraPerc / 100);
@@ -442,7 +474,8 @@ async function calculateUnpaidGaps(
             ptAmount = Math.round(calculatePT(currentMonthGross, currentMonth, isLWDMonth));
         }
 
-        const pfAmount = calculatePF(proratedBasic, proratedDA);
+        const { epfEmployee, epfEmployer, epfEmployerEps, epfEmployerEpf } = calculatePF(proratedBasic, proratedDA);
+        const pfAmount = epfEmployee;
         const itAmount = await calculateIncomeTax(currentMonth, currentYear);
         const esiAmount = calculateESI();
 
@@ -450,10 +483,10 @@ async function calculateUnpaidGaps(
         const componentBasic = Math.round(proratedBasic + proratedDA);
         const componentHRA = Math.round(proratedHRA);
         const componentConveyance = Math.round(proratedConveyance);
-        
+
         // Internal Balancing Logic: Adjust 'Other Allowances' to ensure sum of components exactly matches rounded total gross.
         const componentOtherAllowances = targetGross - (componentBasic + componentHRA + componentConveyance);
-        
+
         const componentSum = targetGross;
         const componentGross = componentSum;
         const componentOtherAllowancesAdjusted = componentOtherAllowances;
@@ -484,6 +517,9 @@ async function calculateUnpaidGaps(
             professionalTax: ptAmount,
             incomeTax: itAmount,
             providentFund: pfAmount,
+            epfEmployer: epfEmployer,       // ✅ Added
+            epfEmployerEps: epfEmployerEps, // ✅ Added
+            epfEmployerEpf: epfEmployerEpf, // ✅ Added
             esi: esiAmount
         });
 
@@ -491,6 +527,9 @@ async function calculateUnpaidGaps(
         totalDaysWorked += payableDays;
         totalProfessionalTax += ptAmount;
         totalProvidentFund += pfAmount;
+        totalEpfEmployer += epfEmployer;        // ✅ Added
+        totalEpfEmployerEps += epfEmployerEps;  // ✅ Added
+        totalEpfEmployerEpf += epfEmployerEpf;  // ✅ Added
         totalIncomeTax += itAmount;
         totalESI += esiAmount;
         totalLOPAmount += Math.round(lopAmount);
@@ -504,6 +543,9 @@ async function calculateUnpaidGaps(
         totalDaysWorked,
         totalProfessionalTax,
         totalProvidentFund,
+        totalEpfEmployer,     // ✅ Added
+        totalEpfEmployerEps,  // ✅ Added
+        totalEpfEmployerEpf,  // ✅ Added
         totalIncomeTax,
         totalESI,
         totalLOPAmount // Return for Final Calc
@@ -960,6 +1002,9 @@ function packSettlement(settlement: any, data: any) {
     if (data.noticePeriodRecovery !== undefined) calc.noticePeriodRecovery = Math.round(data.noticePeriodRecovery);
     if (data.professionalTax !== undefined) calc.professionalTax = Math.round(data.professionalTax);
     if (data.providentFund !== undefined) calc.providentFund = Math.round(data.providentFund);
+    if (data.epfEmployer !== undefined) calc.epfEmployer = Math.round(data.epfEmployer);           // ✅ Added
+    if (data.epfEmployerEps !== undefined) calc.epfEmployerEps = Math.round(data.epfEmployerEps); // ✅ Added
+    if (data.epfEmployerEpf !== undefined) calc.epfEmployerEpf = Math.round(data.epfEmployerEpf); // ✅ Added
     if (data.esi !== undefined) calc.esi = Math.round(data.esi);
     if (data.incomeTax !== undefined) calc.incomeTax = Math.round(data.incomeTax);
     if (data.lopAmount !== undefined) calc.lopAmount = Math.round(data.lopAmount);
@@ -1066,8 +1111,11 @@ export async function saveFinalSettlement(
         let totalUnpaid = 0;
         let pt = 0;
         let pf = 0;
-        let esi = 0;
         let it = 0;
+        let esi = 0;
+        let totalEpfEmployer = 0;     // ✅ Added
+        let totalEpfEmployerEps = 0;  // ✅ Added
+        let totalEpfEmployerEpf = 0;  // ✅ Added
         let totalLOPAmount = 0;
 
         // ✅ RECALCULATION STRATEGY:
@@ -1090,6 +1138,9 @@ export async function saveFinalSettlement(
             esi = gapCalc.totalESI;
             it = gapCalc.totalIncomeTax;
             totalLOPAmount = gapCalc.totalLOPAmount;
+            totalEpfEmployer = gapCalc.totalEpfEmployer || 0;
+            totalEpfEmployerEps = gapCalc.totalEpfEmployerEps || 0;
+            totalEpfEmployerEpf = gapCalc.totalEpfEmployerEpf || 0;
 
         } else {
             // Manual Mode: Trust the input array (Legacy fallback)
@@ -1112,11 +1163,32 @@ export async function saveFinalSettlement(
 
             const calculatePF = (basic: number, da: number) => {
                 const epf = structure?.statutoryDeductions?.epf;
-                if (!epf) return 0;
+                const employerSplit = structure?.statutoryDeductions?.employerSplit;
+                
+                if (!epf) return { epfEmployee: 0, epfEmployer: 0, epfEmployerEps: 0, epfEmployerEpf: 0 };
+
                 const wage = basic + da;
-                const rate = epf.employeeContribution / 100;
+                const empRate = (epf.employeeContribution || 12) / 100;
+                const employerRate = (epf.employerContribution || 13) / 100;
+                const epsPercentage = (employerSplit?.epsPercentage ?? 8.33) / 100;
+                const epsWageCap = employerSplit?.epsWageCap ?? 15000;
+                
                 const limit = epf.maxLimit ?? 15000;
-                return wage >= limit ? (limit * rate) : (wage * rate);
+
+                const isCapped = wage >= limit;
+                const finalEpfEmployee = Math.round(isCapped ? (limit * empRate) : (wage * empRate));
+                const finalEpfEmployer = Math.round(isCapped ? (limit * employerRate) : (wage * employerRate));
+
+                const currentWageForEps = Math.min(wage, epsWageCap);
+                const finalEpfEmployerEps = Math.round(epsPercentage * currentWageForEps);
+                const finalEpfEmployerEpf = Math.max(0, finalEpfEmployer - finalEpfEmployerEps);
+
+                return {
+                    epfEmployee: finalEpfEmployee,
+                    epfEmployer: finalEpfEmployer,
+                    epfEmployerEps: finalEpfEmployerEps,
+                    epfEmployerEpf: finalEpfEmployerEpf
+                };
             };
 
             const calculateESI = () => 0;
@@ -1234,7 +1306,11 @@ export async function saveFinalSettlement(
                     }
 
                     m.professionalTax = ptAmount;
-                    m.providentFund = Math.round(calculatePF(pb, pd));
+                    const pfResult = calculatePF(pb, pd);
+                    m.providentFund = pfResult.epfEmployee;
+                    m.epfEmployer = pfResult.epfEmployer;        // ✅ Added
+                    m.epfEmployerEps = pfResult.epfEmployerEps;  // ✅ Added
+                    m.epfEmployerEpf = pfResult.epfEmployerEpf;  // ✅ Added
                     m.esi = Math.round(calculateESI());
 
                     totalUnpaid += m.salary;
@@ -1242,6 +1318,9 @@ export async function saveFinalSettlement(
                     // Sum totals
                     pt += m.professionalTax;
                     pf += m.providentFund;
+                    totalEpfEmployer += (m.epfEmployer || 0);        // ✅ Added
+                    totalEpfEmployerEps += (m.epfEmployerEps || 0);  // ✅ Added
+                    totalEpfEmployerEpf += (m.epfEmployerEpf || 0);  // ✅ Added
                     esi += m.esi;
                     it += (m.incomeTax || 0);
                     totalLOPAmount += (m.lopAmount || 0);
@@ -1390,6 +1469,9 @@ export async function saveFinalSettlement(
             totalOtherDeductions: totalDeductions,
             professionalTax: pt,
             providentFund: pf,
+            epfEmployer: totalEpfEmployer,           // ✅ Added
+            epfEmployerEps: totalEpfEmployerEps,     // ✅ Added
+            epfEmployerEpf: totalEpfEmployerEpf,     // ✅ Added
             esi: esi,
             incomeTax: it,
             gratuity: gratuity,
@@ -1417,6 +1499,9 @@ export async function saveFinalSettlement(
 
             // Root-level tax/summary
             providentFund: pf,
+            epfEmployer: totalEpfEmployer,           // ✅ Added
+            epfEmployerEps: totalEpfEmployerEps,     // ✅ Added
+            epfEmployerEpf: totalEpfEmployerEpf,     // ✅ Added
             esi: esi,
             professionalTax: pt,
             incomeTax: it,
@@ -2150,7 +2235,7 @@ export async function confirmFinalSettlement(
                 } else {
                     ctc = Math.round(
                         attendanceAdjustedGross +
-                        month.providentFund + // epfEmployer
+                        (month.epfEmployer || month.providentFund) + // epfEmployer
                         month.esi // esiEmployer
                     );
                 }
@@ -2182,7 +2267,9 @@ export async function confirmFinalSettlement(
                     professionalTax: month.professionalTax,
                     incomeTax: month.incomeTax,
                     epfEmployee: month.providentFund,
-                    epfEmployer: month.providentFund,
+                    epfEmployer: month.epfEmployer || month.providentFund,     // ✅ Corrected: 13% rate
+                    epfEmployerEps: month.epfEmployerEps || 0,                 // ✅ Added
+                    epfEmployerEpf: month.epfEmployerEpf || 0,                 // ✅ Added
                     esiEmployee: month.esi,
                     esiEmployer: month.esi,
                     tdsDeduction: 0,
@@ -2219,7 +2306,7 @@ export async function confirmFinalSettlement(
                         const aReimbursement = Math.round(((structure.fixedEarnings.reimbursementPercentage ?? 0) / 100) * periodGross);
                         const aAir = isUAE ? (salaryAssignment.airTicketAllowance || 0) : 0;
                         const aMedical = isUAE ? (salaryAssignment.medicalAllowance || 0) : 0;
-                        
+
                         // Balancing Logic for Assigned Other Allowance
                         const aOther = Math.round(periodGross - (aBasic + aHra + aDa + aTravel + aReimbursement + aAir + aMedical));
 
@@ -2506,12 +2593,35 @@ export async function calculateFinalSettlement(
         // Helper: PF Calculation (Cloned for recalculation logic)
         const calculatePF = (basic: number, da: number) => {
             const epf = structure?.statutoryDeductions?.epf;
-            if (!epf) return 0;
+            const employerSplit = structure?.statutoryDeductions?.employerSplit;
+            
+            if (!epf) return { epfEmployee: 0, epfEmployer: 0, epfEmployerEps: 0, epfEmployerEpf: 0 };
+            
             const wage = basic + da;
             const rate = (epf.employeeContribution || 12) / 100;
+            const employerRate = (epf.employerContribution || 13) / 100;
+            const epsPercentage = (employerSplit?.epsPercentage ?? 8.33) / 100;
+            const epsWageCap = employerSplit?.epsWageCap ?? 15000;
+            
             const limit = epf.maxLimit ?? 15000;
-            const contribution = wage >= limit ? (limit * rate) : (wage * rate);
-            return Math.round(contribution);
+            
+            const isCapped = wage >= limit;
+            const finalEpfEmployee = Math.round(isCapped ? (limit * rate) : (wage * rate));
+            const finalEpfEmployer = Math.round(isCapped ? (limit * employerRate) : (wage * employerRate));
+
+            // EPS (Pension) Calculation
+            const currentWageForEps = Math.min(wage, epsWageCap);
+            const finalEpfEmployerEps = Math.round(epsPercentage * currentWageForEps);
+
+            // EPF (Employer Share) = Total Employer - EPS
+            const finalEpfEmployerEpf = Math.max(0, finalEpfEmployer - finalEpfEmployerEps);
+
+            return {
+                epfEmployee: finalEpfEmployee,
+                epfEmployer: finalEpfEmployer,
+                epfEmployerEps: finalEpfEmployerEps,
+                epfEmployerEpf: finalEpfEmployerEpf
+            };
         };
 
         // Helper: ESI Calculation
@@ -2522,6 +2632,9 @@ export async function calculateFinalSettlement(
         // Variables for aggregation
         let professionalTax = 0;
         let providentFund = 0;
+        let epfEmployerTotal = 0;     // ✅ Added
+        let epfEmployerEpsTotal = 0;  // ✅ Added
+        let epfEmployerEpfTotal = 0;  // ✅ Added
         let esi = 0;
         let incomeTax = 0;
         let totalLOPAmount = 0;
@@ -2547,6 +2660,9 @@ export async function calculateFinalSettlement(
             totalUnpaidSalary = gapCalc.totalUnpaidSalary;
             professionalTax = gapCalc.totalProfessionalTax || 0;
             providentFund = gapCalc.totalProvidentFund || 0;
+            epfEmployerTotal = gapCalc.totalEpfEmployer || 0;     // ✅ Added
+            epfEmployerEpsTotal = gapCalc.totalEpfEmployerEps || 0; // ✅ Added
+            epfEmployerEpfTotal = gapCalc.totalEpfEmployerEpf || 0; // ✅ Added
             esi = gapCalc.totalESI || 0;
             incomeTax = gapCalc.totalIncomeTax || 0;
             totalLOPAmount = gapCalc.totalLOPAmount || 0;
@@ -2582,7 +2698,7 @@ export async function calculateFinalSettlement(
                     const hP = (curMonthStructure.fixedEarnings?.hraPercentage ?? 0) / 100;
                     const tP = (curMonthStructure.fixedEarnings?.travelAllowancePercentage ?? 0) / 100;
                     // removed oP as it is now calculated via balancing logic below
- 
+
                     const fullB = curMonthGross * bP;
                     const fullD = fullB * dP;
                     const fullH = curMonthGross * hP;
@@ -2599,12 +2715,13 @@ export async function calculateFinalSettlement(
                     const roundedBasic = Math.round(proratedBasic + proratedDA);
                     const roundedHRA = Math.round(proratedHRA);
                     const roundedConveyance = Math.round(proratedTravelAllowance);
-                    
+
                     // Balancing Logic: Adjust 'Other Allowance' to ensure sum of components matches targetGross exactly.
                     const roundedOtherAllowances = targetGross - (roundedBasic + roundedHRA + roundedConveyance);
 
                     const lopAmount = (curMonthGross / daysInMonth) * lopDays;
-                    const pfAmount = calculatePF(proratedBasic, proratedDA);
+                    const pfResult = calculatePF(proratedBasic, proratedDA);
+                    const pfAmount = pfResult.epfEmployee;
                     const esiAmount = calculateESI();
 
                     month.components = {
@@ -2684,6 +2801,9 @@ export async function calculateFinalSettlement(
 
                     month.professionalTax = ptAmount;
                     month.providentFund = pfAmount;
+                    month.epfEmployer = pfResult.epfEmployer;        // ✅ Added
+                    month.epfEmployerEps = pfResult.epfEmployerEps;  // ✅ Added
+                    month.epfEmployerEpf = pfResult.epfEmployerEpf;  // ✅ Added
                     month.esi = esiAmount;
                     month.incomeTax = month.incomeTax || 0;
 
@@ -2692,6 +2812,9 @@ export async function calculateFinalSettlement(
                     // Accumulate Override Stats
                     professionalTax += month.professionalTax;
                     providentFund += month.providentFund;
+                    epfEmployerTotal += (month.epfEmployer || 0);     // ✅ Added
+                    epfEmployerEpsTotal += (month.epfEmployerEps || 0); // ✅ Added
+                    epfEmployerEpfTotal += (month.epfEmployerEpf || 0); // ✅ Added
                     esi += month.esi;
                     incomeTax += month.incomeTax;
                     totalLOPAmount += month.lopAmount;
@@ -2812,6 +2935,9 @@ export async function calculateFinalSettlement(
             professionalTax: Math.round(professionalTax),
             incomeTax: Math.round(incomeTax),
             providentFund: Math.round(providentFund),
+            epfEmployer: Math.round(epfEmployerTotal),        // ✅ Added
+            epfEmployerEps: Math.round(epfEmployerEpsTotal),  // ✅ Added
+            epfEmployerEpf: Math.round(epfEmployerEpfTotal),  // ✅ Added
             esi: Math.round(esi),
             lopAmount: Math.round(totalLOPAmount), // ✅ Added for consistency with other statutory deductions
             otherDeductions: Math.round(totalOtherDeductions),
@@ -2830,6 +2956,9 @@ export async function calculateFinalSettlement(
 
             // Root-level tax fields
             providentFund: calculation.providentFund,
+            epfEmployer: calculation.epfEmployer,       // ✅ Added
+            epfEmployerEps: calculation.epfEmployerEps, // ✅ Added
+            epfEmployerEpf: calculation.epfEmployerEpf, // ✅ Added
             esi: calculation.esi,
             professionalTax: calculation.professionalTax,
             incomeTax: calculation.incomeTax,

@@ -29,6 +29,6 @@
       "aws-lambda"
     ]
   },
-  "include": ["src/**/*", "src/**/*.hbs"],
+  "include": ["src/**/*", "src/**/*.hbs", "scripts/migratePayrollType.ts"],
   "exclude": ["node_modules", "dist", "**/*.test.ts", "node_modules/fastify/**"]
 } 

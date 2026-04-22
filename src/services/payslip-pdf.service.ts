@@ -273,6 +273,7 @@ export class PayslipPdfService extends BaseService {
     ): Promise<void> {
         const normalizedCountry = (payroll.country as string)?.toUpperCase() || 'IN';
         const isUaePayroll = normalizedCountry === 'AE';
+        const isConsultant = payroll.isConsultancy === true || employee.isConsultancy === true;
 
         const sanitizeText = (value: unknown): string | undefined => {
             if (value === undefined || value === null) return undefined;
@@ -332,8 +333,17 @@ export class PayslipPdfService extends BaseService {
             ? (sanitizeText(employee.specificRole) || formatLabel(employee.role))
             : (employee.specificRole || formatLabel(employee.role));
 
-        // Matching old service totalEarnings calculation
-        const totalEarnings = basicValue + hraValue + otherAllowanceValue + daValue + travelAllowanceValue + holdSalaryValue;
+        const customReimbursementsTotal = (payroll.customReimbursements || []).reduce(
+            (sum: number, item: any) => sum + sanitizeAmount(item?.value),
+            0
+        );
+        const customDeductionsTotal = (payroll.customDeductions || []).reduce(
+            (sum: number, item: any) => sum + sanitizeAmount(item?.value),
+            0
+        );
+
+        const totalEarnings =
+            basicValue + hraValue + otherAllowanceValue + daValue + travelAllowanceValue + holdSalaryValue + customReimbursementsTotal;
 
         const netSalaryValue = isUaePayroll ? sanitizeAmount(payroll.netSalary) : (payroll.netSalary || 0);
         const netPayNumeric = Math.round(netSalaryValue);
@@ -376,7 +386,8 @@ export class PayslipPdfService extends BaseService {
                 assignedHraValue +
                 assignedOtherAllowanceValue +
                 assignedTravelAllowanceValue +
-                holdSalaryValue,
+                holdSalaryValue +
+                customReimbursementsTotal,
                 payroll.country
             )
         };
@@ -390,7 +401,7 @@ export class PayslipPdfService extends BaseService {
             const notice = Number(payroll.noticePeriodRecovery || 0);
 
             const obj: any = {
-                total: formatCurrency(payroll.totalDeductions || 0, payroll.country)
+                total: formatCurrency((payroll.totalDeductions || 0) + customDeductionsTotal, payroll.country)
             };
             if (pf > 0) obj.pf = formatCurrency(pf, payroll.country);
             if (lop > 0) obj.lop = formatCurrency(lop, payroll.country);
@@ -436,20 +447,40 @@ export class PayslipPdfService extends BaseService {
 
             allEarnings: (() => {
                 const arr: any[] = [];
+                
                 const pushIfValid = (label: string, actual: number, full: number) => {
                     if (actual > 0 || full > 0) {
                         arr.push({ label, fullAmount: formatCurrency(full, payroll.country), actualAmount: formatCurrency(actual, payroll.country) });
                     }
                 };
-                pushIfValid('BASIC', basicValue, assignedBasicValue);
-                pushIfValid('HRA', hraValue, assignedHraValue);
-                pushIfValid('DEARNESS ALLOWANCE', daValue, 0);
-                pushIfValid('OTHER ALLOWANCE', otherAllowanceValue, assignedOtherAllowanceValue);
+
+                if (isConsultant) {
+                    // Consultants: Group Basic, HRA, and Other Allowance into "CONSULTANCY FEES"
+                    const consolidatedFeesActual = basicValue + hraValue + otherAllowanceValue;
+                    const consolidatedFeesFull = assignedBasicValue + assignedHraValue + assignedOtherAllowanceValue;
+                    pushIfValid('CONSULTANCY FEES', consolidatedFeesActual, consolidatedFeesFull);
+                } else {
+                    // Regular Employees: Existing logic (Basic, HRA, DA, Other)
+                    pushIfValid('BASIC', basicValue, assignedBasicValue);
+                    pushIfValid('HRA', hraValue, assignedHraValue);
+                    pushIfValid('DEARNESS ALLOWANCE', daValue, 0);
+                    pushIfValid('OTHER ALLOWANCE', otherAllowanceValue, assignedOtherAllowanceValue);
+                }
+
+                // Shared components (Travel, Reimbursement, etc. - usually consultants don't have these but handled for safety)
                 pushIfValid('TRAVEL ALLOWANCE', travelAllowanceValue, assignedTravelAllowanceValue);
                 pushIfValid('HOLD SALARY', holdSalaryValue, holdSalaryValue);
                 pushIfValid('REIMBURSEMENT', reimbursementValue, assignedReimbursementValue);
                 pushIfValid('AIR TICKET ALLOWANCE', airTicketAllowanceValue, assignedAirTicketValue);
                 pushIfValid('MEDICAL ALLOWANCE', medicalAllowanceValue, assignedMedicalValue);
+                
+                if (payroll.customReimbursements && payroll.customReimbursements.length > 0) {
+                    payroll.customReimbursements.forEach((item: any) => {
+                        if (sanitizeAmount(item?.value) > 0) {
+                            pushIfValid(String(item.name || '').toUpperCase(), sanitizeAmount(item.value), sanitizeAmount(item.value));
+                        }
+                    });
+                }
 
                 return arr;
             })(),
@@ -463,18 +494,37 @@ export class PayslipPdfService extends BaseService {
                 const tds = Number(payroll.tdsDeduction || 0);
                 const notice = Number(payroll.noticePeriodRecovery || 0);
 
-                if (pf > 0) arr.push({ label: 'PROVIDENT FUND', amount: formatCurrency(pf, payroll.country) });
-                if (lop > 0) arr.push({ label: 'LOSS OF PAY', amount: formatCurrency(lop, payroll.country) });
-                if (it > 0) arr.push({ label: 'INCOME TAX', amount: formatCurrency(it, payroll.country) });
-                if (pt > 0) arr.push({ label: 'PROFESSIONAL TAX', amount: formatCurrency(pt, payroll.country) });
-                if (tds > 0) arr.push({ label: 'TDS (1%)', amount: formatCurrency(tds, payroll.country) });
-                if (notice > 0) arr.push({ label: 'NOTICE PERIOD RECOVERY', amount: formatCurrency(notice, payroll.country) });
+                if (isConsultant) {
+                    // Consultants: Show TDS value as "INCOME TAX"
+                    if (tds > 0) arr.push({ label: 'INCOME TAX', amount: formatCurrency(tds, payroll.country) });
+                    if (lop > 0) arr.push({ label: 'LOSS OF PAY', amount: formatCurrency(lop, payroll.country) });
+                    if (notice > 0) arr.push({ label: 'NOTICE PERIOD RECOVERY', amount: formatCurrency(notice, payroll.country) });
+                } else {
+                    // Regular Employees: Existing logic
+                    if (pf > 0) arr.push({ label: 'PROVIDENT FUND', amount: formatCurrency(pf, payroll.country) });
+                    if (lop > 0) arr.push({ label: 'LOSS OF PAY', amount: formatCurrency(lop, payroll.country) });
+                    if (it > 0) arr.push({ label: 'INCOME TAX', amount: formatCurrency(it, payroll.country) });
+                    if (pt > 0) arr.push({ label: 'PROFESSIONAL TAX', amount: formatCurrency(pt, payroll.country) });
+                    if (tds > 0) arr.push({ label: 'TDS (1%)', amount: formatCurrency(tds, payroll.country) });
+                    if (notice > 0) arr.push({ label: 'NOTICE PERIOD RECOVERY', amount: formatCurrency(notice, payroll.country) });
+                }
+
+                if (payroll.customDeductions && payroll.customDeductions.length > 0) {
+                    payroll.customDeductions.forEach((item: any) => {
+                        if (sanitizeAmount(item?.value) > 0) {
+                            arr.push({ label: String(item.name || '').toUpperCase(), amount: formatCurrency(sanitizeAmount(item.value), payroll.country) });
+                        }
+                    });
+                }
 
                 return arr;
             })(),
 
             netPay: formatCurrency(payroll.netSalary || 0, payroll.country),
-            netPayWords: netPayWords
+            netPayWords: netPayWords,
+            isConsultant: isConsultant,
+            isUae: isUaePayroll,
+            currencyCode: isUaePayroll ? 'AED' : 'INR'
         };
 
         // Use __dirname so the path resolves correctly in BOTH environments:
@@ -658,3 +708,4 @@ export class PayslipPdfService extends BaseService {
         }
     };
 }
+

@@ -10,6 +10,8 @@ function buildStorageClient(): Storage {
   const serviceAccountJson = process.env.GCP_SERVICE_ACCOUNT_JSON;
   const clientEmail = process.env.GCP_CLIENT_EMAIL;
   const privateKey = process.env.GCP_PRIVATE_KEY?.replace(/\\n/g, '\n');
+  const totalTimeoutSeconds = Number(process.env.GCP_RETRY_TOTAL_TIMEOUT_SEC ?? '120');
+  const maxRetries = Number(process.env.GCP_RETRY_MAX_RETRIES ?? '2');
 
   if (serviceAccountJson) {
     const parsedCredentials = JSON.parse(serviceAccountJson);
@@ -18,6 +20,11 @@ function buildStorageClient(): Storage {
       credentials: {
         client_email: parsedCredentials.client_email,
         private_key: parsedCredentials.private_key,
+      },
+      retryOptions: {
+        autoRetry: true,
+        maxRetries,
+        totalTimeout: totalTimeoutSeconds,
       },
     });
   }
@@ -29,18 +36,26 @@ function buildStorageClient(): Storage {
         client_email: clientEmail,
         private_key: privateKey,
       },
+      retryOptions: {
+        autoRetry: true,
+        maxRetries,
+        totalTimeout: totalTimeoutSeconds,
+      },
     });
   }
 
   return new Storage({
     projectId,
+    retryOptions: {
+      autoRetry: true,
+      maxRetries,
+      totalTimeout: totalTimeoutSeconds,
+    },
   });
 }
 
 const storage = buildStorageClient();
-console.log(process.env.PROJECT_ID, 'process.env.PROJECT_ID');
-console.log(process.env.GCP_STORAGE_BUCKET, 'process.env.GCP_STORAGE_BUCKETs');
-const bucketName =process.env.GCP_STORAGE_BUCKET;
+const bucketName = process.env.GCP_STORAGE_BUCKET;
 
 export interface IGCPUploadParams {
   filePath: string;
@@ -48,6 +63,7 @@ export interface IGCPUploadParams {
   employeeId: string;
   category: string;
   type: string;
+  public?: boolean;
 }
 
 export interface IGCPUploadResult {
@@ -61,28 +77,54 @@ export interface IGCPUploadResult {
  */
 export async function uploadFileToGCP(params: IGCPUploadParams): Promise<IGCPUploadResult> {
   try {
-    const { filePath, fileName, employeeId, category, type } = params;
+    const { filePath, fileName, employeeId, category, type, public: makePublic } = params;
+
+    if (!bucketName) {
+      return {
+        success: false,
+        error: 'GCP_STORAGE_BUCKET is not configured',
+      };
+    }
 
     // Determine folder name based on category and type
     const folderName = getFolderName(category, type);
-    console.log(folderName, "folderName")
+
     // Create the full path in GCP: employeeId/folderName/fileName
     const gcpFilePath = `${employeeId}/${folderName}/${fileName}`;
 
     // Upload file to GCP
-    const bucket = storage.bucket(bucketName || ``);
-    console.log(bucket, "bucket---bucket")
+    const bucket = storage.bucket(bucketName);
     const file = bucket.file(gcpFilePath);
-    console.log(file, "file---file")
-    // Upload the file
-    await file.save(fs.readFileSync(filePath), {
+
+    const uploadTimeoutMs = Number(process.env.GCP_UPLOAD_TIMEOUT_MS ?? '60000'); // default 60s
+    const buffer = await fs.promises.readFile(filePath);
+
+    // Upload the file (use simple upload for small supporting docs; avoids resumable overhead)
+    await file.save(buffer, {
       metadata: {
         contentType: getContentType(fileName),
       },
+      resumable: false,
+      timeout: uploadTimeoutMs,
     });
 
-    // // Make the file publicly accessible
-    // await file.makePublic();
+    if (makePublic) {
+      try {
+        await file.makePublic();
+      } catch (err: any) {
+        const msg = String(err?.message || err || '');
+        const lowered = msg.toLowerCase();
+
+        // Uniform bucket-level access disables object ACLs. In that case, public access must be granted at bucket IAM level.
+        // Don't fail hard here because the bucket may already be public via IAM, in which case the URL works anyway.
+        const uniformAccessHint =
+          lowered.includes('uniform bucket-level access') ||
+          lowered.includes('bucket-level access') ||
+          lowered.includes('legacy acl');
+
+        if (!uniformAccessHint) throw err;
+      }
+    }
 
     // Construct the public URL
     const fileUrl = `https://storage.googleapis.com/${bucketName}/${gcpFilePath}`;

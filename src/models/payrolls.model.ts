@@ -27,6 +27,8 @@ export interface IPayroll extends Document {
     // Deductions
     epfEmployee: number;
     epfEmployer: number;
+    epfEmployerEps?: number;
+    epfEmployerEpf?: number;
     esiEmployee: number;
     esiEmployer: number;
     professionalTax: number;
@@ -42,6 +44,24 @@ export interface IPayroll extends Document {
     bonus: number;
     holdSalary?: number; // ✅ NEW: Hold Salary field
     noticePeriodRecovery?: number; // ✅ NEW: Notice Period Recovery field
+    customReimbursements: Array<{ name: string; value: number }>;
+    customDeductions: Array<{ name: string; value: number }>;
+    totalCustomReimbursements: number;
+    totalCustomDeductions: number;
+    customComponentAuditTrail?: Array<{
+        appliedBy?: {
+            userId: Types.ObjectId;
+            name: string;
+            email?: string;
+        };
+        appliedAt: Date;
+        employeeId: Types.ObjectId;
+        month: number;
+        year: number;
+        monthYear: string;
+        customReimbursements: Array<{ name: string; value: number }>;
+        customDeductions: Array<{ name: string; value: number }>;
+    }>;
     // Final Payroll Calculations
     netSalary: number;
     ctc: number;
@@ -96,6 +116,8 @@ const PayrollSchema = new Schema<IPayroll>(
         reimbursementAllowance: { type: Number, required: true, default: 0 },
         epfEmployee: { type: Number, required: true, default: 0 },
         epfEmployer: { type: Number, required: true, default: 0 },
+        epfEmployerEps: { type: Number, default: 0 },
+        epfEmployerEpf: { type: Number, default: 0 },
         esiEmployee: { type: Number, required: true, default: 0 },
         esiEmployer: { type: Number, required: true, default: 0 },
         professionalTax: { type: Number, required: true, default: 0 },
@@ -110,6 +132,38 @@ const PayrollSchema = new Schema<IPayroll>(
         bonus: { type: Number, default: 0 },
         holdSalary: { type: Number, default: 0 }, // ✅ Explicit Hold Salary field
         noticePeriodRecovery: { type: Number, default: 0 }, // ✅ Explicit Notice Period Recovery field
+        customReimbursements: [{
+            name: { type: String, required: true },
+            value: { type: Number, required: true }
+        }],
+        customDeductions: [{
+            name: { type: String, required: true },
+            value: { type: Number, required: true }
+        }],
+        totalCustomReimbursements: { type: Number, default: 0 },
+        totalCustomDeductions: { type: Number, default: 0 },
+        customComponentAuditTrail: [{
+            appliedBy: {
+                userId: { type: Schema.Types.ObjectId, ref: 'User' },
+                name: { type: String },
+                email: { type: String },
+                _id: false,
+            },
+            appliedAt: { type: Date, default: Date.now },
+            employeeId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+            month: { type: Number, required: true },
+            year: { type: Number, required: true },
+            monthYear: { type: String, required: true },
+            customReimbursements: [{
+                name: { type: String, required: true },
+                value: { type: Number, required: true }
+            }],
+            customDeductions: [{
+                name: { type: String, required: true },
+                value: { type: Number, required: true }
+            }],
+            _id: false,
+        }],
         netSalary: { type: Number, required: true },
         ctc: { type: Number, required: true },
         monthYear: { type: String, required: true },
@@ -175,6 +229,7 @@ PayrollSchema.pre<IPayroll>('save', async function (next) {
     const monetaryFields = [
         'assigned.basic', 'assigned.hra', 'assigned.da', 'assigned.otherAllowance', 'assigned.travelAllowance', 'assigned.airTicketAllowance', 'assigned.medicalAllowance', 'assigned.reimbursementAllowance',
         'monthlyGross', 'basic', 'hra', 'da', 'otherAllowance', 'travelAllowance', 'airTicketAllowance', 'medicalAllowance', 'reimbursementAllowance', 'epfEmployee', 'epfEmployer',
+        'epfEmployerEps', 'epfEmployerEpf',
         'esiEmployee', 'esiEmployer', 'professionalTax', 'incomeTax', 'tdsDeduction', 'totalDeductions', 'additionalDeduction', 'overtimePay',
         'leaveDeductions', 'reimbursement', 'bonus', 'netSalary', 'ctc',
     ];
@@ -186,6 +241,22 @@ PayrollSchema.pre<IPayroll>('save', async function (next) {
         }
     });
 
+    if (this.customReimbursements && this.customReimbursements.length > 0) {
+        this.customReimbursements.forEach(item => {
+            if (typeof item.value === 'number') {
+                item.value = Math.round(item.value);
+            }
+        });
+    }
+
+    if (this.customDeductions && this.customDeductions.length > 0) {
+        this.customDeductions.forEach(item => {
+            if (typeof item.value === 'number') {
+                item.value = Math.round(item.value);
+            }
+        });
+    }
+
     // Ensure non-monetary fields are integers (already handled in logic, but reinforcing here)
     const integerFields = ['totalDaysInMonth', 'presentDays', 'LOPDays', 'payableDays', 'overtimeHours'];
     integerFields.forEach((field) => {
@@ -194,6 +265,9 @@ PayrollSchema.pre<IPayroll>('save', async function (next) {
             this.set(field, Math.floor(value)); // Ensure no decimals
         }
     });
+
+    this.totalCustomReimbursements = Math.round(this.totalCustomReimbursements || 0);
+    this.totalCustomDeductions = Math.round(this.totalCustomDeductions || 0);
 
     next();
 });

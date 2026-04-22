@@ -85,6 +85,9 @@ export interface IFinalSettlement extends Document {
         professionalTax: number;
         incomeTax: number;       // ✅ Added TDS
         providentFund: number;
+        epfEmployer: number;      // ✅ Added Employer Total
+        epfEmployerEps: number;   // ✅ Added EPS Split
+        epfEmployerEpf: number;   // ✅ Added EPF Split
         esi: number;
     }>;
     totalUnpaidSalary: number;
@@ -133,6 +136,9 @@ export interface IFinalSettlement extends Document {
         professionalTax: number;
         incomeTax: number;       // ✅ Added TDS
         providentFund: number;   // ✅ Added
+        epfEmployer: number;     // ✅ Added Employer Total
+        epfEmployerEps: number;  // ✅ Added EPS Split
+        epfEmployerEpf: number;  // ✅ Added EPF Split
         esi: number;             // ✅ Added
         otherDeductions: number;
         totalDeductions: number;
@@ -226,6 +232,9 @@ const finalSettlementSchema = new Schema<IFinalSettlement>(
             professionalTax: { type: Number, default: 0 },
             incomeTax: { type: Number, default: 0 }, // ✅ Added TDS
             providentFund: { type: Number, default: 0 },
+            epfEmployer: { type: Number, default: 0 },   // ✅ Added
+            epfEmployerEps: { type: Number, default: 0 },// ✅ Added
+            epfEmployerEpf: { type: Number, default: 0 },// ✅ Added
             esi: { type: Number, default: 0 }
         }],
         totalUnpaidSalary: { type: Number, default: 0 },
@@ -286,6 +295,9 @@ const finalSettlementSchema = new Schema<IFinalSettlement>(
             professionalTax: { type: Number, default: 0 },
             incomeTax: { type: Number, default: 0 }, // ✅ Added TDS
             providentFund: { type: Number, default: 0 }, // ✅ Added
+            epfEmployer: { type: Number, default: 0 },   // ✅ Added
+            epfEmployerEps: { type: Number, default: 0 },// ✅ Added
+            epfEmployerEpf: { type: Number, default: 0 },// ✅ Added
             esi: { type: Number, default: 0 },            // ✅ Added
             lopAmount: { type: Number, default: 0 },      // ✅ Added for consistency
             otherDeductions: { type: Number, default: 0 },

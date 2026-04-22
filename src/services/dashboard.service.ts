@@ -6,10 +6,11 @@ import { Overtime } from '../models/overtime.model';
 import { Payroll } from '../models/payrolls.model';
 import { HolidayCalendar } from '../models/holiday-calendar.model';
 import { AttendanceRecord } from '../models/attendance-record.model';
-import { IDashboardMetrics } from '../models/dashboard.model';
+import { IDashboardMetrics, IEmployeeAverage, IUserDashboardMetrics } from '../models/dashboard.model';
 import { startOfDay, endOfDay, startOfMonth, addMonths, getYear } from 'date-fns';
 import { LeaveSummary } from '../models/leave-summary.model';
 import { WFH } from '../models/wfh.model';
+import { CommunicationService } from './communication.service';
 
 export class DashboardService extends BaseService {
     async getDashboardMetrics(): Promise<IDashboardMetrics> {
@@ -654,9 +655,60 @@ export class DashboardService extends BaseService {
         console.log('📅 Today Attendance:', todayAttendanceData);
         console.log('🎉 Upcoming Holidays:', upcomingHolidaysData.length, 'holidays');
         console.log('📤 Resignation Status:', resignationStatus.length, 'months');
+
+        // --- NEW: Individual Average Working Hours for Current Month ---
+        const startOfMonthDate = startOfMonth(today);
+        const endOfMonthDate = endOfDay(today); // Up to now
+        const allActiveUsers = await User.find({ active: true }).select('_id name departmentId');
+
+        const individualAverages = await this.getIndividualAverages(allActiveUsers, startOfMonthDate, endOfMonthDate);
+
+        // For Admin Dashboard, sort and maybe just send Top Performers or a curated list
+        // High level overview
+        dashboardMetrics.individualAverageHours = individualAverages
+            .sort((a, b) => b.attendancePercentage - a.attendancePercentage);
+
+        // Fetch Social Wall Events
+        const communicationService = new CommunicationService(this.context);
+        dashboardMetrics.socialEvents = await communicationService.getSocialWall({
+            limit: 10,
+            viewerId: this.context.user?._id.toString(),
+            viewerRole: this.context.user?.role
+        }) as any;
+
         console.log('🔍 COMPLETE ADMIN DATA:', JSON.stringify(dashboardMetrics, null, 2));
 
         return dashboardMetrics;
+    }
+
+    async getUserDashboardData(userId: any): Promise<IUserDashboardMetrics> {
+        const today = new Date();
+        const startOfMonthDate = startOfMonth(today);
+        const endOfMonthDate = endOfDay(today);
+
+        const user = await User.findById(userId).select('_id name departmentId');
+        if (!user) {
+            throw new Error('User not found');
+        }
+
+        const stats = await this.getIndividualAverages([user], startOfMonthDate, endOfMonthDate);
+        const userStats = stats[0];
+
+        const totalWorkingDays = this.getWorkingDaysCount(startOfMonthDate, endOfMonthDate);
+
+        return {
+            workHighlights: {
+                averageWorkHours: userStats?.averageWorkHours || '00:00',
+                attendancePercentage: userStats?.attendancePercentage || 0,
+                presentDays: userStats?.presentDays || 0,
+                totalWorkingDays: totalWorkingDays
+            },
+            socialEvents: await (new CommunicationService(this.context)).getSocialWall({
+                limit: 10,
+                viewerId: this.context.user?._id.toString(),
+                viewerRole: this.context.user?.role
+            }) as any
+        };
     }
 
     async getManagerDashboardData(managerId: any) {
@@ -701,6 +753,7 @@ export class DashboardService extends BaseService {
                     overtime: 0,
                     resignations: 0
                 },
+                individualAverageHours: [],
                 employees: []
             };
         }
@@ -862,6 +915,10 @@ export class DashboardService extends BaseService {
         console.log('Attendance Summary:', attendanceSummary);
         console.log('Attendance Status:', attendanceStatus);
 
+        const startOfMonthDate = startOfMonth(today);
+        const endOfMonthDate = endOfDay(today);
+        const individualAverageHours = await this.getIndividualAverages(teamEmployees, startOfMonthDate, endOfMonthDate);
+
         const managerDashboardData = {
             teamOverview: {
                 totalEmployees: teamEmployees.length,
@@ -875,8 +932,16 @@ export class DashboardService extends BaseService {
                 regularizations: pendingRegularizations,
                 overtime: pendingOvertime,
                 wfh: pendingWFH,
-                resignations: pendingResignations
+                resignations: pendingResignations,
+                total: pendingLeaves + pendingRegularizations + pendingOvertime + pendingWFH + pendingResignations
             },
+            socialEvents: await (new CommunicationService(this.context)).getSocialWall({
+                limit: 10,
+                viewerId: this.context.user?._id.toString(),
+                viewerRole: this.context.user?.role,
+                teamOnly: true
+            }) as any,
+            individualAverageHours,
             employees: Array.from(attendanceMap.values())
         };
 
@@ -932,5 +997,92 @@ export class DashboardService extends BaseService {
         }
 
         return 'unknown';
+    }
+
+    private async getIndividualAverages(users: any[], startDate: Date, endDate: Date): Promise<IEmployeeAverage[]> {
+        const userIds = users.map(u => u._id.toString());
+        const attendanceRecords = await AttendanceRecord.find({
+            userId: { $in: userIds },
+            shiftDay: { $gte: startDate, $lte: endDate }
+        });
+
+        const userMaps = new Map<string, { totalHours: number; presentDays: number; name: string; dept?: string }>();
+
+        // Initialize with all users
+        for (const user of users) {
+            userMaps.set(user._id.toString(), {
+                totalHours: 0,
+                presentDays: 0,
+                name: user.name,
+                dept: user.departmentId
+            });
+        }
+
+        // Days in period for percentage calculation - Using WORKING DAYS for more accurate "Record"
+        const totalDaysInPeriod = this.getWorkingDaysCount(startDate, endDate);
+
+        for (const record of attendanceRecords as any) {
+            const userId = record.userId.toString();
+            const stats = userMaps.get(userId);
+            if (!stats) continue;
+
+            // Logic derived from BiometricAttendanceService for consistency, but expanded for dashboard
+            const isActuallyPresent = record.attendanceStatus?.some((s: string) =>
+                ['Present', 'Late', 'On-Time', 'Early-Exit', 'Regularized', 'OT', 'Override'].includes(s)
+            ) ||
+                (record.totalWorkHours && record.totalWorkHours !== '00:00:00' && record.totalWorkHours !== '0:00:00') ||
+                (record.swipes && record.swipes.length > 0) ||
+                (record.firstIn);
+
+            if (isActuallyPresent) {
+                stats.presentDays++;
+                if (record.totalWorkHours) {
+                    stats.totalHours += this.timeStringToHours(record.totalWorkHours);
+                }
+            }
+        }
+
+        return Array.from(userMaps.entries()).map(([userId, stats]) => {
+            const avgDecimal = stats.presentDays > 0 ? stats.totalHours / stats.presentDays : 0;
+            return {
+                userId,
+                userName: stats.name,
+                department: stats.dept,
+                presentDays: stats.presentDays,
+                averageWorkHours: this.hoursToTimeString(avgDecimal),
+                attendancePercentage: Math.round((stats.presentDays / totalDaysInPeriod) * 100)
+            };
+        });
+    }
+
+    private timeStringToHours(timeStr: string): number {
+        if (!timeStr) return 0;
+        const parts = timeStr.split(':');
+        if (parts.length < 2) return 0;
+        const hours = parseInt(parts[0], 10);
+        const minutes = parseInt(parts[1], 10);
+        const seconds = parts[2] ? parseInt(parts[2], 10) : 0;
+        return hours + (minutes / 60) + (seconds / 3600);
+    }
+
+    private hoursToTimeString(hours: number): string {
+        const h = Math.floor(hours);
+        const m = Math.round((hours - h) * 60);
+        return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+    }
+
+    private getWorkingDaysCount(start: Date, end: Date): number {
+        let count = 0;
+        let cur = new Date(start);
+        const finish = new Date(end);
+
+        while (cur <= finish) {
+            const dayOfWeek = cur.getDay(); // 0 is Sunday, 6 is Saturday
+            if (dayOfWeek !== 0 && dayOfWeek !== 6) {
+                count++;
+            }
+            cur.setDate(cur.getDate() + 1);
+        }
+        return Math.max(1, count);
     }
 }

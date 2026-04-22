@@ -13,6 +13,7 @@ import libreoffice from 'libreoffice-convert';
 import { promisify } from 'util';
 import { Document, IDocument } from "../models/document.model";
 import { emailService } from "./email.service";
+import { SalaryAssignment, SalaryStructure } from "../models";
 import { IDocumentQuery, IForm12BBGenerate, IForm12BSubmission } from "../routes/document.routes";
 import { config } from "../config";
 
@@ -649,26 +650,52 @@ export class DocumentService extends BaseService {
                     const filteredEmployees = await User.find(employeeFilter, '_id').lean();
                     const employeeIds = filteredEmployees.map(emp => emp._id);
 
-                    if (employeeIds.length === 0) {
-                        req.log.info({
-                            adminId: user._id,
-                            filters: { department, role, activeStatus, designation, location, search }
-                        }, 'No employees found matching the filters');
+                    // If demographic filters were applied (department, location, etc.) and no employees found, return empty
+                    const hasDemographicFilters = department || role !== undefined || activeStatus !== undefined || designation || location;
+                    if (employeeIds.length === 0 && hasDemographicFilters) {
+                        req.log.info({ adminId: user._id, filters: req.query }, 'No employees match demographic filters');
                         return {
                             data: [],
                             meta: { page, limit, total: 0, totalPages: 0 }
                         };
                     }
 
-                    if (type !== 'AttendanceFile') {
-                        query.employeeId = { $in: employeeIds };
+                    // Build final document query conditions
+                    if (search) {
+                        const searchRegex = new RegExp(search, 'i');
+                        const orConditions: any[] = [
+                            { type: searchRegex },
+                            { fileName: searchRegex },
+                            { "metadata.offerLetter.candidateName": searchRegex },
+                            { "metadata.offerLetter.candidateEmail": searchRegex },
+                            { "metadata.offerLetter.designation": searchRegex },
+                            { "metadata.hikeLetter.employeeName": searchRegex },
+                            { "metadata.hikeLetter.employeeCode": searchRegex },
+                            { "metadata.hikeLetter.employeeEmail": searchRegex },
+                            { "metadata.hikeLetter.employeeDesignation": searchRegex },
+                            { "metadata.hikeLetter.batchName": searchRegex },
+                            { "metadata.name": searchRegex },
+                            { "metadata.email": searchRegex }
+                        ];
+
+                        // If we found employees matching the name/email search, include them
+                        if (employeeIds.length > 0) {
+                            orConditions.push({ employeeId: { $in: employeeIds } });
+                        }
+
+                        query.$or = orConditions;
+                    } else if (employeeIds.length > 0) {
+                        if (type !== 'AttendanceFile') {
+                            query.employeeId = { $in: employeeIds };
+                        }
                     }
 
                     req.log.info({
                         adminId: user._id,
                         filteredEmployeesCount: employeeIds.length,
-                        appliedFilters: { department, role, activeStatus, designation, location, search }
-                    }, 'Fetching documents for filtered employees');
+                        hasSearch: !!search,
+                        appliedFilters: { department, role, activeStatus, designation, location }
+                    }, 'Fetching documents with enhanced search');
                 }
 
                 req.log.info({
@@ -726,6 +753,13 @@ export class DocumentService extends BaseService {
                     query['metadata.timesheet.month'] = monthNum;
                 }
             }
+            else if ((category === 'EmployeeLifecycle' || type === 'OfferLetter' || type === 'HikeLetter') && (yearNum !== undefined || monthNum !== undefined)) {
+                // Filter Hikes and Offers by their uploadDate (dispatch date)
+                const start = new Date(yearNum || new Date().getFullYear(), (monthNum !== undefined ? monthNum - 1 : 0), 1);
+                const end = new Date(yearNum || new Date().getFullYear(), (monthNum !== undefined ? monthNum : 12), 0, 23, 59, 59, 999);
+
+                query.uploadDate = { $gte: start, $lte: end };
+            }
             else if (category === 'Tax' && type === 'Form16' && financialYear) {
                 query['metadata.form16.financialYear'] = financialYear;
             }
@@ -745,7 +779,7 @@ export class DocumentService extends BaseService {
             const [total, documents] = await Promise.all([
                 Document.countDocuments(query),
                 Document.find(query)
-                    .populate('employeeId', 'name email')
+                    .populate('employeeId', 'name email employeeCode')
                     .populate('uploadedBy', 'name email')
                     .sort({ uploadDate: -1 })
                     .skip(skip)
@@ -1121,7 +1155,7 @@ export class DocumentService extends BaseService {
                 status: doc.status,
                 payslipUrl: doc.filePath,
                 accessLevel: doc.accessLevel,
-                isExport: doc.status === 'Sent' || doc.status === 'Exported',
+                isExport: doc.metadata.payslip?.isExport ?? (doc.status === 'Sent' || doc.status === 'Exported'),
                 monthYear: doc.metadata.payslip?.monthYear,
                 month: doc.metadata.payslip?.month,
                 year: doc.metadata.payslip?.year,
@@ -1615,8 +1649,17 @@ export class DocumentService extends BaseService {
 
         const holdSalaryValue = isUaePayroll ? sanitizeAmount(payroll.holdSalary) : (payroll.holdSalary || 0);
 
+        const customReimbursementsTotal = (payroll.customReimbursements || []).reduce(
+            (sum: number, item: any) => sum + sanitizeAmount(item?.value),
+            0
+        );
+        const customDeductionsTotal = (payroll.customDeductions || []).reduce(
+            (sum: number, item: any) => sum + sanitizeAmount(item?.value),
+            0
+        );
+
         const totalEarnings =
-            basicValue + hraValue + otherAllowanceValue + daValue + travelAllowanceValue + holdSalaryValue;
+            basicValue + hraValue + otherAllowanceValue + daValue + travelAllowanceValue + holdSalaryValue + customReimbursementsTotal;
 
         const netSalaryValue = sanitizeAmount(payroll.netSalary);
         const netPayNumeric = Math.round(netSalaryValue);
@@ -1686,7 +1729,8 @@ export class DocumentService extends BaseService {
                     assignedHraValue +
                     assignedOtherAllowanceValue +
                     assignedTravelAllowanceValue +
-                    (payroll.holdSalary || 0), // ✅ Add Hold Salary to numeric sum
+                    (payroll.holdSalary || 0) +
+                    customReimbursementsTotal, // Keep Full total aligned with displayed custom reimbursement rows
                     normalizedCountry
                 )
             },
@@ -1694,7 +1738,7 @@ export class DocumentService extends BaseService {
             // Deductions - Only include non-zero values (so template rows can be conditional)
             deduction: (() => {
                 const deductionObj: any = {
-                    total: formatCurrency(Number(payroll.totalDeductions || 0), normalizedCountry),
+                    total: formatCurrency(Number(payroll.totalDeductions || 0) + customDeductionsTotal, normalizedCountry),
                 };
 
                 const pfVal = Number((payroll as any).epfEmployee ?? 0);
@@ -1755,6 +1799,13 @@ export class DocumentService extends BaseService {
                 if (sanitizeAmount(payroll.medicalAllowance) > 0 || sanitizeAmount(payroll.assigned?.medicalAllowance) > 0) {
                     pushIfValid('MEDICAL ALLOWANCE', sanitizeAmount(payroll.medicalAllowance), sanitizeAmount(payroll.assigned?.medicalAllowance));
                 }
+                if (payroll.customReimbursements && payroll.customReimbursements.length > 0) {
+                    payroll.customReimbursements.forEach((item: any) => {
+                        if (sanitizeAmount(item?.value) > 0) {
+                            pushIfValid(String(item.name || '').toUpperCase(), sanitizeAmount(item.value), sanitizeAmount(item.value));
+                        }
+                    });
+                }
 
                 return earningsArray;
             })(),
@@ -1775,6 +1826,13 @@ export class DocumentService extends BaseService {
                 if (ptVal > 0) deductionsArray.push({ label: 'PROFESSIONAL TAX', amount: formatCurrency(ptVal, normalizedCountry) });
                 if (tdsVal > 0) deductionsArray.push({ label: 'TDS (1%)', amount: formatCurrency(tdsVal, normalizedCountry) });
                 if (noticeVal > 0) deductionsArray.push({ label: 'NOTICE PERIOD RECOVERY', amount: formatCurrency(noticeVal, normalizedCountry) });
+                if (payroll.customDeductions && payroll.customDeductions.length > 0) {
+                    payroll.customDeductions.forEach((item: any) => {
+                        if (sanitizeAmount(item?.value) > 0) {
+                            deductionsArray.push({ label: String(item.name || '').toUpperCase(), amount: formatCurrency(sanitizeAmount(item.value), normalizedCountry) });
+                        }
+                    });
+                }
 
                 return deductionsArray;
             })(),
@@ -2930,7 +2988,8 @@ export class DocumentService extends BaseService {
         month: number,
         year: number,
         uploadedFile: any,
-        netSalary?: number
+        netSalary?: number,
+        isExport: boolean = true
     ): Promise<IDocument> {
         // Validate employee exists
         const employee = await User.findById(employeeId);
@@ -3047,7 +3106,7 @@ export class DocumentService extends BaseService {
                     presentDays: 0,
                     totalDays: 0,
                     payableDays: 0,
-                    isExport: false,
+                    isExport,
                 },
             },
             auditLog: [
@@ -3151,7 +3210,8 @@ export class DocumentService extends BaseService {
     async adminUploadPayslipsForYear(
         employeeId: string,
         year: number,
-        filesMap: Map<number, { file: any; netSalary?: number }>
+        filesMap: Map<number, { file: any; netSalary?: number }>,
+        isExport: boolean = true
     ): Promise<{
         success: number;
         failed: number;
@@ -3266,7 +3326,8 @@ export class DocumentService extends BaseService {
                     month,
                     year,
                     file,
-                    netSalary
+                    netSalary,
+                    isExport
                 );
 
                 results.success++;
@@ -3673,5 +3734,274 @@ export class DocumentService extends BaseService {
         }
     }
 
+    /**
+     * Send Offer Letter to Candidate
+     */
+    async sendOfferLetter(data: {
+        name: string;
+        email: string;
+        attachments: Array<{ fileName: string; filePath: string; localPath?: string; fieldname?: string }>;
+        uploadedBy: string
+    }): Promise<any> {
+        const { name, email, attachments, uploadedBy } = data;
 
+        // Generate a unique ID for this dispatch group
+        const dispatchId = `OFFER_${Date.now()}_${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+
+        // 1. Identify primary and secondary files
+        const primaryOffer = attachments.find(a => a.fieldname === 'offerLetter') || attachments[0];
+        const secondaryAnnexure = attachments.find(a => a.fieldname === 'annexure');
+
+        // 2. Create Single Document Record
+        const document = new Document({
+            employeeId: new Types.ObjectId().toString(), // Candidate ID placeholder
+            type: 'OfferLetter',
+            category: 'EmployeeLifecycle',
+            fileName: primaryOffer.fileName,
+            filePath: primaryOffer.filePath,
+            uploadDate: new Date(),
+            uploadedBy: new Types.ObjectId(uploadedBy),
+            status: 'Sent',
+            metadata: {
+                offerLetter: {
+                    candidateName: name,
+                    candidateEmail: email,
+                    offerDate: new Date(),
+                    dispatchId,
+                    annexure: secondaryAnnexure ? {
+                        fileName: secondaryAnnexure.fileName,
+                        filePath: secondaryAnnexure.filePath
+                    } : undefined
+                }
+            },
+            auditLog: [{
+                action: 'Upload',
+                performedBy: new Types.ObjectId(uploadedBy),
+                timestamp: new Date(),
+                details: `Offer Letter [${primaryOffer.fileName}]${secondaryAnnexure ? ' and Annexure [' + secondaryAnnexure.fileName + ']' : ''} uploaded and sent to ${email}`
+            }]
+        });
+
+        await document.save();
+        const createdDocuments = [document];
+
+        // 2. Prepare Email Attachments
+        const emailFiles = attachments.map(att => ({
+            filename: att.fileName,
+            path: att.localPath // Absolute local path for safe attachment
+        } as any));
+
+        // 3. Calculate Deadline (4 Business Days)
+        const calculateDeadline = (days: number) => {
+            let date = new Date();
+            let added = 0;
+            while (added < days) {
+                date.setDate(date.getDate() + 1);
+                if (date.getDay() !== 0 && date.getDay() !== 6) added++;
+            }
+            return date.toLocaleDateString('en-GB').replace(/\//g, '.'); // Format as DD.MM.YYYY
+        };
+        const deadline = calculateDeadline(4);
+
+        // 4. Send Unified Email
+        await emailService.sendEmail({
+            body: {
+                to: email,
+                subject: 'Offer Letter - Cloud Desk Technology',
+                html: `
+                    <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px;">
+                        <p>Mr. ${name},</p>
+                        <p><strong>Congratulations!!</strong> Team- Cloud Desk and the Human Resource Management Team are pleased to invite you to join Cloud Desk Technology. The offer letter copy is enclosed.</p>
+                        <p>Appreciate it if you could confirm your acceptance by email and share a signed copy of the offer to initiate the onboarding and mobilization process along with the following documents (Clear Scans).</p>
+                        
+                        <ol>
+                            <li><strong>Signed offer letter</strong> - kindly share it on or before <strong>${deadline}</strong></li>
+                            <li>Filled employment form</li>
+                        </ol>
+                        
+                        <p>Many thanks for your interest and we look forward to you joining us!!</p>
+                        
+                        <br>
+                        <div style="color: #004085; font-style: italic;">
+                            <strong>Thanks & Regards</strong><br>
+                            <strong>HR Team</strong><br>
+                            Cloud Desk Technology Pvt Ltd<br>
+                            Consulting | IT Staffing | Technology<br>
+                            Mobile: +91-8015441135<br>
+                            Email: myhr@clouddesk.ae<br>
+                            www.clouddesk.ae<br>
+                            <span style="font-size: 11px;">We are your one stop destination for 360-degree solutions of cloud CRM Implementation, mobile app development, and Data Analytics</span>
+                        </div>
+                    </div>
+                `,
+                text: `Congratulations!! Team- Cloud Desk and the Human Resource Management Team are pleased to invite you to join Cloud Desk Technology. Please share the signed offer letter on or before ${deadline}.`
+            },
+            files: emailFiles
+        });
+
+        return createdDocuments[0]; // Return the primary document for UI reference
+    }
+
+    /**
+     * Preview Hike Letter for Employee (No email sent, no DB record)
+     */
+    async previewHikeLetter(data: {
+        employeeId: string;
+        signatory: { name: string; designation: string; signaturePath?: string };
+    }): Promise<any> {
+        const { employeeId, signatory } = data;
+
+        // 1. Fetch Data
+        const employee = await User.findById(employeeId).lean();
+        if (!employee) throw new Error('Employee not found');
+
+        const salaryAssignment = await SalaryAssignment.findOne({ employeeId: new Types.ObjectId(employeeId) }).sort({ createdAt: -1 }).lean();
+        if (!salaryAssignment) throw new Error('Salary assignment not found for this employee');
+
+        const salaryStructure = await SalaryStructure.findById(salaryAssignment.salaryStructureId).lean();
+        if (!salaryStructure) throw new Error('Salary structure not found');
+
+        // 2. Call Refined Helper for PDF Generation and GCP Upload
+        const { generateHikeLetterPDF } = await import('./hike-letter-puppeteer.helper');
+        const fileUrl = await generateHikeLetterPDF({
+            employees: [{
+                employee,
+                salaryAssignment,
+                salaryStructure,
+            }],
+            signatory: {
+                name: signatory.name,
+                designation: signatory.designation,
+                signaturePath: signatory.signaturePath
+            }
+        });
+
+        return { fileUrl };
+    }
+
+    /**
+     * Generate and Send Hike Letter for Employee
+     */
+    async generateAndSendHikeLetter(data: {
+        employeeId: string;
+        signatory: { name: string; designation: string; signaturePath?: string };
+        adminId: string;
+        dispatchId?: string;
+        newCtc?: number;
+        percentageIncrease?: number;
+        batchName?: string;
+        signatureBase64?: string;
+    }): Promise<any> {
+        const { employeeId, signatory, adminId, dispatchId, newCtc, percentageIncrease, batchName, signatureBase64 } = data;
+
+        // 1. Fetch Data
+        const employee = await User.findById(employeeId).lean();
+        if (!employee) throw new Error('Employee not found');
+
+        const salaryAssignment = await SalaryAssignment.findOne({ employeeId: new Types.ObjectId(employeeId) }).sort({ createdAt: -1 }).lean();
+        if (!salaryAssignment) throw new Error('Salary assignment not found for this employee');
+
+        const salaryStructure = await SalaryStructure.findById(salaryAssignment.salaryStructureId).lean();
+        if (!salaryStructure) throw new Error('Salary structure not found');
+
+        // 2. Call Refined Helper for PDF Generation and GCP Upload
+        const { generateHikeLetterPDF } = await import('./hike-letter-puppeteer.helper');
+        const fileUrl = await generateHikeLetterPDF({
+            employees: [{
+                employee,
+                salaryAssignment,
+                salaryStructure,
+            }],
+            signatory: {
+                name: signatory.name,
+                designation: signatory.designation,
+                signaturePath: signatory.signaturePath
+            }
+        });
+
+        const fileName = fileUrl.split('/').pop() || 'HikeLetter.pdf';
+
+        // 3. Create Document Record
+        const document = new Document({
+            employeeId: new Types.ObjectId(employeeId),
+            type: 'HikeLetter',
+            category: 'EmployeeLifecycle',
+            fileName,
+            filePath: fileUrl,
+            uploadDate: new Date(),
+            uploadedBy: new Types.ObjectId(adminId),
+            status: 'Sent',
+            metadata: {
+                hikeLetter: {
+                    effectiveDate: (salaryAssignment as any).effectiveFrom || new Date(),
+                    monthlyGross: (salaryAssignment as any).monthlyGross,
+                    newCtc: newCtc || (salaryAssignment as any).monthlyGross * 12, // Handle fallback or provided values
+                    percentageIncrease: percentageIncrease || 0,
+                    batchName: batchName,
+                    dispatchId,
+                    employeeCode: employee.employeeCode,
+                    employeeName: employee.name,
+                    employeeEmail: employee.email,
+                    signatoryName: signatory.name,
+                    signatoryDesignation: signatory.designation,
+                    signatureBase64: signatureBase64
+                }
+            },
+            auditLog: [{
+                action: 'Generate',
+                performedBy: new Types.ObjectId(adminId),
+                timestamp: new Date(),
+                details: `Hike Letter generated and sent to ${employee.name}`
+            }]
+        });
+
+        await document.save();
+
+        // 4. Send Email (Fetch PDF buffer from GCP URL for attachment)
+        const pdfBuffer = await emailService.fetchPdfBuffer(fileUrl);
+        const { formatOrdinalDate } = await import('./hike-letter-puppeteer.helper');
+        const effectiveDateStr = formatOrdinalDate((salaryAssignment as any).effectiveFrom || new Date());
+        const firstName = employee.name.split(' ')[0];
+
+        await (emailService as any).transporter.sendMail({
+            from: `"Cloud Desk HR" <${(config as any).GMAIL_AUTH_USER}>`,
+            to: (employee as any).email,
+            subject: `Salary Revision Letter - ${(employee as any).name}`,
+            html: `
+                <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px;">
+                    <p>Dear ${firstName},</p>
+                    <p>Greetings from Cloud Desk HR Department!</p>
+                    <p><strong style="color: #004085;">Congratulations!</strong></p>
+                    <p>In recognition of your performance, we are glad to inform you that the company has revised your salary effective <strong>${effectiveDateStr}</strong>.</p>
+                    <p>We would like to take this opportunity to express our appreciation for your contribution to the organization and hope that you will continue to strive for better results. We hope you will shoulder your new responsibility with full dedication and sincerity.</p>
+                    
+                    <br>
+                    <div style="color: #004085; font-style: italic;">
+                        <strong>Thanks & Regards</strong><br>
+                        <strong>HR Team</strong><br>
+                        Cloud Desk Technology Pvt Ltd<br>
+                        Consulting | IT Staffing | Technology<br>
+                        Mobile: +91-8015441135<br>
+                        Email: myhr@clouddesk.ae<br>
+                        www.clouddesk.ae<br>
+                        <span style="font-size: 11px;">We are your one stop destination for 360-degree solutions of cloud CRM Implementation, mobile app development, and Data Analytics</span>
+                    </div>
+                    
+                    <br>
+                    <hr border="0" style="border-top: 1px solid #eee;">
+                    <p style="font-size: 10px; color: #999; font-style: italic;">
+                        The information contained in this communication is intended solely for the use of the individual or entity to whom it is addressed and others authorized to receive it. It may contain confidential or legally privileged information. If you are not the intended recipient you are hereby notified that any disclosure, copying, distribution or taking any action in reliance on the contents of this information is strictly prohibited and may be unlawful.
+                    </p>
+                </div>
+            `,
+            attachments: [{
+                filename: fileName,
+                content: pdfBuffer,
+                contentType: 'application/pdf'
+            }]
+        });
+
+        return document;
+    }
 }
+

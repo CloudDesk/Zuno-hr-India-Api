@@ -1,7 +1,30 @@
 import { Schema, model } from 'mongoose';
 
+export interface IEmployeeAverage {
+    userId: string;
+    userName: string;
+    averageWorkHours: string;
+    presentDays: number;
+    attendancePercentage: number;
+    department?: string;
+}
+
+export interface ISocialEventSummary {
+    _id: string;
+    type: string;
+    subject: string;
+    message: string;
+    bannerImage?: string;
+    attachments?: string[];
+    eventDate: Date;
+    postedBy: string;
+    employeeId?: any;
+    metadata?: any;
+}
+
 export interface IDashboardMetrics {
     totalEmployees: number;
+    individualAverageHours?: IEmployeeAverage[];
     pendingApprovals: {
         leaves: number;
         regularizations: number;
@@ -67,6 +90,17 @@ export interface IDashboardMetrics {
         pending: number;
         approved: number;
     }>;
+    socialEvents?: ISocialEventSummary[];
+}
+
+export interface IUserDashboardMetrics {
+    workHighlights: {
+        averageWorkHours: string;
+        attendancePercentage: number;
+        presentDays: number;
+        totalWorkingDays: number;
+    };
+    socialEvents?: ISocialEventSummary[];
 }
 
 // This is a virtual model for aggregation purposes only

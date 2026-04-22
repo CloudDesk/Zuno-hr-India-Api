@@ -109,13 +109,27 @@ console.log('inside html to pdf helper');
         });
     }
 
-    // Resolve department name if it's currently an ID or N/A
+    // Resolve department and location labels using LOV lookup or fallbacks
+    // We prioritize populated names or direct manual fields, then fall back to LOV lookup using the ID
+    let deptValForLookup = (employee as any).departmentId || (employee as any).department;
     let empDept = (employee as any).departmentName || (employee as any).departmentId?.name || (employee as any).department || 'N/A';
-    if (empDept === 'N/A' || empDept === (employee as any).departmentId) {
-        const deptLov = await LOV.findOne({ type: 'department', 'values.value': employee.departmentId });
+    
+    if (empDept === 'N/A' || empDept === deptValForLookup) {
+        const deptLov = await LOV.findOne({ type: 'department', 'values.value': deptValForLookup });
         if (deptLov) {
-            const deptVal = deptLov.values.find((v: any) => v.value === employee.departmentId);
-            if (deptVal) empDept = deptVal.label;
+            const dVal = deptLov.values.find((v: any) => v.value === deptValForLookup);
+            if (dVal) empDept = dVal.label;
+        }
+    }
+
+    let locValForLookup = (employee as any).location;
+    let empLocation = (employee as any).locationName || locValForLookup || 'N/A';
+    
+    if (empLocation === 'N/A' || empLocation === locValForLookup) {
+        const locLov = await LOV.findOne({ type: 'location', 'values.value': locValForLookup });
+        if (locLov) {
+            const lVal = locLov.values.find((v: any) => v.value === locValForLookup);
+            if (lVal) empLocation = lVal.label;
         }
     }
 
@@ -125,12 +139,18 @@ console.log('inside html to pdf helper');
         ? lastPaidDate.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })
         : settlement.lastPaidMonth || 'N/A';
 
-    // Helper to capitalize first letter of each word
-    const capitalizeWords = (str: string | undefined | null): string => {
+    /**
+     * Helper to format labels (Refer Payslip)
+     * 1. Replaces underscores with spaces
+     * 2. Capitalizes each word
+     */
+    const formatLabel = (str: string | undefined | null): string => {
         if (!str || str === 'N/A') return 'N/A';
         return str
+            .replace(/_/g, ' ')
             .toLowerCase()
             .split(' ')
+            .filter(Boolean)
             .map(word => word.charAt(0).toUpperCase() + word.slice(1))
             .join(' ');
     };
@@ -138,10 +158,10 @@ console.log('inside html to pdf helper');
     const templateData = {
         logoUrl: 'https://storage.googleapis.com/tendlylogo/cd_logo_2%20(1).png', // Official Cloud Desk Logo URLs URL
         empNo: settlement.employeeCode,
-        empName: capitalizeWords(settlement.employeeName),
-        empDept: capitalizeWords(empDept),
-        empDesig: capitalizeWords((employee as any).designation || (employee as any).specificRole || (employee as any).role || 'N/A'),
-        empLocation: capitalizeWords((employee as any).location || 'N/A'),
+        empName: formatLabel(settlement.employeeName),
+        empDept: formatLabel(empDept),
+        empDesig: formatLabel((employee as any).designation || (employee as any).specificRole || (employee as any).role || 'N/A'),
+        empLocation: formatLabel(empLocation),
         joiningDate: formatDate((employee as any).joiningDate),
         lastPaidMonth: lastPaidMonthFormatted,
         resignDate: formatDate(settlement.resignationSubmittedOn),
