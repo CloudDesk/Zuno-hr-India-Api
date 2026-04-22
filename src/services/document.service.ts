@@ -6,7 +6,7 @@ import ExcelJS from 'exceljs';
 import { FastifyReply, FastifyRequest } from "fastify";
 import { RequestContext } from "../types/context";
 import { BaseService } from "./base.service";
-import { ITimesheet, IUser, Payroll, Timesheet, User } from "../models";
+import { ITimesheet, IUser, Payroll, Timesheet, User, Payslip } from "../models";
 import PizZip from "pizzip";
 import Docxtemplater from "docxtemplater";
 import libreoffice from 'libreoffice-convert';
@@ -429,16 +429,24 @@ export class DocumentService extends BaseService {
         // Validate category
         const isCertification = document.category === 'Certification';
         const isTaxForm12B = document.category === 'Tax' && document.type === 'Form12B';
+        const isPayrollPayslip = document.category === 'Payroll' && document.type === 'Payslip';
+        const isSettlement = document.category === 'Settlement';
+        const isAdminUpload = document.type === 'AdminUpload';
 
-        if (!(isCertification || isTaxForm12B)) {
-            throw new Error('Only documents under category "Certification" or category "Tax" with type "Form12B" can be deleted.');
+        if (!(isCertification || isTaxForm12B || isPayrollPayslip || isAdminUpload || isSettlement)) {
+            throw new Error('Only documents under category "Certification", "Tax" (Form12B), "Payroll" (Payslip), "AdminUpload", or "Settlement" can be deleted.');
         }
 
-        if (document.category === 'Certification') {
+        if (isCertification) {
             // Check certificateType and role
             const isSkillType = document.metadata?.certificate?.certificateType === 'Skill';
             if (!isSkillType && userRole !== 'admin') {
                 throw new Error('Forbidden: Only admins can delete non-Skill certification documents.');
+            }
+        } else if (isPayrollPayslip || isAdminUpload || isSettlement) {
+            // Only admins can delete payslips, settlement or admin uploads
+            if (userRole !== 'admin') {
+                throw new Error('Forbidden: Only admins can delete payslips, settlement or admin uploads.');
             }
         }
         // Log document state before deletion
@@ -464,6 +472,27 @@ export class DocumentService extends BaseService {
         // Update audit log (optional, if needed before deletion)
         // Note: Audit log won't be saved since the document is deleted
         console.log('Document deleted:', deletedDocument);
+
+        // If it was a payslip, also delete the corresponding record from the Payslip collection (legacy support)
+        if (isPayrollPayslip) {
+            try {
+                const month = deletedDocument.metadata?.payslip?.month;
+                const year = deletedDocument.metadata?.payslip?.year;
+                const employeeId = deletedDocument.employeeId;
+
+                if (month && year && employeeId) {
+                    await Payslip.deleteMany({
+                        userId: employeeId,
+                        month: month,
+                        year: year
+                    });
+                    console.log(`Deleted corresponding Payslip records for user ${employeeId}, period ${month}-${year}`);
+                }
+            } catch (err) {
+                console.warn('Failed to delete corresponding Payslip record:', err);
+                // We don't throw here as the main document and file are already gone
+            }
+        }
 
 
 

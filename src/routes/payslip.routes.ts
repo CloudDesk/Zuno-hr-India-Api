@@ -115,7 +115,7 @@ export const payslipRoutes: RouteHandler = async (
           });
         }
 
-        const salary = await request.container!.payslipService.bulkGenerate(
+        const salary = await request.container!.payslipPdfService.generatePayslip(
           month,
           year,
           finalUserIds
