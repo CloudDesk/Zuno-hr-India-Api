@@ -1,4 +1,4 @@
-import { Types } from 'mongoose';
+import { Types, type Document } from 'mongoose';
 import { AttendanceRegularization, IAttendanceRegularization } from '../models/attendance-regularization.model';
 import { AttendanceRecord } from '../models/attendance-record.model';
 import { IShift, IUser, ShiftAssignment, User } from '../models';

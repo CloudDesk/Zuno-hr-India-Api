@@ -1,4 +1,4 @@
-import { Types } from 'mongoose';
+import { Types, type Document } from 'mongoose';
 import { User } from '../models/user.model';
 import { ITraining, TrainingAssignment } from '../models/training.model';
 import { TrainingAttendanceRecord } from '../models/training-attendance.model';

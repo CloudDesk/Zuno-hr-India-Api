@@ -19,6 +19,14 @@ declare module 'fastify' {
   }
 
   interface FastifyReply {
+    /**
+     * Fastify v5 narrows `status()`/`code()` to the declared `schema.response` codes.
+     * Many existing routes in this codebase return additional error codes (400/401/403/404/409/500)
+     * without listing them in every route schema. Add a permissive overload so builds don't fail.
+     */
+    status(statusCode: number): FastifyReply;
+    code(statusCode: number): FastifyReply;
+
     setCookie(
       name: string,
       value: string,

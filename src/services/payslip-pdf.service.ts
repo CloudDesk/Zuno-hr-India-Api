@@ -1,3 +1,5 @@
+/// <reference lib="dom" />
+
 import { Types } from "mongoose";
 import * as fsPromises from "fs/promises";
 import handlebars from 'handlebars';

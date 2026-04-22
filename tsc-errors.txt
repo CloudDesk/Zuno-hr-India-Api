@@ -1,0 +1,109 @@
+src/routes/attendance-override.routes.ts(188,29): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/attendance-override.routes.ts(403,29): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/attendance-regularization.routes.ts(619,37): error TS2345: Argument of type 'number' is not assignable to parameter of type '200 | 400 | 403 | 404'.
+src/routes/auth.routes.ts(140,29): error TS2345: Argument of type '401' is not assignable to parameter of type '200'.
+src/routes/auth.routes.ts(191,29): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/auth.routes.ts(241,29): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/bulk-attendance-upload.routes.ts(70,29): error TS2345: Argument of type '500' is not assignable to parameter of type '200 | 401'.
+src/routes/bulk-attendance-upload.routes.ts(409,31): error TS2345: Argument of type '401' is not assignable to parameter of type '200 | 400 | 409'.
+src/routes/bulk-attendance-upload.routes.ts(508,29): error TS2345: Argument of type '500' is not assignable to parameter of type '200'.
+src/routes/bulk-attendance-upload.routes.ts(699,29): error TS2345: Argument of type '500' is not assignable to parameter of type '200 | 400'.
+src/routes/collections.routes.ts(35,33): error TS2345: Argument of type '500' is not assignable to parameter of type '200'.
+src/routes/data-migration.routes.ts(51,31): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/data-migration.routes.ts(64,31): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/data-migration.routes.ts(80,29): error TS2345: Argument of type '500' is not assignable to parameter of type '200'.
+src/routes/data-migration.routes.ts(169,31): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/data-migration.routes.ts(182,31): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/data-migration.routes.ts(214,29): error TS2345: Argument of type '500' is not assignable to parameter of type '200'.
+src/routes/data-migration.routes.ts(257,31): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/data-migration.routes.ts(274,31): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/data-migration.routes.ts(306,31): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/data-migration.routes.ts(322,31): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/data-migration.routes.ts(331,31): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/data-migration.routes.ts(502,29): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/data-migration.routes.ts(562,31): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/data-migration.routes.ts(569,31): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/data-migration.routes.ts(582,31): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/data-migration.routes.ts(672,29): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/document.routes.ts(1032,37): error TS2345: Argument of type '500' is not assignable to parameter of type '200'.
+src/routes/document.routes.ts(2546,41): error TS2345: Argument of type '403' is not assignable to parameter of type '200 | 400'.
+src/routes/document.routes.ts(2587,41): error TS2345: Argument of type '404' is not assignable to parameter of type '200 | 400'.
+src/routes/leave-summary.routes.ts(925,29): error TS2345: Argument of type '400' is not assignable to parameter of type '200 | 403'.
+src/routes/leave-summary.routes.ts(1032,29): error TS2345: Argument of type '400' is not assignable to parameter of type '200 | 403'.
+src/routes/leave.routes.ts(140,29): error TS2345: Argument of type '400' is not assignable to parameter of type '201'.
+src/routes/leave.routes.ts(190,31): error TS2345: Argument of type '403' is not assignable to parameter of type '201'.
+src/routes/leave.routes.ts(246,31): error TS2345: Argument of type '400' is not assignable to parameter of type '201'.
+src/routes/leave.routes.ts(276,33): error TS2345: Argument of type '400' is not assignable to parameter of type '201'.
+src/routes/leave.routes.ts(350,33): error TS2345: Argument of type '400' is not assignable to parameter of type '201'.
+src/routes/leave.routes.ts(386,29): error TS2345: Argument of type '400' is not assignable to parameter of type '201'.
+src/routes/leave.routes.ts(638,29): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/leave.routes.ts(837,31): error TS2345: Argument of type '404' is not assignable to parameter of type '200'.
+src/routes/leave.routes.ts(849,29): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/leave.routes.ts(968,31): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/leave.routes.ts(1001,29): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/leave.routes.ts(1149,29): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/lov.routes.ts(96,29): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/lov.routes.ts(158,29): error TS2345: Argument of type '404' is not assignable to parameter of type '200'.
+src/routes/lov.routes.ts(168,29): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/optional-holiday.routes.ts(97,29): error TS2345: Argument of type '400' is not assignable to parameter of type '201'.
+src/routes/optional-holiday.routes.ts(496,29): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/organization.routes.ts(64,29): error TS2345: Argument of type '400' is not assignable to parameter of type '201'.
+src/routes/organization.routes.ts(133,29): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/overtime.routes.ts(74,29): error TS2345: Argument of type '400' is not assignable to parameter of type '201'.
+src/routes/overtime.routes.ts(169,29): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/payroll.routes.ts(493,41): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/payroll.routes.ts(500,41): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/payroll.routes.ts(520,37): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/payroll.routes.ts(566,41): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/payroll.routes.ts(578,37): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/payslip.routes.ts(270,31): error TS2345: Argument of type '404' is not assignable to parameter of type '200 | 400'.
+src/routes/payslip.routes.ts(589,29): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/permission-summary.routes.ts(199,29): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/permission-summary.routes.ts(361,31): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/permission-summary.routes.ts(384,29): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/permission.routes.ts(109,29): error TS2345: Argument of type '400' is not assignable to parameter of type '201'.
+src/routes/permission.routes.ts(298,29): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/shift-change.routes.ts(119,29): error TS2345: Argument of type '400' is not assignable to parameter of type '201'.
+src/routes/shift-change.routes.ts(333,29): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/shift.routes.ts(101,29): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/shift.routes.ts(222,29): error TS2345: Argument of type '400' is not assignable to parameter of type '201'.
+src/routes/shift.routes.ts(298,29): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/shift.routes.ts(394,29): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/shift.routes.ts(468,29): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/shift.routes.ts(514,29): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/shift.routes.ts(589,29): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/shift.routes.ts(673,29): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/training.routes.ts(127,29): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/training.routes.ts(213,31): error TS2345: Argument of type '404' is not assignable to parameter of type '200'.
+src/routes/training.routes.ts(224,29): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/training.routes.ts(372,29): error TS2345: Argument of type '400' is not assignable to parameter of type '201'.
+src/routes/training.routes.ts(459,29): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/training.routes.ts(547,29): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/user-profile.routes.ts(59,31): error TS2345: Argument of type '401' is not assignable to parameter of type '200'.
+src/routes/user-profile.routes.ts(111,29): error TS2345: Argument of type '500' is not assignable to parameter of type '200'.
+src/routes/user-profile.routes.ts(170,31): error TS2345: Argument of type '401' is not assignable to parameter of type '200'.
+src/routes/user-profile.routes.ts(194,29): error TS2345: Argument of type '500' is not assignable to parameter of type '200'.
+src/routes/user.routes.ts(510,29): error TS2345: Argument of type '400' is not assignable to parameter of type '200 | 404'.
+src/routes/user.routes.ts(1827,29): error TS2345: Argument of type '500' is not assignable to parameter of type '200 | 401 | 403'.
+src/routes/wfh-summary.routes.ts(175,29): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/wfh-summary.routes.ts(323,31): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/wfh-summary.routes.ts(372,29): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/routes/wfh.routes.ts(56,31): error TS2345: Argument of type '403' is not assignable to parameter of type '201'.
+src/routes/wfh.routes.ts(92,31): error TS2345: Argument of type '400' is not assignable to parameter of type '201'.
+src/routes/wfh.routes.ts(131,33): error TS2345: Argument of type '400' is not assignable to parameter of type '201'.
+src/routes/wfh.routes.ts(205,33): error TS2345: Argument of type '400' is not assignable to parameter of type '201'.
+src/routes/wfh.routes.ts(237,29): error TS2345: Argument of type '400' is not assignable to parameter of type '201'.
+src/routes/wfh.routes.ts(340,29): error TS2345: Argument of type '400' is not assignable to parameter of type '201'.
+src/routes/wfh.routes.ts(534,29): error TS2345: Argument of type '400' is not assignable to parameter of type '200'.
+src/services/attendance-regularization.service.ts(1413,45): error TS2304: Cannot find name 'Document'.
+src/services/bulk-attendance-upload.service.ts(85,30): error TS2345: Argument of type 'Buffer<ArrayBufferLike>' is not assignable to parameter of type 'Buffer'.
+  The types of 'slice(...)[Symbol.toStringTag]' are incompatible between these types.
+    Type '"Uint8Array"' is not assignable to type '"ArrayBuffer"'.
+src/services/bulk-attendance-upload.service.ts(1314,12): error TS2352: Conversion of type 'Buffer' to type 'Buffer<ArrayBufferLike>' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Type 'Buffer' is missing the following properties from type 'Buffer<ArrayBufferLike>': subarray, write, toJSON, equals, and 94 more.
+src/services/payslip-pdf.service.ts(563,34): error TS2552: Cannot find name 'document'. Did you mean 'Document'?
+src/services/payslip-pdf.service.ts(563,69): error TS2304: Cannot find name 'HTMLElement'.
+src/services/payslip-pdf.service.ts(564,36): error TS2552: Cannot find name 'document'. Did you mean 'Document'?
+src/services/payslip-pdf.service.ts(564,78): error TS2304: Cannot find name 'HTMLElement'.
+src/services/payslip-pdf.service.ts(573,28): error TS2552: Cannot find name 'document'. Did you mean 'Document'?
+src/services/training-attendance.service.ts(54,52): error TS2304: Cannot find name 'Document'.

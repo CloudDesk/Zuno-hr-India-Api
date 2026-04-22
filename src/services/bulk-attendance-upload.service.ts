@@ -82,8 +82,10 @@ export class BulkAttendanceUploadService {
    */
   async parseExcelFile(fileBuffer: Buffer): Promise<IBulkUploadRow[]> {
     const workbook = new ExcelJS.Workbook();
+    // ExcelJS types currently declare a global `Buffer` that conflicts with Node's `Buffer` in TS.
+    // @ts-ignore - ExcelJS Buffer type compatibility issue
     await workbook.xlsx.load(fileBuffer);
-    
+     
     const worksheet = workbook.getWorksheet(1); // First sheet
     if (!worksheet) {
       throw new Error('No worksheet found in Excel file');
@@ -1311,7 +1313,8 @@ export class BulkAttendanceUploadService {
     await this.createShiftsReferenceSheet(workbook, shifts);
     await this.createInstructionsSheet(workbook);
 
-    return await workbook.xlsx.writeBuffer() as Buffer;
+    const workbookBuffer = await workbook.xlsx.writeBuffer();
+    return Buffer.from(workbookBuffer as any);
   }
 
   /**
