@@ -144,7 +144,7 @@ export async function generateHikeLetterPDF(data: {
         const style = styleMatch ? styleMatch[1] : '';
         const bodyInner = bodyMatch ? bodyMatch[1] : templateHtml;
         
-        handlebars.registerHelper('formatCurrency', (val) => formatCurrency(val));
+        handlebars.registerHelper('formatCurrency', (val: any) => formatCurrency(val));
         const compiledTemplate = handlebars.compile(bodyInner);
 
         // Generate combined HTML for all employees

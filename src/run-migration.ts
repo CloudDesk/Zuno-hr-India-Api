@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { connectDB } from './config/database';
-import { migratePayrollType } from '../scripts/migratePayrollType';
+import { migratePayrollType } from './scripts/migratePayrollType';
 import mongoose from 'mongoose';
 
 async function run() {
