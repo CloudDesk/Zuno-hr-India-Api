@@ -56,7 +56,7 @@ function prepareHikeLetterTemplateData(data: {
 
     // PF Logic
     const epfConfig = salaryStructure.statutoryDeductions.epf;
-    const totalEmployerPfMonthly = Math.min(basic * (epfConfig.employerContribution / 100), epfConfig.maxLimit);
+    const totalEmployerPfMonthly = Math.min(basic, epfConfig.maxLimit) * (epfConfig.employerContribution / 100);
     const annualEmployerPf = totalEmployerPfMonthly * 12;
 
     const annualInsurance = (salaryAssignment as any).annualInsurance || 0;

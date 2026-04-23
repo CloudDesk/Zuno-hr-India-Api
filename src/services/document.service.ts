@@ -3890,29 +3890,41 @@ export class DocumentService extends BaseService {
      * Preview Hike Letter for Employee (No email sent, no DB record)
      */
     async previewHikeLetter(data: {
-        employeeId: string;
+        employeeIds: string[];
         signatory: { name: string; designation: string; signaturePath?: string };
     }): Promise<any> {
-        const { employeeId, signatory } = data;
+        const { employeeIds, signatory } = data;
+        const employeesToProcess = [];
 
-        // 1. Fetch Data
-        const employee = await User.findById(employeeId).lean();
-        if (!employee) throw new Error('Employee not found');
+        for (const empId of employeeIds) {
+            // 1. Fetch Data
+            const employee = await User.findById(empId).lean();
+            if (!employee) throw new Error(`Employee with ID ${empId} not found`);
 
-        const salaryAssignment = await SalaryAssignment.findOne({ employeeId: new Types.ObjectId(employeeId) }).sort({ createdAt: -1 }).lean();
-        if (!salaryAssignment) throw new Error('Salary assignment not found for this employee');
+            const salaryAssignment = await SalaryAssignment.findOne({ employeeId: new Types.ObjectId(empId) }).sort({ createdAt: -1 }).lean();
+            if (!salaryAssignment) throw new Error(`Salary assignment not found for ${employee.name}. Please ensure they have an active salary assigned.`);
+            
+            if (salaryAssignment.isActive === false) {
+                throw new Error(`Salary assignment for ${employee.name} is currently inactive. Please activate it before generating a hike letter.`);
+            }
+            const salaryStructure = await SalaryStructure.findById(salaryAssignment.salaryStructureId).lean();
+            if (!salaryStructure) throw new Error(`Salary structure not found for ${employee.name}`);
 
-        const salaryStructure = await SalaryStructure.findById(salaryAssignment.salaryStructureId).lean();
-        if (!salaryStructure) throw new Error('Salary structure not found');
+            employeesToProcess.push({
+                employee,
+                salaryAssignment,
+                salaryStructure,
+            });
+        }
+
+        if (employeesToProcess.length === 0) {
+            throw new Error('No valid employee data found for preview. Please ensure salary assignments are active for selected employees.');
+        }
 
         // 2. Call Refined Helper for PDF Generation and GCP Upload
         const { generateHikeLetterPDF } = await import('./hike-letter-puppeteer.helper');
         const fileUrl = await generateHikeLetterPDF({
-            employees: [{
-                employee,
-                salaryAssignment,
-                salaryStructure,
-            }],
+            employees: employeesToProcess,
             signatory: {
                 name: signatory.name,
                 designation: signatory.designation,
@@ -3943,10 +3955,14 @@ export class DocumentService extends BaseService {
         if (!employee) throw new Error('Employee not found');
 
         const salaryAssignment = await SalaryAssignment.findOne({ employeeId: new Types.ObjectId(employeeId) }).sort({ createdAt: -1 }).lean();
-        if (!salaryAssignment) throw new Error('Salary assignment not found for this employee');
+        if (!salaryAssignment) throw new Error(`Salary assignment not found for ${employee.name}. Please ensure they have an active salary assigned.`);
+
+        if (salaryAssignment.isActive === false) {
+            throw new Error(`Salary assignment for ${employee.name} is currently inactive. Please activate it before generating a hike letter.`);
+        }
 
         const salaryStructure = await SalaryStructure.findById(salaryAssignment.salaryStructureId).lean();
-        if (!salaryStructure) throw new Error('Salary structure not found');
+        if (!salaryStructure) throw new Error(`Salary structure not found for ${employee.name}`);
 
         // 2. Call Refined Helper for PDF Generation and GCP Upload
         const { generateHikeLetterPDF } = await import('./hike-letter-puppeteer.helper');

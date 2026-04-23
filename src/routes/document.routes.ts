@@ -2733,8 +2733,17 @@ export const documentRoutes = async (
             const { body, files } = await parseMultipartForm(request);
             const { documentService } = request.container!;
 
-            const employeeId = body.employeeId || (Array.isArray(body.employeeIds) ? body.employeeIds[0] : JSON.parse(body.employeeIds || '[]')[0]);
-            if (!employeeId) throw new Error("No employee selected for preview");
+            // Handle both single employeeId and multiple employeeIds
+            let employeeIds: string[] = [];
+            if (body.employeeIds) {
+                employeeIds = Array.isArray(body.employeeIds) ? body.employeeIds : JSON.parse(body.employeeIds);
+            } else if (body.employeeId) {
+                employeeIds = [body.employeeId];
+            }
+
+            if (employeeIds.length === 0) {
+                throw new Error("No employees selected for preview");
+            }
 
             const signatureFile = files.find(f => f.fieldname === 'signature');
 
@@ -2752,7 +2761,7 @@ export const documentRoutes = async (
             }
 
             const result = await documentService.previewHikeLetter({
-                employeeId,
+                employeeIds,
                 signatory: {
                     name: body.signatoryName,
                     designation: body.signatoryDesignation,
