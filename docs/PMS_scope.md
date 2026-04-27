@@ -43,24 +43,9 @@ This scope covers:
 - Notifications and reminders
 - Audit trail and reporting-ready data structures
 
-## 4. Out of Scope for Initial Release
+## 4. Actors and Roles
 
-The following items are not part of the first release unless explicitly prioritized later:
-
-- 360-degree feedback
-- Peer review workflows
-- Calibration sessions across departments
-- Bell-curve normalization
-- Compensation linkage
-- Promotion recommendation workflow
-- Continuous feedback outside formal cycles
-- Advanced analytics dashboards beyond basic status and outcome reporting
-
-These can be added in later phases.
-
-## 5. Actors and Roles
-
-### 5.1 Employee
+### 4.1 Employee
 
 The employee can:
 
@@ -73,7 +58,7 @@ The employee can:
 - Review manager evaluation
 - Accept final evaluation or raise comments before finalization
 
-### 5.2 Manager
+### 4.2 Manager
 
 The manager can:
 
@@ -86,7 +71,7 @@ The manager can:
 - Review employee disagreement comments
 - Re-submit final evaluation where applicable
 
-### 5.3 HR/Admin
+### 4.3 HR/Admin
 
 HR/Admin can:
 
@@ -100,9 +85,9 @@ HR/Admin can:
 - Handle escalations and exceptional closure scenarios
 - Perform bulk operational actions for eligible assignments
 
-## 6. Core Functional Requirements
+## 5. Core Functional Requirements
 
-### 6.1 Template and Form Builder
+### 5.1 Template and Form Builder
 
 HR/Admin must be able to create configurable performance templates.
 
@@ -161,7 +146,7 @@ Supported field types for initial release:
 - Weighted score
 - Comment box
 
-### 6.2 Template Versioning
+### 5.2 Template Versioning
 
 Template versioning is mandatory.
 
@@ -173,7 +158,7 @@ Rules:
 - Changes to template structure must create a new template version
 - Existing cycle records must continue using the original assigned template version
 
-### 6.3 Performance Cycle Management
+### 5.3 Performance Cycle Management
 
 HR/Admin must be able to define performance cycles.
 
@@ -214,7 +199,7 @@ Cycle statuses:
 - `ARCHIVED`
 - `CANCELLED`
 
-### 6.4 Assignment Logic
+### 5.4 Assignment Logic
 
 Employees must be assigned into a cycle with an associated manager and template version.
 
@@ -241,13 +226,13 @@ Rules:
 - Reassignment must be audited
 - Historical review actions must preserve the original actor for prior submissions
 
-## 7. Workflow Design
+## 6. Workflow Design
 
-### 7.1 Workflow Overview
+### 6.1 Workflow Overview
 
 The PMS workflow must support controlled transitions across goal planning, self-review, manager review, acceptance, and finalization.
 
-### 7.2 Assignment-Level State Machine
+### 6.2 Assignment-Level State Machine
 
 Each employee-cycle assignment should move through the following states:
 
@@ -267,7 +252,7 @@ Each employee-cycle assignment should move through the following states:
 - `REOPENED_BY_HR`
 - `CLOSED_BY_HR`
 
-### 7.3 State Transition Rules
+### 6.3 State Transition Rules
 
 Allowed transition examples:
 
@@ -294,9 +279,9 @@ Allowed transition examples:
 
 No direct transitions should be allowed from `FINALIZED` except through the controlled HR reopen path.
 
-## 8. Detailed Functional Workflow
+## 7. Detailed Functional Workflow
 
-### 8.1 Goal Setting Stage
+### 7.1 Goal Setting Stage
 
 At the start of the cycle:
 
@@ -316,7 +301,7 @@ Rules:
 - After submission, goals become read-only until returned
 - Manager approval locks the goal plan for the next stage unless HR reopens it
 
-### 8.2 Self-Review Stage
+### 7.2 Self-Review Stage
 
 During self-review:
 
@@ -332,7 +317,7 @@ Rules:
 - Submission timestamp must be stored
 - Late submission handling should follow cycle policy or HR override
 
-### 8.2.1 Partial Submission and Draft Handling
+### 7.2.1 Partial Submission and Draft Handling
 
 The system must distinguish between draft save and final submit.
 
@@ -350,7 +335,7 @@ Submit behavior:
 - Final submit should fail if stage-specific validation rules are not satisfied
 - Only a successful submit should move the workflow to the next state
 
-### 8.3 Manager Review Stage
+### 7.3 Manager Review Stage
 
 During manager review:
 
@@ -365,7 +350,7 @@ Rules:
 - Manager actions must record actor, timestamp, and change history
 - Manager may modify manager-rating fields only, unless template rules explicitly allow manager edits on additional fields
 
-### 8.4 Employee Acceptance Stage
+### 7.4 Employee Acceptance Stage
 
 After manager submission:
 
@@ -378,7 +363,7 @@ Rules:
 - Employee comments after manager submission must not overwrite manager entries
 - If the employee comments instead of accepting, the record returns to manager review or HR escalation depending on policy
 
-### 8.5 Finalization Stage
+### 7.5 Finalization Stage
 
 The review is finalized when:
 
@@ -392,7 +377,7 @@ Once finalized:
 - Final comments remain visible but not editable
 - No field changes are permitted through standard user actions
 
-### 8.6 Reopen Capability After Finalization
+### 7.6 Reopen Capability After Finalization
 
 The system should support an optional controlled reopen process after finalization.
 
@@ -411,7 +396,7 @@ Rules:
 - Reopened records must return only to approved downstream review stages, not to unrestricted editing
 - The assignment may be finalized again after the corrective flow is completed
 
-## 9. Dual Rating Model
+## 8. Dual Rating Model
 
 The PMS module must preserve both employee and manager input.
 
@@ -428,9 +413,9 @@ Rules:
 - The source of final rating must be traceable
 - Changes to any rating must be auditable
 
-## 10. Rating and Scoring
+## 9. Rating and Scoring
 
-### 10.1 Rating Scale Configuration
+### 9.1 Rating Scale Configuration
 
 The system should support configurable rating scales such as:
 
@@ -447,7 +432,7 @@ Each rating scale should support:
 - Sort order
 - Active flag
 
-### 10.2 Scoring Options
+### 9.2 Scoring Options
 
 The system should support both:
 
@@ -465,9 +450,9 @@ Rules:
 - Formula logic must be versioned with the template
 - Manual override of final score by manager or HR must capture override reason
 
-## 11. Access Control and Permissions
+## 10. Access Control and Permissions
 
-### 11.1 Access Control Principles
+### 10.1 Access Control Principles
 
 Access control must be based on:
 
@@ -476,7 +461,7 @@ Access control must be based on:
 - Workflow state
 - Field-level permissions
 
-### 11.2 Role and Stage Permissions
+### 10.2 Role and Stage Permissions
 
 #### Employee
 
@@ -502,7 +487,7 @@ Access control must be based on:
 - Can override ratings only with mandatory reason capture
 - Can access audit history and reporting views
 
-### 11.3 Field-Level Permissions
+### 10.3 Field-Level Permissions
 
 Each field should allow configuration for:
 
@@ -512,11 +497,11 @@ Each field should allow configuration for:
 - Mandatory or optional status by stage
 - Inclusion or exclusion from scoring
 
-## 12. Data Model - High Level Design
+## 11. Data Model - High Level Design
 
 The following logical entities are recommended.
 
-### 12.1 Master and Configuration Entities
+### 11.1 Master and Configuration Entities
 
 - `users`
 - `templates`
@@ -528,7 +513,7 @@ The following logical entities are recommended.
 - `performance_cycles`
 - `cycle_stage_rules`
 
-### 12.2 Transactional Entities
+### 11.2 Transactional Entities
 
 - `performance_assignments`
 - `goal_items`
@@ -541,7 +526,7 @@ The following logical entities are recommended.
 - `notifications`
 - `audit_logs`
 
-### 12.3 Minimum Data Expectations
+### 11.3 Minimum Data Expectations
 
 #### `performance_assignments`
 
@@ -615,7 +600,7 @@ The following logical entities are recommended.
 - actor role
 - timestamp
 
-## 13. Validation Rules
+## 12. Validation Rules
 
 The system should enforce the following:
 
@@ -627,7 +612,7 @@ The system should enforce the following:
 - Finalized records must reject all standard edits
 - Manager reassignment must not erase prior audit ownership
 
-## 14. Notifications and Reminders
+## 13. Notifications and Reminders
 
 The PMS module should trigger notifications for:
 
@@ -650,7 +635,7 @@ Notifications may be delivered through:
 
 Reminder rules should be configurable by HR/Admin.
 
-## 15. Audit and Compliance
+## 14. Audit and Compliance
 
 The system must maintain a complete audit trail for:
 
@@ -672,9 +657,9 @@ Audit data should preserve:
 - When it changed
 - Why it changed where reason capture is required
 
-## 16. Dashboards and Views
+## 15. Dashboards and Views
 
-### 16.1 HR/Admin Dashboard
+### 15.1 HR/Admin Dashboard
 
 Should support:
 
@@ -688,7 +673,7 @@ Should support:
 - Escalations
 - Finalization summary
 
-### 16.2 Employee View
+### 15.2 Employee View
 
 Should support:
 
@@ -699,7 +684,7 @@ Should support:
 - Final review acceptance
 - Historical finalized reviews if enabled by policy
 
-### 16.3 Manager View
+### 15.3 Manager View
 
 Should support:
 
@@ -709,7 +694,7 @@ Should support:
 - Pending employee acceptance items
 - Finalized outcomes for direct reports
 
-### 16.4 Bulk Actions
+### 15.4 Bulk Actions
 
 The system should support controlled bulk actions for HR/Admin users.
 
@@ -727,7 +712,7 @@ Rules:
 - All bulk actions must be audited with actor, timestamp, filters used, and impact summary
 - Bulk close should be restricted to HR/Admin and should capture closure reason
 
-## 17. Edge Cases and Exception Handling
+## 16. Edge Cases and Exception Handling
 
 The design must support the following scenarios:
 
@@ -748,11 +733,11 @@ Rules for such cases:
 - Disputes may move to `HR_ESCALATED`
 - Closed or finalized records must remain available for reporting
 
-## 18. SLA and Escalation Management
+## 17. SLA and Escalation Management
 
 The PMS module should support configurable SLA management for both submissions and approvals.
 
-### 18.1 SLA Coverage
+### 17.1 SLA Coverage
 
 SLA rules should be definable for each major stage, including:
 
@@ -763,7 +748,7 @@ SLA rules should be definable for each major stage, including:
 - Employee acceptance of final review
 - HR action on escalated or exception cases
 
-### 18.2 Stage-Wise SLA Definition
+### 17.2 Stage-Wise SLA Definition
 
 Each SLA rule should support:
 
@@ -782,7 +767,7 @@ Due dates may be based on:
 - Relative number of days from previous stage completion
 - HR-configured override date for exceptional cases
 
-### 18.3 Reminder Rules
+### 17.3 Reminder Rules
 
 The system should support automated reminders such as:
 
@@ -796,7 +781,7 @@ Reminder channels may include:
 - In-app notifications
 - Email
 
-### 18.4 Auto-Actions
+### 17.4 Auto-Actions
 
 Auto-actions may be configured for selected stages. Examples:
 
@@ -811,7 +796,7 @@ Auto-actions must:
 - Be logged as system-generated actions
 - Preserve original pending owner history
 
-### 18.5 Escalation Hierarchy
+### 17.5 Escalation Hierarchy
 
 The system should support configurable escalation paths such as:
 
@@ -825,11 +810,11 @@ Rules:
 - Escalation should not erase original ownership
 - Escalated tasks must remain traceable to both current and original responsible users
 
-## 19. Delegation and Reassignment
+## 18. Delegation and Reassignment
 
 The PMS module should distinguish between delegation and reassignment.
 
-### 19.1 Temporary Delegation
+### 18.1 Temporary Delegation
 
 Temporary delegation should be used when the assigned approver is unavailable for a limited period, for example:
 
@@ -844,7 +829,7 @@ Rules:
 - Delegate may act on behalf of the original approver only for permitted stages
 - All delegated actions must capture both original owner and acting delegate
 
-### 19.2 Permanent Reassignment
+### 18.2 Permanent Reassignment
 
 Permanent reassignment should be used when managerial ownership changes structurally, for example:
 
@@ -859,7 +844,7 @@ Rules:
 - Reassignment should not rewrite historical audit data
 - Reassignment reason, actor, and timestamp are mandatory
 
-### 19.3 Scope Rules
+### 18.3 Scope Rules
 
 Delegation and reassignment must both support scope control.
 
@@ -877,7 +862,7 @@ Rules:
 - Reassignment may be broader but must be explicitly authorized
 - Users must not gain unrestricted visibility outside approved scope
 
-### 19.4 Audit Requirements
+### 18.4 Audit Requirements
 
 The system must audit:
 
@@ -888,7 +873,7 @@ The system must audit:
 - Affected employees, stages, and cycles
 - Actions performed by a delegate versus original owner
 
-### 19.5 Approval Handling for Manager Leave or Manager Change
+### 18.5 Approval Handling for Manager Leave or Manager Change
 
 For approval continuity, the scope should explicitly support these cases:
 
@@ -897,11 +882,11 @@ For approval continuity, the scope should explicitly support these cases:
 - If the old manager completed earlier stages but the new manager handles the final stage, the system must preserve both histories separately
 - If no delegate or reassignment is configured and SLA is breached, the item should escalate according to hierarchy rules
 
-## 20. Advanced Edge Case Handling
+## 19. Advanced Edge Case Handling
 
 The PMS module should explicitly support advanced operational exceptions.
 
-### 20.1 Manager Exit
+### 19.1 Manager Exit
 
 If a manager exits during an active cycle:
 
@@ -909,7 +894,7 @@ If a manager exits during an active cycle:
 - Completed approvals by the exited manager must remain historically intact
 - HR/Admin should be able to review impacted assignments in bulk
 
-### 20.2 Employee Exit
+### 19.2 Employee Exit
 
 If an employee exits before cycle completion:
 
@@ -917,7 +902,7 @@ If an employee exits before cycle completion:
 - The system may optionally allow pro-rated or early finalization depending on policy
 - Closed records must remain visible for compliance and reporting
 
-### 20.3 Missing Submissions
+### 19.3 Missing Submissions
 
 If employee or manager submissions are missing:
 
@@ -926,7 +911,7 @@ If employee or manager submissions are missing:
 - HR/Admin should be able to intervene manually
 - Bulk follow-up actions should be supported
 
-### 20.4 Disputes
+### 19.4 Disputes
 
 If the employee disputes a manager evaluation:
 
@@ -934,7 +919,7 @@ If the employee disputes a manager evaluation:
 - Comments from both parties must remain preserved
 - HR/Admin should be able to mediate and document the resolution
 
-### 20.5 SLA Breaches
+### 19.5 SLA Breaches
 
 If SLA is breached for any submission or approval stage:
 
@@ -942,7 +927,7 @@ If SLA is breached for any submission or approval stage:
 - Reminder and escalation logic should trigger automatically where configured
 - System-driven escalation or delegation routing must remain auditable
 
-### 20.6 Additional Recommended Scenarios
+### 19.6 Additional Recommended Scenarios
 
 The following cases are also valid and should be considered in implementation:
 
@@ -951,7 +936,7 @@ The following cases are also valid and should be considered in implementation:
 - Multiple reassignments occur within the same cycle
 - Reopened finalized review also breaches SLA after reopen
 
-## 21. Non-Functional Requirements
+## 20. Non-Functional Requirements
 
 The PMS module should be designed with the following qualities:
 
@@ -963,7 +948,7 @@ The PMS module should be designed with the following qualities:
 - Clear status traceability
 - Reporting-ready structured data
 
-## 22. Example Business Flow
+## 21. Example Business Flow
 
 Example:
 
@@ -979,7 +964,7 @@ Example:
 - The assignment moves to `FINALIZED`
 - Final rating and comments are frozen
 
-## 23. Recommended Implementation Notes
+## 22. Recommended Implementation Notes
 
 To keep the module robust and maintainable, the implementation should follow these design principles:
 
@@ -992,7 +977,7 @@ To keep the module robust and maintainable, the implementation should follow the
 - Make all override actions reason-driven and auditable
 - Model SLA, delegation, reassignment, and escalation as separate domain capabilities instead of implicit status flags
 
-## 24. Final Scope Summary
+## 23. Final Scope Summary
 
 This PMS module for Zuno HRMS will provide:
 
