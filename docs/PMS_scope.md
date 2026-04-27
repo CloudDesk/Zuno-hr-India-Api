@@ -748,7 +748,210 @@ Rules for such cases:
 - Disputes may move to `HR_ESCALATED`
 - Closed or finalized records must remain available for reporting
 
-## 18. Non-Functional Requirements
+## 18. SLA and Escalation Management
+
+The PMS module should support configurable SLA management for both submissions and approvals.
+
+### 18.1 SLA Coverage
+
+SLA rules should be definable for each major stage, including:
+
+- Goal submission by employee
+- Goal approval by manager
+- Self-review submission by employee
+- Manager review submission by manager
+- Employee acceptance of final review
+- HR action on escalated or exception cases
+
+### 18.2 Stage-Wise SLA Definition
+
+Each SLA rule should support:
+
+- Applicable cycle or template
+- Workflow stage
+- Responsible role
+- Due date basis
+- Grace period if allowed
+- Reminder schedule
+- Escalation trigger
+- Auto-action policy
+
+Due dates may be based on:
+
+- Fixed cycle milestone date
+- Relative number of days from previous stage completion
+- HR-configured override date for exceptional cases
+
+### 18.3 Reminder Rules
+
+The system should support automated reminders such as:
+
+- Pre-due reminders
+- Due-date reminders
+- Post-due reminders
+- Repeated reminders until action or escalation
+
+Reminder channels may include:
+
+- In-app notifications
+- Email
+
+### 18.4 Auto-Actions
+
+Auto-actions may be configured for selected stages. Examples:
+
+- Auto-escalate to next approver on SLA breach
+- Auto-notify HR/Admin on repeated breach
+- Auto-close inactive assignments by HR policy
+- Auto-reassign pending approval to delegate where active delegation exists
+
+Auto-actions must:
+
+- Follow explicit policy configuration
+- Be logged as system-generated actions
+- Preserve original pending owner history
+
+### 18.5 Escalation Hierarchy
+
+The system should support configurable escalation paths such as:
+
+- Employee -> Manager -> HR/Admin
+- Manager -> Skip-level manager -> HR/Admin
+- HR/Admin -> Super Admin or designated authority if required
+
+Rules:
+
+- Escalation must record the reason, breached stage, and elapsed time
+- Escalation should not erase original ownership
+- Escalated tasks must remain traceable to both current and original responsible users
+
+## 19. Delegation and Reassignment
+
+The PMS module should distinguish between delegation and reassignment.
+
+### 19.1 Temporary Delegation
+
+Temporary delegation should be used when the assigned approver is unavailable for a limited period, for example:
+
+- Manager is on leave during goal approval
+- Manager is unavailable at cycle end during final review
+
+Rules:
+
+- Delegation may be configured with start and end date
+- Delegation should apply only within the configured validity period
+- Delegation should not change the original assignment owner
+- Delegate may act on behalf of the original approver only for permitted stages
+- All delegated actions must capture both original owner and acting delegate
+
+### 19.2 Permanent Reassignment
+
+Permanent reassignment should be used when managerial ownership changes structurally, for example:
+
+- Employee moves to a new reporting manager
+- Original manager exits the company
+- HR changes assignment for business reasons
+
+Rules:
+
+- Reassignment changes the active responsible approver for future pending stages
+- Prior completed approvals must remain attributed to the original actor
+- Reassignment should not rewrite historical audit data
+- Reassignment reason, actor, and timestamp are mandatory
+
+### 19.3 Scope Rules
+
+Delegation and reassignment must both support scope control.
+
+Scope examples:
+
+- Single employee assignment
+- Multiple selected employees
+- Entire cycle
+- Specific workflow stages only
+- Time-bound delegation window
+
+Rules:
+
+- Delegation should be stage-aware and time-bound
+- Reassignment may be broader but must be explicitly authorized
+- Users must not gain unrestricted visibility outside approved scope
+
+### 19.4 Audit Requirements
+
+The system must audit:
+
+- Who delegated or reassigned
+- Who received delegated or reassigned scope
+- Why the action was taken
+- Effective start and end times
+- Affected employees, stages, and cycles
+- Actions performed by a delegate versus original owner
+
+### 19.5 Approval Handling for Manager Leave or Manager Change
+
+For approval continuity, the scope should explicitly support these cases:
+
+- If the originally assigned manager is on leave, a temporary delegate may complete pending approvals within the approved delegation window
+- If a new manager joins before the review is finalized, HR/Admin may permanently reassign pending stages to the new manager
+- If the old manager completed earlier stages but the new manager handles the final stage, the system must preserve both histories separately
+- If no delegate or reassignment is configured and SLA is breached, the item should escalate according to hierarchy rules
+
+## 20. Advanced Edge Case Handling
+
+The PMS module should explicitly support advanced operational exceptions.
+
+### 20.1 Manager Exit
+
+If a manager exits during an active cycle:
+
+- Pending approvals should move to a configured delegate, new manager, or HR/Admin
+- Completed approvals by the exited manager must remain historically intact
+- HR/Admin should be able to review impacted assignments in bulk
+
+### 20.2 Employee Exit
+
+If an employee exits before cycle completion:
+
+- HR/Admin may close the assignment with closure reason
+- The system may optionally allow pro-rated or early finalization depending on policy
+- Closed records must remain visible for compliance and reporting
+
+### 20.3 Missing Submissions
+
+If employee or manager submissions are missing:
+
+- Reminder and SLA policies should trigger automatically
+- Escalation should occur after configured breach thresholds
+- HR/Admin should be able to intervene manually
+- Bulk follow-up actions should be supported
+
+### 20.4 Disputes
+
+If the employee disputes a manager evaluation:
+
+- The assignment may move to `EMPLOYEE_COMMENTED` or `HR_ESCALATED`
+- Comments from both parties must remain preserved
+- HR/Admin should be able to mediate and document the resolution
+
+### 20.5 SLA Breaches
+
+If SLA is breached for any submission or approval stage:
+
+- The breach must be visible in dashboard and audit history
+- Reminder and escalation logic should trigger automatically where configured
+- System-driven escalation or delegation routing must remain auditable
+
+### 20.6 Additional Recommended Scenarios
+
+The following cases are also valid and should be considered in implementation:
+
+- Manager changes after self-review submission but before final evaluation
+- Delegate approves during leave period and original manager returns later
+- Multiple reassignments occur within the same cycle
+- Reopened finalized review also breaches SLA after reopen
+
+## 21. Non-Functional Requirements
 
 The PMS module should be designed with the following qualities:
 
@@ -760,23 +963,23 @@ The PMS module should be designed with the following qualities:
 - Clear status traceability
 - Reporting-ready structured data
 
-## 19. Example Business Flow
+## 22. Example Business Flow
 
 Example:
 
 - Employee is assigned to Annual 2026 PMS cycle
-- Employee sets a goal: "Become proficient in communication"
+- Employee sets a goal: "Improve client handling by managing project communication proactively and resolving client issues within agreed timelines"
 - Employee submits goals
 - Manager reviews and approves goals
-- During self-review, employee updates progress and rates performance as "Good"
-- Manager reviews and records rating as "Very Good"
-- Employee adds final comments such as "Handled client presentations successfully"
+- During self-review, employee updates progress and rates performance as "Very Good"
+- Manager reviews and records rating as "Good"
+- Employee adds final comments such as "Handled client calls effectively, resolved escalation points on time, and improved stakeholder communication across deliveries"
 - Manager rechecks and submits final review
 - Employee accepts the evaluation
 - The assignment moves to `FINALIZED`
 - Final rating and comments are frozen
 
-## 20. Recommended Implementation Notes
+## 23. Recommended Implementation Notes
 
 To keep the module robust and maintainable, the implementation should follow these design principles:
 
@@ -787,8 +990,9 @@ To keep the module robust and maintainable, the implementation should follow the
 - Use explicit approval-action records instead of only updating a status field
 - Enforce permissions based on both role and workflow stage
 - Make all override actions reason-driven and auditable
+- Model SLA, delegation, reassignment, and escalation as separate domain capabilities instead of implicit status flags
 
-## 21. Final Scope Summary
+## 24. Final Scope Summary
 
 This PMS module for Zuno HRMS will provide:
 
