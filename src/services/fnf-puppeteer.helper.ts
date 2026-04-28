@@ -14,7 +14,7 @@ import { LOV } from '../models/lov.model';
  */
 export async function generateFNFLetter(settlement: any, employee: any): Promise<string> {
     const fnfDir = path.join(process.cwd(), 'uploads');
-
+    console.log(fnfDir)
     if (!fs.existsSync("uploads")) {
         fs.mkdirSync("uploads", { recursive: true });
     }
@@ -113,7 +113,7 @@ export async function generateFNFLetter(settlement: any, employee: any): Promise
     // We prioritize populated names or direct manual fields, then fall back to LOV lookup using the ID
     let deptValForLookup = (employee as any).departmentId || (employee as any).department;
     let empDept = (employee as any).departmentName || (employee as any).departmentId?.name || (employee as any).department || 'N/A';
-    
+
     if (empDept === 'N/A' || empDept === deptValForLookup) {
         const deptLov = await LOV.findOne({ type: 'department', 'values.value': deptValForLookup });
         if (deptLov) {
@@ -124,7 +124,7 @@ export async function generateFNFLetter(settlement: any, employee: any): Promise
 
     let locValForLookup = (employee as any).location;
     let empLocation = (employee as any).locationName || locValForLookup || 'N/A';
-    
+
     if (empLocation === 'N/A' || empLocation === locValForLookup) {
         const locLov = await LOV.findOne({ type: 'location', 'values.value': locValForLookup });
         if (locLov) {
