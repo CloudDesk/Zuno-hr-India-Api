@@ -57,7 +57,6 @@ export class PayslipPdfService extends BaseService {
 
         const lastDayOfMonth = new Date(year, month, 0);
         const baseLogContext = { month, year };
-
         const employees = await this.measureStep(
             baseLogContext,
             'fetch_employee_data',

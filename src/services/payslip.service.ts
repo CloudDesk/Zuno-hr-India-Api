@@ -186,27 +186,35 @@ export class PayslipService extends BaseService {
     const payslipMap = new Map(payslips.map(p => [p.userId.toString(), p]));
     const userMap = new Map(users.map(u => [u._id.toString(), u]));
     console.log(payslipMap, userMap, "payslipMap userMap")
-    // 2. Process each recipient
-    const results = await Promise.all(recipients.map(async recipientId => {
+    // 2. Process each recipient sequentially to avoid SMTP timeout spikes in deployed environments
+    const results: Array<{
+      employeeId: string;
+      status: 'success' | 'failed';
+      message?: string;
+    }> = [];
+
+    for (const recipientId of recipients) {
       try {
         const user = userMap.get(recipientId);
         const payslip = payslipMap.get(recipientId);
 
         // Validate user and payslip exist
         if (!user || !user.email) {
-          return {
+          results.push({
             employeeId: recipientId,
             status: 'failed' as const,
             message: 'User not found or no email address'
-          };
+          });
+          continue;
         }
 
         if (!payslip || !payslip.payslipUrl) {
-          return {
+          results.push({
             employeeId: recipientId,
             status: 'failed' as const,
             message: 'Payslip not found or not generated'
-          };
+          });
+          continue;
         }
 
         // Send Email with Payslip
@@ -247,19 +255,19 @@ export class PayslipService extends BaseService {
             }
           );
         }
-        return {
+        results.push({
           employeeId: recipientId,
           status: 'success' as const
-        };
+        });
 
       } catch (error: any) {
-        return {
+        results.push({
           employeeId: recipientId,
           status: 'failed' as const,
           message: error.message
-        };
+        });
       }
-    }));
+    }
 
     // 3. Summarize results
     const successCount = results.filter(r => r.status === 'success').length;
