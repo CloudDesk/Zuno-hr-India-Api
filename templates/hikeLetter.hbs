@@ -197,43 +197,53 @@
                     <td class="text-right">{{formatCurrency monthlyBasic}}</td>
                     <td class="text-right">{{formatCurrency annualBasic}}</td>
                 </tr>
+                {{#if monthlyHra}}
                 <tr>
                     <td><span style="display: inline-block; width: 30px;">B</span> HRA</td>
                     <td class="text-right">{{formatCurrency monthlyHra}}</td>
                     <td class="text-right">{{formatCurrency annualHra}}</td>
                 </tr>
+                {{/if}}
+                {{#if monthlyOtherAllowance}}
                 <tr>
                     <td><span style="display: inline-block; width: 30px;">C</span> Other Allowance</td>
                     <td class="text-right">{{formatCurrency monthlyOtherAllowance}}</td>
                     <td class="text-right">{{formatCurrency annualOtherAllowance}}</td>
                 </tr>
+                {{/if}}
                 <tr class="bg-grey font-bold">
-                    <td><span style="display: inline-block; width: 80px;">D= A+B+C</span> Subtotal Fixed (D)</td>
+                    <td><span style="display: inline-block; width: 80px;">D= A{{#if monthlyHra}}+B{{/if}}{{#if monthlyOtherAllowance}}+C{{/if}}</span> Subtotal Fixed (D)</td>
                     <td class="text-right">{{formatCurrency monthlySubtotalFixed}}</td>
                     <td class="text-right">{{formatCurrency annualSubtotalFixed}}</td>
                 </tr>
 
+                {{#if hasAnnualComponents}}
                 <tr class="bg-grey text-center font-bold">
                     <td colspan="3">Annual Components (G)</td>
                 </tr>
+                {{#if annualInsurance}}
                 <tr>
                     <td><span style="display: inline-block; width: 30px;">E</span> Medical Insurance</td>
                     <td></td>
                     <td class="text-right">{{formatCurrency annualInsurance}}</td>
                 </tr>
+                {{/if}}
+                {{#if annualEmployerPf}}
                 <tr>
                     <td><span style="display: inline-block; width: 30px;">F</span> Company's Contribution of PF</td>
                     <td></td>
                     <td class="text-right">{{formatCurrency annualEmployerPf}}</td>
                 </tr>
+                {{/if}}
                 <tr class="bg-grey font-bold">
                     <td><span style="display: inline-block; width: 80px;">G</span> Subtotal Annual (G)</td>
                     <td></td>
                     <td class="text-right">{{formatCurrency annualSubtotalG}}</td>
                 </tr>
+                {{/if}}
 
                 <tr class="bg-grey font-bold">
-                    <td><span style="display: inline-block; width: 80px;">H= G+D</span> CTC(H)</td>
+                    <td><span style="display: inline-block; width: 80px;">H= {{#if hasAnnualComponents}}G+{{/if}}D</span> CTC(H)</td>
                     <td></td>
                     <td class="text-right">{{formatCurrency totalCtc}}</td>
                 </tr>
