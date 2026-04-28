@@ -2758,6 +2758,16 @@ export const documentRoutes = async (
                 signaturePath = path.join(uploadsDir, `sig_prev_${Date.now()}_${signatureFile.filename}`);
                 await saveMultipartFile(signatureFile, signaturePath);
                 tempFiles.push(signaturePath);
+            } else if (body.signatureBase64) {
+                const match = body.signatureBase64.match(/^data:image\/([a-zA-Z0-9]+);base64,(.+)$/);
+                if (match) {
+                    const ext = match[1];
+                    const base64Data = match[2];
+                    const buffer = Buffer.from(base64Data, 'base64');
+                    signaturePath = path.join(uploadsDir, `sig_prev_cached_${Date.now()}.${ext}`);
+                    await fsPromises.writeFile(signaturePath, buffer);
+                    tempFiles.push(signaturePath);
+                }
             }
 
             const result = await documentService.previewHikeLetter({
