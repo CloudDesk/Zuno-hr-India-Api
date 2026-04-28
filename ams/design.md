@@ -502,6 +502,19 @@ Examples:
 
 ## 9. Lifecycle Definition
 
+Before defining lifecycle values, the AMS should distinguish clearly between state, status, and sub-status.
+
+- State: the primary controlled lifecycle stage of the asset
+- Status: the operational business condition of an asset or process within that state
+- Sub-status: finer workflow progress detail inside a status-sensitive process such as transfer, service, or approval
+
+Examples:
+
+- State: `Transferred`
+- Sub-status: `Initiated`, `Dispatched`, `In Transit`, `Received`
+- State: `Under Service`
+- Sub-status: `Sent to Vendor`, `In Repair`, `Ready for Return`, `Closed`
+
 ### 9.1 Standard Lifecycle States
 
 The AMS should maintain a strict controlled lifecycle for every asset:
@@ -862,6 +875,7 @@ Business rules:
 - Admin should be allowed to adjust recovery amount based on condition, age, policy, or case facts
 - If recovery amount differs materially from the reference value, reason capture and approval should be required according to policy
 - Scrap and loss decisions may use reference value to support review and accountability
+- Recovery of money for a lost or damaged asset should be treated as a recovery transaction or case outcome, not as the asset itself being physically recovered
 
 ### 10.13 Bulk Operations Workflow
 
@@ -1120,7 +1134,36 @@ This solves the gap:
 
 Every important action must create permanent history.
 
-### 14.1 History Events to Capture
+### 14.1 Business Event Model
+
+The AMS should treat business events as the source of truth for asset history, accountability, and auditability.
+
+This means:
+
+- Every important asset action should create a business event
+- Current asset state should always be explainable through prior recorded events
+- History, audit, and operational review should derive from these business events without losing sequence or responsibility
+
+Illustrative events:
+
+- `AssetCreated`
+- `AssetReserved`
+- `AssetAssigned`
+- `AssetReturned`
+- `AssetSentForService`
+- `AssetServiceUpdated`
+- `BackupAssetIssued`
+- `BackupAssetRecovered`
+- `AssetTransferred`
+- `TransferReceived`
+- `LossReported`
+- `DamageReported`
+- `RecoveryAmountRecorded`
+- `AssetFoundAfterLoss`
+- `AssetScrapped`
+- `AssetArchived`
+
+### 14.2 History Events to Capture
 
 - Asset creation
 - Attribute updates affecting business identity
@@ -1136,7 +1179,7 @@ Every important action must create permanent history.
 - Policy exception
 - Scrap approval and disposal
 
-### 14.2 History Questions the System Must Always Answer
+### 14.3 History Questions the System Must Always Answer
 
 - Who had this asset at any given time?
 - Which branch owned it before and after transfer?
@@ -1148,6 +1191,26 @@ Every important action must create permanent history.
 Key business rule:
 
 - No business action should erase prior history
+
+### 14.4 Uniqueness & Identity Control
+
+The AMS should apply uniqueness rules by identifier type, not treat all identifiers the same.
+
+Core rules:
+
+- Internal asset ID must be organization-wide unique and must never change, even if the asset moves across branches
+- Asset transfer must not create a new identity or reset uniqueness
+- Manufacturer or external identifiers should follow asset-type-specific uniqueness rules
+
+Illustrative guidance:
+
+- IMEI: normally organization-wide unique
+- Laptop serial number: normally organization-wide unique
+- Access card number: may follow company-defined or branch-defined uniqueness depending on business policy
+
+Business rule:
+
+- Uniqueness policy for each external identifier must be defined at asset-type level, but movable assets should not rely on branch-only uniqueness where that would create identity collisions after transfer
 
 ---
 
@@ -1191,7 +1254,21 @@ The business design should support capture of:
 - Incident reason
 - Evidence/remarks
 - Recovery/penalty status
+- Recovery amount recorded or collected, where applicable
 - Final closure decision
+
+### 15.4 Archive vs Scrap
+
+The AMS should distinguish clearly between archived assets and scrapped assets.
+
+- Archived: asset is no longer active for normal operations but is retained for business reference, audit, or historical review
+- Scrapped: asset is permanently retired from usable inventory due to disposal, damage, or end-of-life decision
+
+Business rules:
+
+- Archived assets must not appear as normal allocatable stock
+- Scrapped assets must never return to active stock
+- Archive should preserve long-term history without treating the asset as operationally active
 
 This solves the gap:
 
