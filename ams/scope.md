@@ -11,7 +11,7 @@ It identifies:
 - What user roles are covered
 - What workflows and controls must be supported
 
-This scope document does not introduce capabilities beyond the approved AMS design.
+This scope document does not introduce capabilities beyond the current AMS scope definition.
 
 ---
 
@@ -26,7 +26,7 @@ The AMS scope is to provide a controlled business system for managing company as
 - Branch and location movement
 - Loss, damage, and recovery accountability
 - Approval, audit, and policy enforcement
-- Reporting, operational monitoring, and search visibility
+- Dashboard metrics and operational visibility
 
 The system is intended for one organization operating across multiple branches and locations.
 
@@ -57,15 +57,10 @@ The AMS must support:
 - Asset type definition
 - Configurable attributes per asset type
 - Mandatory and optional fields
-- Dependent picklists
-- Asset control classification as `Trackable` or `Consumable`
-- Serial number applicability rules
-- Branch applicability rules where needed
+- Custom field types as `Text`, `Number`, `Date`, and `Picklist`
+- Condition applicability as a system-controlled setting
 - Service applicability rules
-- Reservation applicability rules
-- Approval applicability by asset type
 - SLA or aging threshold definition where needed
-- Default valuation or reference value rules where needed
 
 ### 4.2 Asset Inventory & Identity
 
@@ -79,8 +74,6 @@ The AMS must support:
 - Condition tracking
 - Condition history where required
 - Stock classification visibility
-- Operational hold or lock mechanism to prevent conflicting parallel actions during sensitive workflows
-- Reference value capture where governed assets require it
 
 Identity rules:
 
@@ -89,119 +82,135 @@ Identity rules:
 - Internal asset ID remains the primary identity
 - Internal asset ID must remain unchanged across transfers
 - Asset transfer must not create a new identity or reset uniqueness
-- External identifiers follow asset-type-specific uniqueness rules
-- Uniqueness policy must be defined by identifier type at asset-type level
-- Movable assets must not depend on branch-only uniqueness where transfer can create identity conflict
+- External identifier is system-managed and not user-configurable
+- Asset identity cannot be edited after creation
 
 ### 4.3 Asset Control, Condition & Ownership
 
 The AMS must support:
 
-- Asset control classification as `Trackable` or `Consumable`
-- Controlled condition values for trackable assets such as `New`, `Good`, `Usable`, `Damaged`, and `Critical`
+- Controlled condition values such as `New`, `Good`, `Usable`, `Damaged`, and `Critical`
 - Condition-driven service, reassignment, recovery, and scrap decisions
-- Consumable issue through stock receipt and stock issue
-- Reduced lifecycle handling for consumables by default
 - One active ownership or custody layer at a time
 
 Custody layers covered:
 
-- Organization stock
-- Branch stock
-- Sub-location stock
 - Employee custody
 - Service custody
 - Transit custody
-- Scrap or disposal holding
+- Stock custody in `Available`
 
 ### 4.4 Lifecycle & State Control
 
 The AMS must support a controlled lifecycle with the following core states:
 
-1. Procured / Added
-2. Available
-3. Reserved
-4. Assigned
-5. Under Service
-6. Returned
-7. Idle
-8. Transferred
-9. Scrapped
+1. `Available`
+2. `Assigned`
+3. `Service`
+4. `Transfer`
+5. `Scrapped`
+6. `Lost`
+7. `Archive`
 
 This area includes:
 
 - Controlled state transitions
 - Validation before state changes
 - Prevention of invalid actions
-- Distinction between state, status, and sub-status
-- Operational hold or lock control during sensitive workflows
-- Prevention of conflicting parallel actions on the same asset
+- Distinction between state and status
+- Prevention of invalid state override
 
 Lifecycle control must support:
 
 - State as the primary controlled lifecycle stage
-- Status as the operational business condition within a state
-- Sub-status as finer workflow progress detail for service, transfer, or approval-driven activities
+- Status as the current business condition or progress marker within a state
+- Service flow of `Assigned` -> `Service` -> `Assigned` or `Available`
 
-### 4.5 Allocation, Reservation & Recovery
+State meaning:
+
+- `Available` means the asset is ready for allocation.
+- `Assigned` means the asset is currently issued to an employee.
+- `Service` means the asset is under repair or service in service custody.
+- `Transfer` means the asset is in branch transfer movement.
+- `Scrapped` means the asset is permanently retired from use.
+- `Lost` means the asset is marked lost and cannot re-enter the active lifecycle after recovery is completed.
+- `Archive` means the asset is retained for history and should not appear as active allocatable stock.
+
+Examples:
+
+- State: `Service`
+- Status: `Approved for Service`, `Sent to Vendor`, `Repair In Progress`, `Ready for Return`
+- State: `Transfer`
+- Status: `Initiated`, `Dispatched`, `In Transit`, `Received`
+
+### 4.5 Allocation & Recovery
 
 The AMS must support:
 
 - Admin-driven assignment
-- Onboarding assignment
-- Request-based assignment
-- Reservation before handover
-- Reservation expiry, release, and notification handling
-- Bulk allocation
+- Employee acceptance after assignment as receipt confirmation
 - Asset return processing
-- Partial return handling
-- Missing component accountability
 - Reallocation after recovery
-- Offboarding asset recovery
+- Post-return state handling into `Available`
+
+Current scope clarification:
+
+- Reservation logic is not required in the current phase
+- Offboarding is not handled in the current scope
+- Asset bundling is not part of the current scope
+- Employee acceptance is a workflow confirmation and not a separate lifecycle state
 
 ### 4.6 Request & Approval Handling
 
 The AMS must support:
 
-- New asset requests
-- Additional accessory requests
-- Replacement requests
+- Asset requests by employee
 - Repair or service requests
-- Return requests
 - Lost or damaged asset declarations
+- Requested asset type or specification capture
+- Admin review and assignment against request
 - Approval routing
-- Approval aging visibility
-- Exception handling
-- Closure tracking with outcome history
+- Single-level approval
+- Role-based approval routing
+- Transfer approval
+- Scrap approval
+- Automatic closure of asset request after assignment
+- Automatic closure of rejected requests
+- Rejected requests cannot be reopened
+
+Current scope clarification:
+
+- Other approval flows are not needed for now
 
 ### 4.7 Service & Backup Handling
 
 The AMS must support:
 
 - Service intake and tracking
-- Service provider or service location capture
-- Service status tracking
-- Service SLA tracking
-- SLA-based notification and escalation handling
+- Service status tracking against the service ticket
+- Service custody while the asset is under service
+- Service history updates by admin
 - Temporary backup asset issue
+- Temporary backup asset issue when employee forgets the assigned asset
 - Backup asset recovery
-- Reassignment after service outcome
-- Separation of backup handling from the main lifecycle
-- Backup handling as an operational process, not a separate lifecycle state
-- Temporary and permanent backup allocations must be distinguishable
-- Backup stock must remain visible separately from regular available stock
+- Return of serviced asset to `Available` after validation
+- Reassignment of serviced asset to employee where required
+
+Current scope clarification:
+
+- Temporary backup issue is an operational process and not a separate lifecycle state
+- The original assigned asset remains unchanged when temporary backup is issued
+- Temporary backup can be issued for short-term operational use and must be recovered after use
 
 ### 4.8 Transfer & Movement
 
 The AMS must support:
 
 - Inter-branch transfer
-- Intra-branch location movement
-- Bulk transfer
 - Receipt confirmation
-- Transfer approval where required
+- Transfer approval
 - Transfer aging visibility
-- Transfer sub-status visibility such as `Initiated`, `Dispatched`, `In Transit`, and `Received`
+- Transit custody during transfer
 
 ### 4.9 Loss, Damage & Recovery Accountability
 
@@ -214,6 +223,10 @@ The AMS must support:
 - Penalty or recovery tracking
 - Blocking uncontrolled reuse of affected assets
 - Distinction between monetary recovery and physical asset recovery
+- Proof or document attachment for recovery handling
+- Closure of lost ticket as `Found` if the asset is found before recovery completion
+- Cancellation of recovery process if the asset is found before recovery completion
+- Return of found asset to `Available` or `Assigned` after admin verification
 
 ### 4.10 Governance, Audit & Compliance
 
@@ -235,45 +248,37 @@ The AMS must support:
 
 The AMS must support policy-driven business control for:
 
-- Role-based eligibility
-- Department-based eligibility
-- Branch-specific entitlement
-- Branch-specific restrictions
-- Maximum quantity by asset type
-- Approval requirement by asset value or asset type
-- Replacement eligibility
-- Backup issue priority
-- Return requirement during offboarding
-- Reservation eligibility and duration
+- Recovery policy
+- Eligibility rules
+- SLA rules
 - Override eligibility for policy exceptions
 
-The AMS must also support policy precedence in the following order:
+### 4.12 Reporting, Dashboard & Visibility
 
-1. Organization or global restriction
-2. Branch or local restriction
-3. Role or department entitlement
-4. Request-specific approved exception
+The AMS must support dashboard metrics and visibility of:
 
-### 4.12 Reporting, Search & Visibility
+- Available assets
+- Assigned assets
+- Lost or damaged assets
+- Assets in `Service`
+- Assets in `Transfer`
 
-The AMS must support visibility of:
+The AMS must also support additional views for:
+
+- Branch-wise assets
+- Employee-wise assets
+- Aging reports
+
+The AMS may support search visibility for:
 
 - Branch stock
-- Reserved stock
 - Assigned assets
-- Assigned assets by employee
-- Assigned assets by branch
-- Idle assets
 - Backup stock
-- Assets under service
-- Assets in transit
 - Lost assets
 - Damaged assets
 - Scrapped assets
-- Aging views for asset, approval, transfer, and service operations
-- Utilization and failure trends
 
-The AMS must also support search by:
+Search keys:
 
 - Asset ID
 - Serial number or IMEI
@@ -311,6 +316,8 @@ The AMS must support:
 
 ## 5. User Roles
 
+Roles in the AMS are dynamically created and managed based on business needs and access control requirements.
+
 ### 5.1 Super Admin
 
 Responsibilities:
@@ -340,18 +347,11 @@ Responsibilities:
 
 - View assigned assets
 - Raise requests
+- Raise asset request with needed type or specification
 - Raise service, loss, and damage declarations
 - Track request status
-- Confirm receipt where applicable
+- Confirm receipt and acceptance of assigned asset
 - Return assets
-
-### 5.4 Optional Governance Roles
-
-Included if business chooses to enable them:
-
-- Approver
-- Service Coordinator
-- Auditor or Compliance User
 
 ---
 
@@ -360,21 +360,18 @@ Included if business chooses to enable them:
 The following end-to-end workflows are covered:
 
 1. Asset procurement or asset addition to inventory
-2. Onboarding asset reservation and assignment
-3. Admin manual assignment
-4. Employee request-based asset issue or replacement
-5. Fault reporting and service processing
-6. Backup asset issue and recovery
-7. Asset return and validation
-8. Offboarding recovery
-9. Branch transfer
-10. Intra-branch location movement
-11. Scrap approval and disposal
-12. Valuation and recovery amount handling
-13. Bulk operations
-14. SLA, aging, notification, and escalation monitoring
-15. Inventory audit and reconciliation
-16. Loss and damage accountability closure
+2. Admin manual assignment and employee acceptance
+3. Employee asset request, assignment, and ticket closure
+4. Fault reporting and service processing
+5. Temporary backup asset issue and recovery
+6. Asset return and validation
+7. Branch transfer
+8. Scrap approval and disposal
+9. Valuation and recovery amount handling
+10. Bulk operations
+11. SLA, aging, notification, and escalation monitoring
+12. Inventory audit and reconciliation
+13. Loss and damage accountability closure
 
 ---
 
@@ -384,14 +381,12 @@ The AMS must enforce the following business controls:
 
 - No asset assignment outside allowed lifecycle conditions
 - No conflicting active custody
-- No transfer of assigned or under-service assets
+- No transfer of assigned or assets in `Service` state
 - No scrapping of assets with unresolved accountability
 - No deletion of governed operational history
 - No reuse of lost or scrapped assets without proper business closure
-- No conflicting parallel actions where an operational hold applies
 - Approval, exception, and override traceability
 - Policy-based eligibility and quantity controls
-- Reservation expiry and release control
 - Uniqueness control for identity values according to asset type
 
 ---
@@ -401,9 +396,7 @@ The AMS must enforce the following business controls:
 The AMS includes event-based business history for major actions, including:
 
 - `AssetCreated`
-- `AssetReserved`
 - `AssetAssigned`
-- `AssetReturned`
 - `AssetSentForService`
 - `AssetServiceUpdated`
 - `BackupAssetIssued`
@@ -413,7 +406,6 @@ The AMS includes event-based business history for major actions, including:
 - `LossReported`
 - `DamageReported`
 - `RecoveryAmountRecorded`
-- `AssetFoundAfterLoss`
 - `AssetScrapped`
 - `AssetArchived`
 
@@ -427,8 +419,9 @@ The AMS is defined with the following boundaries:
 
 - The AMS is designed for one organization with multiple branches
 - Asset handling is primarily centered on individually controlled assets
-- Consumable support exists, but consumables do not drive the core lifecycle model
 - Bundling is not part of the current scope
+- Reservation logic is not part of the current scope
+- Offboarding workflow handling is not part of the current scope
 - Database design, API design, technical architecture, and low-level implementation details are handled separately
 - Background processing, locking mechanisms, search indexing, and integration implementation are handled separately
 - Multi-company operation, formal asset bundle model, and finance-module behavior are not part of this scope document
@@ -446,4 +439,4 @@ If the AMS is built within this scope, the business should be able to:
 - Hold employees or administrators accountable for loss and damage
 - Maintain full auditability and business history
 - Monitor branch-wise stock and operational aging
-- Support real operational use without changing the approved AMS business model
+- Support real operational use without changing the current AMS business model

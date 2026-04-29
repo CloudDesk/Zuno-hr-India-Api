@@ -10,11 +10,13 @@ Each asset is uniquely identified by:
 
 - A system-generated internal asset ID
 - A system-managed external identifier
+- Manufacturer serial number or similar identifier where applicable
 
 Business rules:
 
 - The internal asset ID is the primary and immutable identity.
 - The external identifier is managed at system level and is not user-configurable.
+- The system must support assets even when no manufacturer serial number exists.
 - Asset identity cannot be edited after creation.
 - Asset identity must remain constant across assignment, transfer, service, and lifecycle transitions.
 
@@ -54,24 +56,39 @@ Supported condition values:
 
 Core asset states:
 
-1. `Procured / Added`
-2. `Available`
-3. `Assigned`
-4. `Under Service`
-5. `Returned`
-6. `Idle`
-7. `Transferred`
-8. `Scrapped`
-9. `Lost`
+1. `Available`
+2. `Assigned`
+3. `Service`
+4. `Transfer`
+5. `Scrapped`
+6. `Lost`
+7. `Archive`
 
 State behavior:
 
 - `Available` means ready for immediate allocation.
-- `Idle` means available stock with lower allocation priority.
+- `Assigned` means the asset is currently issued to an employee.
+- `Service` means the asset is under repair or service and remains in service custody.
+- `Transfer` means the asset is in branch transfer movement.
+- `Scrapped` means the asset is permanently retired from use.
+- `Lost` means the asset is marked lost and cannot re-enter the active lifecycle.
+- `Archive` means the asset is retained for history and should not appear as active allocatable stock.
 
 Service flow:
 
-`Assigned` -> `Under Service` -> `Assigned` or `Available` or `Idle`
+`Assigned` -> `Service` -> `Assigned` or `Available`
+
+Lifecycle terminology:
+
+- `State` is the main lifecycle stage of the asset.
+- `Status` is the current business condition or progress marker within a state.
+
+Examples:
+
+- State: `Service`
+- Status: `Approved for Service`, `Sent to Vendor`, `Repair In Progress`, `Ready for Return`
+- State: `Transfer`
+- Status: `Initiated`, `Dispatched`, `In Transit`, `Received`
 
 Control rules:
 
@@ -93,7 +110,7 @@ Supported custody types:
 - Employee custody
 - Service custody
 - Transit custody
-- Stock custody in `Available` or `Idle`
+- Stock custody in `Available`
 
 Control rules:
 
@@ -119,16 +136,21 @@ Clarification:
 Allocation rules:
 
 - One asset can be assigned to one employee.
+- Employee must confirm receipt and acceptance after assignment.
 - Asset bundling is not in scope.
 
 Return rules:
 
 - Condition capture is enforced based on policy.
-- Post-return state must be either `Available` or `Idle`.
+- Post-return state must be `Available`.
 
 Scope boundary:
 
 - Offboarding is not handled in the current scope.
+
+Clarification:
+
+- Employee acceptance is a workflow confirmation and not a separate lifecycle state.
 
 ---
 
@@ -136,8 +158,15 @@ Scope boundary:
 
 Supported request types:
 
+- Asset request
 - Service request
 - Loss or damage declaration
+
+Asset request rules:
+
+- Employee can raise an asset request with required type or specification.
+- Admin can review and assign asset against the request.
+- Once asset is assigned, the asset request must be closed.
 
 Approval rules:
 
@@ -161,19 +190,21 @@ Rejection handling:
 
 Service rules:
 
-- A serviced asset moves to `Under Service`.
+- A serviced asset moves to `Service`.
 - Custody shifts to system or service custody while under service.
 
 Backup asset rules:
 
 - Backup assignment is temporary only.
 - Only one backup asset is allowed at a time.
+- Temporary backup can also be issued when the employee forgets the originally assigned asset.
+- The original assigned asset remains unchanged during temporary backup issue.
+- Temporary backup must be recovered after short-term use.
 
 Post-service outcomes:
 
 - Reassign the original asset to the employee
 - Move the asset to `Available`
-- Move the asset to `Idle`
 - Replace the asset if it is not repairable
 - Convert the backup assignment to a permanent assignment
 
@@ -197,7 +228,10 @@ SLA handling:
 Lost asset rules:
 
 - A lost asset moves to `Lost`.
-- A lost asset cannot re-enter the active lifecycle.
+- If the asset is found before recovery completion, the lost ticket can be closed as `Found`.
+- If the asset is found before recovery completion, the recovery process must be cancelled.
+- A found asset can move back to `Available` or `Assigned` after admin verification.
+- If recovery is already completed, the lost asset cannot re-enter the active lifecycle.
 
 Recovery support:
 
@@ -207,6 +241,7 @@ Recovery support:
 Evidence requirement:
 
 - The system must support proof or document attachment.
+- Proof or remarks must be captured when a lost ticket is closed as `Found`.
 
 ---
 
