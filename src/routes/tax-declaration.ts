@@ -480,25 +480,28 @@ export async function taxDeclarationRoutes(fastify: FastifyInstance): Promise<vo
         }
     )
 
-    // Initialize Migration Tax (Even split across 12 months, lock upto Jan)
-    fastify.post<{ Params: { id: string }, Body: { uptoMonth?: string } }>('/:id/initialize-migration',
+    // Initialize Migration Tax (Even split across 12 months, optionally lock past months)
+    fastify.post<{ Params: { id: string }, Body: { uptoMonth?: string, lockPastMonths?: boolean } }>('/:id/initialize-migration',
         {
             preHandler: [authenticate]
         },
         async (request, reply) => {
             try {
                 const { id } = request.params;
-                const { uptoMonth } = request.body || {};
+                const { uptoMonth, lockPastMonths = true } = request.body || {};
 
                 const result = await request.container!.taxDeclarationService.initializeMigrationTax(
                     new Types.ObjectId(id),
-                    uptoMonth || "Jan",
-                    request.user?._id ? new Types.ObjectId(request.user._id) : undefined
+                    lockPastMonths ? (uptoMonth || "Jan") : undefined,
+                    request.user?._id ? new Types.ObjectId(request.user._id) : undefined,
+                    lockPastMonths
                 );
 
                 return reply.send({
                     success: true,
-                    message: `Tax successfully even-split and locked upto ${uptoMonth || "Jan"}`,
+                    message: lockPastMonths
+                        ? `Tax successfully even-split and locked upto ${uptoMonth || "Jan"}`
+                        : "Tax successfully even-split across all 12 months without locking any month",
                     data: result
                 });
             } catch (error: any) {

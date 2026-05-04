@@ -2321,15 +2321,22 @@ export class TaxDeclarationService extends BaseService {
         return buffer;
     }
 
-    // Initialize tax history for migration (e.g., in January)
-    // Divides total Yearly Tax by 12, back-fills past months, and locks them as processed.
-    async initializeMigrationTax(id: Types.ObjectId, uptoMonth: string = "Jan", uploadedBy?: Types.ObjectId): Promise<ITaxDeclaration> {
+    // Initialize tax history for migration.
+    // Divides total yearly tax by 12 and optionally locks past months as processed.
+    async initializeMigrationTax(
+        id: Types.ObjectId,
+        uptoMonth: string | undefined = "Jan",
+        uploadedBy?: Types.ObjectId,
+        lockPastMonths: boolean = true
+    ): Promise<ITaxDeclaration> {
         const taxDeclaration = await TaxDeclaration.findById(id);
         if (!taxDeclaration) throw new Error('Tax Declaration not found');
 
         const monthOrder = ["Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Jan", "Feb", "Mar"];
-        const uptoIndex = monthOrder.indexOf(uptoMonth);
-        if (uptoIndex === -1) throw new Error('Invalid month provided for migration initialization');
+        const uptoIndex = lockPastMonths
+            ? monthOrder.indexOf(uptoMonth || "Jan")
+            : -1;
+        if (lockPastMonths && uptoIndex === -1) throw new Error('Invalid month provided for migration initialization');
 
         // 0. Only update PT deduction if not already set
         if (!taxDeclaration.ptDeduction || taxDeclaration.ptDeduction === 0) {
@@ -2358,7 +2365,7 @@ export class TaxDeclarationService extends BaseService {
             m.adjustmentAmount = 0;
 
             // Lock past months
-            if (mIndex <= uptoIndex) {
+            if (lockPastMonths && mIndex <= uptoIndex) {
                 m.isProcessed = true;
                 m.plannedDate = m.plannedDate || new Date();
                 accumulatedHistoryPaid += monthlyShare;
@@ -2383,8 +2390,9 @@ export class TaxDeclarationService extends BaseService {
         taxDeclaration.initialTaxCalculated = true;
 
         // 6. Populate migrationAdjustment fields
-        const processedMonths = uptoIndex + 1; // Months from Apr to uptoMonth (inclusive)
+        const processedMonths = lockPastMonths ? uptoIndex + 1 : 0;
         const remainingMonths = 12 - processedMonths;
+        const appliedUptoMonth = lockPastMonths ? (uptoMonth || "Jan") : "None";
 
         taxDeclaration.migrationAdjustment = {
             appliedForFY: taxDeclaration.financialYear,
@@ -2404,7 +2412,9 @@ export class TaxDeclarationService extends BaseService {
                 plannedDate: m.plannedDate,
                 isProcessed: m.isProcessed
             })),
-            overrideReason: `Migration initialized up to ${uptoMonth} for FY ${taxDeclaration.financialYear}`
+            overrideReason: lockPastMonths
+                ? `Migration initialized up to ${appliedUptoMonth} for FY ${taxDeclaration.financialYear}`
+                : `Migration initialized without locking any month for FY ${taxDeclaration.financialYear}`
         };
 
         // 7. Reset summary flags for a clean 'Source of Truth'
@@ -2415,7 +2425,9 @@ export class TaxDeclarationService extends BaseService {
         taxDeclaration.monthlyAdjustment = 0;
         taxDeclaration.adjustmentReason = "migration_initialization";
 
-        console.log(`[MIGRATION INIT] Employee ${taxDeclaration.employeeId}: Total Tax ${totalYearlyTax}, Paid upto ${uptoMonth}: ${accumulatedHistoryPaid}`);
+        console.log(
+            `[MIGRATION INIT] Employee ${taxDeclaration.employeeId}: Total Tax ${totalYearlyTax}, Paid upto ${appliedUptoMonth}: ${accumulatedHistoryPaid}, lockPastMonths=${lockPastMonths}`
+        );
 
         // Note: Mongoose automatically increments __v on save
         return await taxDeclaration.save();
