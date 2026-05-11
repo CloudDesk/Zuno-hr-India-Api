@@ -40,7 +40,7 @@ async function backfillIdentityProof() {
             const idType = idDetails?.idType;
             const idKey = idType ? idTypeToGovernmentKey[idType] : null;
 
-            if (!idKey || !doc.employeeId) continue;
+            if (!idKey || !doc.employeeId || !idDetails) continue;
 
             const setData: any = {
                 [`governmentIds.${idKey}.number`]: idDetails.idNumber,

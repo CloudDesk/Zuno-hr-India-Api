@@ -62,8 +62,8 @@ async function previewBackfillIdentityProof() {
                     console.log(`[SAMPLE ${previewCount + 1}]`);
                     console.log(`   User ID: ${doc.employeeId}`);
                     console.log(`   ID Type: ${idType} (mapped to '${idKey}')`);
-                    console.log(`   ID Number: ${idDetails.idNumber}`);
-                    if (idKey === 'pf' && idDetails.uanNumber) {
+                    console.log(`   ID Number: ${idDetails?.idNumber || 'N/A'}`);
+                    if (idKey === 'pf' && idDetails?.uanNumber) {
                         console.log(`   UAN: ${idDetails.uanNumber}`);
                     }
                     console.log(`   Status: Would be set to 'Verified'`);
