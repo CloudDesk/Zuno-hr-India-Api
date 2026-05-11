@@ -1,4 +1,7 @@
+import 'dotenv/config';
+import { connectDB } from '../src/config/database';
 import { Payroll } from '../src/models/payrolls.model';
+import mongoose from 'mongoose';
 
 /**
  * Migration Utility: Updates the 'type' field for all existing payroll records.
@@ -7,6 +10,7 @@ import { Payroll } from '../src/models/payrolls.model';
  */
 export async function migratePayrollType() {
     try {
+        await connectDB();
         console.log('Starting Payroll Type migration...');
 
         //get
@@ -35,8 +39,13 @@ export async function migratePayrollType() {
 
         const totalUpdated = fnfResult.modifiedCount + regularResult.modifiedCount;
         console.log(`Payroll Type migration complete. Records processed: ${totalUpdated}`);
+        
+        await mongoose.connection.close();
+        process.exit(0);
     } catch (error) {
         console.error('Migration failed:', error);
+        process.exit(1);
     }
 }
 
+migratePayrollType();

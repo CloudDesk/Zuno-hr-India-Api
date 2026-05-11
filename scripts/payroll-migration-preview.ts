@@ -28,9 +28,9 @@ async function previewPayrollMigration() {
 
         // Sample check for peace of mind
         if (fnfCount > 0) {
-            const sampleFnf = await Payroll.findOne(fnfQuery).select('employeeName month Year');
+            const sampleFnf = await Payroll.findOne(fnfQuery).select('employeeId month year');
             console.log('\n📄 Sample Final Settlement Record:');
-            console.log(`   Name: ${sampleFnf?.employeeName || 'N/A'}, Date: ${sampleFnf?.month}/${sampleFnf?.Year}`);
+            console.log(`   ID: ${sampleFnf?.employeeId || 'N/A'}, Date: ${sampleFnf?.month}/${sampleFnf?.year}`);
         }
 
         console.log('\n⚠️  NO DATABASE CHANGES WERE APPLIED.');
