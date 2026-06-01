@@ -1,4 +1,5 @@
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import type { LaunchOptions } from 'puppeteer';
 
@@ -11,7 +12,8 @@ const DEFAULT_PUPPETEER_ARGS = [
     '--no-zygote'
 ];
 
-const LOCAL_PUPPETEER_CACHE_DIR = path.join(process.cwd(), 'node_modules', '.puppeteer_cache');
+const LOCAL_PUPPETEER_CACHE_DIR =
+    process.env.PUPPETEER_CACHE_DIR || path.join(os.homedir(), '.cache', 'puppeteer');
 
 const KNOWN_BROWSER_PATHS = [
     process.env.PUPPETEER_EXECUTABLE_PATH,
