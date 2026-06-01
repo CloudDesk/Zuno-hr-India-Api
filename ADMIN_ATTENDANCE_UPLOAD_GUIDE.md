@@ -6,6 +6,8 @@ This document provides complete information for **Admin users** to upload and ma
 
 ---
 
+
+
 ## 🎯 **What is Attendance Upload?**
 
 The Attendance Upload feature allows **administrators** to upload company-wide attendance files (Excel or PDF) for record-keeping and reporting purposes.
