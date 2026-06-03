@@ -1,12 +1,18 @@
 import { Types } from "mongoose";
 import { ISalaryAssignment, SalaryAssignment } from "../models/salary-assignments.model";
+import { SalaryStructure } from "../models/salary-structure.model";
 import { BaseService } from "./base.service";
 import { RequestContext } from "../types/context";
 import { getCurrentFinancialYear } from "../utilis/dates";
 import { TaxDeclaration } from "../models/tax-declaration";
 import { ITaxDeclarationUpdate, TaxDeclarationService } from "./tax-declaration.service";
 
-
+export interface IVoluntaryPf {
+    enabled: boolean;
+    employeeContributionType: 'percentage' | 'fixed';
+    employeeContributionPercentage: number;
+    employeeContributionValue: number;
+}
 
 export interface ISalaryAssignmentCreate {
     employeeId: Types.ObjectId;
@@ -16,6 +22,7 @@ export interface ISalaryAssignmentCreate {
     travelAllowance?: number; // ✅ Optional travel allowance (default: 0)
     airTicketAllowance?: number; // ✅ NEW: Optional air ticket allowance (default: 0)
     medicalAllowance?: number; // ✅ NEW: Optional medical allowance (default: 0)
+    voluntaryPf?: IVoluntaryPf;
     salaryStructureId: Types.ObjectId
     isActive: Boolean;
     effectiveFrom: Date;
@@ -31,6 +38,7 @@ export interface ISalaryAssignmentUpdate {
     travelAllowance?: number; // ✅ Optional travel allowance (default: 0)
     airTicketAllowance?: number; // ✅ NEW: Optional air ticket allowance (default: 0)
     medicalAllowance?: number; // ✅ NEW: Optional medical allowance (default: 0)
+    voluntaryPf?: IVoluntaryPf;
     salaryStructureId: Types.ObjectId
     isActive: Boolean;
     effectiveFrom: Date;
@@ -43,6 +51,81 @@ export class SalaryAssignmentService extends BaseService {
     constructor(context: RequestContext) {
         super(context);
         this.context = context;
+    }
+
+    private async calculateAssignedBasic(monthlyGross: number, salaryStructureId: Types.ObjectId): Promise<number> {
+        const salaryStructure = await SalaryStructure.findById(salaryStructureId).lean();
+        if (!salaryStructure) {
+            throw new Error('Salary structure not found');
+        }
+
+        const basicPercentage = Number(salaryStructure.fixedEarnings?.basicPercentage ?? 0);
+        return Math.round((basicPercentage / 100) * Number(monthlyGross || 0));
+    }
+
+    private async normalizeVoluntaryPf(
+        data: ISalaryAssignmentCreate | ISalaryAssignmentUpdate,
+        existingAssignment?: ISalaryAssignment
+    ): Promise<void> {
+        const incomingVoluntaryPf = data.voluntaryPf;
+        const existingVoluntaryPf = existingAssignment?.voluntaryPf;
+
+        if (!incomingVoluntaryPf && !existingVoluntaryPf) {
+            return;
+        }
+
+        const voluntaryPf: IVoluntaryPf = {
+            enabled: incomingVoluntaryPf?.enabled ?? existingVoluntaryPf?.enabled ?? false,
+            employeeContributionType:
+                incomingVoluntaryPf?.employeeContributionType ?? existingVoluntaryPf?.employeeContributionType ?? 'percentage',
+            employeeContributionPercentage:
+                incomingVoluntaryPf?.employeeContributionPercentage ?? existingVoluntaryPf?.employeeContributionPercentage ?? 0,
+            employeeContributionValue:
+                incomingVoluntaryPf?.employeeContributionValue ?? existingVoluntaryPf?.employeeContributionValue ?? 0,
+        };
+
+        if (!voluntaryPf.enabled) {
+            data.voluntaryPf = {
+                ...voluntaryPf,
+                employeeContributionPercentage: 0,
+                employeeContributionValue: 0,
+            };
+            return;
+        }
+
+        if (!['percentage', 'fixed'].includes(voluntaryPf.employeeContributionType)) {
+            throw new Error('Invalid voluntary PF contribution type');
+        }
+
+        if (voluntaryPf.employeeContributionPercentage < 0 || voluntaryPf.employeeContributionValue < 0) {
+            throw new Error('Voluntary PF contribution cannot be negative');
+        }
+
+        const monthlyGross = Number(data.monthlyGross ?? existingAssignment?.monthlyGross ?? 0);
+        const salaryStructureId = data.salaryStructureId ?? existingAssignment?.salaryStructureId;
+
+        if (!salaryStructureId) {
+            throw new Error('Salary structure is required to calculate voluntary PF');
+        }
+
+        const assignedBasic = await this.calculateAssignedBasic(monthlyGross, salaryStructureId);
+
+        if (voluntaryPf.employeeContributionType === 'percentage') {
+            voluntaryPf.employeeContributionValue = Math.round(
+                (voluntaryPf.employeeContributionPercentage / 100) * assignedBasic
+            );
+        } else {
+            if (assignedBasic <= 0 && voluntaryPf.employeeContributionValue > 0) {
+                throw new Error('Cannot calculate voluntary PF percentage without assigned basic');
+            }
+
+            voluntaryPf.employeeContributionPercentage = assignedBasic > 0
+                ? Number(((voluntaryPf.employeeContributionValue / assignedBasic) * 100).toFixed(2))
+                : 0;
+            voluntaryPf.employeeContributionValue = Math.round(voluntaryPf.employeeContributionValue);
+        }
+
+        data.voluntaryPf = voluntaryPf;
     }
 
     async create(data: ISalaryAssignmentCreate): Promise<ISalaryAssignment> {
@@ -62,6 +145,7 @@ export class SalaryAssignmentService extends BaseService {
                 { isActive: false }
             );
         }
+        await this.normalizeVoluntaryPf(data);
         const salaryAssignment = new SalaryAssignment(data);
         const savedAssignment = await salaryAssignment.save();
 
@@ -161,6 +245,7 @@ export class SalaryAssignmentService extends BaseService {
             );
         }
 
+        await this.normalizeVoluntaryPf(data, salaryAssignment);
         Object.assign(salaryAssignment, data);
         const updatedAssignment = await salaryAssignment.save();
         // Trigger tax declaration update for the current financial year

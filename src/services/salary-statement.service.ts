@@ -482,7 +482,7 @@ export class SalaryStatementService extends BaseService {
         const reim = Math.round((struct.fixedEarnings.reimbursementPercentage ?? 0) / 100 * adjGross);
         const other = adjGross - (basic + hra + da + travel + reim);
 
-        const resDeductions = await this.calculateDeductionsLocally(basic, da, struct, monthName, month, year, employee._id, payableDays, daysInMonth, monthlyGross, country, employee.isConsultancy, employee.isIntern);
+        const resDeductions = await this.calculateDeductionsLocally(basic, da, struct, monthName, month, year, employee._id, payableDays, daysInMonth, monthlyGross, country, employee.isConsultancy, employee.isIntern, sa.voluntaryPf);
 
         return {
             basic, hra, da,
@@ -492,6 +492,8 @@ export class SalaryStatementService extends BaseService {
             monthlyGross: adjGross,
             epfEmployee: Math.round(resDeductions.epfEmployee || 0),
             epfEmployer: Math.round(resDeductions.epfEmployer || 0),
+            voluntaryPfEnabled: resDeductions.voluntaryPfEnabled,
+            voluntaryPfEmployeeContribution: Math.round(resDeductions.voluntaryPfEmployeeContribution || 0),
             esiEmployee: Math.round(resDeductions.esiEmployee || 0),
             professionalTax: Math.round(resDeductions.professionalTax),
             incomeTax: Math.round(resDeductions.incomeTax),
@@ -501,15 +503,17 @@ export class SalaryStatementService extends BaseService {
         };
     }
 
-    private async calculateDeductionsLocally(basic: number, da: number, struct: any, monthName: string, month: number, year: number, empId: Types.ObjectId, payableDays: number, daysInMonth: number, monthlyGross: number, country: string, isConsultancy: boolean, isIntern: boolean) {
+    private async calculateDeductionsLocally(basic: number, da: number, struct: any, monthName: string, month: number, year: number, empId: Types.ObjectId, payableDays: number, daysInMonth: number, monthlyGross: number, country: string, isConsultancy: boolean, isIntern: boolean, voluntaryPf?: any) {
         if (country === 'AE') {
             const unpaid = Math.max(daysInMonth - payableDays, 0);
             const leaveDed = unpaid > 0 ? (unpaid / daysInMonth) * monthlyGross : 0;
-            return { epfEmployee: 0, esiEmployee: 0, professionalTax: 0, incomeTax: 0, tdsDeduction: 0, totalDeductions: 0, leaveDeductions: leaveDed };
+            return { epfEmployee: 0, voluntaryPfEnabled: false, voluntaryPfEmployeeContribution: 0, esiEmployee: 0, professionalTax: 0, incomeTax: 0, tdsDeduction: 0, totalDeductions: 0, leaveDeductions: leaveDed };
         }
 
         let epfEmployee = 0;
         let epfEmployer = 0;
+        let voluntaryPfEmployeeContribution = 0;
+        const voluntaryPfEnabled = Boolean(voluntaryPf?.enabled && !isConsultancy && !isIntern);
         let esiEmployee = 0;
         if (!isConsultancy && !isIntern) {
             // EPF: Decoupled logic (12% Employee, 13% Employer)
@@ -520,6 +524,10 @@ export class SalaryStatementService extends BaseService {
             const epfRawEmployee = (epfConfig.employeeContribution / 100) * basicForEpf;
             const epfCapEmployee = (epfConfig.employeeContribution / 100) * maxLimit;
             epfEmployee = Number((basicForEpf >= maxLimit ? epfCapEmployee : epfRawEmployee).toFixed(2));
+            if (voluntaryPfEnabled) {
+                voluntaryPfEmployeeContribution = Math.max(0, Math.round(Number(voluntaryPf.employeeContributionValue || 0)));
+                epfEmployee = Number((epfEmployee + voluntaryPfEmployeeContribution).toFixed(2));
+            }
 
             const epfRawEmployer = (epfConfig.employerContribution / 100) * basicForEpf;
             const epfCapEmployer = (epfConfig.employerContribution / 100) * maxLimit;
@@ -548,6 +556,8 @@ export class SalaryStatementService extends BaseService {
         return {
             epfEmployee,
             epfEmployer,
+            voluntaryPfEnabled,
+            voluntaryPfEmployeeContribution,
             esiEmployee,
             professionalTax: pt,
             incomeTax: it,
