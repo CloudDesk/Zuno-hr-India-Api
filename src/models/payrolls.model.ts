@@ -29,6 +29,8 @@ export interface IPayroll extends Document {
     epfEmployer: number;
     epfEmployerEps?: number;
     epfEmployerEpf?: number;
+    voluntaryPfEnabled?: boolean;
+    voluntaryPfEmployeeContribution?: number;
     esiEmployee: number;
     esiEmployer: number;
     professionalTax: number;
@@ -118,6 +120,8 @@ const PayrollSchema = new Schema<IPayroll>(
         epfEmployer: { type: Number, required: true, default: 0 },
         epfEmployerEps: { type: Number, default: 0 },
         epfEmployerEpf: { type: Number, default: 0 },
+        voluntaryPfEnabled: { type: Boolean, default: false },
+        voluntaryPfEmployeeContribution: { type: Number, default: 0 },
         esiEmployee: { type: Number, required: true, default: 0 },
         esiEmployer: { type: Number, required: true, default: 0 },
         professionalTax: { type: Number, required: true, default: 0 },
@@ -229,7 +233,7 @@ PayrollSchema.pre<IPayroll>('save', async function (next) {
     const monetaryFields = [
         'assigned.basic', 'assigned.hra', 'assigned.da', 'assigned.otherAllowance', 'assigned.travelAllowance', 'assigned.airTicketAllowance', 'assigned.medicalAllowance', 'assigned.reimbursementAllowance',
         'monthlyGross', 'basic', 'hra', 'da', 'otherAllowance', 'travelAllowance', 'airTicketAllowance', 'medicalAllowance', 'reimbursementAllowance', 'epfEmployee', 'epfEmployer',
-        'epfEmployerEps', 'epfEmployerEpf',
+        'epfEmployerEps', 'epfEmployerEpf', 'voluntaryPfEmployeeContribution',
         'esiEmployee', 'esiEmployer', 'professionalTax', 'incomeTax', 'tdsDeduction', 'totalDeductions', 'additionalDeduction', 'overtimePay',
         'leaveDeductions', 'reimbursement', 'bonus', 'netSalary', 'ctc',
     ];

@@ -54,6 +54,8 @@ interface IPayslipResponse {
     otherAllowance: number;
     monthYear: string;
     epfEmployee: number;
+    voluntaryPfEnabled: boolean;
+    voluntaryPfEmployeeContribution: number;
     professionalTax: number;
     incomeTax: number;
     overtimePay: number;
@@ -1213,6 +1215,8 @@ export class DocumentService extends BaseService {
                 baseResponse.totalDeductions = doc.metadata.payslip?.paySummary?.deductions;
                 baseResponse.reimbursement = doc.metadata.payslip?.paySummary?.reimbursement;
                 baseResponse.bonus = doc.metadata.payslip?.paySummary?.bonus;
+                baseResponse.voluntaryPfEnabled = doc.metadata.payslip?.voluntaryPfEnabled || false;
+                baseResponse.voluntaryPfEmployeeContribution = doc.metadata.payslip?.voluntaryPfEmployeeContribution || 0;
             }
 
             return baseResponse;
@@ -1269,6 +1273,8 @@ export class DocumentService extends BaseService {
                     otherAllowance: 0,
                     monthYear: '',
                     epfEmployee: 0,
+                    voluntaryPfEnabled: false,
+                    voluntaryPfEmployeeContribution: 0,
                     professionalTax: 0,
                     incomeTax: 0,
                     overtimePay: 0,
@@ -1301,6 +1307,8 @@ export class DocumentService extends BaseService {
                 baseResponse.da = paySummary && typeof paySummary === 'object' && 'da' in paySummary ? Number(paySummary.da) : 0;
                 baseResponse.otherAllowance = paySummary && typeof paySummary === 'object' && 'otherAllowance' in paySummary ? Number(paySummary.otherAllowance) : 0;
                 baseResponse.epfEmployee = paySummary && typeof paySummary === 'object' && 'epfEmployee' in paySummary ? Number(paySummary.epfEmployee) : 0;
+                baseResponse.voluntaryPfEnabled = Boolean(payslipData.voluntaryPfEnabled);
+                baseResponse.voluntaryPfEmployeeContribution = Number(payslipData.voluntaryPfEmployeeContribution || 0);
                 baseResponse.professionalTax = paySummary && typeof paySummary === 'object' && 'professionalTax' in paySummary ? Number(paySummary.professionalTax) : 0;
                 baseResponse.incomeTax = paySummary && typeof paySummary === 'object' && 'incomeTax' in paySummary ? Number(paySummary.incomeTax) : 0;
                 baseResponse.overtimePay = paySummary && typeof paySummary === 'object' && 'overtimePay' in paySummary ? Number(paySummary.overtimePay) : 0;
@@ -1318,6 +1326,8 @@ export class DocumentService extends BaseService {
                 baseResponse.da = 0;
                 baseResponse.otherAllowance = 0;
                 baseResponse.epfEmployee = 0;
+                baseResponse.voluntaryPfEnabled = false;
+                baseResponse.voluntaryPfEmployeeContribution = 0;
                 baseResponse.professionalTax = 0;
                 baseResponse.incomeTax = 0;
                 baseResponse.overtimePay = 0;
@@ -1559,6 +1569,8 @@ export class DocumentService extends BaseService {
                                 bonus: payroll.bonus || 0,
                                 reimbursement: payroll.reimbursement || 0,
                             },
+                            voluntaryPfEnabled: payroll.voluntaryPfEnabled || false,
+                            voluntaryPfEmployeeContribution: payroll.voluntaryPfEmployeeContribution || 0,
                             presentDays: payroll.presentDays,
                             totalDays: payroll.totalDaysInMonth,
                             payableDays: payroll.payableDays,
@@ -4064,4 +4076,3 @@ export class DocumentService extends BaseService {
         return document;
     }
 }
-

@@ -15,6 +15,8 @@ export interface IPayslip extends Document {
     bonus: number;
     reimbursement: number;
   };
+  voluntaryPfEnabled?: boolean;
+  voluntaryPfEmployeeContribution?: number;
   status: 'Generated' | 'Sent' | 'Exported';
   isExport: boolean;
   payslipUrl: string;
@@ -55,6 +57,8 @@ const payslipSchema = new Schema<IPayslip>(
       bonus: { type: Number, required: true },
       reimbursement: { type: Number, required: true },
     },
+    voluntaryPfEnabled: { type: Boolean, default: false },
+    voluntaryPfEmployeeContribution: { type: Number, default: 0 },
     status: {
       type: String,
       enum: ['Generated', 'Sent', 'Exported'],

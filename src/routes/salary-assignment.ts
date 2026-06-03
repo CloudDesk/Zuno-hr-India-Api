@@ -4,6 +4,36 @@ import { ISalaryAssignmentCreate, ISalaryAssignmentUpdate } from '../services/sa
 import { Types } from "mongoose";
 import { SalaryAssignment } from "../models/salary-assignments.model";
 
+const voluntaryPfSchema = {
+    type: 'object',
+    properties: {
+        enabled: { type: 'boolean' },
+        employeeContributionType: { type: 'string', enum: ['percentage', 'fixed'] },
+        employeeContributionPercentage: { type: 'number', minimum: 0 },
+        employeeContributionValue: { type: 'number', minimum: 0 },
+    },
+};
+
+const salaryAssignmentBodySchema = {
+    type: 'object',
+    properties: {
+        employeeId: { type: 'string' },
+        salaryStructureId: { type: 'string' },
+        monthlyGross: { type: 'number' },
+        annualInsurance: { type: 'number' },
+        reimbursement: { type: 'number' },
+        travelAllowance: { type: 'number' },
+        airTicketAllowance: { type: 'number' },
+        medicalAllowance: { type: 'number' },
+        voluntaryPf: voluntaryPfSchema,
+        updateType: { type: 'string' },
+        comments: { type: 'string' },
+        isActive: { type: 'boolean' },
+        effectiveFrom: { type: 'string' },
+        effectiveTo: { type: 'string' },
+    },
+};
+
 
 export async function salaryAssignmentRoutes(fastify: FastifyInstance): Promise<void> {
 
@@ -26,7 +56,17 @@ export async function salaryAssignmentRoutes(fastify: FastifyInstance): Promise<
         }
     )
 
-    fastify.post('/', { preHandler: [authenticate] },
+    fastify.post('/', {
+        preHandler: [authenticate],
+        schema: {
+            tags: ['Salary Assignment'],
+            summary: 'Create salary assignment',
+            body: {
+                ...salaryAssignmentBodySchema,
+                required: ['employeeId', 'salaryStructureId', 'monthlyGross', 'isActive', 'effectiveFrom', 'effectiveTo'],
+            },
+        },
+    },
         async (request, reply) => {
 
             try {
@@ -45,7 +85,24 @@ export async function salaryAssignmentRoutes(fastify: FastifyInstance): Promise<
         }
     )
 
-    fastify.put('/:id', { preHandler: [authenticate] },
+    fastify.put('/:id', {
+        preHandler: [authenticate],
+        schema: {
+            tags: ['Salary Assignment'],
+            summary: 'Update salary assignment',
+            params: {
+                type: 'object',
+                required: ['id'],
+                properties: {
+                    id: { type: 'string' },
+                },
+            },
+            body: {
+                ...salaryAssignmentBodySchema,
+                required: ['updateType', 'comments'],
+            },
+        },
+    },
         async (request, reply) => {
             try {
                 const { id } = request.params as { id: string };
