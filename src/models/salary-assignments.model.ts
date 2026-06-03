@@ -14,6 +14,8 @@ export interface ISalaryAssignment extends Document {
         employeeContributionPercentage: number;
         employeeContributionValue: number;
     };
+    updateType?: string;
+    comments?: string;
     employeeId: Types.ObjectId;
     salaryStructureId: Types.ObjectId;
     isActive: Boolean;
@@ -86,6 +88,16 @@ const SalaryAssignmentSchema = new Schema<ISalaryAssignment>(
                 default: 0,
                 min: [0, 'Voluntary PF value cannot be negative'],
             },
+        },
+        updateType: {
+            type: String,
+            trim: true,
+            default: '',
+        },
+        comments: {
+            type: String,
+            trim: true,
+            default: '',
         },
         isActive: { type: Boolean, required: true, default: false },
         effectiveFrom: { type: Date, required: true, index: true },

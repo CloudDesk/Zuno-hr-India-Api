@@ -26,6 +26,8 @@ const salaryAssignmentBodySchema = {
         airTicketAllowance: { type: 'number' },
         medicalAllowance: { type: 'number' },
         voluntaryPf: voluntaryPfSchema,
+        updateType: { type: 'string' },
+        comments: { type: 'string' },
         isActive: { type: 'boolean' },
         effectiveFrom: { type: 'string' },
         effectiveTo: { type: 'string' },
@@ -95,7 +97,10 @@ export async function salaryAssignmentRoutes(fastify: FastifyInstance): Promise<
                     id: { type: 'string' },
                 },
             },
-            body: salaryAssignmentBodySchema,
+            body: {
+                ...salaryAssignmentBodySchema,
+                required: ['updateType', 'comments'],
+            },
         },
     },
         async (request, reply) => {

@@ -23,6 +23,8 @@ export interface ISalaryAssignmentCreate {
     airTicketAllowance?: number; // ✅ NEW: Optional air ticket allowance (default: 0)
     medicalAllowance?: number; // ✅ NEW: Optional medical allowance (default: 0)
     voluntaryPf?: IVoluntaryPf;
+    updateType?: string;
+    comments?: string;
     salaryStructureId: Types.ObjectId
     isActive: Boolean;
     effectiveFrom: Date;
@@ -31,26 +33,149 @@ export interface ISalaryAssignmentCreate {
 
 export interface ISalaryAssignmentUpdate {
     _id: Types.ObjectId;
-    employeeId: Types.ObjectId;
-    monthlyGross: number;
-    annualInsurance: number;
-    reimbursement: number;
+    employeeId?: Types.ObjectId;
+    monthlyGross?: number;
+    annualInsurance?: number;
+    reimbursement?: number;
     travelAllowance?: number; // ✅ Optional travel allowance (default: 0)
     airTicketAllowance?: number; // ✅ NEW: Optional air ticket allowance (default: 0)
     medicalAllowance?: number; // ✅ NEW: Optional medical allowance (default: 0)
     voluntaryPf?: IVoluntaryPf;
-    salaryStructureId: Types.ObjectId
-    isActive: Boolean;
-    effectiveFrom: Date;
-    effectiveTo: Date;
+    updateType?: string;
+    comments?: string;
+    salaryStructureId?: Types.ObjectId
+    isActive?: Boolean;
+    effectiveFrom?: Date;
+    effectiveTo?: Date;
 }
 
 export class SalaryAssignmentService extends BaseService {
     protected context: RequestContext;
+    private static readonly VERSIONING_EXCLUDED_FIELDS = [
+        '_id',
+        'employeeId',
+        'effectiveFrom',
+        'effectiveTo',
+        'isActive',
+        'updateType',
+        'comments',
+        'createdAt',
+        'updatedAt',
+        '__v',
+    ];
+
+    private static readonly VERSIONED_FIELDS = [
+        'salaryStructureId',
+        'monthlyGross',
+        'annualInsurance',
+        'reimbursement',
+        'travelAllowance',
+        'airTicketAllowance',
+        'medicalAllowance',
+        'voluntaryPf',
+    ];
 
     constructor(context: RequestContext) {
         super(context);
         this.context = context;
+    }
+
+    private validateUpdateMetadata(data: ISalaryAssignmentUpdate): void {
+        if (!data.updateType || !data.updateType.trim()) {
+            throw new Error('updateType is required for salary assignment updates.');
+        }
+        if (!data.comments || !data.comments.trim()) {
+            throw new Error('comments is required for salary assignment updates.');
+        }
+
+        data.updateType = data.updateType.trim();
+        data.comments = data.comments.trim();
+    }
+
+    private isSameObjectId(a: unknown, b: unknown): boolean {
+        return a?.toString?.() === b?.toString?.();
+    }
+
+    private normalizeForComparison(value: unknown): unknown {
+        if (value instanceof Types.ObjectId) {
+            return value.toString();
+        }
+        if (value instanceof Date) {
+            return value.toISOString();
+        }
+        if (Array.isArray(value)) {
+            return value.map((item) => this.normalizeForComparison(item));
+        }
+        if (value && typeof value === 'object') {
+            const normalized: Record<string, unknown> = {};
+            Object.keys(value as Record<string, unknown>)
+                .sort()
+                .forEach((key) => {
+                    normalized[key] = this.normalizeForComparison((value as Record<string, unknown>)[key]);
+                });
+            return normalized;
+        }
+        return value;
+    }
+
+    private valuesEqual(a: unknown, b: unknown): boolean {
+        return JSON.stringify(this.normalizeForComparison(a)) === JSON.stringify(this.normalizeForComparison(b));
+    }
+
+    private getMergedVoluntaryPfForComparison(incoming: IVoluntaryPf | undefined, existing: ISalaryAssignment): IVoluntaryPf {
+        return {
+            enabled: incoming?.enabled ?? existing.voluntaryPf?.enabled ?? false,
+            employeeContributionType:
+                incoming?.employeeContributionType ?? existing.voluntaryPf?.employeeContributionType ?? 'percentage',
+            employeeContributionPercentage:
+                incoming?.employeeContributionPercentage ?? existing.voluntaryPf?.employeeContributionPercentage ?? 0,
+            employeeContributionValue:
+                incoming?.employeeContributionValue ?? existing.voluntaryPf?.employeeContributionValue ?? 0,
+        };
+    }
+
+    private getVersionedChangedFields(data: ISalaryAssignmentUpdate, existing: ISalaryAssignment): string[] {
+        return Object.keys(data)
+            .filter((field) => !SalaryAssignmentService.VERSIONING_EXCLUDED_FIELDS.includes(field))
+            .filter((field) => SalaryAssignmentService.VERSIONED_FIELDS.includes(field))
+            .filter((field) => {
+                if (!Object.prototype.hasOwnProperty.call(data, field)) {
+                    return false;
+                }
+
+                const incomingValue = (data as any)[field];
+                const existingValue = (existing as any)[field];
+
+                if (field === 'voluntaryPf') {
+                    return !this.valuesEqual(
+                        this.getMergedVoluntaryPfForComparison(incomingValue, existing),
+                        existing.voluntaryPf || {
+                            enabled: false,
+                            employeeContributionType: 'percentage',
+                            employeeContributionPercentage: 0,
+                            employeeContributionValue: 0,
+                        }
+                    );
+                }
+
+                return !this.valuesEqual(incomingValue, existingValue);
+            });
+    }
+
+    private getPreviousDayEnd(date: Date): Date {
+        const previousDay = new Date(date);
+        previousDay.setDate(previousDay.getDate() - 1);
+        previousDay.setHours(23, 59, 59, 999);
+        return previousDay;
+    }
+
+    private toPlainAssignment(assignment: ISalaryAssignment): Record<string, any> {
+        const plain = assignment.toObject();
+        delete plain._id;
+        delete plain.createdAt;
+        delete plain.updatedAt;
+        delete plain.__v;
+        return plain;
     }
 
     private async calculateAssignedBasic(monthlyGross: number, salaryStructureId: Types.ObjectId): Promise<number> {
@@ -222,39 +347,146 @@ export class SalaryAssignmentService extends BaseService {
     }
 
     async update(data: ISalaryAssignmentUpdate): Promise<ISalaryAssignment> {
-
-        const hasOverlap = await this.isDateOverlap(
-            data.employeeId,
-            data.effectiveFrom,
-            data.effectiveTo,
-            data._id // To avoid falsely detect that the current record overlaps with itself.
-        );
-        if (hasOverlap) {
-            throw new Error('Salary assignment dates overlap with an existing record.');
-        }
+        this.validateUpdateMetadata(data);
 
         const salaryAssignment = await SalaryAssignment.findById(data._id);
         if (!salaryAssignment) {
             throw new Error('Salary Assignment not found');
         }
-        // Deactivate other active assignments if this one is set to active
-        if (data.isActive) {
-            await SalaryAssignment.updateMany(
-                { employeeId: data.employeeId, isActive: true, _id: { $ne: data._id } },
-                { isActive: false }
-            );
+
+        if (data.employeeId && !this.isSameObjectId(data.employeeId, salaryAssignment.employeeId)) {
+            throw new Error('employeeId cannot be changed for an existing salary assignment.');
         }
 
-        await this.normalizeVoluntaryPf(data, salaryAssignment);
-        Object.assign(salaryAssignment, data);
-        const updatedAssignment = await salaryAssignment.save();
+        const versionedChangedFields = this.getVersionedChangedFields(data, salaryAssignment);
+        let updatedAssignment: ISalaryAssignment | null = null;
+
+        if (versionedChangedFields.length === 0) {
+            const effectiveFrom = data.effectiveFrom ?? salaryAssignment.effectiveFrom;
+            const effectiveTo = data.effectiveTo ?? salaryAssignment.effectiveTo;
+
+            const hasOverlap = await this.isDateOverlap(
+                salaryAssignment.employeeId,
+                effectiveFrom,
+                effectiveTo,
+                data._id
+            );
+            if (hasOverlap) {
+                throw new Error('Salary assignment dates overlap with an existing record.');
+            }
+
+            const inPlaceUpdateData = { ...data };
+            delete (inPlaceUpdateData as any)._id;
+            if (data.isActive) {
+                await SalaryAssignment.updateMany(
+                    { employeeId: salaryAssignment.employeeId, isActive: true, _id: { $ne: data._id } },
+                    { isActive: false }
+                );
+            }
+            Object.assign(salaryAssignment, {
+                ...inPlaceUpdateData,
+                employeeId: salaryAssignment.employeeId,
+                salaryStructureId: data.salaryStructureId ?? salaryAssignment.salaryStructureId,
+                effectiveFrom,
+                effectiveTo,
+            });
+            updatedAssignment = await salaryAssignment.save();
+        } else {
+            if (!data.effectiveFrom) {
+                throw new Error('effectiveFrom is required when salary-affecting fields are updated.');
+            }
+
+            const activeAssignment = await SalaryAssignment.findOne({
+                employeeId: salaryAssignment.employeeId,
+                isActive: true,
+            });
+            if (!activeAssignment) {
+                throw new Error('No active salary assignment found to close before creating a new version.');
+            }
+
+            const newEffectiveFrom = new Date(data.effectiveFrom);
+            if (Number.isNaN(newEffectiveFrom.getTime())) {
+                throw new Error('Invalid effectiveFrom date.');
+            }
+            if (newEffectiveFrom <= activeAssignment.effectiveFrom) {
+                throw new Error('New effectiveFrom must be after the current active assignment effectiveFrom.');
+            }
+
+            const newEffectiveTo = data.effectiveTo ? new Date(data.effectiveTo) : activeAssignment.effectiveTo;
+            if (Number.isNaN(newEffectiveTo.getTime())) {
+                throw new Error('Invalid effectiveTo date.');
+            }
+            if (newEffectiveTo < newEffectiveFrom) {
+                throw new Error('effectiveTo cannot be earlier than effectiveFrom.');
+            }
+
+            const activeEndsOn = this.getPreviousDayEnd(newEffectiveFrom);
+            if (activeEndsOn < activeAssignment.effectiveFrom) {
+                throw new Error('Cannot close the active assignment before its effectiveFrom date.');
+            }
+
+            const hasOverlap = await this.isDateOverlap(
+                activeAssignment.employeeId,
+                newEffectiveFrom,
+                newEffectiveTo,
+                activeAssignment._id
+            );
+            if (hasOverlap) {
+                throw new Error('New salary assignment dates overlap with an existing record.');
+            }
+
+            const revisionUpdateData = { ...data };
+            delete (revisionUpdateData as any)._id;
+            const newAssignmentData = {
+                ...this.toPlainAssignment(activeAssignment),
+                ...revisionUpdateData,
+                employeeId: activeAssignment.employeeId,
+                salaryStructureId: data.salaryStructureId ?? activeAssignment.salaryStructureId,
+                isActive: true,
+                effectiveFrom: newEffectiveFrom,
+                effectiveTo: newEffectiveTo,
+                updateType: data.updateType,
+                comments: data.comments,
+            } as ISalaryAssignmentCreate;
+            await this.normalizeVoluntaryPf(newAssignmentData, activeAssignment);
+
+            const session = await SalaryAssignment.startSession();
+            try {
+                await session.withTransaction(async () => {
+                    const currentActive = await SalaryAssignment.findById(activeAssignment._id).session(session);
+                    if (!currentActive || !currentActive.isActive) {
+                        throw new Error('Active salary assignment changed while creating a new salary version.');
+                    }
+
+                    currentActive.isActive = false;
+                    currentActive.effectiveTo = activeEndsOn;
+                    await currentActive.save({ session });
+
+                    await SalaryAssignment.updateMany(
+                        { employeeId: activeAssignment.employeeId, isActive: true, _id: { $ne: currentActive._id } },
+                        { isActive: false },
+                        { session }
+                    );
+
+                    const [createdAssignment] = await SalaryAssignment.create([newAssignmentData], { session });
+                    updatedAssignment = createdAssignment;
+                });
+            } finally {
+                await session.endSession();
+            }
+        }
+
+        if (!updatedAssignment) {
+            throw new Error('Failed to update salary assignment.');
+        }
+
         // Trigger tax declaration update for the current financial year
-        if (!data.isActive) {
+        if (!updatedAssignment.isActive) {
             return updatedAssignment; // If not active, no need to update tax declaration
         }
         const financialYear = getCurrentFinancialYear();
         const taxDeclaration = await TaxDeclaration.findOne({
-            employeeId: data.employeeId,
+            employeeId: updatedAssignment.employeeId,
             financialYear
         });
         console.log(taxDeclaration, "taxDeclaration in update method")
@@ -262,7 +494,7 @@ export class SalaryAssignmentService extends BaseService {
             // Check for migration adjustment
             if (taxDeclaration.isMigrationAdjusted) {
                 console.warn(
-                    `[MIGRATION WARNING] Salary assignment updated for migration-adjusted employee ${data.employeeId}. ` +
+                    `[MIGRATION WARNING] Salary assignment updated for migration-adjusted employee ${updatedAssignment.employeeId}. ` +
                     `Annual tax will be recalculated, but monthly deductions will NOT be redistributed.`
                 );
             }
@@ -270,7 +502,7 @@ export class SalaryAssignmentService extends BaseService {
             const taxDeclarationService = new TaxDeclarationService(this.context);
             const taxUpdateData: ITaxDeclarationUpdate = {
                 _id: taxDeclaration._id.toString(),
-                employeeId: data.employeeId.toString(),
+                employeeId: updatedAssignment.employeeId.toString(),
                 financialYear: taxDeclaration.financialYear,
                 regime: taxDeclaration.regime,
                 declarations: taxDeclaration.declarations.map((decl: any) => ({
