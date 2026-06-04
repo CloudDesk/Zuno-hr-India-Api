@@ -57,7 +57,10 @@ RUN apt-get update && \
 
 # Set environment variables for Puppeteer
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
-    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
+    HOME=/home/appuser \
+    XDG_CONFIG_HOME=/tmp/.chromium \
+    XDG_CACHE_HOME=/tmp/.chromium-cache
  
  
 # Set the working directory
@@ -84,7 +87,8 @@ COPY --from=builder /app/*.docx ./
 # Create uploads directory and non-root user for security
 RUN mkdir -p /app/uploads && \
     groupadd -r appuser && useradd -r -g appuser appuser && \
-    chown -R appuser:appuser /app
+    mkdir -p /home/appuser/Downloads /tmp/.chromium /tmp/.chromium-cache && \
+    chown -R appuser:appuser /app /home/appuser /tmp/.chromium /tmp/.chromium-cache
  
 USER appuser
  
