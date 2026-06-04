@@ -110,7 +110,7 @@ export class PayslipService extends BaseService {
     const payslips = await Payslip.find(filter)
       .sort({ year: -1, month: -1 }) // Sort by year and month descending
       .populate('userId', 'name email')
-      .populate('payrollId', 'month year monthYear monthlyGross basic hra da otherAllowance travelAllowance airTicketAllowance medicalAllowance epfEmployee professionalTax incomeTax overtimePay netSalary ctc totalDeductions reimbursement bonus holdSalary noticePeriodRecovery');
+      .populate('payrollId', 'month year monthYear monthlyGross basic hra da otherAllowance travelAllowance airTicketAllowance medicalAllowance epfEmployee voluntaryPfEnabled voluntaryPfEmployeeContribution professionalTax incomeTax overtimePay netSalary ctc totalDeductions reimbursement bonus holdSalary noticePeriodRecovery');
 
     console.log(payslips, "payslips getEmployeePayslipAndPayroll")
     // Format the response with detailed payroll calculations
@@ -135,6 +135,8 @@ export class PayslipService extends BaseService {
         medicalAllowance: payroll.medicalAllowance || 0, // ✅ NEW: Include medical allowance
         monthYear: payroll.monthYear,
         epfEmployee: payroll.epfEmployee,
+        voluntaryPfEnabled: payroll.voluntaryPfEnabled || false,
+        voluntaryPfEmployeeContribution: payroll.voluntaryPfEmployeeContribution || 0,
         professionalTax: payroll.professionalTax,
         incomeTax: payroll.incomeTax,
         overtimePay: payroll.overtimePay,
@@ -349,6 +351,8 @@ export class PayslipService extends BaseService {
             bonus: payroll.bonus,
             reimbursement: payroll.reimbursement,
           },
+          voluntaryPfEnabled: payroll.voluntaryPfEnabled || false,
+          voluntaryPfEmployeeContribution: payroll.voluntaryPfEmployeeContribution || 0,
           isExport: false
         };
 
@@ -1031,4 +1035,3 @@ export class PayslipService extends BaseService {
     }).populate('userId', 'name email');
   }
 }
-

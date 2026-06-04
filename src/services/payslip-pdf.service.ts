@@ -191,6 +191,8 @@ export class PayslipPdfService extends BaseService {
                                             bonus: payroll.bonus || 0,
                                             reimbursement: payroll.reimbursement || 0,
                                         },
+                                        voluntaryPfEnabled: payroll.voluntaryPfEnabled || false,
+                                        voluntaryPfEmployeeContribution: payroll.voluntaryPfEmployeeContribution || 0,
                                         presentDays: payroll.presentDays,
                                         totalDays: payroll.totalDaysInMonth,
                                         payableDays: payroll.payableDays,
@@ -703,4 +705,3 @@ export class PayslipPdfService extends BaseService {
         }
     }
 }
-

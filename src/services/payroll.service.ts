@@ -79,6 +79,8 @@ interface PayrollRecord {
     epfEmployer: number;
     epfEmployerEps: number;
     epfEmployerEpf: number;
+    voluntaryPfEnabled: boolean;
+    voluntaryPfEmployeeContribution: number;
     esiEmployee: number;
     esiEmployer: number;
     professionalTax: number;
@@ -1874,7 +1876,8 @@ export class PayrollService extends BaseService {
             monthlyGross,
             employee.country || 'IN', // Pass employee's country, default to 'IN'
             employee.isConsultancy || false, // Pass consultancy flag
-            employee.isIntern || false // Pass intern flag
+            employee.isIntern || false, // Pass intern flag
+            salaryAssignment.voluntaryPf
         );
         // ✅ THE CORRECT SOLUTION: 
         // Calculate totals strictly from the sum of rounded components.
@@ -1936,6 +1939,8 @@ export class PayrollService extends BaseService {
             epfEmployer: resolvedDeductions.epfEmployer,
             epfEmployerEps: resolvedDeductions.epfEmployerEps,
             epfEmployerEpf: resolvedDeductions.epfEmployerEpf,
+            voluntaryPfEnabled: resolvedDeductions.voluntaryPfEnabled,
+            voluntaryPfEmployeeContribution: resolvedDeductions.voluntaryPfEmployeeContribution,
             esiEmployee: resolvedDeductions.esiEmployee,
             esiEmployer: resolvedDeductions.esiEmployer,
             professionalTax: resolvedDeductions.professionalTax,
@@ -1980,7 +1985,13 @@ export class PayrollService extends BaseService {
         monthlyGross: number, //monthly gross salary
         employeeCountry: string = 'IN', // Default to India for backward compatibility
         isConsultancy: boolean = false, // Flag for consultancy staff
-        isIntern: boolean = false // Flag for intern employees
+        isIntern: boolean = false, // Flag for intern employees
+        voluntaryPf?: {
+            enabled?: boolean;
+            employeeContributionType?: 'percentage' | 'fixed';
+            employeeContributionPercentage?: number;
+            employeeContributionValue?: number;
+        }
     ) {
         console.log(salaryStructure, approvedLeaves, 'calculateDeductions');
         console.log(`Processing deductions for employee country: ${employeeCountry}`);
@@ -2001,6 +2012,8 @@ export class PayrollService extends BaseService {
                 epfEmployer: 0,
                 epfEmployerEps: 0,
                 epfEmployerEpf: 0,
+                voluntaryPfEnabled: false,
+                voluntaryPfEmployeeContribution: 0,
                 esiEmployee: 0,
                 esiEmployer: 0,
                 professionalTax: 0,
@@ -2025,6 +2038,8 @@ export class PayrollService extends BaseService {
         let finalEpfEmployer = 0;
         let finalEpfEmployerEps = 0;
         let finalEpfEmployerEpf = 0;
+        let voluntaryPfEmployeeContribution = 0;
+        const voluntaryPfEnabled = Boolean(voluntaryPf?.enabled && !isConsultancy && !isIntern);
 
         if (!isConsultancy && !isIntern) {
             // Use configured split or defaults
@@ -2066,7 +2081,13 @@ export class PayrollService extends BaseService {
             // EPF (Employer Share) = Total Employer - EPS
             finalEpfEmployerEpf = Number((finalEpfEmployer - finalEpfEmployerEps).toFixed(2));
 
+            if (voluntaryPfEnabled) {
+                voluntaryPfEmployeeContribution = Math.max(0, Math.round(Number(voluntaryPf?.employeeContributionValue || 0)));
+                finalEpfEmployee = Number((finalEpfEmployee + voluntaryPfEmployeeContribution).toFixed(2));
+            }
+
             console.log(finalEpfEmployee, 'finalEpfEmployee');
+            console.log(voluntaryPfEmployeeContribution, 'voluntaryPfEmployeeContribution');
             console.log(finalEpfEmployer, 'finalEpfEmployer (Total)');
             console.log(finalEpfEmployerEps, 'finalEpfEmployerEps (Pension)');
             console.log(finalEpfEmployerEpf, 'finalEpfEmployerEpf (Share)');
@@ -2167,6 +2188,8 @@ export class PayrollService extends BaseService {
             epfEmployer: finalEpfEmployer,
             epfEmployerEps: finalEpfEmployerEps,
             epfEmployerEpf: finalEpfEmployerEpf,
+            voluntaryPfEnabled,
+            voluntaryPfEmployeeContribution,
             esiEmployee,
             esiEmployer,
             professionalTax,

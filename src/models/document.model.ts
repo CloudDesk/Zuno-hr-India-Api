@@ -28,6 +28,8 @@ export interface IDocument extends DocumentM {
                 bonus: number;
                 reimbursement: number;
             };
+            voluntaryPfEnabled?: boolean;
+            voluntaryPfEmployeeContribution?: number;
             isExport: boolean; // Tracks if payslip was exported/sent
             emailHistory?: Array<{
                 sentAt: Date;
