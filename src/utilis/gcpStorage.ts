@@ -72,6 +72,35 @@ export interface IGCPUploadResult {
   error?: string;
 }
 
+function parsePositiveInteger(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTransientUploadError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error || '');
+  const lowered = message.toLowerCase();
+  const code = typeof error === 'object' && error !== null && 'code' in error
+    ? Number((error as { code?: unknown }).code)
+    : undefined;
+
+  return (
+    lowered.includes('stream was destroyed') ||
+    lowered.includes('socket hang up') ||
+    lowered.includes('connection reset') ||
+    lowered.includes('timeout') ||
+    lowered.includes('econnreset') ||
+    lowered.includes('etimedout') ||
+    (typeof code === 'number' && [408, 429, 500, 502, 503, 504].includes(code))
+  );
+}
+
 /**
  * Upload file to GCP Cloud Storage with organized folder structure
  */
@@ -96,17 +125,50 @@ export async function uploadFileToGCP(params: IGCPUploadParams): Promise<IGCPUpl
     const bucket = storage.bucket(bucketName);
     const file = bucket.file(gcpFilePath);
 
-    const uploadTimeoutMs = Number(process.env.GCP_UPLOAD_TIMEOUT_MS ?? '60000'); // default 60s
-    const buffer = await fs.promises.readFile(filePath);
+    const uploadTimeoutMs = parsePositiveInteger(process.env.GCP_UPLOAD_TIMEOUT_MS, 180000);
+    const maxAttempts = parsePositiveInteger(process.env.GCP_UPLOAD_MAX_ATTEMPTS, 3);
+    let lastUploadError: unknown;
 
-    // Upload the file (use simple upload for small supporting docs; avoids resumable overhead)
-    await file.save(buffer, {
-      metadata: {
-        contentType: getContentType(fileName),
-      },
-      resumable: false,
-      timeout: uploadTimeoutMs,
-    });
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        const buffer = await fs.promises.readFile(filePath);
+
+        // Use simple upload for generated PDFs and supporting docs; disabling validation
+        // keeps the client from adding extra hash streams around small file uploads.
+        await file.save(buffer, {
+          metadata: {
+            contentType: getContentType(fileName),
+          },
+          resumable: false,
+          validation: false,
+          timeout: uploadTimeoutMs,
+        });
+
+        lastUploadError = undefined;
+        break;
+      } catch (error) {
+        lastUploadError = error;
+        const message = error instanceof Error ? error.message : String(error);
+        const shouldRetry = attempt < maxAttempts && isTransientUploadError(error);
+
+        if (!shouldRetry) {
+          throw error;
+        }
+
+        console.warn('GCP Upload transient error, retrying:', {
+          filePath: gcpFilePath,
+          attempt,
+          maxAttempts,
+          message,
+        });
+
+        await wait(Math.min(1000 * attempt, 5000));
+      }
+    }
+
+    if (lastUploadError) {
+      throw lastUploadError;
+    }
 
     if (makePublic) {
       try {
