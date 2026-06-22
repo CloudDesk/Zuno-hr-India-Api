@@ -1213,43 +1213,63 @@ export class LeaveService extends BaseService {
     // Update leave summary when leave is created
     console.log(leave, 'leave data 2 final');
 
+    console.log("first")
+    // Pass leaveType as-is to updateLeaveBalance - it will handle the mapping to camelCase
+    // The leaveType from frontend is already in camelCase (e.g., "lossOfPay")
+    await this.leaveSummaryService.updateLeaveBalance(
+      leave.userId as Types.ObjectId,
+      new Date(leave.startDate).getFullYear(),
+      leave.leaveType || '',
+      leave.noOfDays as number,
+      leave._id as Types.ObjectId
+    );
 
     //Email to Manager 
-    const manager: IUser = await User.findById(
-      new Types.ObjectId(leave.appliedTo?._id)
-    ).select('name email');
-    const applier: IUser = await User.findById(new Types.ObjectId(leave.userId)).select('name email');
+    const applier = await User.findById(new Types.ObjectId(leave.userId)).select('name email');
     //get the Recipient Email
     const appUrl = process.env.APP_URL || 'http://localhost:5173';
-    console.log(manager, "manager")
 
     // For restricted_holiday, use "holiday" terminology instead of "leave"
     const isRestrictedHoliday = leave.leaveType === 'restricted_holiday';
     const requestType = isRestrictedHoliday ? 'holiday' : 'leave';
     const requestTypeCapitalized = isRestrictedHoliday ? 'Holiday' : 'Leave';
 
-    const htmlContent = generateEmailTemplate('leaveApplyEmail', {
-      managerName: manager.name,
-      employeeName: applier.name,
-      leaveType: leave.leaveType,
-      fromDate: leave.startDate.toDateString(),
-      toDate: leave.endDate.toDateString(),
-      totalDays: leave.noOfDays,
-      reason: leave.reason,
-      approvalLink: `${appUrl}/manager/actions/leaves/${leave._id}`,
-      companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS',
-      appliedOnBehalf: leave.appliedOnBehalf || false,
-      appliedByName: leave.appliedBy?.name || '',
-    });
+    try {
+      const manager = leave.appliedTo?._id
+        ? await User.findById(new Types.ObjectId(leave.appliedTo._id)).select('name email')
+        : null;
+      console.log(manager, "manager")
 
-    await emailService.sendEmail({
-      body: {
-        to: manager.email,
-        subject: `${requestTypeCapitalized} Request from ${applier.name}`,
-        text: `${applier.name} has requested ${requestType} from ${leave.startDate.toDateString()} to ${leave.endDate.toDateString()} for ${leave.leaveType}.`,
-        html: htmlContent,
+      if (manager?.email && applier) {
+        const htmlContent = generateEmailTemplate('leaveApplyEmail', {
+          managerName: manager.name,
+          employeeName: applier.name,
+          leaveType: leave.leaveType,
+          fromDate: leave.startDate.toDateString(),
+          toDate: leave.endDate.toDateString(),
+          totalDays: leave.noOfDays,
+          reason: leave.reason,
+          approvalLink: `${appUrl}/manager/actions/leaves/${leave._id}`,
+          companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS',
+          appliedOnBehalf: leave.appliedOnBehalf || false,
+          appliedByName: leave.appliedBy?.name || '',
+        });
+
+        await emailService.sendEmail({
+          body: {
+            to: manager.email,
+            subject: `${requestTypeCapitalized} Request from ${applier.name}`,
+            text: `${applier.name} has requested ${requestType} from ${leave.startDate.toDateString()} to ${leave.endDate.toDateString()} for ${leave.leaveType}.`,
+            html: htmlContent,
+          }
+        });
+      } else {
+        console.warn(`Cannot send manager email: manager or applier missing for leave request ${leave._id}`);
       }
-    });
+    } catch (managerEmailError) {
+      console.error('Failed to send email to manager for leave request:', managerEmailError);
+      // Don't fail the leave request or summary update if manager email fails
+    }
 
     // Send Email Notification to All Admins
     try {
@@ -1299,7 +1319,7 @@ Request Details:
 - Total Days: ${leave.noOfDays}
 - Reason: ${leave.reason || 'N/A'}
 - Status: Pending${leave.appliedOnBehalf ? ' (Can be approved by Manager or Admin)' : ''}${appliedOnBehalfText}
-- Manager: ${manager?.name || 'N/A'}
+- Manager: ${leave.appliedTo?.name || 'N/A'}
 
 This is an automated notification for your records.
 
@@ -1322,17 +1342,6 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
       console.error('Failed to send email to admins for leave request:', adminEmailError);
       // Don't fail the request if admin email fails
     }
-
-    console.log("first")
-    // Pass leaveType as-is to updateLeaveBalance - it will handle the mapping to camelCase
-    // The leaveType from frontend is already in camelCase (e.g., "lossOfPay")
-    await this.leaveSummaryService.updateLeaveBalance(
-      leave.userId as Types.ObjectId,
-      new Date(leave.startDate).getFullYear(),
-      leave.leaveType || '',
-      leave.noOfDays as number,
-      leave._id as Types.ObjectId
-    );
 
     return this.findById(leave._id as string);
   }
