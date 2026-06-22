@@ -20,8 +20,7 @@ async function main(): Promise<void> {
 
   console.log('Pre-sync reconciliation report generated.');
   console.log(`Rows needing update: ${report.totals.rowsNeedingUpdate}`);
-  console.log(`Simple CSV: ${files.simpleCsv}`);
-  console.log(`Report JSON: ${files.json}`);
+  console.log(`Report CSV: ${files.reportCsv}`);
 
   const result = await applyReconciliationReport(report);
 

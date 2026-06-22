@@ -230,21 +230,21 @@ function buildSimpleReportRows(summaryRows: SummaryReportRow[]): Record<string, 
   return summaryRows
     .filter((row) => row.approvedDays > 0 || row.pendingDays > 0 || row.currentAvailed > 0 || row.needsUpdate)
     .map((row) => ({
-      employee: row.employeeName,
-      code: row.employeeCode,
-      email: row.email,
-      year: row.year,
-      leaveType: row.category,
-      allottedInDb: row.alloted,
-      approvedLeaveTaken: row.approvedDays,
-      pendingLeaveNow: row.pendingDays,
-      currentAvailedInDb: row.currentAvailed,
-      correctAvailedShouldBe: row.calculatedAvailed,
-      availedDifference: row.availedDiff,
-      currentRemainingInDb: row.currentRemaining,
-      correctRemainingShouldBe: row.calculatedRemaining,
-      remainingDifference: row.remainingDiff,
-      needsUpdate: row.needsUpdate,
+      'Employee Name': row.employeeName,
+      'Employee Code': row.employeeCode,
+      'Email': row.email,
+      'Year': row.year,
+      'Leave Type': row.category,
+      'Allotted in DB': row.alloted,
+      'Approved Leave Taken': row.approvedDays,
+      'Pending Leave Now': row.pendingDays,
+      'Current Availed in DB': row.currentAvailed,
+      'Correct Availed Should Be': row.calculatedAvailed,
+      'Availed Difference': row.availedDiff,
+      'Current Remaining in DB': row.currentRemaining,
+      'Correct Remaining Should Be': row.calculatedRemaining,
+      'Remaining Difference': row.remainingDiff,
+      'Action Required': row.needsUpdate ? 'Yes' : 'No',
     }));
 }
 
@@ -502,25 +502,17 @@ export async function buildReconciliationReport(
 export function writeReconciliationReport(
   report: ReconciliationReport,
   outDir = 'leave-summary-reconciliation-reports',
-): { directory: string; simpleCsv: string; summaryCsv: string; detailCsv: string; unknownCsv: string; json: string } {
+): { directory: string; reportCsv: string } {
   const resolvedDir = path.resolve(process.cwd(), outDir);
   fs.mkdirSync(resolvedDir, { recursive: true });
 
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const prefix = `leave-summary-reconciliation-${stamp}`;
-  const simpleCsv = path.join(resolvedDir, `${prefix}-simple.csv`);
-  const summaryCsv = path.join(resolvedDir, `${prefix}-summary.csv`);
-  const detailCsv = path.join(resolvedDir, `${prefix}-leave-details.csv`);
-  const unknownCsv = path.join(resolvedDir, `${prefix}-unknown-leave-types.csv`);
-  const json = path.join(resolvedDir, `${prefix}.json`);
+  const reportCsv = path.join(resolvedDir, `${prefix}.csv`);
 
-  writeCsv(simpleCsv, buildSimpleReportRows(report.summaryRows));
-  writeCsv(summaryCsv, report.summaryRows as unknown as Record<string, unknown>[]);
-  writeCsv(detailCsv, report.leaveDetails as unknown as Record<string, unknown>[]);
-  writeCsv(unknownCsv, report.unknownLeaveDetails as unknown as Record<string, unknown>[]);
-  fs.writeFileSync(json, JSON.stringify(report, null, 2), 'utf8');
+  writeCsv(reportCsv, buildSimpleReportRows(report.summaryRows));
 
-  return { directory: resolvedDir, simpleCsv, summaryCsv, detailCsv, unknownCsv, json };
+  return { directory: resolvedDir, reportCsv };
 }
 
 export async function applyReconciliationReport(report: ReconciliationReport): Promise<{

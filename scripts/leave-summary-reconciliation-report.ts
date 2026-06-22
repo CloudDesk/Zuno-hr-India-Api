@@ -18,11 +18,7 @@ async function main(): Promise<void> {
   console.log(`Unknown leave type rows: ${report.totals.unknownLeaveDetails}`);
   console.log(`Missing summary rows: ${report.totals.missingSummaryRows}`);
   console.log(`Output directory: ${files.directory}`);
-  console.log(`Simple CSV: ${files.simpleCsv}`);
-  console.log(`Summary CSV: ${files.summaryCsv}`);
-  console.log(`Leave details CSV: ${files.detailCsv}`);
-  console.log(`Unknown leave types CSV: ${files.unknownCsv}`);
-  console.log(`JSON: ${files.json}`);
+  console.log(`Report CSV: ${files.reportCsv}`);
 }
 
 main()
