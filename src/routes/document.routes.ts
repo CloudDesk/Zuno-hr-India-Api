@@ -91,6 +91,66 @@ interface getPayslipRequestBody {
     month: number,
     year: number
 }
+
+const FORM16_YEAR_FIELDS = ['financialYear', 'assessmentYear', 'assesmentYear'];
+const YEAR_RANGE_PATTERN = /^(\d{4})-(\d{2}|\d{4})$/;
+
+function getMultipartTextValue(value: unknown): string | undefined {
+    if (typeof value === 'string') {
+        const trimmed = value.trim();
+        return trimmed.length > 0 ? trimmed : undefined;
+    }
+
+    if (Array.isArray(value)) {
+        for (const item of value) {
+            const parsed = getMultipartTextValue(item);
+            if (parsed) {
+                return parsed;
+            }
+        }
+        return undefined;
+    }
+
+    if (value && typeof value === 'object' && 'value' in value) {
+        return getMultipartTextValue((value as { value?: unknown }).value);
+    }
+
+    return undefined;
+}
+
+function getForm16Year(body: unknown): string | undefined {
+    if (!body || typeof body !== 'object') {
+        return undefined;
+    }
+
+    const fields = body as Record<string, unknown>;
+    for (const fieldName of FORM16_YEAR_FIELDS) {
+        const value = getMultipartTextValue(fields[fieldName]);
+        if (value) {
+            return value;
+        }
+    }
+
+    return undefined;
+}
+
+function isValidYearRange(value: string): boolean {
+    const match = value.match(YEAR_RANGE_PATTERN);
+    if (!match) {
+        return false;
+    }
+
+    const startYear = Number(match[1]);
+    const endYearText = match[2];
+    const expectedEndYear = startYear + 1;
+
+    if (endYearText.length === 2) {
+        return Number(endYearText) === expectedEndYear % 100;
+    }
+
+    return Number(endYearText) === expectedEndYear;
+}
+
 interface IPreviewStatusRequest {
     Params: { id: string };
     Body: { isPreviewEnabled: boolean };
@@ -898,25 +958,19 @@ export const documentRoutes = async (
             try {
                 const file = (request as any).file;
                 console.log(file, "file");
-                const today = new Date();
-                const year = today.getFullYear();
-                const month = today.getMonth() + 1; // JS months are 0-based
+                const financialYear = getForm16Year(request.body);
+                if (!financialYear) {
+                    return reply.status(200).send({
+                        success: false,
+                        errors: [{ fileName: '', error: 'assessmentYear or financialYear is required.' }],
+                    });
+                }
 
-                const startYear = month >= 4 ? year : year - 1;
-                const endYear = startYear + 1;
-
-                const FY = `${startYear}-${endYear}`;
-
-                let financialYear: string;
-                if (
-                    typeof request.body === 'object' &&
-                    request.body !== null &&
-                    'financialYear' in request.body &&
-                    typeof (request.body as any).financialYear === 'string'
-                ) {
-                    financialYear = (request.body as any).financialYear;
-                } else {
-                    financialYear = FY;
+                if (!isValidYearRange(financialYear)) {
+                    return reply.status(200).send({
+                        success: false,
+                        errors: [{ fileName: '', error: 'assessmentYear/financialYear must be a consecutive year range in YYYY-YY or YYYY-YYYY format.' }],
+                    });
                 }
 
                 if (!file || !file.buffer) {
