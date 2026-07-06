@@ -4,7 +4,6 @@ import { RouteHandler } from '../types/routes';
 import { authenticate } from '../middleware/auth';
 import { ILeaveCreate, ILeaveQuery } from '../services/leave.service';
 import { leaveSummaryRoutes } from './leave-summary.routes';
-import { Leave } from '../models';
 import mongoose from 'mongoose';
 import { parseMultipartForm } from '../utilis/parseMultiPartForm';
 import { uploadFileToGCP } from '../utilis/gcpStorage';
@@ -775,8 +774,16 @@ export const leaveRoutes: RouteHandler = async (
           approvedBy: { _id: (request.user as any)._id, name: (request.user as any).name, email: (request.user as any).email },
         };
 
-        const leave = await request.container!.leaveService.updateStatus(id, updateData);
-        console.log(Leave, 'Leave data');
+        const leave = await request.container!.leaveService.updateStatus(id, updateData, {
+          sendEmails: false,
+        });
+
+        void request.container!.leaveService
+          .sendBulkLeaveStatusEmails([leave])
+          .catch((error: any) => {
+            request.log.error({ error }, 'Leave status email processing failed');
+          });
+
         return reply.send({
           success: true,
           data: leave,
