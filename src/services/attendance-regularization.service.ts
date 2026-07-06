@@ -35,6 +35,13 @@ interface RegularizationFilters {
     search?: string;
 }
 
+interface AssignedRegularizationListOptions {
+    page?: number;
+    limit?: number;
+    sortBy?: string;
+    sortOrder?: 'asc' | 'desc';
+}
+
 
 export class AttendanceRegularizationService extends BaseService {
     protected context: RequestContext;
@@ -249,7 +256,8 @@ export class AttendanceRegularizationService extends BaseService {
         date?: string,
         search?: string,
         startDate?: string,
-        endDate?: string
+        endDate?: string,
+        options: AssignedRegularizationListOptions = {}
     ) {
         // Validate approverId
         if (!Types.ObjectId.isValid(approverId)) {
@@ -320,17 +328,69 @@ export class AttendanceRegularizationService extends BaseService {
             query.$or = searchConditions;
         }
 
-        console.log(query, "query getAssignedRegularizationRecords")
-        // Fetch assigned regularization records
-        const records = await AttendanceRegularization.find(query)
-            .populate('userId', '_id name')
-            .lean();
-        console.log(records, "records getAssignedRegularizationRecords")
-        if (!records.length) {
-            return [];
-        }
+        const page = Math.max(1, Number(options.page) || 1);
+        const limit = Math.min(Math.max(1, Number(options.limit) || 10), 100);
+        const skip = (page - 1) * limit;
+        const sortDirection = options.sortOrder === 'asc' ? 1 : -1;
+        const sortFieldMap: Record<string, string> = {
+            shiftDay: 'shiftDay',
+            from: 'from',
+            to: 'to',
+            reason: 'reason',
+            status: 'status',
+            createdAt: 'createdAt',
+            userName: 'user.name',
+            user: 'user.name',
+        };
 
-        return records.map(record => ({
+        const sortField = options.sortBy ? sortFieldMap[options.sortBy] : undefined;
+        const sortStage: Record<string, 1 | -1> = sortField
+            ? { [sortField]: sortDirection, _id: -1 }
+            : status === undefined
+                ? { statusRank: 1, createdAt: -1, shiftDay: -1, _id: -1 }
+                : { createdAt: -1, shiftDay: -1, _id: -1 };
+
+        const [records, total] = await Promise.all([
+            AttendanceRegularization.aggregate([
+                { $match: query },
+                {
+                    $lookup: {
+                        from: 'users',
+                        localField: 'userId',
+                        foreignField: '_id',
+                        as: 'user',
+                        pipeline: [{ $project: { _id: 1, name: 1 } }]
+                    }
+                },
+                { $unwind: { path: '$user', preserveNullAndEmptyArrays: true } },
+                {
+                    $addFields: {
+                        statusRank: { $cond: [{ $eq: ['$status', 'Pending'] }, 0, 1] }
+                    }
+                },
+                { $sort: sortStage },
+                { $skip: skip },
+                { $limit: limit },
+                {
+                    $project: {
+                        attendanceId: 1,
+                        shiftDay: 1,
+                        from: 1,
+                        to: 1,
+                        reason: 1,
+                        status: 1,
+                        approver: 1,
+                        approvedDate: 1,
+                        comments: 1,
+                        userId: '$user._id',
+                        userName: '$user.name'
+                    }
+                }
+            ]),
+            AttendanceRegularization.countDocuments(query)
+        ]);
+
+        const data = records.map(record => ({
             _id: record._id.toString(),
             attendanceId: record.attendanceId?.toString(),
             shiftDay: record.shiftDay.toISOString(),
@@ -341,9 +401,19 @@ export class AttendanceRegularizationService extends BaseService {
             approver: record.approver,
             approvedDate: record.approvedDate ? record.approvedDate.toISOString() : null,
             comments: record.comments || null,
-            userId: record.userId?._id?.toString() || '',
-            userName: (record.userId && typeof record.userId !== 'string' && 'name' in record.userId) ? record.userId.name : ''
+            userId: record.userId?.toString() || '',
+            userName: record.userName || ''
         }));
+
+        return {
+            data,
+            meta: {
+                page,
+                limit,
+                total,
+                totalPages: Math.ceil(total / limit)
+            }
+        };
     }
 
     async getRegularizationRecordById(id: string, user: any) {

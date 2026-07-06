@@ -76,6 +76,11 @@ const attendanceRegularizationSchema = new Schema<IAttendanceRegularization>(
     }
 );
 
+attendanceRegularizationSchema.index({ 'approver.id': 1, status: 1, createdAt: -1 });
+attendanceRegularizationSchema.index({ 'approver.id': 1, status: 1, shiftDay: -1 });
+attendanceRegularizationSchema.index({ status: 1, createdAt: -1 });
+attendanceRegularizationSchema.index({ userId: 1, shiftDay: -1 });
+
 export const AttendanceRegularization = model<IAttendanceRegularization>('AttendanceRegularization', attendanceRegularizationSchema);
 
 //2-5
