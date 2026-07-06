@@ -18,7 +18,15 @@ const DEFAULT_PUPPETEER_ARGS = [
     '--metrics-recording-only',
     '--mute-audio',
     '--hide-scrollbars',
-    '--disable-software-rasterizer'
+    '--disable-software-rasterizer',
+    '--disable-component-update',
+    '--disable-default-apps',
+    '--disable-dev-tools',
+    '--no-default-browser-check',
+    '--password-store=basic',
+    '--use-mock-keychain',
+    '--single-process',
+    '--disable-features=UseDBus,Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints'
 ];
 
 const LOCAL_PUPPETEER_CACHE_DIR =
