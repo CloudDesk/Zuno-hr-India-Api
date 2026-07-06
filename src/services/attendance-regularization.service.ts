@@ -1014,7 +1014,8 @@ ${companyName}`;
         regularizationId: Types.ObjectId,
         status: 'Approved' | 'Rejected',
         approver: { id: Types.ObjectId; name: string },
-        comments?: string
+        comments?: string,
+        options: { sendEmails?: boolean; backgroundEmails?: boolean } = {}
     ): Promise<IAttendanceRegularization> {
         const regularization = await AttendanceRegularization.findById(regularizationId);
         console.log(regularization, "1 get Regularization record ")
@@ -1041,13 +1042,31 @@ ${companyName}`;
             await this.handleApproval(regularization);
         }
 
+        if (options.sendEmails !== false) {
+            const emailTask = this.sendRegularizationStatusEmails(regularization, approver);
+            if (options.backgroundEmails === false) {
+                await emailTask;
+            } else {
+                void emailTask.catch((emailError) => {
+                    console.error('Background attendance regularization status email failed:', emailError);
+                });
+            }
+        }
+
+        return regularization;
+    }
+
+    private async sendRegularizationStatusEmails(
+        regularization: IAttendanceRegularization,
+        approver: { id: Types.ObjectId; name: string }
+    ): Promise<void> {
         // Send email notification to employee (the person who applied)
         try {
             // 1. Fetch employee user details
             const employee = await User.findById(regularization.userId).select('name email');
             if (!employee?.email) {
                 console.warn(`Cannot send email: Employee not found or email missing for userId: ${regularization.userId}`);
-                return regularization; // Exit if no email
+                return; // Exit if no email
             }
 
             // Get user details for timezone formatting
@@ -1178,8 +1197,207 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
             console.error('Failed to send email to admins for attendance regularization:', adminEmailError);
             // Don't fail the request if admin email fails
         }
+    }
 
-        return regularization;
+    private async sendBulkRegularizationStatusEmails(
+        regularizations: IAttendanceRegularization[],
+        approver: { id: Types.ObjectId; name: string }
+    ): Promise<void> {
+        try {
+            const userIds = [...new Set(
+                regularizations
+                    .map((regularization) => regularization.userId?.toString())
+                    .filter(Boolean)
+            )];
+
+            if (userIds.length === 0) {
+                return;
+            }
+
+            const [admins, users] = await Promise.all([
+                User.find({
+                    $or: [
+                        { role: 'admin' },
+                        { isSuperAdmin: true }
+                    ],
+                    active: true
+                }).select('name email').lean(),
+                User.find({
+                    _id: { $in: userIds.map((id) => new Types.ObjectId(id)) }
+                }).select('name email country').lean()
+            ]);
+
+            const adminEmails = admins.map(admin => admin.email).filter(Boolean);
+            const usersById = new Map(users.map((user: any) => [user._id.toString(), user]));
+
+            const emailResults = await Promise.allSettled(
+                regularizations.map(async (regularization) => {
+                    const employee: any = usersById.get(regularization.userId?.toString());
+                    if (!employee?.email) {
+                        console.warn(`Cannot send email: Employee not found or email missing for userId: ${regularization.userId}`);
+                        return;
+                    }
+
+                    const userCountry = employee.country || 'IN';
+                    const shiftDayFormatted = regularization.shiftDay.toLocaleDateString('en-US', {
+                        weekday: 'long',
+                        year: 'numeric',
+                        month: 'long',
+                        day: 'numeric'
+                    });
+
+                    const fromTimeFormatted = this.formatTimeLocal(regularization.from, userCountry);
+                    const toTimeFormatted = this.formatTimeLocal(regularization.to, userCountry);
+
+                    const htmlContent = generateEmailTemplate('attendanceRegularizeApproval', {
+                        employeeName: employee.name,
+                        approverName: approver.name,
+                        shiftDay: shiftDayFormatted,
+                        fromTime: fromTimeFormatted,
+                        toTime: toTimeFormatted,
+                        reason: regularization.reason,
+                        comments: regularization.comments || '',
+                        status: regularization.status,
+                        companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS'
+                    });
+
+                    const textContent = `Dear ${employee.name},
+
+Your attendance regularization request has been ${regularization.status.toLowerCase()} by ${approver.name}.
+
+Regularization Details:
+- Date: ${shiftDayFormatted}
+- From Time: ${fromTimeFormatted}
+- To Time: ${toTimeFormatted}
+- Reason: ${regularization.reason}
+${regularization.comments ? `- Comments: ${regularization.comments}` : ''}
+
+${regularization.status === 'Approved'
+                            ? '✅ Your attendance regularization has been approved. The attendance record has been updated accordingly.'
+                            : '❌ Your attendance regularization request has been rejected. The attendance record remains unchanged.'}
+
+Thank you for your understanding.
+
+Regards,
+${approver.name}
+${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
+
+                    await emailService.sendEmail({
+                        body: {
+                            to: employee.email,
+                            subject: `Your Attendance Regularization has been ${regularization.status}`,
+                            text: textContent,
+                            html: htmlContent
+                        }
+                    });
+
+                    if (adminEmails.length > 0) {
+                        const adminEmailText = `Dear Admin,
+
+An attendance regularization request has been ${regularization.status.toLowerCase()} by ${approver.name}.
+
+Request Details:
+- Employee: ${employee.name} (${employee.email})
+- Date: ${shiftDayFormatted}
+- From Time: ${fromTimeFormatted}
+- To Time: ${toTimeFormatted}
+- Reason: ${regularization.reason}
+- Status: ${regularization.status}
+${regularization.comments ? `- Comments: ${regularization.comments}` : ''}
+- Approved/Rejected By: ${approver.name}
+
+This is an automated notification for your records.
+
+Regards,
+${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
+
+                        await emailService.sendEmail({
+                            body: {
+                                to: adminEmails,
+                                subject: `Attendance Regularization ${regularization.status} - ${employee.name}`,
+                                text: adminEmailText,
+                                html: adminEmailText.replace(/\n/g, '<br>'),
+                            }
+                        });
+                    }
+                })
+            );
+
+            const failedEmails = emailResults.filter((result) => result.status === 'rejected').length;
+            if (failedEmails > 0) {
+                console.error(`Bulk regularization background email failed for ${failedEmails} request(s)`);
+            }
+        } catch (emailError) {
+            console.error('Failed to send bulk attendance regularization status emails:', emailError);
+        }
+    }
+
+    async bulkUpdateRegularizationStatus(
+        regularizationIds: string[],
+        status: 'Approved' | 'Rejected',
+        approver: { id: Types.ObjectId; name: string },
+        comments?: string
+    ): Promise<{
+        total: number;
+        successCount: number;
+        failureCount: number;
+        results: Array<{
+            id: string;
+            success: boolean;
+            regularization?: IAttendanceRegularization;
+            error?: string;
+        }>;
+    }> {
+        const uniqueIds = [...new Set((regularizationIds || []).filter(Boolean))];
+
+        if (uniqueIds.length === 0) {
+            throw new Error('At least one regularization ID is required');
+        }
+
+        const results = [];
+        const successfulRegularizations: IAttendanceRegularization[] = [];
+
+        for (const id of uniqueIds) {
+            try {
+                if (!Types.ObjectId.isValid(id)) {
+                    throw new Error('Invalid regularization ID');
+                }
+
+                const regularization = await this.updateRegularizationStatus(
+                    new Types.ObjectId(id),
+                    status,
+                    approver,
+                    comments,
+                    { sendEmails: false }
+                );
+
+                successfulRegularizations.push(regularization);
+                results.push({
+                    id,
+                    success: true,
+                    regularization
+                });
+            } catch (error: any) {
+                results.push({
+                    id,
+                    success: false,
+                    error: error.message || 'Failed to update regularization'
+                });
+            }
+        }
+
+        if (successfulRegularizations.length > 0) {
+            void this.sendBulkRegularizationStatusEmails(successfulRegularizations, approver);
+        }
+
+        const successCount = results.filter((result) => result.success).length;
+
+        return {
+            total: uniqueIds.length,
+            successCount,
+            failureCount: uniqueIds.length - successCount,
+            results
+        };
     }
 
 

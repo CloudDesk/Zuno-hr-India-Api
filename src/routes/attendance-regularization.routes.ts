@@ -254,6 +254,70 @@ export const attendanceRegularizeRoutes: RouteHandler = async (
         }
     );
 
+    // Bulk update regularization status
+    fastify.put(
+        '/bulk/status',
+        {
+            onRequest: [authenticate],
+            schema: {
+                tags: ['Biometric Attendance'],
+                summary: 'Bulk update regularization status',
+                description: 'Approve or reject multiple attendance regularization requests using the same validation flow as single update.',
+                body: {
+                    type: 'object',
+                    required: ['ids', 'status', 'approver'],
+                    properties: {
+                        ids: {
+                            type: 'array',
+                            minItems: 1,
+                            items: { type: 'string' },
+                            description: 'Regularization request IDs'
+                        },
+                        status: {
+                            type: 'string',
+                            enum: ['Approved', 'Rejected'],
+                            description: 'New status for selected regularization requests'
+                        },
+                        approver: {
+                            type: 'object',
+                            required: ['id', 'name'],
+                            properties: {
+                                id: { type: 'string', description: 'Approver ID' },
+                                name: { type: 'string', description: 'Approver name' }
+                            }
+                        },
+                        comments: {
+                            type: 'string',
+                            description: 'Optional comments'
+                        }
+                    }
+                }
+            }
+        },
+        async (request, reply) => {
+            try {
+                const { ids, status, approver, comments } = request.body as any;
+
+                const result = await request.container!.attendanceRegularizationService.bulkUpdateRegularizationStatus(
+                    ids,
+                    status,
+                    approver,
+                    comments
+                );
+
+                return reply.send({
+                    success: result.failureCount === 0,
+                    data: result
+                });
+            } catch (error: any) {
+                return reply.status(400).send({
+                    success: false,
+                    error: { message: error.message }
+                });
+            }
+        }
+    );
+
     // Update regularization status
     fastify.put(
         '/:id/status',
