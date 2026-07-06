@@ -257,6 +257,7 @@ export class AttendanceRegularizationService extends BaseService {
         search?: string,
         startDate?: string,
         endDate?: string,
+        statuses?: string,
         options: AssignedRegularizationListOptions = {}
     ) {
         // Validate approverId
@@ -266,8 +267,26 @@ export class AttendanceRegularizationService extends BaseService {
 
         // Build query — omit status filter entirely when undefined (= "All")
         const query: any = {};
+        let statusArray: string[] = [];
 
-        if (status !== undefined) {
+        if (statuses) {
+            const validStatuses = ['Pending', 'Approved', 'Rejected', 'Rejected-Absent', 'Rejected-Leave', 'Withdrawn'];
+            statusArray = statuses
+                .split(',')
+                .map((item) => item.trim())
+                .filter(Boolean);
+            const invalidStatuses = statusArray.filter((item) => !validStatuses.includes(item));
+
+            if (invalidStatuses.length > 0) {
+                throw new Error(`Invalid status values: ${invalidStatuses.join(', ')}`);
+            }
+
+            if (statusArray.length === 1) {
+                query.status = statusArray[0];
+            } else if (statusArray.length > 1) {
+                query.status = { $in: statusArray };
+            }
+        } else if (status !== undefined) {
             query.status = status;
         }
 
@@ -346,7 +365,7 @@ export class AttendanceRegularizationService extends BaseService {
         const sortField = options.sortBy ? sortFieldMap[options.sortBy] : undefined;
         const sortStage: Record<string, 1 | -1> = sortField
             ? { [sortField]: sortDirection, _id: -1 }
-            : status === undefined
+            : status === undefined || statusArray.length > 1
                 ? { statusRank: 1, createdAt: -1, shiftDay: -1, _id: -1 }
                 : { createdAt: -1, shiftDay: -1, _id: -1 };
 

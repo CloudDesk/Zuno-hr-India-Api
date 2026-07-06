@@ -629,6 +629,7 @@ export const attendanceRegularizeRoutes: RouteHandler = async (
         Params: { approverId: string };
         Querystring: {
             status?: 'Pending' | 'Approved' | 'Rejected' | 'Rejected-Absent' | 'Rejected-Leave' | 'Withdrawn';
+            statuses?: string;
             allStatus?: boolean;
             date?: string;
             startDate?: string;
@@ -663,6 +664,10 @@ export const attendanceRegularizeRoutes: RouteHandler = async (
                             enum: ['Pending', 'Approved', 'Rejected', 'Rejected-Absent', 'Rejected-Leave', 'Withdrawn'],
                             default: 'Pending',
                             description: 'Filter by regularization status'
+                        },
+                        statuses: {
+                            type: 'string',
+                            description: 'Comma-separated list of statuses to filter by'
                         },
                         allStatus: {
                             type: 'boolean',
@@ -775,7 +780,7 @@ export const attendanceRegularizeRoutes: RouteHandler = async (
         async (request, reply) => {
             try {
                 const { approverId } = request.params;
-                const { status = 'Pending', allStatus, date, search, startDate, endDate, isAdmin, page, limit, sortBy, sortOrder } = request.query as any;
+                const { status = 'Pending', statuses, allStatus, date, search, startDate, endDate, isAdmin, page, limit, sortBy, sortOrder } = request.query as any;
 
                 // Ensure boolean flags are correctly parsed from strings if necessary
                 const isAllStatus = String(allStatus) === 'true';
@@ -791,6 +796,7 @@ export const attendanceRegularizeRoutes: RouteHandler = async (
                     search,
                     startDate,
                     endDate,
+                    isAllStatus ? undefined : statuses,
                     {
                         page: pageNum,
                         limit: limitNum,
