@@ -643,6 +643,108 @@ export const leaveRoutes: RouteHandler = async (
     },
   );
 
+  // Bulk approve/reject leave requests
+  fastify.put(
+    '/bulk/status',
+    {
+      onRequest: [authenticate],
+      schema: {
+        tags: ['Leave Management'],
+        summary: 'Bulk approve/reject leave requests',
+        description: 'Approve or reject multiple leave requests using the same single-request business logic',
+        body: {
+          type: 'object',
+          required: ['ids', 'status'],
+          properties: {
+            ids: {
+              type: 'array',
+              minItems: 1,
+              items: { type: 'string' },
+            },
+            status: { type: 'string', enum: ['Approved', 'Rejected'] },
+            remarks: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      try {
+        const { ids, status, remarks } = request.body as {
+          ids: string[];
+          status: 'Approved' | 'Rejected';
+          remarks?: string;
+        };
+
+        const uniqueIds = Array.from(new Set(ids.filter(Boolean)));
+        if (uniqueIds.length === 0) {
+          return reply.status(400).send({
+            success: false,
+            error: { message: 'No leave request IDs provided' },
+          });
+        }
+
+        const results: Array<{ id: string; success: boolean; data?: any; error?: string }> = [];
+        const successfulLeaves: any[] = [];
+        for (const id of uniqueIds) {
+          try {
+            const leave = await request.container!.leaveService.updateStatus(id, {
+              status,
+              remarks,
+              approvedById: new Types.ObjectId((request.user as any)._id),
+              approvedBy: {
+                _id: (request.user as any)._id,
+                name: (request.user as any).name,
+                email: (request.user as any).email,
+              },
+            }, {
+              sendEmails: false,
+            });
+
+            successfulLeaves.push(leave);
+            results.push({
+              id,
+              success: true,
+              data: leave,
+            });
+          } catch (error: any) {
+            results.push({
+              id,
+              success: false,
+              error: error.message,
+            });
+          }
+        }
+
+        const successCount = results.filter((result) => result.success).length;
+        const failureCount = results.length - successCount;
+
+        console.log(`Bulk leave ${status}: ${successCount} succeeded, ${failureCount} failed.`);
+
+        if (successfulLeaves.length > 0) {
+          void request.container!.leaveService
+            .sendBulkLeaveStatusEmails(successfulLeaves)
+            .catch((error: any) => {
+              request.log.error({ error }, 'Bulk leave status email processing failed');
+            });
+        }
+
+        return reply.send({
+          success: successCount > 0,
+          data: {
+            successCount,
+            failureCount,
+            results,
+          },
+        });
+      } catch (error: any) {
+        return reply.status(400).send({
+          success: false,
+          error: { message: error.message },
+        });
+      }
+    },
+  );
+
   // Approve/Reject leave request
   fastify.put(
     '/:id/status',
@@ -1052,6 +1154,8 @@ export const leaveRoutes: RouteHandler = async (
             endDate: { type: 'string', format: 'date' },
             page: { type: 'number', minimum: 1, default: 1 },
             limit: { type: 'number', minimum: 1, maximum: 100, default: 5 },
+            sortBy: { type: 'string' },
+            sortOrder: { type: 'string', enum: ['asc', 'desc'] },
             search: {
               description: 'Search by employee name, leave type, reason, manager name, or status'
             },
@@ -1114,7 +1218,7 @@ export const leaveRoutes: RouteHandler = async (
     async (request, reply) => {
       try {
         const { appliedTo } = request.params as { appliedTo: string };
-        const { userId, status, startDate, endDate, page, limit, search } = request.query as any;
+        const { userId, status, startDate, endDate, page, limit, search, sortBy, sortOrder } = request.query as any;
         // Normalize search parameter (handle case where it might be an array from duplicate query params)
         const normalizedSearch = search ? (Array.isArray(search) ? search[0] : search) : undefined;
 
@@ -1127,6 +1231,8 @@ export const leaveRoutes: RouteHandler = async (
           page: page ? Number(page) : undefined,
           limit: limit ? Number(limit) : undefined,
           search: normalizedSearch,
+          sortBy,
+          sort: sortOrder,
         };
 
         const leaveData = await request.container!.leaveService.getLeavesByAppliedTo(query);
