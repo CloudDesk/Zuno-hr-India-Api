@@ -9,7 +9,16 @@ const DEFAULT_PUPPETEER_ARGS = [
     '--disable-dev-shm-usage',
     '--disable-gpu',
     '--no-first-run',
-    '--no-zygote'
+    '--no-zygote',
+    '--disable-crashpad',
+    '--disable-crash-reporter',
+    '--disable-background-networking',
+    '--disable-extensions',
+    '--disable-sync',
+    '--metrics-recording-only',
+    '--mute-audio',
+    '--hide-scrollbars',
+    '--disable-software-rasterizer'
 ];
 
 const LOCAL_PUPPETEER_CACHE_DIR =
