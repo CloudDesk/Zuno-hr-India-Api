@@ -1,0 +1,28 @@
+Employee Name,Employee Code,Email,Country,Year,Leave Type,Current Allotted in DB,Reduction Days,New Allotted Should Be,Actual Reduction,Current Availed in DB,Current Remaining in DB,New Remaining Should Be,Action
+Suresh Kumar,CD0143,sureshkumar@clouddesk.ae,IN,2026,annual,22.5,4.5,18,4.5,10,12.5,8,Excluded
+Pandishree Satish,CD0122,pandishree@clouddesk.ae,IN,2026,annual,23,4.5,18.5,4.5,7,16,11.5,Will update
+Divya Dharshni,CD0238,divyadharshni@clouddesk.ae,IN,2026,annual,15,4.5,10.5,4.5,15,0,0,Will update
+Sriram,CD0235,sriram@clouddesk.ae,IN,2026,annual,23,4.5,18.5,4.5,7,16,11.5,Will update
+Manikandan R S,CD0209,manikandan@clouddesk.ae,IN,2026,annual,23,4.5,18.5,4.5,6,17,12.5,Will update
+Harish Raja,CD0174,harish@clouddesk.ae,IN,2026,annual,23,4.5,18.5,4.5,7,16,11.5,Will update
+Kamesh Kamalakannan,CD0208,kamesh@clouddesk.ae,IN,2026,annual,23,4.5,18.5,4.5,6,17,12.5,Will update
+Ambuja Kamatchi,CD0244,ambujakamatchi@clouddesk.ae,IN,2026,annual,23,4.5,18.5,4.5,6.5,16.5,12,Will update
+Pravin Raja,CD0128,pravinraja@clouddesk.ae,IN,2026,annual,23,4.5,18.5,4.5,5.5,17.5,13,Will update
+Chandru Sinivasan,CD0218,chandru@clouddesk.ae,IN,2026,annual,10,4.5,5.5,4.5,10,0,0,Will update
+Pavithra M,CD0245,pavithra.m@clouddesk.ae,IN,2026,annual,23,4.5,18.5,4.5,6,17,12.5,Will update
+Wajidth Raja Abbas,CD0026,wajidthraja@clouddesk.ae,IN,2026,annual,23,4.5,18.5,4.5,8,15,10.5,Will update
+Deepika Manohar,CD0308,deepika@clouddesk.ae,IN,2026,annual,18.5,4.5,14,4.5,6,12.5,8,Will update
+CD- HR,CD-HR,myhr@clouddesk.ae,IN,2026,annual,0,4.5,0,0,0,0,0,No change
+Hari Arivalagan,CD0307,hari.arivalagan@clouddesk.ae,IN,2026,annual,9.5,4.5,5,4.5,3,6.5,2,Will update
+Mohamed Fazil,CD0214,fazil@clouddesk.ae,IN,2026,annual,23,4.5,18.5,4.5,7,16,11.5,Will update
+Vinith Kumar,CD0227,vinith@clouddesk.ae,IN,2026,annual,13,4.5,8.5,4.5,9.5,3.5,0,Will update
+Hariharanarayanan Rajasekar,CD0055,hariharanarayanan@clouddesk.ae,IN,2026,annual,23,4.5,18.5,4.5,12,11,6.5,Will update
+Sachithanandham Kumaraguruparan,CD0099,sachi@clouddesk.in,IN,2026,annual,23,4.5,18.5,4.5,8.5,14.5,10,Will update
+Kanitha Priya,CD0206,kanitha@clouddesk.ae,IN,2026,annual,23,4.5,18.5,4.5,10,13,8.5,Will update
+Premkumar,CD0030,premkumar@clouddesk.ae,IN,2026,annual,21,4.5,16.5,4.5,8,13,8.5,Will update
+Gunasekaraselvapandian A,IN1,gssp02826@gmail.com,IN,2026,annual,0,4.5,0,0,0,0,0,No change
+Jeyakumar Nagalingam,CD0035,jeyakumar@clouddesk.ae,IN,2026,annual,13.5,4.5,9,4.5,0,13.5,9,Will update
+Satish Kumar S,CD0313,satish@clouddesk.ae,IN,2026,annual,4.5,4.5,0,4.5,0,4.5,0,Will update
+Shyamala Devi,CD0312,jeyakumar@clouddesk.ae,IN,2026,annual,13.5,4.5,9,4.5,0,13.5,9,Will update
+,,,,2026,annual,0,4.5,0,0,0,0,0,No change
+,,,,2026,annual,0,4.5,0,0,0,0,0,No change

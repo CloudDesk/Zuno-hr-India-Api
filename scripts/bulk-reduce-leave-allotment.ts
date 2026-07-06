@@ -36,6 +36,7 @@ interface Options {
   outDir: string;
   userId?: string;
   employeeCode?: string;
+  excludeEmployeeCodes: string[];
 }
 
 interface ReportRow {
@@ -62,6 +63,7 @@ function parseArgs(argv: string[]): Options {
     days: 4.5,
     confirm: false,
     outDir: 'leave-summary-reconciliation-reports',
+    excludeEmployeeCodes: [],
   };
 
   for (const arg of argv) {
@@ -77,6 +79,12 @@ function parseArgs(argv: string[]): Options {
       options.userId = arg.slice('--userId='.length);
     } else if (arg.startsWith('--employeeCode=')) {
       options.employeeCode = arg.slice('--employeeCode='.length);
+    } else if (arg.startsWith('--excludeEmployeeCodes=')) {
+      options.excludeEmployeeCodes = arg
+        .slice('--excludeEmployeeCodes='.length)
+        .split(',')
+        .map((code) => code.trim())
+        .filter(Boolean);
     } else if (arg === '--confirm') {
       options.confirm = true;
     }
@@ -96,6 +104,9 @@ function parseArgs(argv: string[]): Options {
   }
   if (options.userId && options.employeeCode) {
     throw new Error('Use either --userId or --employeeCode, not both');
+  }
+  if ((options.userId || options.employeeCode) && options.excludeEmployeeCodes.length > 0) {
+    throw new Error('Exclude list is only for bulk runs. Do not combine it with --userId or --employeeCode');
   }
 
   return options;
@@ -177,6 +188,7 @@ async function main(): Promise<void> {
     .select('name email employeeCode country')
     .lean();
   const userMap = new Map(users.map((user: any) => [String(user._id), user]));
+  const excludeEmployeeCodeSet = new Set(options.excludeEmployeeCodes);
 
   const rows: ReportRow[] = summaries.map((summary: any) => {
     const category = summary[options.leaveType] || {};
@@ -189,7 +201,10 @@ async function main(): Promise<void> {
     const user: any = userMap.get(String(summary.userId)) || {};
 
     let action = 'Will update';
-    if (actualReduction === 0) {
+    const isExcluded = excludeEmployeeCodeSet.has(user.employeeCode || '');
+    if (isExcluded) {
+      action = 'Excluded';
+    } else if (actualReduction === 0) {
       action = 'No change';
     } else if (actualReduction < options.days) {
       action = 'Will update, clamped to zero';
@@ -233,6 +248,9 @@ async function main(): Promise<void> {
   if (options.employeeCode) {
     console.log(`Employee Code: ${options.employeeCode}`);
   }
+  if (options.excludeEmployeeCodes.length > 0) {
+    console.log(`Excluded Employee Codes: ${options.excludeEmployeeCodes.join(', ')}`);
+  }
   console.log(`Employees in report: ${rows.length}`);
   console.log(`Report CSV: ${reportPath}`);
 
@@ -244,6 +262,11 @@ async function main(): Promise<void> {
   let updated = 0;
   for (const summary of summaries as any[]) {
     const category = summary[options.leaveType] || {};
+    const user: any = userMap.get(String(summary.userId)) || {};
+    if (excludeEmployeeCodeSet.has(user.employeeCode || '')) {
+      continue;
+    }
+
     const currentAllotted = numberValue(category.alloted);
     const currentAvailed = numberValue(category.availed);
     const newAllotted = roundDays(Math.max(0, currentAllotted - options.days));
