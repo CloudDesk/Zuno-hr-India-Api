@@ -44,6 +44,7 @@ const KNOWN_BROWSER_PATHS = [
 export interface PuppeteerRuntimeConfig {
     launchOptions: LaunchOptions;
     executablePath?: string;
+    transport: 'pipe' | 'websocket';
     browserReuse: boolean;
     defaultTimeoutMs: number;
     navigationTimeoutMs: number;
@@ -70,7 +71,6 @@ export function getPuppeteerLaunchOptions(): LaunchOptions {
     return {
         headless: true,
         executablePath,
-        pipe: true,
         timeout: 60000,
         args: DEFAULT_PUPPETEER_ARGS
     };
@@ -102,6 +102,7 @@ export function getPuppeteerRuntimeConfig(): PuppeteerRuntimeConfig {
     return {
         launchOptions,
         executablePath: launchOptions.executablePath,
+        transport: launchOptions.pipe ? 'pipe' : 'websocket',
         browserReuse: process.env.PUPPETEER_BROWSER_REUSE !== 'false',
         defaultTimeoutMs: parsePositiveInteger(process.env.PUPPETEER_DEFAULT_TIMEOUT_MS, 30000),
         navigationTimeoutMs: parsePositiveInteger(process.env.PUPPETEER_NAVIGATION_TIMEOUT_MS, 30000),

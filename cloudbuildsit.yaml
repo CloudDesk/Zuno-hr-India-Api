@@ -42,7 +42,7 @@ steps:
       - '--execution-environment'
       - 'gen2'
       - '--memory'
-      - '1Gi'
+      - '2Gi'
       - '--cpu'
       - '1'
       - '--set-env-vars'
