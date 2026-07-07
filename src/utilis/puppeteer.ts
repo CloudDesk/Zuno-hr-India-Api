@@ -9,11 +9,23 @@ const DEFAULT_PUPPETEER_ARGS = [
     '--disable-dev-shm-usage',
     '--disable-gpu',
     '--no-first-run',
-    '--no-zygote'
+    '--no-zygote',
+    '--disable-crashpad',
+    '--disable-crash-reporter',
+    '--disable-background-networking',
+    '--disable-extensions',
+    '--disable-sync',
+    '--metrics-recording-only',
+    '--mute-audio',
+    '--hide-scrollbars',
+    '--disable-software-rasterizer',
+    '--disable-features=UseDBus'
 ];
 
 const LOCAL_PUPPETEER_CACHE_DIR =
     process.env.PUPPETEER_CACHE_DIR || path.join(os.homedir(), '.cache', 'puppeteer');
+const CHROMIUM_USER_DATA_DIR =
+    process.env.PUPPETEER_USER_DATA_DIR || path.join('/tmp', 'puppeteer-user-data');
 
 const KNOWN_BROWSER_PATHS = [
     process.env.PUPPETEER_EXECUTABLE_PATH,
@@ -53,7 +65,8 @@ export function getPuppeteerLaunchOptions(): LaunchOptions {
     return {
         headless: true,
         executablePath,
-        args: DEFAULT_PUPPETEER_ARGS
+        args: DEFAULT_PUPPETEER_ARGS,
+        userDataDir: CHROMIUM_USER_DATA_DIR
     };
 }
 
