@@ -60,7 +60,8 @@ ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
     PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
     HOME=/home/appuser \
     XDG_CONFIG_HOME=/tmp/.chromium \
-    XDG_CACHE_HOME=/tmp/.chromium-cache
+    XDG_CACHE_HOME=/tmp/.chromium-cache \
+    XDG_RUNTIME_DIR=/tmp/.chromium-runtime
  
  
 # Set the working directory
@@ -87,8 +88,8 @@ COPY --from=builder /app/*.docx ./
 # Create uploads directory and non-root user for security
 RUN mkdir -p /app/uploads && \
     groupadd -r appuser && useradd -r -g appuser appuser && \
-    mkdir -p /home/appuser/Downloads /tmp/.chromium /tmp/.chromium-cache && \
-    chown -R appuser:appuser /app /home/appuser /tmp/.chromium /tmp/.chromium-cache
+    mkdir -p /home/appuser/Downloads /tmp/.chromium /tmp/.chromium-cache /tmp/.chromium-runtime && \
+    chown -R appuser:appuser /app /home/appuser /tmp/.chromium /tmp/.chromium-cache /tmp/.chromium-runtime
  
 USER appuser
  

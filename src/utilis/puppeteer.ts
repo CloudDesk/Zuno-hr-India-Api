@@ -9,7 +9,24 @@ const DEFAULT_PUPPETEER_ARGS = [
     '--disable-dev-shm-usage',
     '--disable-gpu',
     '--no-first-run',
-    '--no-zygote'
+    '--no-zygote',
+    '--disable-crashpad',
+    '--disable-crash-reporter',
+    '--disable-breakpad',
+    '--disable-background-networking',
+    '--disable-extensions',
+    '--disable-sync',
+    '--metrics-recording-only',
+    '--mute-audio',
+    '--hide-scrollbars',
+    '--disable-software-rasterizer',
+    '--disable-component-update',
+    '--disable-default-apps',
+    '--disable-dev-tools',
+    '--no-default-browser-check',
+    '--password-store=basic',
+    '--use-mock-keychain',
+    '--disable-features=UseDBus,Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints'
 ];
 
 const LOCAL_PUPPETEER_CACHE_DIR =
@@ -50,23 +67,11 @@ export function getPuppeteerLaunchOptions(): LaunchOptions {
 
     const executablePath = resolveExecutablePath();
 
-    // ===== DEBUG LOGS =====
-    console.log("========== PUPPETEER DEBUG ==========");
-    console.log("Executable Path:", executablePath);
-    console.log("Executable Exists:", executablePath ? fs.existsSync(executablePath) : false);
-    console.log("PUPPETEER_EXECUTABLE_PATH:", process.env.PUPPETEER_EXECUTABLE_PATH);
-    console.log("HOME:", process.env.HOME);
-    console.log("XDG_CONFIG_HOME:", process.env.XDG_CONFIG_HOME);
-    console.log("XDG_CACHE_HOME:", process.env.XDG_CACHE_HOME);
-    console.log("PUPPETEER_CACHE_DIR:", process.env.PUPPETEER_CACHE_DIR);
-
-    console.log("Pipe Transport:", false);
-    console.log("====================================");
-    // ===== END DEBUG =====
-
     return {
         headless: true,
         executablePath,
+        pipe: true,
+        timeout: 60000,
         args: DEFAULT_PUPPETEER_ARGS
     };
 }
