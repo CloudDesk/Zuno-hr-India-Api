@@ -24,8 +24,6 @@ const DEFAULT_PUPPETEER_ARGS = [
 
 const LOCAL_PUPPETEER_CACHE_DIR =
     process.env.PUPPETEER_CACHE_DIR || path.join(os.homedir(), '.cache', 'puppeteer');
-const CHROMIUM_USER_DATA_DIR =
-    process.env.PUPPETEER_USER_DATA_DIR || path.join('/tmp', 'puppeteer-user-data');
 
 const KNOWN_BROWSER_PATHS = [
     process.env.PUPPETEER_EXECUTABLE_PATH,
@@ -57,10 +55,23 @@ function resolveExecutablePath(): string | undefined {
     return undefined;
 }
 
+function resolveUserDataDirectory(): string {
+    const configuredDir = process.env.PUPPETEER_USER_DATA_DIR?.trim();
+    if (configuredDir) {
+        return configuredDir;
+    }
+
+    return path.join(
+        os.tmpdir(),
+        `puppeteer-user-data-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    );
+}
+
 export function getPuppeteerLaunchOptions(): LaunchOptions {
     process.env.PUPPETEER_CACHE_DIR = process.env.PUPPETEER_CACHE_DIR || LOCAL_PUPPETEER_CACHE_DIR;
 
     const executablePath = resolveExecutablePath();
+    const userDataDir = resolveUserDataDirectory();
 
     // ===== DEBUG LOGS =====
     console.log("========== PUPPETEER DEBUG ==========");
@@ -71,7 +82,8 @@ export function getPuppeteerLaunchOptions(): LaunchOptions {
     console.log("XDG_CONFIG_HOME:", process.env.XDG_CONFIG_HOME);
     console.log("XDG_CACHE_HOME:", process.env.XDG_CACHE_HOME);
     console.log("PUPPETEER_CACHE_DIR:", process.env.PUPPETEER_CACHE_DIR);
-    console.log("User Data Dir:", CHROMIUM_USER_DATA_DIR);
+    console.log("User Data Dir:", userDataDir);
+    console.log("Pipe Transport:", true);
     console.log("====================================");
     // ===== END DEBUG =====
 
@@ -79,7 +91,8 @@ export function getPuppeteerLaunchOptions(): LaunchOptions {
         headless: true,
         executablePath,
         args: DEFAULT_PUPPETEER_ARGS,
-        userDataDir: CHROMIUM_USER_DATA_DIR
+        userDataDir,
+        pipe: true
     };
 }
 
