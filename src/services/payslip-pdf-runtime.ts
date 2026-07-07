@@ -148,6 +148,7 @@ async function getBrowser(context: PayslipRuntimeLogContext): Promise<Browser> {
             logRuntime('info', 'browser_launch_config', context, {
                 executablePath: executablePath || 'puppeteer-managed-browser',
                 transport: runtimeConfig.transport,
+                userDataDir: runtimeConfig.userDataDir,
                 browserReuse: runtimeConfig.browserReuse,
                 navigationTimeoutMs: runtimeConfig.navigationTimeoutMs,
                 defaultTimeoutMs: runtimeConfig.defaultTimeoutMs,

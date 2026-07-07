@@ -340,6 +340,19 @@ export const documentRoutes = async (
                 //     finalUserIds
                 // );
 
+                if (salary.summary.failed > 0) {
+                    const allPayslipsFailed = salary.summary.generated === 0;
+                    return reply.status(allPayslipsFailed ? 500 : 207).send({
+                        success: false,
+                        data: salary,
+                        error: {
+                            message: allPayslipsFailed
+                                ? 'Payslip generation failed for all selected employees.'
+                                : 'Payslip generation completed with some employee-level failures.',
+                        },
+                    });
+                }
+
                 return reply.send({
                     success: true,
                     data: salary,
