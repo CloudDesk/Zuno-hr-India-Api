@@ -62,6 +62,19 @@ export function getPuppeteerLaunchOptions(): LaunchOptions {
 
     const executablePath = resolveExecutablePath();
 
+    // ===== DEBUG LOGS =====
+    console.log("========== PUPPETEER DEBUG ==========");
+    console.log("Executable Path:", executablePath);
+    console.log("Executable Exists:", executablePath ? fs.existsSync(executablePath) : false);
+    console.log("PUPPETEER_EXECUTABLE_PATH:", process.env.PUPPETEER_EXECUTABLE_PATH);
+    console.log("HOME:", process.env.HOME);
+    console.log("XDG_CONFIG_HOME:", process.env.XDG_CONFIG_HOME);
+    console.log("XDG_CACHE_HOME:", process.env.XDG_CACHE_HOME);
+    console.log("PUPPETEER_CACHE_DIR:", process.env.PUPPETEER_CACHE_DIR);
+    console.log("User Data Dir:", CHROMIUM_USER_DATA_DIR);
+    console.log("====================================");
+    // ===== END DEBUG =====
+
     return {
         headless: true,
         executablePath,
