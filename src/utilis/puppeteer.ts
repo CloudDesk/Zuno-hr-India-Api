@@ -9,42 +9,24 @@ const DEFAULT_PUPPETEER_ARGS = [
     '--disable-dev-shm-usage',
     '--disable-gpu',
     '--no-first-run',
-    '--no-zygote',
-    '--disable-crashpad',
-    '--disable-crash-reporter',
-    '--disable-breakpad',
-    '--disable-background-networking',
-    '--disable-extensions',
-    '--disable-sync',
-    '--metrics-recording-only',
-    '--mute-audio',
-    '--hide-scrollbars',
-    '--disable-software-rasterizer',
-    '--disable-component-update',
-    '--disable-default-apps',
-    '--disable-dev-tools',
-    '--no-default-browser-check',
-    '--password-store=basic',
-    '--use-mock-keychain',
-    '--disable-features=UseDBus,Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints'
+    '--no-zygote'
 ];
 
 const LOCAL_PUPPETEER_CACHE_DIR =
     process.env.PUPPETEER_CACHE_DIR || path.join(os.homedir(), '.cache', 'puppeteer');
 
-const SYSTEM_BROWSER_PATHS = [
+const KNOWN_BROWSER_PATHS = [
+    process.env.PUPPETEER_EXECUTABLE_PATH,
     '/usr/bin/chromium',
     '/usr/bin/chromium-browser',
     '/usr/bin/google-chrome-stable',
     '/usr/bin/google-chrome',
     '/snap/bin/chromium'
-];
+].filter((candidate): candidate is string => Boolean(candidate));
 
 export interface PuppeteerRuntimeConfig {
     launchOptions: LaunchOptions;
     executablePath?: string;
-    transport: 'pipe' | 'websocket';
-    userDataDir: string;
     browserReuse: boolean;
     defaultTimeoutMs: number;
     navigationTimeoutMs: number;
@@ -54,16 +36,7 @@ export interface PuppeteerRuntimeConfig {
 }
 
 function resolveExecutablePath(): string | undefined {
-    const configuredPath = process.env.PUPPETEER_EXECUTABLE_PATH?.trim();
-    if (configuredPath) {
-        return configuredPath;
-    }
-
-    if (process.env.PUPPETEER_USE_SYSTEM_CHROMIUM !== 'true') {
-        return undefined;
-    }
-
-    for (const candidate of SYSTEM_BROWSER_PATHS) {
+    for (const candidate of KNOWN_BROWSER_PATHS) {
         if (fs.existsSync(candidate)) {
             return candidate;
         }
@@ -76,13 +49,10 @@ export function getPuppeteerLaunchOptions(): LaunchOptions {
     process.env.PUPPETEER_CACHE_DIR = process.env.PUPPETEER_CACHE_DIR || LOCAL_PUPPETEER_CACHE_DIR;
 
     const executablePath = resolveExecutablePath();
-    const userDataDir = process.env.PUPPETEER_USER_DATA_DIR || path.join(resolveTempDirectory(), 'chromium-user-data');
 
     return {
         headless: true,
         executablePath,
-        userDataDir,
-        timeout: 60000,
         args: DEFAULT_PUPPETEER_ARGS
     };
 }
@@ -113,8 +83,6 @@ export function getPuppeteerRuntimeConfig(): PuppeteerRuntimeConfig {
     return {
         launchOptions,
         executablePath: launchOptions.executablePath,
-        transport: launchOptions.pipe ? 'pipe' : 'websocket',
-        userDataDir: launchOptions.userDataDir || '',
         browserReuse: process.env.PUPPETEER_BROWSER_REUSE !== 'false',
         defaultTimeoutMs: parsePositiveInteger(process.env.PUPPETEER_DEFAULT_TIMEOUT_MS, 30000),
         navigationTimeoutMs: parsePositiveInteger(process.env.PUPPETEER_NAVIGATION_TIMEOUT_MS, 30000),

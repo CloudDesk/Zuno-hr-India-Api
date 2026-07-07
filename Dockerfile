@@ -56,12 +56,11 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Set environment variables for Puppeteer
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=false \
-    PUPPETEER_CACHE_DIR=/home/appuser/.cache/puppeteer \
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
     HOME=/home/appuser \
     XDG_CONFIG_HOME=/tmp/.chromium \
-    XDG_CACHE_HOME=/tmp/.chromium-cache \
-    XDG_RUNTIME_DIR=/tmp/.chromium-runtime
+    XDG_CACHE_HOME=/tmp/.chromium-cache
  
  
 # Set the working directory
@@ -74,7 +73,6 @@ COPY scripts/install-puppeteer-browser.js ./scripts/install-puppeteer-browser.js
  
 # Install only production dependencies
 RUN npm ci --only=production && \
-    node scripts/install-puppeteer-browser.js && \
     npm cache clean --force
  
 # Copy built application from builder stage
@@ -89,9 +87,8 @@ COPY --from=builder /app/*.docx ./
 # Create uploads directory and non-root user for security
 RUN mkdir -p /app/uploads && \
     groupadd -r appuser && useradd -r -g appuser appuser && \
-    mkdir -p /home/appuser/Downloads /home/appuser/.cache/puppeteer /tmp/.chromium /tmp/.chromium-cache /tmp/.chromium-runtime && \
-    chown -R appuser:appuser /app /home/appuser /tmp/.chromium /tmp/.chromium-cache /tmp/.chromium-runtime && \
-    chmod 700 /tmp/.chromium-runtime
+    mkdir -p /home/appuser/Downloads /tmp/.chromium /tmp/.chromium-cache && \
+    chown -R appuser:appuser /app /home/appuser /tmp/.chromium /tmp/.chromium-cache
  
 USER appuser
  
