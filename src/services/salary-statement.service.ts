@@ -490,9 +490,8 @@ export class SalaryStatementService extends BaseService {
 
         const leaves = await Leave.find({
             userId: employeeId,
-            status: 'Approved',
-            // To include applied/pending LOP later, replace the line above with:
-            // status: { $in: ['Pending', 'Approved'] },
+            // status: 'Approved',
+            status: { $in: ['Pending', 'Approved'] },
             leaveType: 'lossOfPay',
             startDate: { $lte: endDate },
             endDate: { $gte: startDate },
