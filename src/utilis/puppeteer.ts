@@ -19,7 +19,7 @@ const DEFAULT_PUPPETEER_ARGS = [
     '--mute-audio',
     '--hide-scrollbars',
     '--disable-software-rasterizer',
-    '--disable-features=UseDBus'
+    '--disable-features=UseDBus,VizDisplayCompositor'
 ];
 
 const LOCAL_PUPPETEER_CACHE_DIR =
@@ -83,7 +83,7 @@ export function getPuppeteerLaunchOptions(): LaunchOptions {
     console.log("XDG_CACHE_HOME:", process.env.XDG_CACHE_HOME);
     console.log("PUPPETEER_CACHE_DIR:", process.env.PUPPETEER_CACHE_DIR);
     console.log("User Data Dir:", userDataDir);
-    console.log("Pipe Transport:", true);
+    console.log("Pipe Transport:", false);
     console.log("====================================");
     // ===== END DEBUG =====
 
@@ -92,7 +92,7 @@ export function getPuppeteerLaunchOptions(): LaunchOptions {
         executablePath,
         args: DEFAULT_PUPPETEER_ARGS,
         userDataDir,
-        pipe: true
+        dumpio: true
     };
 }
 
