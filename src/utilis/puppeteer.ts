@@ -9,24 +9,7 @@ const DEFAULT_PUPPETEER_ARGS = [
     '--disable-dev-shm-usage',
     '--disable-gpu',
     '--no-first-run',
-    '--no-zygote',
-    '--disable-crashpad',
-    '--disable-crash-reporter',
-    '--disable-background-networking',
-    '--disable-extensions',
-    '--disable-sync',
-    '--metrics-recording-only',
-    '--mute-audio',
-    '--hide-scrollbars',
-    '--disable-software-rasterizer',
-    '--disable-component-update',
-    '--disable-default-apps',
-    '--disable-dev-tools',
-    '--no-default-browser-check',
-    '--password-store=basic',
-    '--use-mock-keychain',
-    '--single-process',
-    '--disable-features=UseDBus,Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints'
+    '--no-zygote'
 ];
 
 const LOCAL_PUPPETEER_CACHE_DIR =
