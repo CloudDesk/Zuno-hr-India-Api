@@ -4,9 +4,11 @@ import path from 'path';
 import mongoose from 'mongoose';
 import { LeaveSummary } from '../src/models/leave-summary.model';
 import { User } from '../src/models/user.model';
-
+import dns from "node:dns";
+ 
+dns.setServers(["1.1.1.1", "8.8.8.8"]);
 dotenv.config();
-
+console.log(process.env.MONGODB_URI);
 type LeaveCategory =
   | 'annual'
   | 'sick'
@@ -156,6 +158,7 @@ function writeCsv(filePath: string, rows: ReportRow[]): void {
 
 async function connect(): Promise<void> {
   const mongoUri = process.env.MONGODB_URI;
+  console.log(mongoUri ,'MOngodb');
   if (!mongoUri) {
     throw new Error('MONGODB_URI is required');
   }
