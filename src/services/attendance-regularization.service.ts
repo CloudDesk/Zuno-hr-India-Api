@@ -35,6 +35,13 @@ interface RegularizationFilters {
     search?: string;
 }
 
+interface AssignedRegularizationListOptions {
+    page?: number;
+    limit?: number;
+    sortBy?: string;
+    sortOrder?: 'asc' | 'desc';
+}
+
 
 export class AttendanceRegularizationService extends BaseService {
     protected context: RequestContext;
@@ -249,7 +256,9 @@ export class AttendanceRegularizationService extends BaseService {
         date?: string,
         search?: string,
         startDate?: string,
-        endDate?: string
+        endDate?: string,
+        statuses?: string,
+        options: AssignedRegularizationListOptions = {}
     ) {
         // Validate approverId
         if (!Types.ObjectId.isValid(approverId)) {
@@ -258,8 +267,26 @@ export class AttendanceRegularizationService extends BaseService {
 
         // Build query — omit status filter entirely when undefined (= "All")
         const query: any = {};
+        let statusArray: string[] = [];
 
-        if (status !== undefined) {
+        if (statuses) {
+            const validStatuses = ['Pending', 'Approved', 'Rejected', 'Rejected-Absent', 'Rejected-Leave', 'Withdrawn'];
+            statusArray = statuses
+                .split(',')
+                .map((item) => item.trim())
+                .filter(Boolean);
+            const invalidStatuses = statusArray.filter((item) => !validStatuses.includes(item));
+
+            if (invalidStatuses.length > 0) {
+                throw new Error(`Invalid status values: ${invalidStatuses.join(', ')}`);
+            }
+
+            if (statusArray.length === 1) {
+                query.status = statusArray[0];
+            } else if (statusArray.length > 1) {
+                query.status = { $in: statusArray };
+            }
+        } else if (status !== undefined) {
             query.status = status;
         }
 
@@ -320,17 +347,69 @@ export class AttendanceRegularizationService extends BaseService {
             query.$or = searchConditions;
         }
 
-        console.log(query, "query getAssignedRegularizationRecords")
-        // Fetch assigned regularization records
-        const records = await AttendanceRegularization.find(query)
-            .populate('userId', '_id name')
-            .lean();
-        console.log(records, "records getAssignedRegularizationRecords")
-        if (!records.length) {
-            return [];
-        }
+        const page = Math.max(1, Number(options.page) || 1);
+        const limit = Math.min(Math.max(1, Number(options.limit) || 10), 100);
+        const skip = (page - 1) * limit;
+        const sortDirection = options.sortOrder === 'asc' ? 1 : -1;
+        const sortFieldMap: Record<string, string> = {
+            shiftDay: 'shiftDay',
+            from: 'from',
+            to: 'to',
+            reason: 'reason',
+            status: 'status',
+            createdAt: 'createdAt',
+            userName: 'user.name',
+            user: 'user.name',
+        };
 
-        return records.map(record => ({
+        const sortField = options.sortBy ? sortFieldMap[options.sortBy] : undefined;
+        const sortStage: Record<string, 1 | -1> = sortField
+            ? { [sortField]: sortDirection, _id: -1 }
+            : status === undefined || statusArray.length > 1
+                ? { statusRank: 1, createdAt: -1, shiftDay: -1, _id: -1 }
+                : { createdAt: -1, shiftDay: -1, _id: -1 };
+
+        const [records, total] = await Promise.all([
+            AttendanceRegularization.aggregate([
+                { $match: query },
+                {
+                    $lookup: {
+                        from: 'users',
+                        localField: 'userId',
+                        foreignField: '_id',
+                        as: 'user',
+                        pipeline: [{ $project: { _id: 1, name: 1 } }]
+                    }
+                },
+                { $unwind: { path: '$user', preserveNullAndEmptyArrays: true } },
+                {
+                    $addFields: {
+                        statusRank: { $cond: [{ $eq: ['$status', 'Pending'] }, 0, 1] }
+                    }
+                },
+                { $sort: sortStage },
+                { $skip: skip },
+                { $limit: limit },
+                {
+                    $project: {
+                        attendanceId: 1,
+                        shiftDay: 1,
+                        from: 1,
+                        to: 1,
+                        reason: 1,
+                        status: 1,
+                        approver: 1,
+                        approvedDate: 1,
+                        comments: 1,
+                        userId: '$user._id',
+                        userName: '$user.name'
+                    }
+                }
+            ]),
+            AttendanceRegularization.countDocuments(query)
+        ]);
+
+        const data = records.map(record => ({
             _id: record._id.toString(),
             attendanceId: record.attendanceId?.toString(),
             shiftDay: record.shiftDay.toISOString(),
@@ -341,9 +420,19 @@ export class AttendanceRegularizationService extends BaseService {
             approver: record.approver,
             approvedDate: record.approvedDate ? record.approvedDate.toISOString() : null,
             comments: record.comments || null,
-            userId: record.userId?._id?.toString() || '',
-            userName: (record.userId && typeof record.userId !== 'string' && 'name' in record.userId) ? record.userId.name : ''
+            userId: record.userId?.toString() || '',
+            userName: record.userName || ''
         }));
+
+        return {
+            data,
+            meta: {
+                page,
+                limit,
+                total,
+                totalPages: Math.ceil(total / limit)
+            }
+        };
     }
 
     async getRegularizationRecordById(id: string, user: any) {
@@ -533,26 +622,135 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
         approver: { id: string; name: string };
     }>): Promise<any> {
         const results = [];
-        console.log(data, "data createBulkReg")
+        const appUrl = process.env.APP_URL || 'http://localhost:5173';
+        const companyName = process.env.COMPANY_NAME || 'CloudDesk HRMS';
+        const specialStatuses = ['holiday_swipe', 'leave_swipe', 'overridden', 'regularized'];
+        const successfulNotifications: Array<{
+            regularization: IAttendanceRegularization;
+            userId: string;
+            approverId: string;
+            approverName: string;
+            shiftDay: Date;
+            fromTime: string;
+            toTime: string;
+            reason: string;
+        }> = [];
+
+        const normalizeObjectId = (id: string): string => new Types.ObjectId(id).toString();
+
+        const uniqueValidIds = Array.from(new Set(
+            data
+                .flatMap(entry => [entry.userId, entry.approver?.id])
+                .filter((id): id is string => Boolean(id) && Types.ObjectId.isValid(id))
+                .map(normalizeObjectId)
+        ));
+
+        const uniqueValidAttendanceIds = Array.from(new Set(
+            data
+                .map(entry => entry.attendanceId)
+                .filter((id): id is string => typeof id === 'string' && Types.ObjectId.isValid(id))
+        ));
+
+        const validShiftDays = Array.from(new Set(
+            data
+                .map(entry => {
+                    const shiftDay = new Date(entry.date);
+                    shiftDay.setUTCHours(0, 0, 0, 0);
+                    return shiftDay;
+                })
+                .filter(shiftDay => !isNaN(shiftDay.getTime()))
+                .map(shiftDay => shiftDay.getTime())
+        )).map(time => new Date(time));
+
+        const earliestShiftDay = validShiftDays.reduce(
+            (earliest, shiftDay) => shiftDay < earliest ? shiftDay : earliest,
+            new Date(8640000000000000)
+        );
+        const latestShiftDay = validShiftDays.reduce(
+            (latest, shiftDay) => shiftDay > latest ? shiftDay : latest,
+            new Date(0)
+        );
+
+        const [users, admins, attendanceRecords, shiftAssignments, existingRegularizations] = await Promise.all([
+            uniqueValidIds.length
+                ? User.find({ _id: { $in: uniqueValidIds.map(id => new Types.ObjectId(id)) } })
+                    .select('name email country')
+                    .lean()
+                : [],
+            User.find({
+                $or: [
+                    { role: 'admin' },
+                    { isSuperAdmin: true }
+                ],
+                active: true
+            }).select('name email').lean(),
+            uniqueValidAttendanceIds.length
+                ? AttendanceRecord.find({ _id: { $in: uniqueValidAttendanceIds.map(id => new Types.ObjectId(id)) } })
+                : [],
+            uniqueValidIds.length && validShiftDays.length
+                ? ShiftAssignment.find({
+                    userId: { $in: uniqueValidIds.map(id => new Types.ObjectId(id)) },
+                    startDate: { $lte: latestShiftDay },
+                    $or: [
+                        { endDate: { $gte: earliestShiftDay } },
+                        { endDate: null },
+                    ],
+                }).populate<{ shiftId: any }>('shiftId')
+                : [],
+            uniqueValidIds.length && validShiftDays.length
+                ? AttendanceRegularization.find({
+                    userId: { $in: uniqueValidIds.map(id => new Types.ObjectId(id)) },
+                    shiftDay: { $in: validShiftDays },
+                    status: { $in: ['Pending', 'Approved'] },
+                }).select('userId shiftDay status').lean()
+                : [],
+        ]);
+
+        const usersById = new Map(users.map((user: any) => [user._id.toString(), user]));
+        const attendanceById = new Map(attendanceRecords.map((attendance: any) => [attendance._id.toString(), attendance]));
+        const existingRegularizationKeys = new Set(
+            existingRegularizations.map((regularization: any) =>
+                `${regularization.userId.toString()}:${new Date(regularization.shiftDay).getTime()}`
+            )
+        );
+
+        const findShiftAssignment = (userId: string, shiftDay: Date) => {
+            const normalizedUserId = normalizeObjectId(userId);
+            return shiftAssignments.find((assignment: any) => {
+                const assignmentUserId = assignment.userId?.toString();
+                const startDate = new Date(assignment.startDate);
+                const endDate = assignment.endDate ? new Date(assignment.endDate) : null;
+                return assignmentUserId === normalizedUserId
+                    && startDate <= shiftDay
+                    && (!endDate || endDate >= shiftDay)
+                    && assignment.shiftId;
+            });
+        };
+
+        const escapeHtml = (value: any): string => String(value ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+
+        console.log(`createBulkRegularization processing ${data.length} entries`);
         for (const entry of data) {
-            console.log(entry, "entry createBulkReg")
             try {
                 const { userId, date, fromTime, toTime, reason, approver, attendanceId } = entry;
-                console.log(fromTime, toTime)
+                const normalizedUserId = normalizeObjectId(userId);
+                const normalizedApproverId = normalizeObjectId(approver.id);
                 // 1. Parse date and convert local times to UTC
                 const shiftDay = new Date(date);
                 shiftDay.setUTCHours(0, 0, 0, 0);
 
-                console.log(shiftDay, "shiftDay createBulkReg ")
-
                 // Get user details to determine timezone based on country
-                const user = await User.findById(userId).select('country').lean();
+                const user = usersById.get(normalizedUserId);
                 if (!user) {
                     throw new Error('User not found');
                 }
 
                 const timezoneOffset = this.getTimezoneOffsetHours(user.country);
-                console.log(`User country: ${user.country}, Timezone offset: UTC${timezoneOffset >= 0 ? '+' : ''}${timezoneOffset}`);
 
                 // Convert fromTime and toTime from local timezone to UTC
                 const parseLocalTime = (timeStr: string, baseDate: Date): Date => {
@@ -563,10 +761,8 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
                     return new Date(localDate.getTime() - timezoneOffset * 60 * 60 * 1000);
                 };
 
-                console.log(parseLocalTime, "parseLocalTime")
                 const requestedFrom = parseLocalTime(fromTime, shiftDay);
                 const requestedTo = parseLocalTime(toTime, shiftDay);
-                console.log(requestedFrom, requestedTo, "requested createBulkReg")
                 // Validate time order
                 if (requestedTo <= requestedFrom) {
                     throw new Error('toTime must be after fromTime');
@@ -574,26 +770,25 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
 
 
                 // 2. Get shift assignment first (needed for both cases)
-                const shiftAssignment = await this.getCurrentShiftAssignment(
-                    new Types.ObjectId(userId),
-                    shiftDay
-                );
-                const shift = shiftAssignment.shiftId;
-                console.log(shiftAssignment, "2 shiftAssignment bulk regularize createBulkReg")
-
+                let shiftAssignment = findShiftAssignment(userId, shiftDay);
                 if (!shiftAssignment) {
-                    throw new Error(`No active shift assignment found for date: ${date}`);
+                    shiftAssignment = await this.getCurrentShiftAssignment(
+                        new Types.ObjectId(userId),
+                        shiftDay
+                    );
                 }
+                const shift = shiftAssignment.shiftId;
 
                 //3. shift window
                 const shiftWindow = this.getShiftTimings(shift, shiftDay, user.country);
-                console.log(shiftWindow, "shiftWindow");
 
                 // 4. Find or create attendance record
                 let attendance;
                 if (attendanceId) {
-                    attendance = await AttendanceRecord.findById(attendanceId);
-                    console.log(attendance, "Atetendance record 2")
+                    if (!Types.ObjectId.isValid(attendanceId)) {
+                        throw new Error('Invalid attendanceId');
+                    }
+                    attendance = attendanceById.get(attendanceId);
                     if (attendance) {
                         // Update missing required fields for existing record
                         attendance.shiftId = attendance.shiftId || shiftAssignment.shiftId;
@@ -607,12 +802,11 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
                         // }
 
                         // Check if the day is marked as leave
-                        if (attendance.attendanceStatus.some(status => ['On-Leave', 'Absent'].includes(status))) {
+                        if (attendance.attendanceStatus.some((status: string) => ['On-Leave', 'Absent'].includes(status))) {
                             throw new Error('Regularization not allowed for leave or absent days');
                         }
                     }
                 }
-                console.log(attendance, "3 attendance bulk regularize")
                 if (!attendance) {
                     // Create new attendance
                     attendance = new AttendanceRecord({
@@ -641,7 +835,6 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
                     attendance.needsRegularization = true;
 
                     // Set status to pending_regularization if not a special status
-                    const specialStatuses = ['holiday_swipe', 'leave_swipe', 'overridden', 'regularized'];
                     if (!specialStatuses.includes(attendance.status)) {
                         attendance.status = 'pending_regularization';
                     }
@@ -652,7 +845,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
                     attendance,
                     shiftWindow.shiftStart,
                     shiftWindow.shiftEnd,
-                    // shiftAssignment
+                    existingRegularizationKeys
                 );
 
                 if (!validationResult.isValid) {
@@ -671,7 +864,6 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
                     approver
                 });
                 await regularization.save();
-                console.log(regularization, "regularization created")
                 // 6. Update attendance with regularization reference
                 attendance.regularization = {
                     hasRegularizationRequest: true,
@@ -680,90 +872,19 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
                     regularizationId: regularization._id,
                 };
                 await attendance.save();
+                const existingRegularizationKey = `${attendance.userId.toString()}:${new Date(attendance.shiftDay).getTime()}`;
+                existingRegularizationKeys.add(existingRegularizationKey);
 
-                // 7. Send Email Notification to Approver
-                const approverUser: IUser = await User.findById(new Types.ObjectId(approver.id)).select('name email');
-                const employeeUser: IUser = await User.findById(new Types.ObjectId(userId)).select('name email');
-
-                if (approverUser?.email) {
-                    const appUrl = process.env.APP_URL || 'http://localhost:5173';
-
-                    const htmlContent = generateEmailTemplate('attendanceRegularizeApply', {
-                        approverName: approverUser.name,
-                        employeeName: employeeUser.name,
-                        shiftDay: shiftDay.toDateString(),
-                        fromTime: fromTime,
-                        toTime: toTime,
-                        reason,
-                        reviewLink: `${appUrl}/manager/attendance-approvals/${regularization._id}`,
-                        companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS'
-                    });
-
-                    await emailService.sendEmail({
-                        body: {
-                            to: approverUser.email,
-                            subject: `Attendance Regularization Request from ${employeeUser.name}`,
-                            text: `${employeeUser.name} has requested regularization on ${shiftDay.toDateString()} from ${fromTime} to ${toTime}.`,
-                            html: htmlContent
-                        }
-                    });
-                }
-
-                // 8. Send Email Notification to All Admins
-                try {
-                    const admins = await User.find({
-                        $or: [
-                            { role: 'admin' },
-                            { isSuperAdmin: true }
-                        ],
-                        active: true
-                    }).select('name email').lean();
-
-                    if (admins && admins.length > 0) {
-                        const adminEmails = admins.map(admin => admin.email).filter(Boolean);
-
-                        if (adminEmails.length > 0 && employeeUser) {
-                            const shiftDayFormatted = shiftDay.toLocaleDateString('en-US', {
-                                weekday: 'long',
-                                year: 'numeric',
-                                month: 'long',
-                                day: 'numeric'
-                            });
-
-                            const adminEmailText = `Dear Admin,
-
-An attendance regularization request has been submitted by ${employeeUser.name}.
-
-Request Details:
-- Employee: ${employeeUser.name} (${employeeUser.email || 'N/A'})
-- Date: ${shiftDayFormatted}
-- Requested In Time: ${fromTime}
-- Requested Out Time: ${toTime}
-- Reason: ${reason}
-- Status: Pending
-- Approver: ${approver.name}
-
-This is an automated notification for your records.
-
-Regards,
-${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
-
-                            await emailService.sendEmail({
-                                body: {
-                                    to: adminEmails,
-                                    subject: `Attendance Regularization Request Submitted - ${employeeUser.name}`,
-                                    text: adminEmailText,
-                                    html: adminEmailText.replace(/\n/g, '<br>'),
-                                }
-                            });
-
-                            console.log(`Email notification sent to ${adminEmails.length} admin(s) for attendance regularization request ${regularization._id}`);
-                        }
-                    }
-                } catch (adminEmailError) {
-                    console.error('Failed to send email to admins for attendance regularization request:', adminEmailError);
-                    // Don't fail the request if admin email fails
-                }
+                successfulNotifications.push({
+                    regularization,
+                    userId: normalizedUserId,
+                    approverId: normalizedApproverId,
+                    approverName: approver.name,
+                    shiftDay,
+                    fromTime,
+                    toTime,
+                    reason,
+                });
 
                 results.push({
                     success: true,
@@ -784,10 +905,107 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
         }
 
         const hasSuccesses = results.some(result => result.success);
-        console.log(hasSuccesses, results, "createBulkReg")
+        console.log(`createBulkRegularization completed: ${results.filter(result => result.success).length}/${results.length} succeeded`);
         if (!hasSuccesses) {
             throw new Error(results[0].error || 'All regularization attempts failed');
         }
+
+        void (async () => {
+            try {
+            const groupedByEmployeeAndApprover = successfulNotifications.reduce((groups, item) => {
+                const groupKey = `${item.userId}:${item.approverId}`;
+                const existing = groups.get(groupKey) || [];
+                existing.push(item);
+                groups.set(groupKey, existing);
+                return groups;
+            }, new Map<string, typeof successfulNotifications>());
+
+            const adminEmails = admins.map((admin: any) => admin.email).filter(Boolean);
+
+            for (const group of groupedByEmployeeAndApprover.values()) {
+                const firstItem = group[0];
+                const employeeUser = usersById.get(firstItem.userId);
+                const approverUser = usersById.get(firstItem.approverId);
+                const employeeName = employeeUser?.name || 'Employee';
+                const approverName = approverUser?.name || firstItem.approverName || 'Approver';
+                const isSingleRequest = group.length === 1;
+
+                if (approverUser?.email) {
+                    const requestRowsHtml = group.map(item => {
+                        const reviewLink = `${appUrl}/manager/attendance-approvals/${item.regularization._id}`;
+                        return `
+                            <li style="margin-bottom: 12px;">
+                                <strong>Date:</strong> ${escapeHtml(item.shiftDay.toDateString())}<br/>
+                                <strong>Requested In Time:</strong> ${escapeHtml(item.fromTime)}<br/>
+                                <strong>Requested Out Time:</strong> ${escapeHtml(item.toTime)}<br/>
+                                <strong>Reason:</strong> ${escapeHtml(item.reason)}<br/>
+                                <a href="${escapeHtml(reviewLink)}">Review this request</a>
+                            </li>
+                        `;
+                    }).join('');
+
+                    const requestRowsText = group.map(item => {
+                        const reviewLink = `${appUrl}/manager/attendance-approvals/${item.regularization._id}`;
+                        return `- ${item.shiftDay.toDateString()} | ${item.fromTime} - ${item.toTime} | Reason: ${item.reason} | Review: ${reviewLink}`;
+                    }).join('\n');
+
+                    await emailService.sendEmail({
+                        body: {
+                            to: approverUser.email,
+                            subject: `Attendance Regularization Request${isSingleRequest ? '' : 's'} from ${employeeName}`,
+                            text: `${employeeName} has requested attendance regularization for ${group.length} day${isSingleRequest ? '' : 's'}.\n\n${requestRowsText}`,
+                            html: `<div style="font-family: Arial, sans-serif; max-width: 700px; margin: 0 auto;">
+                                <h2>Attendance Regularization Request${isSingleRequest ? '' : 's'}</h2>
+                                <p>Dear ${escapeHtml(approverName)},</p>
+                                <p>${escapeHtml(employeeName)} has requested attendance regularization for the following ${isSingleRequest ? 'day' : 'days'}:</p>
+                                <ul>${requestRowsHtml}</ul>
+                                <p>Please review each request in the Zuno HR portal.</p>
+                                <p>Regards,</p>
+                                <p>${escapeHtml(companyName)} Zuno HR</p>
+                            </div>`
+                        }
+                    });
+                }
+
+                if (adminEmails.length > 0 && employeeUser) {
+                    const adminRequestRowsText = group.map(item =>
+                        `- Date: ${item.shiftDay.toLocaleDateString('en-US', {
+                            weekday: 'long',
+                            year: 'numeric',
+                            month: 'long',
+                            day: 'numeric'
+                        })}, Requested In Time: ${item.fromTime}, Requested Out Time: ${item.toTime}, Reason: ${item.reason}, Approver: ${item.approverName}`
+                    ).join('\n');
+
+                    const adminEmailText = `Dear Admin,
+
+Attendance regularization request${isSingleRequest ? '' : 's'} ${isSingleRequest ? 'has' : 'have'} been submitted by ${employeeName}.
+
+Request Details:
+- Employee: ${employeeName} (${employeeUser.email || 'N/A'})
+- Status: Pending
+${adminRequestRowsText}
+
+This is an automated notification for your records.
+
+Regards,
+${companyName}`;
+
+                    await emailService.sendEmail({
+                        body: {
+                            to: adminEmails,
+                            subject: `Attendance Regularization Request${isSingleRequest ? '' : 's'} Submitted - ${employeeName}`,
+                            text: adminEmailText,
+                            html: adminEmailText.replace(/\n/g, '<br>'),
+                        }
+                    });
+                }
+            }
+            } catch (emailError) {
+                console.error('Failed to send grouped email for bulk attendance regularization:', emailError);
+                // Don't fail the request if email fails
+            }
+        })();
 
         return results;
     }
@@ -796,7 +1014,8 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
         regularizationId: Types.ObjectId,
         status: 'Approved' | 'Rejected',
         approver: { id: Types.ObjectId; name: string },
-        comments?: string
+        comments?: string,
+        options: { sendEmails?: boolean; backgroundEmails?: boolean } = {}
     ): Promise<IAttendanceRegularization> {
         const regularization = await AttendanceRegularization.findById(regularizationId);
         console.log(regularization, "1 get Regularization record ")
@@ -823,13 +1042,31 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
             await this.handleApproval(regularization);
         }
 
+        if (options.sendEmails !== false) {
+            const emailTask = this.sendRegularizationStatusEmails(regularization, approver);
+            if (options.backgroundEmails === false) {
+                await emailTask;
+            } else {
+                void emailTask.catch((emailError) => {
+                    console.error('Background attendance regularization status email failed:', emailError);
+                });
+            }
+        }
+
+        return regularization;
+    }
+
+    private async sendRegularizationStatusEmails(
+        regularization: IAttendanceRegularization,
+        approver: { id: Types.ObjectId; name: string }
+    ): Promise<void> {
         // Send email notification to employee (the person who applied)
         try {
             // 1. Fetch employee user details
             const employee = await User.findById(regularization.userId).select('name email');
             if (!employee?.email) {
                 console.warn(`Cannot send email: Employee not found or email missing for userId: ${regularization.userId}`);
-                return regularization; // Exit if no email
+                return; // Exit if no email
             }
 
             // Get user details for timezone formatting
@@ -960,8 +1197,207 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
             console.error('Failed to send email to admins for attendance regularization:', adminEmailError);
             // Don't fail the request if admin email fails
         }
+    }
 
-        return regularization;
+    private async sendBulkRegularizationStatusEmails(
+        regularizations: IAttendanceRegularization[],
+        approver: { id: Types.ObjectId; name: string }
+    ): Promise<void> {
+        try {
+            const userIds = [...new Set(
+                regularizations
+                    .map((regularization) => regularization.userId?.toString())
+                    .filter(Boolean)
+            )];
+
+            if (userIds.length === 0) {
+                return;
+            }
+
+            const [admins, users] = await Promise.all([
+                User.find({
+                    $or: [
+                        { role: 'admin' },
+                        { isSuperAdmin: true }
+                    ],
+                    active: true
+                }).select('name email').lean(),
+                User.find({
+                    _id: { $in: userIds.map((id) => new Types.ObjectId(id)) }
+                }).select('name email country').lean()
+            ]);
+
+            const adminEmails = admins.map(admin => admin.email).filter(Boolean);
+            const usersById = new Map(users.map((user: any) => [user._id.toString(), user]));
+
+            const emailResults = await Promise.allSettled(
+                regularizations.map(async (regularization) => {
+                    const employee: any = usersById.get(regularization.userId?.toString());
+                    if (!employee?.email) {
+                        console.warn(`Cannot send email: Employee not found or email missing for userId: ${regularization.userId}`);
+                        return;
+                    }
+
+                    const userCountry = employee.country || 'IN';
+                    const shiftDayFormatted = regularization.shiftDay.toLocaleDateString('en-US', {
+                        weekday: 'long',
+                        year: 'numeric',
+                        month: 'long',
+                        day: 'numeric'
+                    });
+
+                    const fromTimeFormatted = this.formatTimeLocal(regularization.from, userCountry);
+                    const toTimeFormatted = this.formatTimeLocal(regularization.to, userCountry);
+
+                    const htmlContent = generateEmailTemplate('attendanceRegularizeApproval', {
+                        employeeName: employee.name,
+                        approverName: approver.name,
+                        shiftDay: shiftDayFormatted,
+                        fromTime: fromTimeFormatted,
+                        toTime: toTimeFormatted,
+                        reason: regularization.reason,
+                        comments: regularization.comments || '',
+                        status: regularization.status,
+                        companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS'
+                    });
+
+                    const textContent = `Dear ${employee.name},
+
+Your attendance regularization request has been ${regularization.status.toLowerCase()} by ${approver.name}.
+
+Regularization Details:
+- Date: ${shiftDayFormatted}
+- From Time: ${fromTimeFormatted}
+- To Time: ${toTimeFormatted}
+- Reason: ${regularization.reason}
+${regularization.comments ? `- Comments: ${regularization.comments}` : ''}
+
+${regularization.status === 'Approved'
+                            ? '✅ Your attendance regularization has been approved. The attendance record has been updated accordingly.'
+                            : '❌ Your attendance regularization request has been rejected. The attendance record remains unchanged.'}
+
+Thank you for your understanding.
+
+Regards,
+${approver.name}
+${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
+
+                    await emailService.sendEmail({
+                        body: {
+                            to: employee.email,
+                            subject: `Your Attendance Regularization has been ${regularization.status}`,
+                            text: textContent,
+                            html: htmlContent
+                        }
+                    });
+
+                    if (adminEmails.length > 0) {
+                        const adminEmailText = `Dear Admin,
+
+An attendance regularization request has been ${regularization.status.toLowerCase()} by ${approver.name}.
+
+Request Details:
+- Employee: ${employee.name} (${employee.email})
+- Date: ${shiftDayFormatted}
+- From Time: ${fromTimeFormatted}
+- To Time: ${toTimeFormatted}
+- Reason: ${regularization.reason}
+- Status: ${regularization.status}
+${regularization.comments ? `- Comments: ${regularization.comments}` : ''}
+- Approved/Rejected By: ${approver.name}
+
+This is an automated notification for your records.
+
+Regards,
+${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
+
+                        await emailService.sendEmail({
+                            body: {
+                                to: adminEmails,
+                                subject: `Attendance Regularization ${regularization.status} - ${employee.name}`,
+                                text: adminEmailText,
+                                html: adminEmailText.replace(/\n/g, '<br>'),
+                            }
+                        });
+                    }
+                })
+            );
+
+            const failedEmails = emailResults.filter((result) => result.status === 'rejected').length;
+            if (failedEmails > 0) {
+                console.error(`Bulk regularization background email failed for ${failedEmails} request(s)`);
+            }
+        } catch (emailError) {
+            console.error('Failed to send bulk attendance regularization status emails:', emailError);
+        }
+    }
+
+    async bulkUpdateRegularizationStatus(
+        regularizationIds: string[],
+        status: 'Approved' | 'Rejected',
+        approver: { id: Types.ObjectId; name: string },
+        comments?: string
+    ): Promise<{
+        total: number;
+        successCount: number;
+        failureCount: number;
+        results: Array<{
+            id: string;
+            success: boolean;
+            regularization?: IAttendanceRegularization;
+            error?: string;
+        }>;
+    }> {
+        const uniqueIds = [...new Set((regularizationIds || []).filter(Boolean))];
+
+        if (uniqueIds.length === 0) {
+            throw new Error('At least one regularization ID is required');
+        }
+
+        const results = [];
+        const successfulRegularizations: IAttendanceRegularization[] = [];
+
+        for (const id of uniqueIds) {
+            try {
+                if (!Types.ObjectId.isValid(id)) {
+                    throw new Error('Invalid regularization ID');
+                }
+
+                const regularization = await this.updateRegularizationStatus(
+                    new Types.ObjectId(id),
+                    status,
+                    approver,
+                    comments,
+                    { sendEmails: false }
+                );
+
+                successfulRegularizations.push(regularization);
+                results.push({
+                    id,
+                    success: true,
+                    regularization
+                });
+            } catch (error: any) {
+                results.push({
+                    id,
+                    success: false,
+                    error: error.message || 'Failed to update regularization'
+                });
+            }
+        }
+
+        if (successfulRegularizations.length > 0) {
+            void this.sendBulkRegularizationStatusEmails(successfulRegularizations, approver);
+        }
+
+        const successCount = results.filter((result) => result.success).length;
+
+        return {
+            total: uniqueIds.length,
+            successCount,
+            failureCount: uniqueIds.length - successCount,
+            results
+        };
     }
 
 
@@ -1367,11 +1803,10 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
     // New validation method specifically for regularization eligibility
     private async validateRegularizationEligibility(
         attendance: any,
-        fromTime: Date,
-        toTime: Date,
-        // shiftAssignment: any
+        _fromTime: Date,
+        _toTime: Date,
+        existingRegularizationKeys?: Set<string>
     ): Promise<{ isValid: boolean; message: string }> {
-        console.log(attendance, fromTime, toTime, "validateRegularizationEligibility")
         // 1. Check if already regularized
         if (attendance.regularization?.isRegularized &&
             attendance.regularization.status === 'Approved') {
@@ -1393,13 +1828,16 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
                 }
         */
         // 3. Check for overlapping regularizations
-        const existingRegularization = await AttendanceRegularization.findOne({
-            userId: attendance.userId,
-            shiftDay: attendance.shiftDay,
-            status: { $in: ['Pending', 'Approved'] },
-        });
-        console.log(existingRegularization, "existingRegularization")
-        if (existingRegularization) {
+        const existingRegularizationKey = `${attendance.userId.toString()}:${new Date(attendance.shiftDay).getTime()}`;
+        const hasExistingRegularization = existingRegularizationKeys
+            ? existingRegularizationKeys.has(existingRegularizationKey)
+            : Boolean(await AttendanceRegularization.findOne({
+                userId: attendance.userId,
+                shiftDay: attendance.shiftDay,
+                status: { $in: ['Pending', 'Approved'] },
+            }));
+
+        if (hasExistingRegularization) {
             return {
                 isValid: false,
                 message: 'Another regularization request exists for this date'
@@ -1420,7 +1858,6 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
         };
 
         const timezoneOffset = this.getTimezoneOffset(userCountry);
-        console.log(`Converting shift times for country: ${userCountry}, Timezone offset: UTC+${timezoneOffset.hours}:${timezoneOffset.minutes.toString().padStart(2, '0')}`);
 
         // ✅ FIX: Create a copy of shiftDay to avoid mutating the original parameter
         // This prevents the attendance record from being created with the wrong date
@@ -1483,7 +1920,6 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
             (windowEndUTC.hours === windowStartUTC.hours && windowEndUTC.minutes < windowStartUTC.minutes)) {
             windowEnd.setUTCDate(windowEnd.getUTCDate() + 1);
         }
-        console.log({ shiftStart, shiftEnd, windowStart, windowEnd }, "getShiftTimings")
         return { shiftStart, shiftEnd, windowStart, windowEnd };
     }
 
@@ -1589,4 +2025,3 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
         return breaks;
     }
 }
-

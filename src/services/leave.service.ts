@@ -1,6 +1,6 @@
 import { BaseService } from './base.service';
 import { RequestContext } from '../types/context';
-import { IUser, User } from '../models/user.model';
+import { User } from '../models/user.model';
 import { Leave } from '../models/leave.model';
 import { LOV } from '../models/lov.model';
 import { FilterQuery, Types } from 'mongoose';
@@ -56,14 +56,14 @@ export interface ILeaveCreate {
 
 export interface ILeaveQuery {
   userId?: string | Types.ObjectId;
-  status?: 'Pending' | 'Approved' | 'Rejected';
+  status?: 'Pending' | 'Approved' | 'Rejected' | 'Cancelled';
   leaveType?: string;
   startDate?: Date;
   endDate?: Date;
   page?: number;
   limit?: number;
   sort?: 'asc' | 'desc';
-  sortBy?: keyof ILeave;
+  sortBy?: keyof ILeave | string;
   search?: string;
   searchBy?: keyof ILeave;
   $or?: unknown;
@@ -81,6 +81,10 @@ export interface ILeaveStatusUpdate {
     name: string;
     email: string;
   };
+}
+
+interface ILeaveStatusUpdateOptions {
+  sendEmails?: boolean;
 }
 
 export class LeaveService extends BaseService {
@@ -1346,10 +1350,210 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
     return this.findById(leave._id as string);
   }
 
-  async updateStatus(id: string | Types.ObjectId, updateData: ILeaveStatusUpdate): Promise<ILeave> {
-    console.log("updateStatus 1", id);
+  private getStatusApproverId(leave: any): string | undefined {
+    if (leave.appliedOnBehalf && leave.status === 'Approved') {
+      return (leave.adminApprovedById || leave.managerApprovedById)?.toString();
+    }
+
+    return (leave.approvedBy?._id || leave.approvedById)?.toString();
+  }
+
+  private formatLeaveEmailDate(date: Date): string {
+    return date.toLocaleDateString('en-US', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric'
+    });
+  }
+
+  private async sendLeaveStatusEmails(
+    leave: ILeave,
+    lookups?: {
+      employeeById?: Map<string, any>;
+      approverById?: Map<string, any>;
+      admins?: any[];
+    }
+  ): Promise<void> {
+    const shouldSendEmail = leave.status === 'Approved' || leave.status === 'Rejected';
+
+    if (!shouldSendEmail) {
+      console.log(`Leave ${leave._id} status ${leave.status}; status email skipped.`);
+      return;
+    }
+
+    const employeeId = leave.userId?.toString();
+    const approverId = this.getStatusApproverId(leave);
+    const employee = employeeId
+      ? lookups?.employeeById?.get(employeeId) || await User.findById(new Types.ObjectId(employeeId)).select('name email')
+      : null;
+    const approver = approverId
+      ? lookups?.approverById?.get(approverId) || await User.findById(new Types.ObjectId(approverId)).select('name email')
+      : null;
+
+    const fromDateFormatted = this.formatLeaveEmailDate(leave.startDate);
+    const toDateFormatted = this.formatLeaveEmailDate(leave.endDate);
+    const isRestrictedHoliday = leave.leaveType === 'restricted_holiday';
+    const requestType = isRestrictedHoliday ? 'holiday' : 'leave';
+    const requestTypeCapitalized = isRestrictedHoliday ? 'Holiday' : 'Leave';
+
+    try {
+      if (employee?.email) {
+        const htmlContent = generateEmailTemplate('leaveApprovalEmail', {
+          employeeName: employee.name,
+          approverName: approver?.name || 'Manager',
+          leaveType: leave.leaveType,
+          fromDate: fromDateFormatted,
+          toDate: toDateFormatted,
+          totalDays: leave.noOfDays,
+          remarks: leave.remarks || '',
+          status: leave.status,
+          companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS',
+          appliedOnBehalf: leave.appliedOnBehalf || false,
+          appliedByName: leave.appliedBy?.name || '',
+        });
+
+        const appliedByText = leave.appliedOnBehalf && leave.appliedBy?.name
+          ? `\n- Applied By: ${leave.appliedBy.name} (on behalf)`
+          : '';
+
+        const emailText = `Dear ${employee.name},
+
+Your ${requestType} request has been ${leave.status.toLowerCase()} by ${approver?.name || 'Manager'}.
+${leave.appliedOnBehalf && leave.appliedBy?.name ? `\nNote: This request was applied on your behalf by ${leave.appliedBy.name}.` : ''}
+
+${requestTypeCapitalized} Details:
+- ${requestTypeCapitalized} Type: ${leave.leaveType}
+- From Date: ${fromDateFormatted}
+- To Date: ${toDateFormatted}
+- Total Days: ${leave.noOfDays}
+- Reason: ${leave.reason || 'N/A'}${appliedByText}
+- Approved By: ${approver?.name || 'Manager'}
+${leave.remarks ? `- Remarks: ${leave.remarks}` : ''}
+
+${leave.status === 'Approved'
+            ? `Your ${requestType} request has been approved. ${isRestrictedHoliday ? 'Enjoy your holiday!' : 'Please ensure you have completed all pending work before your leave period.'}`
+            : `Unfortunately, your ${requestType} request has been rejected. If you have any questions, please contact your manager.`}
+
+Thank you for your understanding.
+
+Regards,
+${approver?.name || 'Manager'}
+${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
+
+        await emailService.sendEmail({
+          body: {
+            to: employee.email,
+            subject: `Your ${requestTypeCapitalized} Request has been ${leave.status}`,
+            text: emailText,
+            html: htmlContent,
+          }
+        });
+      } else {
+        console.warn(`Cannot send email: Employee not found or email missing for userId: ${leave.userId}`);
+      }
+    } catch (emailError) {
+      console.error('Failed to send email to employee for leave request:', emailError);
+    }
+
+    try {
+      const admins: any[] = lookups?.admins ?? (await User.find({
+        $or: [
+          { role: 'admin' },
+          { isSuperAdmin: true }
+        ],
+        active: true
+      }).select('name email').lean());
+
+      const adminEmails = admins.map(admin => admin.email).filter(Boolean);
+
+      if (adminEmails.length > 0) {
+        const adminEmailText = `Dear Admin,
+
+A ${requestType} request has been ${leave.status.toLowerCase()} by ${approver?.name || 'Manager'}.
+
+Request Details:
+- Employee: ${employee?.name || 'N/A'} (${employee?.email || 'N/A'})
+- ${requestTypeCapitalized} Type: ${leave.leaveType}
+- From Date: ${fromDateFormatted}
+- To Date: ${toDateFormatted}
+- Total Days: ${leave.noOfDays}
+- Reason: ${leave.reason || 'N/A'}
+- Status: ${leave.status}
+${leave.remarks ? `- Remarks: ${leave.remarks}` : ''}
+- Approved/Rejected By: ${approver?.name || 'Manager'}
+
+This is an automated notification for your records.
+
+Regards,
+${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
+
+        await emailService.sendEmail({
+          body: {
+            to: adminEmails,
+            subject: `${requestTypeCapitalized} Request ${leave.status} - ${employee?.name || 'Employee'}`,
+            text: adminEmailText,
+            html: adminEmailText.replace(/\n/g, '<br>'),
+          }
+        });
+      }
+    } catch (adminEmailError) {
+      console.error('Failed to send email to admins for leave request:', adminEmailError);
+    }
+  }
+
+  async sendBulkLeaveStatusEmails(leaves: ILeave[]): Promise<void> {
+    const emailLeaves = leaves.filter((leave) => leave.status === 'Approved' || leave.status === 'Rejected');
+    if (emailLeaves.length === 0) return;
+
+    try {
+      const employeeIds = Array.from(new Set(
+        emailLeaves
+          .map((leave) => leave.userId?.toString())
+          .filter((id): id is string => typeof id === 'string' && Types.ObjectId.isValid(id))
+      ));
+      const approverIds = Array.from(new Set(
+        emailLeaves
+          .map((leave) => this.getStatusApproverId(leave))
+          .filter((id): id is string => typeof id === 'string' && Types.ObjectId.isValid(id))
+      ));
+
+      const [employees, approvers, admins] = await Promise.all([
+        employeeIds.length
+          ? User.find({ _id: { $in: employeeIds.map((id) => new Types.ObjectId(id)) } }).select('name email').lean()
+          : [],
+        approverIds.length
+          ? User.find({ _id: { $in: approverIds.map((id) => new Types.ObjectId(id)) } }).select('name email').lean()
+          : [],
+        User.find({
+          $or: [
+            { role: 'admin' },
+            { isSuperAdmin: true }
+          ],
+          active: true
+        }).select('name email').lean(),
+      ]);
+
+      const employeeById = new Map(employees.map((employee: any) => [employee._id.toString(), employee]));
+      const approverById = new Map(approvers.map((approver: any) => [approver._id.toString(), approver]));
+
+      for (const leave of emailLeaves) {
+        await this.sendLeaveStatusEmails(leave, {
+          employeeById,
+          approverById,
+          admins,
+        });
+      }
+
+      console.log(`Bulk leave status emails processed for ${emailLeaves.length} leave request(s).`);
+    } catch (error) {
+      console.error('Failed to process bulk leave status emails:', error);
+    }
+  }
+
+  async updateStatus(id: string | Types.ObjectId, updateData: ILeaveStatusUpdate, options: ILeaveStatusUpdateOptions = {}): Promise<ILeave> {
+    console.log(`updateStatus leave ${id}`);
     const leave = await Leave.findById(id);
-    console.log(leave, "updatestatus 2")
     if (!leave) {
       throw new Error('Leave request not found');
     }
@@ -1432,13 +1636,8 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
       }
     } else {
       // Normal approval flow (not applied on behalf)
-      console.log(updateData, 'updateData in update Status');
       leave.status = updateData.status;
       leave.approvedById = updateData.approvedById;
-      console.log(updateData.approvedBy, 'updateData.approvedBy');
-      console.log(updateData.approvedBy?._id, 'updateData.approvedBy?.id');
-      console.log(updateData.approvedBy?.name, 'updateData.approvedBy?.name');
-      console.log(updateData.approvedBy?.email, 'updateData.approvedBy?.email');
       leave.approvedBy = updateData.approvedBy
         ? {
           _id: typeof updateData.approvedBy._id === 'string'
@@ -1456,186 +1655,8 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
     if (updateData.remarks) leave.remarks = updateData.remarks;
     await leave.save();
 
-    // Send email notification to employee (the person who applied)
-    // Only send email if status is 'Approved' or 'Rejected'
-    // For applied on behalf: Either manager or admin can approve, and email is sent immediately
-    const shouldSendEmail = leave.status === 'Approved' || leave.status === 'Rejected';
-
-    if (shouldSendEmail) {
-      try {
-        const employee: IUser = await User.findById(new Types.ObjectId(leave.userId)).select('name email');
-        // For applied on behalf, get the approver (manager or admin who approved)
-        // For rejected, get who rejected
-        // For normal approval, get the approver
-        let approver: IUser | null = null;
-        if (leave.appliedOnBehalf && leave.status === 'Approved') {
-          // Get who approved (manager or admin - either can approve)
-          approver = leave.adminApprovedById
-            ? (await User.findById(leave.adminApprovedById).select('name email')) as IUser | null
-            : leave.managerApprovedById
-              ? (await User.findById(leave.managerApprovedById).select('name email')) as IUser | null
-              : null;
-        } else if (leave.appliedOnBehalf && leave.status === 'Rejected') {
-          // Get who rejected (manager or admin)
-          approver = leave.approvedById ? (await User.findById(leave.approvedById).select('name email')) as IUser | null : null;
-        } else {
-          // Normal approval/rejection
-          approver = leave.approvedById ? (await User.findById(leave.approvedById).select('name email')) as IUser | null : null;
-        }
-
-        if (employee && employee.email) {
-          const fromDateFormatted = leave.startDate.toLocaleDateString('en-US', {
-            weekday: 'long',
-            year: 'numeric',
-            month: 'long',
-            day: 'numeric'
-          });
-          const toDateFormatted = leave.endDate.toLocaleDateString('en-US', {
-            weekday: 'long',
-            year: 'numeric',
-            month: 'long',
-            day: 'numeric'
-          });
-
-          // For restricted_holiday, use "holiday" terminology instead of "leave"
-          const isRestrictedHoliday = leave.leaveType === 'restricted_holiday';
-          const requestType = isRestrictedHoliday ? 'holiday' : 'leave';
-          const requestTypeCapitalized = isRestrictedHoliday ? 'Holiday' : 'Leave';
-
-          const htmlContent = generateEmailTemplate('leaveApprovalEmail', {
-            employeeName: employee.name,
-            approverName: approver?.name || 'Manager',
-            leaveType: leave.leaveType,
-            fromDate: fromDateFormatted,
-            toDate: toDateFormatted,
-            totalDays: leave.noOfDays,
-            remarks: leave.remarks || '',
-            status: leave.status, // 'Approved' or 'Rejected'
-            companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS',
-            appliedOnBehalf: leave.appliedOnBehalf || false,
-            appliedByName: leave.appliedBy?.name || '',
-          });
-
-          const appliedByText = leave.appliedOnBehalf && leave.appliedBy?.name
-            ? `\n- Applied By: ${leave.appliedBy.name} (on behalf)`
-            : '';
-
-          const emailText = `Dear ${employee.name},
-
-Your ${requestType} request has been ${leave.status.toLowerCase()} by ${approver?.name || 'Manager'}.
-${leave.appliedOnBehalf && leave.appliedBy?.name ? `\nNote: This request was applied on your behalf by ${leave.appliedBy.name}.` : ''}
-
-${requestTypeCapitalized} Details:
-- ${requestTypeCapitalized} Type: ${leave.leaveType}
-- From Date: ${fromDateFormatted}
-- To Date: ${toDateFormatted}
-- Total Days: ${leave.noOfDays}
-- Reason: ${leave.reason || 'N/A'}${appliedByText}
-- Approved By: ${approver?.name || 'Manager'}
-${leave.remarks ? `- Remarks: ${leave.remarks}` : ''}
-
-${leave.status === 'Approved'
-              ? `Your ${requestType} request has been approved. ${isRestrictedHoliday ? 'Enjoy your holiday!' : 'Please ensure you have completed all pending work before your leave period.'}`
-              : `Unfortunately, your ${requestType} request has been rejected. If you have any questions, please contact your manager.`}
-
-Thank you for your understanding.
-
-Regards,
-${approver?.name || 'Manager'}
-${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
-
-          await emailService.sendEmail({
-            body: {
-              to: employee.email,
-              subject: `Your ${requestTypeCapitalized} Request has been ${leave.status}`,
-              text: emailText,
-              html: htmlContent,
-            }
-          });
-
-          console.log(`Email notification sent to ${employee.email} for leave request ${leave._id} - Status: ${leave.status}`);
-        } else {
-          console.warn(`Cannot send email: Employee not found or email missing for userId: ${leave.userId}`);
-        }
-      } catch (emailError) {
-        console.error('Failed to send email to employee for leave request:', emailError);
-        // Don't fail the request if email fails - log the error but continue
-      }
-    } else {
-      // Manager approved first (for applied on behalf) - don't send email yet, wait for admin approval
-      console.log(`Manager approved leave ${leave._id} (applied on behalf). Waiting for admin approval before sending email.`);
-    }
-
-    // Send email notification to all admins
-    try {
-      const admins = await User.find({
-        $or: [
-          { role: 'admin' },
-          { isSuperAdmin: true }
-        ],
-        active: true
-      }).select('name email').lean();
-
-      if (admins && admins.length > 0) {
-        const employee: IUser = await User.findById(new Types.ObjectId(leave.userId)).select('name email');
-        const approver: IUser = await User.findById((leave.approvedBy?._id)).select('name email');
-
-        const fromDateFormatted = leave.startDate.toLocaleDateString('en-US', {
-          weekday: 'long',
-          year: 'numeric',
-          month: 'long',
-          day: 'numeric'
-        });
-        const toDateFormatted = leave.endDate.toLocaleDateString('en-US', {
-          weekday: 'long',
-          year: 'numeric',
-          month: 'long',
-          day: 'numeric'
-        });
-
-        const adminEmails = admins.map(admin => admin.email).filter(Boolean);
-
-        if (adminEmails.length > 0) {
-          // For restricted_holiday, use "holiday" terminology instead of "leave"
-          const isRestrictedHoliday = leave.leaveType === 'restricted_holiday';
-          const requestType = isRestrictedHoliday ? 'holiday' : 'leave';
-          const requestTypeCapitalized = isRestrictedHoliday ? 'Holiday' : 'Leave';
-
-          const adminEmailText = `Dear Admin,
-
-A ${requestType} request has been ${leave.status.toLowerCase()} by ${approver?.name || 'Manager'}.
-
-Request Details:
-- Employee: ${employee?.name || 'N/A'} (${employee?.email || 'N/A'})
-- ${requestTypeCapitalized} Type: ${leave.leaveType}
-- From Date: ${fromDateFormatted}
-- To Date: ${toDateFormatted}
-- Total Days: ${leave.noOfDays}
-- Reason: ${leave.reason || 'N/A'}
-- Status: ${leave.status}
-${leave.remarks ? `- Remarks: ${leave.remarks}` : ''}
-- Approved/Rejected By: ${approver?.name || 'Manager'}
-
-This is an automated notification for your records.
-
-Regards,
-${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
-
-          await emailService.sendEmail({
-            body: {
-              to: adminEmails,
-              subject: `${requestTypeCapitalized} Request ${leave.status} - ${employee?.name || 'Employee'}`,
-              text: adminEmailText,
-              html: adminEmailText.replace(/\n/g, '<br>'),
-            }
-          });
-
-          console.log(`Email notification sent to ${adminEmails.length} admin(s) for leave request ${leave._id} - Status: ${leave.status}`);
-        }
-      }
-    } catch (adminEmailError) {
-      console.error('Failed to send email to admins for leave request:', adminEmailError);
-      // Don't fail the request if admin email fails
+    if (options.sendEmails !== false) {
+      await this.sendLeaveStatusEmails(leave);
     }
 
 
@@ -1779,7 +1800,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
     }
 
     if (updateData.status === 'Rejected' || updateData.status === 'Cancelled') {
-      console.log("3, rejected or cancelled");
+      console.log(`Leave ${leave._id} ${updateData.status}; updating attendance and summary.`);
       const startDate = new Date(leave.startDate);
       const endDate = new Date(leave.endDate);
 
@@ -1787,9 +1808,6 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
       const currentDate = new Date(startDate);
 
       while (currentDate <= endDate) {
-        console.log(leave.userId);
-        console.log(leave, 'leave updated ==>> ');
-
         // Find existing attendance record to check for swipes
         const existingRecord = await AttendanceRecord.findOne({
           userId: leave.userId,
@@ -1828,7 +1846,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
         }
 
         // Revert attendance records for the leave period
-        let resatten = await AttendanceRecord.findOneAndUpdate(
+        await AttendanceRecord.findOneAndUpdate(
           {
             userId: leave.userId,
             shiftDay: currentDate,
@@ -1849,7 +1867,6 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
           { strict: false }
         );
 
-        console.log(resatten, 'resatten');
         currentDate.setDate(currentDate.getDate() + 1);
       }
 
@@ -1952,7 +1969,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
     }
   }> {
     console.log(query, "2, query")
-    const { appliedTo, userId, status, startDate, endDate, page = 1, limit = 5, search } = query;
+    const { appliedTo, userId, status, startDate, endDate, page = 1, limit = 5, search, sortBy, sort = 'desc' } = query;
     const skip = (page - 1) * limit;
 
     const filter: any = { 'appliedTo._id': appliedTo }; // Initialize filter with appliedTo
@@ -2026,51 +2043,99 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
 
     console.log('Filter:', filter);
 
+    const sortDirection = sort === 'asc' ? 1 : -1;
+    const sortFieldMap: Record<string, string> = {
+      user: 'user.name',
+      leaveType: 'leaveType',
+      appliedOn: 'createdAt',
+      createdAt: 'createdAt',
+      startDate: 'startDate',
+      endDate: 'endDate',
+      reason: 'reason',
+      status: 'status',
+    };
+    const sortField = sortBy ? sortFieldMap[String(sortBy)] : undefined;
+    const sortStage: Record<string, 1 | -1> = sortField
+      ? { [sortField]: sortDirection, _id: -1 }
+      : status
+        ? { createdAt: -1, startDate: -1, _id: -1 }
+        : { statusRank: 1, createdAt: -1, startDate: -1, _id: -1 };
+
     const [leaves, total] = await Promise.all([
-      Leave.find(filter)
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limit),
+      Leave.aggregate([
+        { $match: filter },
+        {
+          $lookup: {
+            from: 'users',
+            localField: 'userId',
+            foreignField: '_id',
+            as: 'userDetails',
+            pipeline: [{ $project: { _id: 1, name: 1, email: 1 } }]
+          }
+        },
+        {
+          $lookup: {
+            from: 'users',
+            localField: 'approvedById',
+            foreignField: '_id',
+            as: 'approverDetails',
+            pipeline: [{ $project: { _id: 1, name: 1, email: 1 } }]
+          }
+        },
+        {
+          $addFields: {
+            statusRank: { $cond: [{ $eq: ['$status', 'Pending'] }, 0, 1] },
+            userLookup: { $arrayElemAt: ['$userDetails', 0] },
+            approverLookup: { $arrayElemAt: ['$approverDetails', 0] },
+          }
+        },
+        {
+          $addFields: {
+            user: {
+              $cond: [
+                { $ne: ['$userLookup', null] },
+                {
+                  name: '$userLookup.name',
+                  email: '$userLookup.email',
+                },
+                '$user'
+              ]
+            },
+            approvedBy: {
+              $cond: [
+                { $ne: ['$approverLookup', null] },
+                {
+                  _id: '$approverLookup._id',
+                  name: '$approverLookup.name',
+                  email: '$approverLookup.email',
+                },
+                '$approvedBy'
+              ]
+            }
+          }
+        },
+        { $sort: sortStage },
+        { $skip: skip },
+        { $limit: limit },
+        {
+          $project: {
+            userDetails: 0,
+            approverDetails: 0,
+            userLookup: 0,
+            approverLookup: 0,
+            statusRank: 0,
+          }
+        }
+      ]),
       Leave.countDocuments(filter),
     ]);
     console.log(leaves, "2. leaves")
-    // Populate all references in parallel for better performance
-    const populatedLeaves = await Promise.all(
-      leaves.map(async (leave) => {
-        const [user, approver] = await Promise.all([
-          User.findById(leave.userId).select('name email'),
-          leave.approvedById ? User.findById(leave.approvedById).select('name email') : null,
-        ]);
-
-        if (user) {
-          leave.user = {
-            name: user.name,
-            email: user.email,
-          };
-        }
-
-        if (approver) {
-          leave.approvedBy = {
-            _id: approver._id,
-            name: approver.name,
-            email: approver.email,
-          };
-        }
-
-        // Ensure appliedOnBehalf fields are always present (for consistency with WFH)
-        if (leave.appliedOnBehalf === undefined) {
-          leave.appliedOnBehalf = false;
-        }
-        if (leave.managerApproved === undefined) {
-          leave.managerApproved = false;
-        }
-        if (leave.adminApproved === undefined) {
-          leave.adminApproved = false;
-        }
-
-        return leave;
-      })
-    );
+    const populatedLeaves = leaves.map((leave: any) => ({
+      ...leave,
+      appliedOnBehalf: leave.appliedOnBehalf ?? false,
+      managerApproved: leave.managerApproved ?? false,
+      adminApproved: leave.adminApproved ?? false,
+    }));
 
     console.log(populatedLeaves, "3. populatedLeaves")
     return {

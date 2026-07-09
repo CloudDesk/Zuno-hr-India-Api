@@ -152,25 +152,33 @@
 
         .pay-header .col-label {
             flex: 1;
+            min-width: 0;
             white-space: nowrap;
+            padding-right: 6px;
         }
 
         .pay-header .col-full {
             width: 88px;
+            flex: 0 0 88px;
             text-align: right;
             padding-right: 15px;
+            white-space: nowrap;
         }
 
         .pay-header .col-act {
             width: 88px;
+            flex: 0 0 88px;
             text-align: right;
             padding-right: 15px;
+            white-space: nowrap;
         }
 
         .pay-header .col-ded {
             width: 88px;
+            flex: 0 0 88px;
             text-align: right;
             padding-right: 15px;
+            white-space: nowrap;
         }
 
         /* Data rows — NO borders between rows */
@@ -187,25 +195,34 @@
 
         .pay-row .col-label {
             flex: 1;
-            white-space: nowrap;
+            min-width: 0;
+            white-space: normal;
+            overflow-wrap: anywhere;
+            padding-right: 6px;
         }
 
         .pay-row .col-full {
             width: 88px;
+            flex: 0 0 88px;
             text-align: right;
             padding-right: 15px;
+            white-space: nowrap;
         }
 
         .pay-row .col-act {
             width: 88px;
+            flex: 0 0 88px;
             text-align: right;
             padding-right: 15px;
+            white-space: nowrap;
         }
 
         .pay-row .col-ded {
             width: 88px;
+            flex: 0 0 88px;
             text-align: right;
             padding-right: 15px;
+            white-space: nowrap;
         }
 
         /* Totals row — top border only (separates items from total) */
@@ -221,25 +238,38 @@
 
         .pay-total .col-label {
             flex: 1;
-            white-space: nowrap;
+            min-width: 0;
+            white-space: normal;
+            overflow-wrap: anywhere;
+            padding-right: 6px;
         }
 
         .pay-total .col-full {
             width: 88px;
+            flex: 0 0 88px;
             text-align: right;
             padding-right: 15px;
+            white-space: nowrap;
         }
 
         .pay-total .col-act {
             width: 88px;
+            flex: 0 0 88px;
             text-align: right;
             padding-right: 15px;
+            white-space: nowrap;
         }
 
         .pay-total .col-ded {
             width: 88px;
+            flex: 0 0 88px;
             text-align: right;
             padding-right: 15px;
+            white-space: nowrap;
+        }
+
+        .deductions-side .col-full {
+            display: none;
         }
 
         /* ══════════════════════════
