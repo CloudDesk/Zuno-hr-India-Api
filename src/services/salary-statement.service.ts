@@ -1,4 +1,4 @@
-import { Payroll, SalaryAssignment, User } from '../models';
+import { Leave, Payroll, SalaryAssignment, User } from '../models';
 import { PayrollStatus } from './payroll-status.service';
 import { TaxDeclaration } from '../models/tax-declaration';
 import ExcelJS from 'exceljs';
@@ -101,6 +101,15 @@ export class SalaryStatementService extends BaseService {
             { header: 'NET PAY', key: 'netPay', width: 15 },
         ];
 
+        if (isPreview) {
+            const totalDeductionsIndex = columnDefinitions.findIndex(c => c.key === 'totalDeductions');
+            columnDefinitions.splice(totalDeductionsIndex, 0, {
+                header: 'LOP DEDUCTION',
+                key: 'lopDeduction',
+                width: 18,
+            });
+        }
+
         // --- NEW: DYNAMIC COLUMNS FOR CUSTOM COMPONENTS ---
         const customEarningNames = new Set<string>();
         const customDeductionNames = new Set<string>();
@@ -192,6 +201,7 @@ export class SalaryStatementService extends BaseService {
             incomeTax: 0,
             professionalTax: 0,
             tdsAmount: 0,
+            lopDeduction: 0,
             totalDeductions: 0,
             netPay: 0
         };
@@ -230,6 +240,7 @@ export class SalaryStatementService extends BaseService {
                 incomeTax: Math.round(record.incomeTax || 0),
                 professionalTax: Math.round(record.professionalTax || 0),
                 tdsAmount: Math.round(record.tdsDeduction || 0),
+                ...(isPreview ? { lopDeduction: Math.round(record.leaveDeductions || 0) } : {}),
                 totalDeductions: Math.round((record.totalDeductions || 0) + customDeductionTotal),
                 netPay: Math.round(record.netSalary || 0)
             };
@@ -273,6 +284,7 @@ export class SalaryStatementService extends BaseService {
             grandTotals.incomeTax += rowData.incomeTax;
             grandTotals.professionalTax += rowData.professionalTax;
             grandTotals.tdsAmount += rowData.tdsAmount;
+            grandTotals.lopDeduction += (rowData as any).lopDeduction || 0;
             grandTotals.totalDeductions += rowData.totalDeductions;
             grandTotals.netPay += rowData.netPay;
 
@@ -296,6 +308,7 @@ export class SalaryStatementService extends BaseService {
             incomeTax: Math.round(grandTotals.incomeTax),
             professionalTax: Math.round(grandTotals.professionalTax),
             tdsAmount: Math.round(grandTotals.tdsAmount),
+            ...(isPreview ? { lopDeduction: Math.round(grandTotals.lopDeduction) } : {}),
             totalDeductions: Math.round(grandTotals.totalDeductions),
             netPay: Math.round(grandTotals.netPay),
             ...customTotals
@@ -414,14 +427,24 @@ export class SalaryStatementService extends BaseService {
                     effectiveSeparation = sa.effectiveTo;
                 }
 
-                const payableDays = Math.max(0, Math.floor((effectiveSeparation.getTime() - effectiveJoin.getTime()) / (1000 * 60 * 60 * 24)) + 1);
+                const employmentPayableDays = Math.max(0, Math.floor((effectiveSeparation.getTime() - effectiveJoin.getTime()) / (1000 * 60 * 60 * 24)) + 1);
+                const lossOfPayDays = Math.min(
+                    employmentPayableDays,
+                    await this.getApprovedLossOfPayDays(user._id, effectiveJoin, effectiveSeparation)
+                );
+                const payableDays = Math.max(0, employmentPayableDays - lossOfPayDays);
 
-                console.log(`[VirtualPayroll] Processing ${user.name}: payableDays=${payableDays} (Join: ${user.joiningDate.toLocaleDateString()}, Sep: ${user.separationDate?.toLocaleDateString() || 'N/A'})`);
+                console.log(`[VirtualPayroll] Processing ${user.name}: payableDays=${payableDays}, lossOfPayDays=${lossOfPayDays} (Join: ${user.joiningDate.toLocaleDateString()}, Sep: ${user.separationDate?.toLocaleDateString() || 'N/A'})`);
 
                 const record = await this.calculatePayrollRecordLocally(
-                    user, sa, { presentDays: payableDays, weekendDays: 0, holidayDays: 0, absentDays: 0 },
+                    user, sa, { presentDays: employmentPayableDays, weekendDays: 0, holidayDays: 0, absentDays: 0 },
                     0, daysInMonth, monthName, month, year
                 );
+                const lopDeduction = employmentPayableDays > 0
+                    ? Math.round((record.monthlyGross / employmentPayableDays) * lossOfPayDays)
+                    : 0;
+                const totalDeductionsWithLop = Math.round((record.totalDeductions || 0) + lopDeduction);
+                const netSalaryAfterLop = Math.round((record.monthlyGross || 0) - totalDeductionsWithLop);
 
                 const existingPayroll = existingPayrollMap.get(user._id.toString());
                 const customReimbursements = existingPayroll?.customReimbursements || [];
@@ -441,11 +464,13 @@ export class SalaryStatementService extends BaseService {
 
                 payrollRecords.push({
                     ...record,
+                    leaveDeductions: lopDeduction,
+                    totalDeductions: totalDeductionsWithLop,
                     customReimbursements,
                     customDeductions,
                     totalCustomReimbursements: customReimbursementsTotal,
                     totalCustomDeductions: customDeductionsTotal,
-                    netSalary: Math.round((record.netSalary || 0) + customReimbursementsTotal - customDeductionsTotal),
+                    netSalary: Math.round(netSalaryAfterLop + customReimbursementsTotal - customDeductionsTotal),
                     employeeId: user,
                     status: statusBadge,
                     totalDaysInMonth: daysInMonth,
@@ -458,6 +483,56 @@ export class SalaryStatementService extends BaseService {
 
         console.log(`[VirtualPayroll] Total records generated: ${payrollRecords.length}`);
         return payrollRecords;
+    }
+
+    private async getApprovedLossOfPayDays(employeeId: Types.ObjectId, startDate: Date, endDate: Date): Promise<number> {
+        if (endDate < startDate) return 0;
+
+        const leaves = await Leave.find({
+            userId: employeeId,
+            // status: 'Approved',
+            status: { $in: ['Pending', 'Approved'] },
+            leaveType: 'lossOfPay',
+            startDate: { $lte: endDate },
+            endDate: { $gte: startDate },
+        })
+            .select('startDate endDate noOfDays leaveDuration weekendExclusion')
+            .lean();
+
+        return leaves.reduce((total, leave: any) => {
+            const leaveStart = new Date(leave.startDate);
+            const leaveEnd = new Date(leave.endDate);
+            const overlapStart = new Date(Math.max(leaveStart.getTime(), startDate.getTime()));
+            const overlapEnd = new Date(Math.min(leaveEnd.getTime(), endDate.getTime()));
+
+            if (overlapStart > overlapEnd) return total;
+            if (overlapStart.getTime() === leaveStart.getTime() && overlapEnd.getTime() === leaveEnd.getTime()) {
+                return total + Number(leave.noOfDays || 0);
+            }
+
+            const excludedDates = new Set<number>(
+                (leave.weekendExclusion?.excludedDates || []).map((date: Date) => {
+                    const excluded = new Date(date);
+                    excluded.setUTCHours(0, 0, 0, 0);
+                    return excluded.getTime();
+                })
+            );
+
+            let days = 0;
+            const currentDate = new Date(overlapStart);
+            currentDate.setUTCHours(0, 0, 0, 0);
+            const lastDate = new Date(overlapEnd);
+            lastDate.setUTCHours(0, 0, 0, 0);
+
+            while (currentDate <= lastDate) {
+                if (!excludedDates.has(currentDate.getTime())) {
+                    days += leave.leaveDuration === 'half-day' ? 0.5 : 1;
+                }
+                currentDate.setUTCDate(currentDate.getUTCDate() + 1);
+            }
+
+            return total + days;
+        }, 0);
     }
 
     /**
