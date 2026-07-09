@@ -1,7 +1,10 @@
 import dotenv from 'dotenv';
 import formbody from "@fastify/formbody";
 import fastifyStatic from "@fastify/static";
-
+import dns from "node:dns";
+ 
+dns.setServers(["1.1.1.1", "8.8.8.8"]);
+ 
 // const parentDir = path.resolve(__dirname, '../../api-server');
 // const uploadsDir = path.join(parentDir, 'uploads');
 // console.log(parentDir, uploadsDir, ' uploadsDir in INdex')
