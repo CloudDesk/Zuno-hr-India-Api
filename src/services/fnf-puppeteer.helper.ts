@@ -69,7 +69,8 @@ export async function generateFNFLetter(settlement: any, employee: any): Promise
     const unpaidHRA = (settlement.unpaidMonths || []).reduce((sum: number, m: any) => sum + (m.components?.hra || 0), 0);
     const unpaidConveyance = (settlement.unpaidMonths || []).reduce((sum: number, m: any) => sum + (m.components?.conveyance || 0), 0);
     const unpaidOtherAllowances = (settlement.unpaidMonths || []).reduce((sum: number, m: any) => sum + (m.components?.otherAllowances || 0), 0);
-    const totalLOPAmount = (settlement.unpaidMonths || []).reduce((sum: number, m: any) => sum + (m.lopAmount || 0), 0);
+    const attendanceLOPAmount = (settlement.unpaidMonths || []).reduce((sum: number, m: any) => sum + (m.lopAmount || 0), 0);
+    const additionalLOPAmount = Number(settlement.additionalLopAmount || 0);
 
     // Prepare Earnings list
     const allEarnings: any[] = [];
@@ -90,7 +91,8 @@ export async function generateFNFLetter(settlement: any, employee: any): Promise
     const allDeductions: any[] = [];
     const d = settlement.finalCalculation;
     if (d.providentFund > 0) allDeductions.push({ label: 'PF', amount: (d.providentFund).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) });
-    if (totalLOPAmount > 0) allDeductions.push({ label: 'LOSS OF PAY', amount: (totalLOPAmount).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) });
+    if (attendanceLOPAmount > 0) allDeductions.push({ label: 'LOSS OF PAY', amount: (attendanceLOPAmount).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) });
+    if (additionalLOPAmount > 0) allDeductions.push({ label: 'ADDITIONAL LOP', amount: (additionalLOPAmount).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) });
     if (d.professionalTax > 0) allDeductions.push({ label: 'PROF TAX', amount: (d.professionalTax).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) });
     if (d.incomeTax > 0) allDeductions.push({ label: 'INCOME TAX', amount: (d.incomeTax).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) });
     if (d.noticePeriodRecovery > 0) allDeductions.push({ label: 'NOTICE PERIOD RECOVERY', amount: (d.noticePeriodRecovery).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) });
@@ -170,8 +172,15 @@ export async function generateFNFLetter(settlement: any, employee: any): Promise
         noticeAdjustable: settlement.daysServed || 0,
         plDays: (settlement.leaveBalance || []).reduce((sum: number, l: any) => sum + (l.encashDays || 0), 0) || 0,
         salaryDays: (settlement.unpaidMonths || []).reduce((sum: number, m: any) => sum + (m.daysWorked || 0), 0),
-        monthDays: (settlement.unpaidMonths || []).reduce((sum: number, m: any) => sum + (m.totalDays || 0), 0),
-        lopDays: (settlement.unpaidMonths || []).reduce((sum: number, m: any) => sum + (m.lopDays || 0), 0),
+        monthDays: (settlement.unpaidMonths || []).reduce(
+            (sum: number, m: any) =>
+                sum + Math.min(
+                    Number(m.totalDays) || 0,
+                    (Number(m.daysWorked) || 0) + (Number(m.lopDays) || 0)
+                ),
+            0
+        ),
+        lopDays: (settlement.unpaidMonths || []).reduce((sum: number, m: any) => sum + (m.lopDays || 0), 0) + Number(settlement.additionalLopDays || 0),
         effectiveWorkdays: (settlement.unpaidMonths || []).reduce((sum: number, m: any) => sum + (m.daysWorked || 0), 0),
 
         combinedRows,

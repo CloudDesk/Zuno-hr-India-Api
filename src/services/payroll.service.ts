@@ -23,6 +23,7 @@ import { getCurrentFinancialYear } from '../utilis/dates';
 import { Parser } from "json2csv";
 import { Document } from '../models/document.model';
 import { deleteFileFromGCP } from '../utilis/gcpStorage';
+import { synchronizeFinalSettlementPayrollForPayslip } from './final-settlement.service';
 
 
 // Constants
@@ -791,6 +792,30 @@ export class PayrollService extends BaseService {
             query.country = country;
         }
 
+        // Older F&F payroll rows may have been created before one-time settlement
+        // earnings/deductions were copied into the payroll document. Reconcile only
+        // explicitly-marked F&F rows before calculating the summary so the displayed
+        // net salary and any subsequent processing use the confirmed settlement as
+        // their source of truth. Regular payroll records never enter this path.
+        const finalSettlementPayrolls = await Payroll.find({
+            ...query,
+            $or: [
+                { isFinalSettlement: true },
+                { type: 'FinalSettlement' }
+            ]
+        });
+
+        await Promise.all(finalSettlementPayrolls.map(async (payroll) => {
+            try {
+                await synchronizeFinalSettlementPayrollForPayslip(payroll);
+            } catch (error) {
+                console.error(
+                    `Failed to reconcile Final Settlement payroll ${payroll._id} for summary:`,
+                    error
+                );
+            }
+        }));
+
         const payrollAggregation = await Payroll.aggregate([
             { $match: query },
             {
@@ -1398,6 +1423,20 @@ export class PayrollService extends BaseService {
                 failedRecords.push({
                     id: record._id.toString(),
                     reason: 'Cannot modify payroll record with Completed status'
+                });
+                continue;
+            }
+
+            // Repair legacy F&F amounts before advancing the payroll workflow.
+            // This prevents an old Draft row with missing dynamic components from
+            // being approved or paid with a net amount different from the confirmed
+            // Final Settlement. The helper is a no-op for every regular payroll.
+            try {
+                await synchronizeFinalSettlementPayrollForPayslip(record);
+            } catch (error: any) {
+                failedRecords.push({
+                    id: record._id.toString(),
+                    reason: `Failed to reconcile Final Settlement values: ${error.message}`
                 });
                 continue;
             }

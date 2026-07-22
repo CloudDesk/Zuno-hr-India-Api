@@ -15,6 +15,7 @@ import { emailService } from './email.service';
 import { generateFNFLetter } from './fnf-puppeteer.helper';
 import { TaxDeclaration } from '../models/tax-declaration';
 import { Document } from '../models/document.model';
+import { isLossOfPayLeaveType } from '../utilis/leave-type-constants';
 
 const MONTH_NAMES = [
     'January', 'February', 'March', 'April', 'May', 'June',
@@ -26,6 +27,453 @@ const MONTH_SHORT_NAMES: Record<string, string> = {
     May: 'May', June: 'Jun', July: 'Jul', August: 'Aug',
     September: 'Sep', October: 'Oct', November: 'Nov', December: 'Dec'
 };
+
+class AdditionalLopValidationError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = 'AdditionalLopValidationError';
+    }
+}
+
+function calculateAdditionalLop(
+    monthlyGross: number,
+    leavingDate: Date | string | null | undefined,
+    requestedDays: unknown
+) {
+    const parsedDate = leavingDate ? new Date(leavingDate) : new Date(NaN);
+    const salaryDays = Number.isNaN(parsedDate.getTime())
+        ? 30
+        : new Date(parsedDate.getFullYear(), parsedDate.getMonth() + 1, 0).getDate();
+    const additionalLopDays = requestedDays === undefined || requestedDays === null || requestedDays === ''
+        ? 0
+        : Number(requestedDays);
+
+    if (!Number.isFinite(additionalLopDays) || additionalLopDays < 0) {
+        throw new AdditionalLopValidationError('Additional LOP days must be a non-negative number.');
+    }
+    if (additionalLopDays > salaryDays) {
+        throw new AdditionalLopValidationError(`Additional LOP days cannot exceed ${salaryDays} salary days.`);
+    }
+
+    const exactPerDayRate = salaryDays > 0 ? Math.max(0, Number(monthlyGross) || 0) / salaryDays : 0;
+
+    return {
+        additionalLopDays,
+        lopSalaryDays: salaryDays,
+        lopPerDayRate: Math.round(exactPerDayRate),
+        additionalLopAmount: Math.round(exactPerDayRate * additionalLopDays)
+    };
+}
+
+/**
+ * Build the accounting presentation for an unpaid F&F month.
+ *
+ * Complete employment months are shown at the full historical monthly gross.
+ * For the leaving month, earnings stop at the LWD, so the settlement gross is
+ * the monthly gross prorated from day 1 through the LWD. Attendance LOP is then
+ * deducted only from that employment-period gross.
+ */
+function calculateUnpaidMonthPresentation(
+    monthlyGross: number,
+    structure: any,
+    daysInMonth: number,
+    payableDays: number,
+    employmentDays: number = daysInMonth
+) {
+    const safeDaysInMonth = Math.max(1, Number(daysInMonth) || 1);
+    const safeEmploymentDays = Math.min(
+        safeDaysInMonth,
+        Math.max(0, Number(employmentDays) || 0)
+    );
+    const safePayableDays = Math.min(
+        safeEmploymentDays,
+        Math.max(0, Number(payableDays) || 0)
+    );
+    const safeMonthlyGross = Math.max(0, Number(monthlyGross) || 0);
+    const perDayGross = safeMonthlyGross / safeDaysInMonth;
+    const employmentRatio = safeEmploymentDays / safeDaysInMonth;
+    const settlementGross = Math.round(perDayGross * safeEmploymentDays);
+
+    const fixedEarnings = structure?.fixedEarnings || {};
+    const basicPercentage = (Number(fixedEarnings.basicPercentage) || 0) / 100;
+    const daPercentage = (Number(fixedEarnings.daPercentage) || 0) / 100;
+    const hraPercentage = (Number(fixedEarnings.hraPercentage) || 0) / 100;
+    const conveyancePercentage = (
+        Number(
+            fixedEarnings.conveyancePercentage ??
+            fixedEarnings.travelAllowancePercentage
+        ) || 0
+    ) / 100;
+
+    const fullBasicBeforeDa = safeMonthlyGross * basicPercentage;
+    const fullDa = fullBasicBeforeDa * daPercentage;
+    const fullHra = safeMonthlyGross * hraPercentage;
+    const fullConveyance = safeMonthlyGross * conveyancePercentage;
+
+    const componentBasic = Math.round(
+        (fullBasicBeforeDa + fullDa) * employmentRatio
+    );
+    const componentHra = Math.round(fullHra * employmentRatio);
+    const componentConveyance = Math.round(fullConveyance * employmentRatio);
+    // Preserve the payroll service's balancing-component behavior so the
+    // reported earnings always add up exactly to the settlement-period gross.
+    const componentOtherAllowances =
+        settlementGross - componentBasic - componentHra - componentConveyance;
+
+    const earnedSalary = Math.round(perDayGross * safePayableDays);
+    // Every non-payable day inside the employment period is attendance LOP.
+    // Using the balancing difference also absorbs harmless one-rupee rounding.
+    const attendanceLopAmount = Math.max(0, settlementGross - earnedSalary);
+
+    return {
+        settlementGross,
+        earnedSalary,
+        attendanceLopAmount,
+        // Retain zero-valued legacy fields for stored-draft compatibility.
+        separationProrationDays: 0,
+        separationProrationAmount: 0,
+        proratedBasic: (fullBasicBeforeDa / safeDaysInMonth) * safePayableDays,
+        proratedDa: (fullDa / safeDaysInMonth) * safePayableDays,
+        components: {
+            basic: componentBasic,
+            hra: componentHra,
+            conveyance: componentConveyance,
+            specialAllowance: 0,
+            otherAllowances: componentOtherAllowances,
+            gross: settlementGross
+        }
+    };
+}
+
+/**
+ * Convert drafts produced by the former full-month-plus-post-LWD presentation.
+ * The employee's net stays unchanged because the same amount is removed from
+ * both earnings and deductions.
+ */
+function normalizeLegacySeparationPresentation(unpaidMonths: any[]) {
+    const sourceMonths = Array.isArray(unpaidMonths) ? unpaidMonths : [];
+    const removedSeparationAmount = sourceMonths.reduce(
+        (sum: number, month: any) =>
+            sum + (Number(month.separationProrationAmount) || 0),
+        0
+    );
+    const normalizedMonths = sourceMonths.map((month: any) => {
+        const plainMonth = month?.toObject?.() || month;
+        const oldSalary = Math.max(0, Number(plainMonth.salary) || 0);
+        const oldSeparation = Math.max(
+            0,
+            Number(plainMonth.separationProrationAmount) || 0
+        );
+        const salary = Math.max(0, oldSalary - oldSeparation);
+        const oldComponents = plainMonth.components?.toObject?.() || plainMonth.components;
+
+        let components = oldComponents;
+        if (oldComponents && oldSeparation > 0 && oldSalary > 0) {
+            const ratio = salary / oldSalary;
+            const basic = Math.round((Number(oldComponents.basic) || 0) * ratio);
+            const hra = Math.round((Number(oldComponents.hra) || 0) * ratio);
+            const conveyance = Math.round(
+                (Number(oldComponents.conveyance ?? oldComponents.travelAllowance) || 0) * ratio
+            );
+            const specialAllowance = Math.round(
+                (Number(oldComponents.specialAllowance) || 0) * ratio
+            );
+            components = {
+                ...oldComponents,
+                basic,
+                hra,
+                conveyance,
+                specialAllowance,
+                otherAllowances: salary - basic - hra - conveyance - specialAllowance,
+                gross: salary
+            };
+        }
+
+        return {
+            ...plainMonth,
+            salary,
+            components,
+            separationProrationDays: 0,
+            separationProrationAmount: 0
+        };
+    });
+
+    return {
+        unpaidMonths: normalizedMonths,
+        removedSeparationAmount,
+        totalUnpaidSalary: normalizedMonths.reduce(
+            (sum: number, month: any) => sum + (Number(month.salary) || 0),
+            0
+        )
+    };
+}
+
+type PayslipNamedComponent = {
+    name: string;
+    value: number;
+};
+
+/**
+ * Convert one-time F&F earnings and deductions into the payroll model's named
+ * custom components. These rows are attached only to the final unpaid/LWD
+ * payroll so a multi-month settlement does not repeat them on every payslip.
+ */
+export function buildFinalSettlementPayslipAdjustments(settlement: any) {
+    const customReimbursements: PayslipNamedComponent[] = [];
+    const customDeductions: PayslipNamedComponent[] = [];
+    const finalCalculation = settlement?.finalCalculation?.toObject?.()
+        || settlement?.finalCalculation
+        || {};
+
+    const normalizeLabel = (value: unknown, fallback: string) => {
+        const label = typeof value === 'string' ? value.trim() : '';
+        return label || fallback;
+    };
+
+    const addSignedEarning = (label: string, rawAmount: unknown) => {
+        const amount = Math.round(Number(rawAmount) || 0);
+        if (amount > 0) {
+            customReimbursements.push({ name: label, value: amount });
+        } else if (amount < 0) {
+            customDeductions.push({ name: label, value: Math.abs(amount) });
+        }
+    };
+
+    const addSignedDeduction = (label: string, rawAmount: unknown) => {
+        const amount = Math.round(Number(rawAmount) || 0);
+        if (amount > 0) {
+            customDeductions.push({ name: label, value: amount });
+        } else if (amount < 0) {
+            customReimbursements.push({ name: label, value: Math.abs(amount) });
+        }
+    };
+
+    // Aggregate rows use the same labels and values as the F&F report.
+    addSignedEarning(
+        'LEAVE ENCASHMENT',
+        finalCalculation.leaveEncashment ?? settlement?.totalLeaveEncashment
+    );
+    addSignedEarning(
+        'REIMBURSEMENTS',
+        finalCalculation.reimbursements ?? settlement?.totalReimbursements
+    );
+    addSignedEarning('GRATUITY', finalCalculation.gratuity ?? settlement?.gratuity);
+
+    (settlement?.otherAdditions || []).forEach((item: any) => {
+        addSignedEarning(
+            normalizeLabel(item?.description, 'OTHER ADDITION'),
+            item?.amount
+        );
+    });
+
+    addSignedDeduction(
+        'ADDITIONAL LOP',
+        finalCalculation.additionalLopAmount ?? settlement?.additionalLopAmount
+    );
+
+    (settlement?.otherDeductions || []).forEach((item: any) => {
+        addSignedDeduction(
+            normalizeLabel(item?.description, 'OTHER DEDUCTION'),
+            item?.amount
+        );
+    });
+
+    return {
+        customReimbursements,
+        customDeductions,
+        totalCustomReimbursements: customReimbursements.reduce(
+            (sum, item) => sum + item.value,
+            0
+        ),
+        totalCustomDeductions: customDeductions.reduce(
+            (sum, item) => sum + item.value,
+            0
+        )
+    };
+}
+
+/**
+ * Build the authoritative payroll values used when an F&F payslip is rendered.
+ * This protects both newly-created and previously-created F&F payroll rows from
+ * drifting away from the confirmed settlement (for example after an older
+ * payroll calculation stored attendance-adjusted earnings).
+ */
+export function buildFinalSettlementPayrollReconciliation(
+    payroll: any,
+    settlement: any
+) {
+    const plainPayroll = payroll?.toObject?.() || payroll || {};
+    const unpaidMonths = Array.isArray(settlement?.unpaidMonths)
+        ? settlement.unpaidMonths.map((item: any) => item?.toObject?.() || item)
+        : [];
+    const settlementMonth = unpaidMonths.find((item: any) =>
+        Number(item?.month) === Number(plainPayroll.month) &&
+        Number(item?.year) === Number(plainPayroll.year)
+    );
+
+    if (!settlementMonth) return null;
+
+    const sortedMonths = [...unpaidMonths].sort((a: any, b: any) => {
+        if (Number(a.year) !== Number(b.year)) return Number(a.year) - Number(b.year);
+        return Number(a.month) - Number(b.month);
+    });
+    const lastMonth = sortedMonths[sortedMonths.length - 1];
+    const isLastMonth = !!lastMonth &&
+        Number(lastMonth.month) === Number(settlementMonth.month) &&
+        Number(lastMonth.year) === Number(settlementMonth.year);
+    const amount = (value: unknown) => Math.round(Number(value) || 0);
+    const periodGross = Math.max(0, amount(settlementMonth.salary));
+    const attendanceLopAmount = Math.max(0, amount(settlementMonth.lopAmount));
+    const attendanceAdjustedGross = Math.max(0, periodGross - attendanceLopAmount);
+    const components = settlementMonth.components?.toObject?.()
+        || settlementMonth.components
+        || {};
+    const componentTotal = amount(components.basic) +
+        amount(components.hra) +
+        amount(components.conveyance) +
+        amount(components.specialAllowance) +
+        amount(components.otherAllowances);
+    const componentGross = amount(components.gross);
+    const hasAuthoritativeComponents = periodGross > 0 &&
+        Math.abs(componentGross - periodGross) <= 1 &&
+        Math.abs(componentTotal - periodGross) <= 1;
+
+    const customAdjustments = isLastMonth
+        ? buildFinalSettlementPayslipAdjustments(settlement)
+        : {
+            customReimbursements: [],
+            customDeductions: [],
+            totalCustomReimbursements: 0,
+            totalCustomDeductions: 0
+        };
+    const finalCalculation = settlement?.finalCalculation?.toObject?.()
+        || settlement?.finalCalculation
+        || {};
+    const noticePeriodRecovery = isLastMonth
+        ? amount(settlement?.noticePeriodRecovery ?? finalCalculation.noticePeriodRecovery)
+        : 0;
+    const professionalTax = amount(settlementMonth.professionalTax);
+    const incomeTax = amount(settlementMonth.incomeTax);
+    const providentFund = amount(settlementMonth.providentFund);
+    const esi = amount(settlementMonth.esi);
+    const totalDeductions = amount(
+        professionalTax + incomeTax + providentFund + esi +
+        attendanceLopAmount + noticePeriodRecovery
+    );
+    const settlementHoldSalary = amount(
+        finalCalculation.holdSalaries || settlement?.totalHoldAmount
+    );
+    const holdSalary = isLastMonth
+        ? amount(plainPayroll.holdSalary || settlementHoldSalary)
+        : 0;
+    const reimbursement = amount(plainPayroll.reimbursement);
+    const netSalary = amount(
+        periodGross - totalDeductions + reimbursement + holdSalary -
+        customAdjustments.totalCustomDeductions +
+        customAdjustments.totalCustomReimbursements
+    );
+
+    const reconciliation: any = {
+        professionalTax,
+        incomeTax,
+        epfEmployee: providentFund,
+        epfEmployer: amount(settlementMonth.epfEmployer || providentFund),
+        epfEmployerEps: amount(settlementMonth.epfEmployerEps),
+        epfEmployerEpf: amount(settlementMonth.epfEmployerEpf),
+        esiEmployee: esi,
+        esiEmployer: esi,
+        noticePeriodRecovery,
+        leaveDeductions: attendanceLopAmount,
+        totalDeductions,
+        monthlyGross: periodGross,
+        attendanceAdjustGross: attendanceAdjustedGross,
+        netSalary,
+        totalDaysInMonth: amount(settlementMonth.totalDays),
+        presentDays: amount(settlementMonth.presentDays),
+        payableDays: amount(settlementMonth.daysWorked),
+        LOPDays: Number(settlementMonth.lopDays) || 0,
+        holdSalary,
+        reimbursement,
+        customReimbursements: customAdjustments.customReimbursements,
+        customDeductions: customAdjustments.customDeductions,
+        totalCustomReimbursements: customAdjustments.totalCustomReimbursements,
+        totalCustomDeductions: customAdjustments.totalCustomDeductions,
+        isFinalSettlement: true,
+        type: 'FinalSettlement'
+    };
+
+    if (hasAuthoritativeComponents) {
+        const basic = amount(components.basic);
+        const hra = amount(components.hra);
+        const travelAllowance = amount(components.conveyance);
+        // F&F presentation combines DA into BASIC and balances all remaining
+        // components into OTHER ALLOWANCE.
+        const da = 0;
+        const otherAllowance = amount(periodGross - basic - hra - travelAllowance);
+
+        Object.assign(reconciliation, {
+            basic,
+            hra,
+            da,
+            otherAllowance,
+            travelAllowance,
+            reimbursementAllowance: 0,
+            assigned: {
+                basic,
+                hra,
+                da,
+                otherAllowance,
+                travelAllowance,
+                airTicketAllowance: 0,
+                medicalAllowance: 0,
+                reimbursementAllowance: 0
+            }
+        });
+    }
+
+    return reconciliation;
+}
+
+/**
+ * Refresh only an explicitly-created F&F payroll from its confirmed settlement
+ * before payslip generation. Regular payroll rows never enter this path.
+ */
+export async function synchronizeFinalSettlementPayrollForPayslip(payroll: any) {
+    const plainPayroll = payroll?.toObject?.() || payroll;
+    if (!plainPayroll ||
+        (plainPayroll.isFinalSettlement !== true && plainPayroll.type !== 'FinalSettlement')) {
+        return payroll;
+    }
+
+    const settlement = await FinalSettlement.findOne({
+        employeeId: plainPayroll.employeeId,
+        status: 'Confirmed',
+        unpaidMonths: {
+            $elemMatch: {
+                month: Number(plainPayroll.month),
+                year: Number(plainPayroll.year)
+            }
+        }
+    }).sort({ confirmedAt: -1, updatedAt: -1 }).lean();
+
+    if (!settlement) return payroll;
+
+    const reconciliation = buildFinalSettlementPayrollReconciliation(
+        plainPayroll,
+        settlement
+    );
+    if (!reconciliation) return payroll;
+
+    await Payroll.updateOne(
+        { _id: plainPayroll._id },
+        { $set: reconciliation }
+    );
+
+    return {
+        ...plainPayroll,
+        ...reconciliation
+    };
+}
 
 /**
  * Helper: Calculate Unpaid Gaps (Months between Last Paid and LWD)
@@ -49,6 +497,7 @@ async function calculateUnpaidGaps(
     let totalIncomeTax = 0;
     let totalESI = 0;
     let totalLOPAmount = 0; // Track total LOP
+    const totalSeparationProrationAmount = 0;
 
     // Find last PAID payroll (status = Completed)
     const lastPaidPayroll = await Payroll.findOne({
@@ -386,15 +835,12 @@ async function calculateUnpaidGaps(
         });
 
         let leaveDays = 0;
-        let lopDays = 0;
 
         for (const leave of leaves) {
             const leaveStart = leave.startDate < periodStartDate ? periodStartDate : leave.startDate;
             const leaveEnd = leave.endDate > endDate ? endDate : leave.endDate;
             const days = Math.floor((leaveEnd.getTime() - leaveStart.getTime()) / (1000 * 60 * 60 * 24)) + 1;
-            if (leave.leaveType === 'LOP' || leave.leaveType === 'Loss Of Pay') {
-                lopDays += days;
-            } else {
+            if (!isLossOfPayLeaveType(leave.leaveType)) {
                 leaveDays += days;
             }
         }
@@ -410,9 +856,10 @@ async function calculateUnpaidGaps(
         // Cap payableDays at employmentDays (just in case)
         if (payableDays > employmentDays) payableDays = employmentDays;
 
-        // LOP = Employment Days - Payable Days
-        // Ensure we don't return negative LOP
-        lopDays = Math.max(0, employmentDays - payableDays);
+        // Approved LOP leave is excluded from leaveDays/payableDays. The
+        // remaining employment days therefore contain both approved LOP leave
+        // and other attendance gaps, all of which belong exclusively in LOP.
+        const lopDays = Math.max(0, employmentDays - payableDays);
 
         // ✅ GUARD 2: Skip if no payable days (CRITICAL - Prevents overpayment)
         if (payableDays <= 0) {
@@ -427,27 +874,14 @@ async function calculateUnpaidGaps(
 
         const monthlySalary = (currentMonthGross / daysInMonth) * payableDays;
 
-        // Proration Logic (Matched with Payroll Service)
         const structure = currentMonthStructure;
-        const basicPerc = structure.fixedEarnings?.basicPercentage ?? 0;
-        const daPerc = Number(structure.fixedEarnings?.daPercentage) || 0;
-        const hraPerc = Number(structure.fixedEarnings?.hraPercentage) || 0;
-        const conveyancePerc = Number(structure.fixedEarnings?.conveyancePercentage) || 0;
-        // removed otherAllowancePerc as it is now calculated via balancing logic below
-
-        const fullBasic = currentMonthGross * (basicPerc / 100);
-        const fullDA = daPerc === 0 ? 0 : fullBasic * (daPerc / 100);
-        const fullHRA = currentMonthGross * (hraPerc / 100);
-        const fullConveyance = currentMonthGross * (conveyancePerc / 100);
-        // removed fullOtherAllowances
-
-        const proratedBasic = (fullBasic / daysInMonth) * payableDays;
-        const proratedDA = (fullDA / daysInMonth) * payableDays;
-        const proratedHRA = (fullHRA / daysInMonth) * payableDays;
-        const proratedConveyance = (fullConveyance / daysInMonth) * payableDays;
-
-        // Note: Use rounded components and sum value to avoid 1-rupee rounding drift.
-        const lopAmount = (currentMonthGross / daysInMonth) * lopDays;
+        const presentation = calculateUnpaidMonthPresentation(
+            currentMonthGross,
+            structure,
+            daysInMonth,
+            payableDays,
+            employmentDays
+        );
 
         // ✅ PT Calculation Logic (Updated to Aggregate Cycle Logic)
         // Add current month's earned gross to the aggregate ONLY if it's in the same cycle as LWD (Apr-Sep or Oct-Mar)
@@ -475,24 +909,13 @@ async function calculateUnpaidGaps(
             ptAmount = Math.round(calculatePT(currentMonthGross, currentMonth, isLWDMonth));
         }
 
-        const { epfEmployee, epfEmployer, epfEmployerEps, epfEmployerEpf } = calculatePF(proratedBasic, proratedDA);
+        const { epfEmployee, epfEmployer, epfEmployerEps, epfEmployerEpf } = calculatePF(
+            presentation.proratedBasic,
+            presentation.proratedDa
+        );
         const pfAmount = epfEmployee;
         const itAmount = await calculateIncomeTax(currentMonth, currentYear);
         const esiAmount = calculateESI();
-
-        const targetGross = Math.round(monthlySalary);
-        const componentBasic = Math.round(proratedBasic + proratedDA);
-        const componentHRA = Math.round(proratedHRA);
-        const componentConveyance = Math.round(proratedConveyance);
-
-        // Internal Balancing Logic: Adjust 'Other Allowances' to ensure sum of components exactly matches rounded total gross.
-        const componentOtherAllowances = targetGross - (componentBasic + componentHRA + componentConveyance);
-
-        const componentSum = targetGross;
-        const componentGross = componentSum;
-        const componentOtherAllowancesAdjusted = componentOtherAllowances;
-
-        const roundedSalary = componentGross;
 
         unpaidMonths.push({
             month: currentMonth,
@@ -505,16 +928,12 @@ async function calculateUnpaidGaps(
             holidayDays: holidayDays,
             leaveDays: leaveDays,
             lopDays: lopDays,
-            lopAmount: Math.round(lopAmount),
-            components: {
-                basic: componentBasic,
-                hra: componentHRA,
-                conveyance: componentConveyance,
-                specialAllowance: 0,
-                otherAllowances: componentOtherAllowancesAdjusted,
-                gross: componentGross
-            },
-            salary: roundedSalary,
+            lopAmount: presentation.attendanceLopAmount,
+            earnedSalary: presentation.earnedSalary,
+            separationProrationDays: presentation.separationProrationDays,
+            separationProrationAmount: presentation.separationProrationAmount,
+            components: presentation.components,
+            salary: presentation.settlementGross,
             professionalTax: ptAmount,
             incomeTax: itAmount,
             providentFund: pfAmount,
@@ -524,7 +943,7 @@ async function calculateUnpaidGaps(
             esi: esiAmount
         });
 
-        totalUnpaidSalary += roundedSalary;
+        totalUnpaidSalary += presentation.settlementGross;
         totalDaysWorked += payableDays;
         totalProfessionalTax += ptAmount;
         totalProvidentFund += pfAmount;
@@ -533,7 +952,7 @@ async function calculateUnpaidGaps(
         totalEpfEmployerEpf += epfEmployerEpf;  // ✅ Added
         totalIncomeTax += itAmount;
         totalESI += esiAmount;
-        totalLOPAmount += Math.round(lopAmount);
+        totalLOPAmount += presentation.attendanceLopAmount;
 
         incrementMonth();
     }
@@ -549,7 +968,8 @@ async function calculateUnpaidGaps(
         totalEpfEmployerEpf,  // ✅ Added
         totalIncomeTax,
         totalESI,
-        totalLOPAmount // Return for Final Calc
+        totalLOPAmount, // Return for Final Calc
+        totalSeparationProrationAmount
     };
 }
 
@@ -829,8 +1249,11 @@ export async function initializeFinalSettlement(
             totalProvidentFund,
             totalIncomeTax,
             totalESI,
-            totalLOPAmount
+            totalLOPAmount,
+            totalSeparationProrationAmount
         } = unpaidCalculation;
+        const additionalLop = calculateAdditionalLop(monthlyGross, leavingDate, 0);
+        const combinedLopAmount = totalLOPAmount + additionalLop.additionalLopAmount;
 
         // Auto-fill response
         const initialData = {
@@ -859,11 +1282,13 @@ export async function initializeFinalSettlement(
             totalHoldAmount: Math.round(totalHoldAmount),
             unpaidMonths,
             totalUnpaidSalary: Math.round(totalUnpaidSalary),
+            separationProrationAmount: Math.round(totalSeparationProrationAmount),
             totalDaysWorked,
 
             // Step 5: Leave Encashment
             leaveBalance,
             totalLeaveEncashment: Math.round(leaveBalance[0].encashAmount),
+            ...additionalLop,
 
             // Step 6: Reimbursements
             reimbursements: [],
@@ -887,11 +1312,14 @@ export async function initializeFinalSettlement(
                 incomeTax: Math.round(totalIncomeTax),
                 providentFund: Math.round(totalProvidentFund),
                 esi: Math.round(totalESI),
-                lopAmount: Math.round(totalLOPAmount || 0), // ✅ Added LOP amount
+                attendanceLopAmount: Math.round(totalLOPAmount || 0),
+                additionalLopAmount: additionalLop.additionalLopAmount,
+                lopAmount: Math.round(combinedLopAmount),
+                separationProrationAmount: Math.round(totalSeparationProrationAmount),
                 otherDeductions: 0,
-                totalDeductions: Math.round(noticePeriodRecovery + totalProfessionalTax + totalIncomeTax + totalProvidentFund + totalESI + (totalLOPAmount || 0)),
-                netAmount: Math.round((totalHoldAmount + totalUnpaidSalary + leaveBalance[0].encashAmount + gratuityAmount) - (noticePeriodRecovery + totalProfessionalTax + totalIncomeTax + totalProvidentFund + totalESI + (totalLOPAmount || 0))),
-                isNegative: ((totalHoldAmount + totalUnpaidSalary + leaveBalance[0].encashAmount + gratuityAmount) - (noticePeriodRecovery + totalProfessionalTax + totalIncomeTax + totalProvidentFund + totalESI + (totalLOPAmount || 0))) < 0
+                totalDeductions: Math.round(noticePeriodRecovery + totalProfessionalTax + totalIncomeTax + totalProvidentFund + totalESI + combinedLopAmount),
+                netAmount: Math.round((totalHoldAmount + totalUnpaidSalary + leaveBalance[0].encashAmount + gratuityAmount) - (noticePeriodRecovery + totalProfessionalTax + totalIncomeTax + totalProvidentFund + totalESI + combinedLopAmount)),
+                isNegative: ((totalHoldAmount + totalUnpaidSalary + leaveBalance[0].encashAmount + gratuityAmount) - (noticePeriodRecovery + totalProfessionalTax + totalIncomeTax + totalProvidentFund + totalESI + combinedLopAmount)) < 0
             }
         };
 
@@ -936,9 +1364,10 @@ function packSettlement(settlement: any, data: any) {
         'resignationSubmittedOn', 'leavingDate', 'leavingReason', 'settlementDate',
         'lastPaidMonth', 'lastPaidMonthDate',
         'holdPayrolls', 'totalHoldAmount',
-        'unpaidMonths', 'totalUnpaidSalary',
+        'unpaidMonths', 'totalUnpaidSalary', 'separationProrationAmount',
         'totalDaysWorked',
         'leaveBalance', 'totalLeaveEncashment',
+        'additionalLopDays', 'lopSalaryDays', 'lopPerDayRate', 'additionalLopAmount',
         'reimbursements', 'totalReimbursements',
         'otherDeductions', 'totalOtherDeductions',
         'otherAdditions', 'totalOtherAdditions',
@@ -1008,7 +1437,10 @@ function packSettlement(settlement: any, data: any) {
     if (data.epfEmployerEpf !== undefined) calc.epfEmployerEpf = Math.round(data.epfEmployerEpf); // ✅ Added
     if (data.esi !== undefined) calc.esi = Math.round(data.esi);
     if (data.incomeTax !== undefined) calc.incomeTax = Math.round(data.incomeTax);
+    if (data.attendanceLopAmount !== undefined) calc.attendanceLopAmount = Math.round(data.attendanceLopAmount);
+    if (data.additionalLopAmount !== undefined) calc.additionalLopAmount = Math.round(data.additionalLopAmount);
     if (data.lopAmount !== undefined) calc.lopAmount = Math.round(data.lopAmount);
+    if (data.separationProrationAmount !== undefined) calc.separationProrationAmount = Math.round(data.separationProrationAmount);
 
     const dAmt = data.totalOtherDeductions !== undefined ? data.totalOtherDeductions : data.otherDeductions;
     if (dAmt !== undefined) calc.otherDeductions = Math.round(dAmt);
@@ -1107,6 +1539,11 @@ export async function saveFinalSettlement(
 
 
         const leavingDate = data.leavingDate || data.resignationDetails?.lwd;
+        const additionalLop = calculateAdditionalLop(
+            monthlyGross,
+            leavingDate,
+            data.additionalLopDays ?? data.leaveEncashment?.additionalLopDays
+        );
 
         let unpaidMonths: any[] = [];
         let totalUnpaid = 0;
@@ -1118,6 +1555,7 @@ export async function saveFinalSettlement(
         let totalEpfEmployerEps = 0;  // ✅ Added
         let totalEpfEmployerEpf = 0;  // ✅ Added
         let totalLOPAmount = 0;
+        const totalSeparationProrationAmount = 0;
 
         // ✅ RECALCULATION STRATEGY:
         // If mode is 'automatic' (or default), we MUST regenerate the Unpaid Gaps based on the
@@ -1193,6 +1631,7 @@ export async function saveFinalSettlement(
             };
 
             const calculateESI = () => 0;
+            let totalEarnedForStatutory = 0;
 
             for (const m of unpaidMonths) {
                 const daysInMonth = m.totalDays || 30;
@@ -1204,48 +1643,28 @@ export async function saveFinalSettlement(
                     const mGross = mAssignment?.monthlyGross || monthlyGross;
                     const mStructure = mAssignment?.salaryStructureId || structure;
 
-                    const bP = (mStructure.fixedEarnings?.basicPercentage ?? 0) / 100;
-                    const dP = (mStructure.fixedEarnings?.daPercentage ?? 0) / 100;
-                    const hP = (mStructure.fixedEarnings?.hraPercentage ?? 0) / 100;
-                    const tP = (mStructure.fixedEarnings?.travelAllowancePercentage ?? 0) / 100;
-                    const oP = (mStructure.fixedEarnings?.otherAllowancePercentage ?? 0) / 100;
-
-                    const fullB = mGross * bP;
-                    const fullD = fullB * dP;
-                    const fullH = mGross * hP;
-                    const fullT = mGross * tP;
-                    const fullOtherAllowances = mGross * oP;
-
-                    const pb = (fullB / daysInMonth) * payableDays;
-                    const pd = (fullD / daysInMonth) * payableDays;
-                    const ph = (fullH / daysInMonth) * payableDays;
-                    const ptAllo = (fullT / daysInMonth) * payableDays;
-                    const proratedOtherAllowances = (fullOtherAllowances / daysInMonth) * payableDays;
-
-                    const pg = (mGross / daysInMonth) * payableDays;
-                    const targetGross = Math.round(pg);
-                    const roundedBasic = Math.round(pb + pd);
-                    const roundedHRA = Math.round(ph);
-                    const roundedConveyance = Math.round(ptAllo);
-                    const roundedOtherAllowances = Math.round(proratedOtherAllowances);
-
-                    // Re-calculate balancing allowance to ensure sum of components exactly matches targetGross.
-                    const roundedSpecialAllowance = targetGross - (roundedBasic + roundedHRA + roundedConveyance + roundedOtherAllowances);
-
-                    m.components = {
-                        basic: roundedBasic,
-                        hra: roundedHRA,
-                        conveyance: roundedConveyance,
-                        specialAllowance: roundedSpecialAllowance,
-                        otherAllowances: roundedOtherAllowances,
-                        gross: targetGross
-                    };
-
-                    m.salary = targetGross;
-
-                    // ✅ PT Calculation Logic (Updated to Aggregate Cycle Logic for Manual Mode)
                     const lDate = leavingDate ? new Date(leavingDate) : new Date();
                     const isLeavingMonth = m.year === lDate.getFullYear() && m.month === (lDate.getMonth() + 1);
+                    const employmentDays = isLeavingMonth
+                        ? Math.min(daysInMonth, lDate.getDate())
+                        : daysInMonth;
+                    const presentation = calculateUnpaidMonthPresentation(
+                        mGross,
+                        mStructure,
+                        daysInMonth,
+                        payableDays,
+                        employmentDays
+                    );
+                    const pg = presentation.earnedSalary;
+
+                    m.components = presentation.components;
+                    m.salary = presentation.settlementGross;
+                    m.earnedSalary = presentation.earnedSalary;
+                    m.lopAmount = presentation.attendanceLopAmount;
+                    m.separationProrationDays = presentation.separationProrationDays;
+                    m.separationProrationAmount = presentation.separationProrationAmount;
+
+                    // ✅ PT Calculation Logic (Updated to Aggregate Cycle Logic for Manual Mode)
                     const lwMonth = lDate.getMonth() + 1;
                     const lwYear = lDate.getFullYear();
                     const isH1_m = lwMonth >= 4 && lwMonth <= 9;
@@ -1295,7 +1714,7 @@ export async function saveFinalSettlement(
 
                             // totalUnpaid includes all gaps before this month
                             // plus current month gross (pg)
-                            const totalCycleGross = prevGross + totalUnpaid + pg;
+                            const totalCycleGross = prevGross + totalEarnedForStatutory + pg;
                             const representativeMonth = isH1_m ? 8 : 2;
                             const totalDue = Math.round(calculatePT(totalCycleGross, representativeMonth));
                             ptAmount = Math.max(0, totalDue - prevPT);
@@ -1307,7 +1726,10 @@ export async function saveFinalSettlement(
                     }
 
                     m.professionalTax = ptAmount;
-                    const pfResult = calculatePF(pb, pd);
+                    const pfResult = calculatePF(
+                        presentation.proratedBasic,
+                        presentation.proratedDa
+                    );
                     m.providentFund = pfResult.epfEmployee;
                     m.epfEmployer = pfResult.epfEmployer;        // ✅ Added
                     m.epfEmployerEps = pfResult.epfEmployerEps;  // ✅ Added
@@ -1315,6 +1737,7 @@ export async function saveFinalSettlement(
                     m.esi = Math.round(calculateESI());
 
                     totalUnpaid += m.salary;
+                    totalEarnedForStatutory += presentation.earnedSalary;
 
                     // Sum totals
                     pt += m.professionalTax;
@@ -1423,7 +1846,11 @@ export async function saveFinalSettlement(
 
         const totalPayable = Math.round(holdSalaries + totalUnpaid + totalLeaveAmt + totalReimbursements + totalAdditions + gratuity);
         // ✅ Include LOP Amount in Total Deductions
-        const allDeductions = Math.round((noticeRecovery || 0) + totalDeductions + pt + pf + esi + it + totalLOPAmount);
+        const combinedLopAmount = totalLOPAmount + additionalLop.additionalLopAmount;
+        const allDeductions = Math.round(
+            (noticeRecovery || 0) + totalDeductions + pt + pf + esi + it +
+            combinedLopAmount
+        );
         const netAmount = totalPayable - allDeductions;
 
 
@@ -1464,7 +1891,9 @@ export async function saveFinalSettlement(
             unpaidMonths,
             totalHoldAmount: holdSalaries,
             totalUnpaidSalary: totalUnpaid,
+            separationProrationAmount: totalSeparationProrationAmount,
             totalLeaveEncashment: totalLeaveAmt,
+            ...additionalLop,
             totalReimbursements: totalReimbursements,
             totalOtherAdditions: totalAdditions, // Maps to data.totalOtherAdditions in packSettlement
             totalOtherDeductions: totalDeductions,
@@ -1476,7 +1905,9 @@ export async function saveFinalSettlement(
             esi: esi,
             incomeTax: it,
             gratuity: gratuity,
-            lopAmount: totalLOPAmount, // ✅ Added LOP amount
+            attendanceLopAmount: totalLOPAmount,
+            additionalLopAmount: additionalLop.additionalLopAmount,
+            lopAmount: combinedLopAmount,
             noticePeriodRecovery: noticeRecovery,
             totalPayable,
             totalDeductions: allDeductions,
@@ -1507,7 +1938,10 @@ export async function saveFinalSettlement(
             professionalTax: pt,
             incomeTax: it,
             gratuity: gratuity,
-            lopAmount: totalLOPAmount, // ✅ Added for consistency
+            ...additionalLop,
+            attendanceLopAmount: totalLOPAmount,
+            lopAmount: combinedLopAmount,
+            separationProrationAmount: totalSeparationProrationAmount,
 
             // Full document
             data: settlement
@@ -1515,6 +1949,9 @@ export async function saveFinalSettlement(
 
     } catch (error: any) {
         request.log.error(error);
+        if (error instanceof AdditionalLopValidationError) {
+            return reply.code(400).send({ success: false, error: error.message });
+        }
         return reply.code(500).send({ success: false, error: 'Internal server error', details: error.message });
     }
 }
@@ -1845,24 +2282,57 @@ export async function getFinalSettlement(
         });
 
         // ✅ FIX #2: Return flattened response for GET endpoint
+        const settlementData: any = settlement.toObject();
+        if (settlement.status === 'Draft') {
+            const normalizedDraft = normalizeLegacySeparationPresentation(
+                settlementData.unpaidMonths || []
+            );
+            if (normalizedDraft.removedSeparationAmount > 0) {
+                const oldCalculation = settlementData.finalCalculation || {};
+                const totalPayable = Math.round(
+                    (Number(oldCalculation.totalPayable) || 0) -
+                    normalizedDraft.removedSeparationAmount
+                );
+                const totalDeductions = Math.round(
+                    (Number(oldCalculation.totalDeductions) || 0) -
+                    normalizedDraft.removedSeparationAmount
+                );
+                const netAmount = totalPayable - totalDeductions;
+
+                settlementData.unpaidMonths = normalizedDraft.unpaidMonths;
+                settlementData.totalUnpaidSalary = normalizedDraft.totalUnpaidSalary;
+                settlementData.separationProrationAmount = 0;
+                settlementData.finalCalculation = {
+                    ...oldCalculation,
+                    unpaidSalaries: normalizedDraft.totalUnpaidSalary,
+                    separationProrationAmount: 0,
+                    totalPayable,
+                    totalDeductions,
+                    netAmount,
+                    isNegative: netAmount < 0
+                };
+            }
+        }
+        const responseCalculation = settlementData.finalCalculation || {};
+
         return reply.send({
             success: true,
             canEdit: !completedPayslips, // Indicate if it can be unlocked/edited
 
             // Root-level fields
-            pdfUrl: settlement.pdfUrl,
-            netAmount: settlement.finalCalculation?.netAmount || 0,
-            isNegative: settlement.finalCalculation?.isNegative || false,
-            totalPayable: settlement.finalCalculation?.totalPayable || 0,
-            totalDeductions: settlement.finalCalculation?.totalDeductions || 0,
-            providentFund: settlement.finalCalculation?.providentFund || 0,
-            esi: settlement.finalCalculation?.esi || 0,
-            professionalTax: settlement.finalCalculation?.professionalTax || 0,
-            incomeTax: settlement.finalCalculation?.incomeTax || 0,
-            gratuity: settlement.finalCalculation?.gratuity || 0,
+            pdfUrl: settlementData.pdfUrl,
+            netAmount: responseCalculation.netAmount || 0,
+            isNegative: responseCalculation.isNegative || false,
+            totalPayable: responseCalculation.totalPayable || 0,
+            totalDeductions: responseCalculation.totalDeductions || 0,
+            providentFund: responseCalculation.providentFund || 0,
+            esi: responseCalculation.esi || 0,
+            professionalTax: responseCalculation.professionalTax || 0,
+            incomeTax: responseCalculation.incomeTax || 0,
+            gratuity: responseCalculation.gratuity || 0,
 
             // Full settlement data
-            data: settlement
+            data: settlementData
         });
 
     } catch (error: any) {
@@ -1887,7 +2357,7 @@ export async function confirmFinalSettlement(
     reply: FastifyReply
 ) {
     const { employeeId } = request.params;
-    const bodyData = request.body;
+    const bodyData = request.body as any;
     const { confirmedBy } = bodyData;
 
     if (!confirmedBy) {
@@ -1919,6 +2389,72 @@ export async function confirmFinalSettlement(
             return reply.code(404).send({ success: false, error: 'Employee not found' });
         }
 
+        // Recalculate additional LOP from authoritative salary data before PDF/confirmation.
+        const confirmationSalary: any = await SalaryAssignment.findOne({
+            employeeId: new Types.ObjectId(employeeId)
+        }).sort({ effectiveFrom: -1 }).lean();
+        const additionalLop = calculateAdditionalLop(
+            confirmationSalary?.monthlyGross || 0,
+            bodyData.leavingDate || draft.leavingDate,
+            bodyData.additionalLopDays ?? draft.additionalLopDays
+        );
+        const rawConfirmationUnpaidMonths = bodyData.unpaidMonths || draft.unpaidMonths || [];
+        const normalizedConfirmation = normalizeLegacySeparationPresentation(
+            rawConfirmationUnpaidMonths
+        );
+        const previousSeparationProrationAmount =
+            normalizedConfirmation.removedSeparationAmount;
+        const confirmationUnpaidMonths = normalizedConfirmation.unpaidMonths;
+        bodyData.unpaidMonths = confirmationUnpaidMonths;
+        const confirmedUnpaidSalary = normalizedConfirmation.totalUnpaidSalary;
+        bodyData.totalUnpaidSalary = confirmedUnpaidSalary;
+        bodyData.unpaidSalaries = confirmedUnpaidSalary;
+        const attendanceLopAmount = confirmationUnpaidMonths.reduce(
+            (sum: number, month: any) => sum + (Number(month.lopAmount) || 0),
+            0
+        );
+        const separationProrationAmount = 0;
+        const combinedLopAmount = attendanceLopAmount + additionalLop.additionalLopAmount;
+        const previousLopAmount = Number(
+            bodyData.lopAmount ?? bodyData.finalCalculation?.lopAmount ?? draft.finalCalculation?.lopAmount ?? attendanceLopAmount
+        ) || 0;
+        const submittedTotalDeductions = Number(
+            bodyData.totalDeductions ?? bodyData.finalCalculation?.totalDeductions ?? draft.finalCalculation?.totalDeductions ?? 0
+        ) || 0;
+        const confirmedTotalDeductions = Math.round(
+            submittedTotalDeductions - previousLopAmount -
+            previousSeparationProrationAmount + combinedLopAmount
+        );
+        const submittedTotalPayable = Number(
+            bodyData.totalPayable ?? bodyData.finalCalculation?.totalPayable ?? draft.finalCalculation?.totalPayable ?? 0
+        ) || 0;
+        const confirmedTotalPayable = Math.round(
+            submittedTotalPayable - previousSeparationProrationAmount
+        );
+
+        Object.assign(bodyData, additionalLop, {
+            attendanceLopAmount,
+            lopAmount: combinedLopAmount,
+            separationProrationAmount,
+            totalPayable: confirmedTotalPayable,
+            totalDeductions: confirmedTotalDeductions,
+            netAmount: Math.round(confirmedTotalPayable - confirmedTotalDeductions),
+            isNegative: confirmedTotalPayable - confirmedTotalDeductions < 0
+        });
+        bodyData.finalCalculation = {
+            ...((draft.finalCalculation as any)?.toObject?.() || draft.finalCalculation || {}),
+            ...(bodyData.finalCalculation || {}),
+            attendanceLopAmount,
+            additionalLopAmount: additionalLop.additionalLopAmount,
+            lopAmount: combinedLopAmount,
+            separationProrationAmount,
+            unpaidSalaries: confirmedUnpaidSalary,
+            totalPayable: confirmedTotalPayable,
+            totalDeductions: bodyData.totalDeductions,
+            netAmount: bodyData.netAmount,
+            isNegative: bodyData.isNegative
+        };
+
         // 1.2 Generate PDF (Outside transaction to prevent timeouts)
         // Note: settlement data might change if another admin confirms, 
         // but we verify status again inside the transaction.
@@ -1936,6 +2472,10 @@ export async function confirmFinalSettlement(
                 ...(bodyData.unpaidMonths && { unpaidMonths: bodyData.unpaidMonths }),
                 ...(bodyData.holdPayrolls && { holdPayrolls: bodyData.holdPayrolls }),
                 ...(bodyData.leaveBalance && { leaveBalance: bodyData.leaveBalance }),
+                ...additionalLop,
+                attendanceLopAmount,
+                lopAmount: combinedLopAmount,
+                separationProrationAmount,
                 // Ensure finalCalculation is updated if provided
                 ...(bodyData.finalCalculation && { finalCalculation: { ...draft.finalCalculation, ...bodyData.finalCalculation } })
             };
@@ -2151,6 +2691,7 @@ export async function confirmFinalSettlement(
                 if (a.year !== b.year) return a.year - b.year;
                 return a.month - b.month;
             });
+            const settlementPayslipAdjustments = buildFinalSettlementPayslipAdjustments(settlement);
 
             for (let i = 0; i < sortedUnpaidMonths.length; i++) {
                 const month = sortedUnpaidMonths[i];
@@ -2160,10 +2701,22 @@ export async function confirmFinalSettlement(
                 // Create or Update a standard Payroll record for this settled month
                 const monthName = MONTH_NAMES[month.month - 1];
 
-                // Fetch salary assignment for proper structure
-                const salaryAssignment = await SalaryAssignment.findOne({
-                    employeeId: new Types.ObjectId(employeeId)
+                // Use the salary assignment that was effective for this unpaid
+                // month. Falling back to the latest assignment preserves the
+                // former behavior for legacy data with incomplete date ranges.
+                const firstDayOfPayrollMonth = new Date(month.year, month.month - 1, 1);
+                const lastDayOfPayrollMonth = new Date(month.year, month.month, 0);
+                let salaryAssignment: any = await SalaryAssignment.findOne({
+                    employeeId: new Types.ObjectId(employeeId),
+                    effectiveFrom: { $lte: lastDayOfPayrollMonth },
+                    effectiveTo: { $gte: firstDayOfPayrollMonth }
                 }).sort({ effectiveFrom: -1 }).populate('salaryStructureId').session(session);
+
+                if (!salaryAssignment) {
+                    salaryAssignment = await SalaryAssignment.findOne({
+                        employeeId: new Types.ObjectId(employeeId)
+                    }).sort({ effectiveFrom: -1 }).populate('salaryStructureId').session(session);
+                }
 
                 if (!salaryAssignment) {
                     throw new Error(`No salary assignment found for employee ${employeeId}`);
@@ -2174,35 +2727,78 @@ export async function confirmFinalSettlement(
                 const employeeCountry = employee.country || 'IN';
                 const isUAE = employeeCountry === 'AE';
 
-                // Calculate attendance adjusted gross (same as Payroll Service)
-                const attendanceAdjustedGross = Math.round((month.daysWorked / month.totalDays) * monthlyGross);
+                // Keep the generated payslip on the same accounting basis as
+                // the F&F report: period gross is income and attendance LOP is
+                // one separately displayed deduction.
+                const periodGross = Math.max(0, Math.round(Number(month.salary) || 0));
+                const attendanceLopAmount = Math.max(0, Math.round(Number(month.lopAmount) || 0));
+                const attendanceAdjustedGross = Math.max(0, periodGross - attendanceLopAmount);
 
-                // Calculate earnings components (matching Payroll Service logic)
-                const basic = Math.round((structure.fixedEarnings.basicPercentage / 100) * attendanceAdjustedGross);
-                const hra = Math.round((structure.fixedEarnings.hraPercentage / 100) * attendanceAdjustedGross);
-                const da = Math.round((structure.fixedEarnings.daPercentage / 100) * basic);
+                const storedComponents: any = (month as any).components?.toObject?.()
+                    || (month as any).components
+                    || {};
+                const storedComponentsTotal = Math.round(
+                    (Number(storedComponents.basic) || 0) +
+                    (Number(storedComponents.hra) || 0) +
+                    (Number(storedComponents.conveyance) || 0) +
+                    (Number(storedComponents.specialAllowance) || 0) +
+                    (Number(storedComponents.otherAllowances) || 0)
+                );
+                const storedComponentsGross = Math.round(Number(storedComponents.gross) || 0);
+                // India F&F reports already contain the authoritative historical
+                // component split. Reusing it keeps the generated monthly payslip
+                // identical even if the employee received a later salary revision.
+                const useStoredSettlementComponents = !isUAE &&
+                    periodGross > 0 &&
+                    Math.abs(storedComponentsGross - periodGross) <= 1 &&
+                    Math.abs(storedComponentsTotal - periodGross) <= 1;
+
+                // Calculate earnings components (matching Payroll Service logic,
+                // with the stored F&F split taking precedence for India).
+                const calculatedBasic = Math.round((structure.fixedEarnings.basicPercentage / 100) * periodGross);
+                const calculatedHra = Math.round((structure.fixedEarnings.hraPercentage / 100) * periodGross);
+                const calculatedDa = Math.round((structure.fixedEarnings.daPercentage / 100) * calculatedBasic);
 
                 // Calculate travel allowance based on country
                 const travelAllowanceFromPercentageProrated = Math.round(
-                    ((structure.fixedEarnings.travelAllowancePercentage ?? 0) / 100) * attendanceAdjustedGross
+                    ((structure.fixedEarnings.travelAllowancePercentage ?? 0) / 100) * periodGross
                 );
                 const travelAllowanceFromAssignment = salaryAssignment.travelAllowance || 0;
-                const travelAllowance = isUAE
-                    ? Math.round((month.daysWorked / month.totalDays) * travelAllowanceFromAssignment)
+                const calculatedTravelAllowance = isUAE
+                    ? Math.round((periodGross / Math.max(1, monthlyGross)) * travelAllowanceFromAssignment)
                     : travelAllowanceFromPercentageProrated;
 
-                const reimbursementAllowance = Math.round(
-                    ((structure.fixedEarnings.reimbursementPercentage ?? 0) / 100) * attendanceAdjustedGross
+                const calculatedReimbursementAllowance = Math.round(
+                    ((structure.fixedEarnings.reimbursementPercentage ?? 0) / 100) * periodGross
                 );
 
                 // Air ticket and medical allowances (UAE only, annual)
                 const airTicketAllowance = isUAE ? (salaryAssignment.airTicketAllowance || 0) : 0;
                 const medicalAllowance = isUAE ? (salaryAssignment.medicalAllowance || 0) : 0;
 
-                // ✅ Balancing Logic for Other Allowance (India & UAE)
-                const otherAllowance = Math.round(
-                    attendanceAdjustedGross - (basic + hra + da + travelAllowance + reimbursementAllowance + airTicketAllowance + medicalAllowance)
-                );
+                const basic = useStoredSettlementComponents
+                    ? Math.round(Number(storedComponents.basic) || 0)
+                    : calculatedBasic;
+                const hra = useStoredSettlementComponents
+                    ? Math.round(Number(storedComponents.hra) || 0)
+                    : calculatedHra;
+                // The F&F report intentionally includes DA inside its BASIC row.
+                const da = useStoredSettlementComponents ? 0 : calculatedDa;
+                const travelAllowance = useStoredSettlementComponents
+                    ? Math.round(Number(storedComponents.conveyance) || 0)
+                    : calculatedTravelAllowance;
+                const reimbursementAllowance = useStoredSettlementComponents
+                    ? 0
+                    : calculatedReimbursementAllowance;
+
+                // Balancing Logic for Other Allowance (India & UAE). For the
+                // stored path this also carries any legacy special allowance,
+                // matching the F&F report's visible component total exactly.
+                const otherAllowance = useStoredSettlementComponents
+                    ? Math.round(periodGross - (basic + hra + travelAllowance))
+                    : Math.round(
+                        periodGross - (basic + hra + da + travelAllowance + reimbursementAllowance + airTicketAllowance + medicalAllowance)
+                    );
 
                 // Calculate assigned values (full month, not prorated)
                 const assignedBasic = Math.round((structure.fixedEarnings.basicPercentage / 100) * monthlyGross);
@@ -2230,6 +2826,19 @@ export async function confirmFinalSettlement(
 
                 const finalReimburseVal = existingReimbursement;
 
+                const customReimbursements = isLastMonth
+                    ? settlementPayslipAdjustments.customReimbursements
+                    : [];
+                const customDeductions = isLastMonth
+                    ? settlementPayslipAdjustments.customDeductions
+                    : [];
+                const totalCustomReimbursements = isLastMonth
+                    ? settlementPayslipAdjustments.totalCustomReimbursements
+                    : 0;
+                const totalCustomDeductions = isLastMonth
+                    ? settlementPayslipAdjustments.totalCustomDeductions
+                    : 0;
+
 
                 // Calculate total deductions (matching Payroll Service)
                 const noticeRecoveryAmount = isLastMonth ? Math.round(settlement.noticePeriodRecovery || 0) : 0;
@@ -2239,20 +2848,18 @@ export async function confirmFinalSettlement(
                     month.incomeTax +
                     month.providentFund +
                     month.esi +
-                    (month.lopAmount || 0) +
+                    attendanceLopAmount +
                     noticeRecoveryAmount
                 );
 
                 // Calculate net salary (matching Payroll Service)
                 const netSalary = Math.round(
-                    attendanceAdjustedGross -
-                    month.providentFund -
-                    month.incomeTax -
-                    month.professionalTax -
-                    month.esi +
+                    periodGross -
+                    totalDeductions +
                     finalReimburseVal + // Add Reimbursement
                     holdSalaryAddition - // ✅ ADDED: Include Hold Salary in Net Pay for FNF Month
-                    noticeRecoveryAmount
+                    totalCustomDeductions +
+                    totalCustomReimbursements
                 );
                 // Calculate CTC based on country (matching Payroll Service)
                 let ctc: number;
@@ -2266,7 +2873,7 @@ export async function confirmFinalSettlement(
                     );
                 } else {
                     ctc = Math.round(
-                        attendanceAdjustedGross +
+                        periodGross +
                         (month.epfEmployer || month.providentFund) + // epfEmployer
                         month.esi // esiEmployer
                     );
@@ -2276,9 +2883,6 @@ export async function confirmFinalSettlement(
                 // ✅ FNF SPECIAL: Use 'periodGross' (Worked + LOP) for Assigned Values
                 // This ensures "Full" column shows the Max Salary for the Period (e.g. 1-14 Feb),
                 // while "Actual" column shows what was earned (deducting LOP).
-                const periodDays = (month.daysWorked || 0) + (month.lopDays || 0);
-                const periodGross = Math.round((periodDays / month.totalDays) * monthlyGross);
-
                 // Prepare payload matching Payroll Service structure
                 const payrollPayload = {
                     salaryAssignmentId: salaryAssignment._id,
@@ -2308,10 +2912,10 @@ export async function confirmFinalSettlement(
                     noticePeriodRecovery: noticeRecoveryAmount,
                     additionalDeduction: 0,
                     totalDeductions,
-                    leaveDeductions: month.lopAmount || 0,
+                    leaveDeductions: attendanceLopAmount,
 
                     // Salary calculations
-                    monthlyGross: attendanceAdjustedGross,
+                    monthlyGross: periodGross,
                     attendanceAdjustGross: attendanceAdjustedGross,
                     netSalary,
                     ctc,
@@ -2328,9 +2932,26 @@ export async function confirmFinalSettlement(
                     reimbursement: finalReimburseVal,
                     holdSalary: holdSalaryAddition, // ✅ Store Hold Salary explicitly
                     bonus: 0,
+                    customReimbursements,
+                    customDeductions,
+                    totalCustomReimbursements,
+                    totalCustomDeductions,
 
                     // Assigned values (matching Payroll Service)
                     assigned: (() => {
+                        if (useStoredSettlementComponents) {
+                            return {
+                                basic,
+                                hra,
+                                da,
+                                otherAllowance,
+                                travelAllowance,
+                                airTicketAllowance: 0,
+                                medicalAllowance: 0,
+                                reimbursementAllowance: 0
+                            };
+                        }
+
                         const aBasic = Math.round((structure.fixedEarnings.basicPercentage / 100) * periodGross);
                         const aHra = Math.round((structure.fixedEarnings.hraPercentage / 100) * periodGross);
                         const aDa = Math.round((structure.fixedEarnings.daPercentage / 100) * aBasic);
@@ -2451,6 +3072,9 @@ export async function confirmFinalSettlement(
 
     } catch (error: any) {
         request.log.error(error);
+        if (error instanceof AdditionalLopValidationError) {
+            return reply.code(400).send({ success: false, error: error.message });
+        }
         return reply.code(500).send({ success: false, error: 'Internal server error', details: error.message });
     }
 }
@@ -2670,11 +3294,18 @@ export async function calculateFinalSettlement(
         let esi = 0;
         let incomeTax = 0;
         let totalLOPAmount = 0;
+        const totalSeparationProrationAmount = 0;
+        let totalEarnedForStatutory = 0;
 
         // Reset (reuse existing variable)
         totalUnpaidSalary = 0;
 
         const effectiveLeavingDate = data.leavingDate || (data as any).resignationDetails?.lwd;
+        const additionalLop = calculateAdditionalLop(
+            monthlyGross,
+            effectiveLeavingDate,
+            data.additionalLopDays ?? (data as any).leaveEncashment?.additionalLopDays
+        );
 
         // ✅ RECALCULATION STRATEGY:
         // Use calculateUnpaidGaps if mode is automatic/default and we have a valid leaving date.
@@ -2717,7 +3348,6 @@ export async function calculateFinalSettlement(
             for (const month of filteredUnpaidMonths) {
                 const daysInMonth = month.totalDays || 30;
                 const payableDays = month.daysWorked || 0;
-                const lopDays = month.lopDays || 0;
 
                 if (daysInMonth > 0) {
                     // ✅ ACTUAL LEGAL: Fetch correct assignment for THIS specific month in loop
@@ -2725,52 +3355,34 @@ export async function calculateFinalSettlement(
                     const curMonthGross = curMonthAssignment?.monthlyGross || monthlyGross;
                     const curMonthStructure = curMonthAssignment?.salaryStructureId || structure;
 
-                    const bP = (curMonthStructure.fixedEarnings?.basicPercentage ?? 0) / 100;
-                    const dP = (curMonthStructure.fixedEarnings?.daPercentage ?? 0) / 100;
-                    const hP = (curMonthStructure.fixedEarnings?.hraPercentage ?? 0) / 100;
-                    const tP = (curMonthStructure.fixedEarnings?.travelAllowancePercentage ?? 0) / 100;
-                    // removed oP as it is now calculated via balancing logic below
-
-                    const fullB = curMonthGross * bP;
-                    const fullD = fullB * dP;
-                    const fullH = curMonthGross * hP;
-                    const fullT = curMonthGross * tP;
-                    // removed fullOtherAllowances
-
-                    const proratedBasic = (fullB / daysInMonth) * payableDays;
-                    const proratedDA = (fullD / daysInMonth) * payableDays;
-                    const proratedHRA = (fullH / daysInMonth) * payableDays;
-                    const proratedTravelAllowance = (fullT / daysInMonth) * payableDays;
-
-                    const pg = (curMonthGross / daysInMonth) * payableDays;
-                    const targetGross = Math.round(pg);
-                    const roundedBasic = Math.round(proratedBasic + proratedDA);
-                    const roundedHRA = Math.round(proratedHRA);
-                    const roundedConveyance = Math.round(proratedTravelAllowance);
-
-                    // Balancing Logic: Adjust 'Other Allowance' to ensure sum of components matches targetGross exactly.
-                    const roundedOtherAllowances = targetGross - (roundedBasic + roundedHRA + roundedConveyance);
-
-                    const lopAmount = (curMonthGross / daysInMonth) * lopDays;
-                    const pfResult = calculatePF(proratedBasic, proratedDA);
+                    const lDate = effectiveLeavingDate ? new Date(effectiveLeavingDate) : new Date();
+                    const isLeavingMonth = month.year === lDate.getFullYear() && month.month === (lDate.getMonth() + 1);
+                    const employmentDays = isLeavingMonth
+                        ? Math.min(daysInMonth, lDate.getDate())
+                        : daysInMonth;
+                    const presentation = calculateUnpaidMonthPresentation(
+                        curMonthGross,
+                        curMonthStructure,
+                        daysInMonth,
+                        payableDays,
+                        employmentDays
+                    );
+                    const pg = presentation.earnedSalary;
+                    const pfResult = calculatePF(
+                        presentation.proratedBasic,
+                        presentation.proratedDa
+                    );
                     const pfAmount = pfResult.epfEmployee;
                     const esiAmount = calculateESI();
 
-                    month.components = {
-                        basic: roundedBasic,
-                        hra: roundedHRA,
-                        conveyance: roundedConveyance,
-                        specialAllowance: 0,
-                        otherAllowances: roundedOtherAllowances,
-                        gross: targetGross
-                    };
-
-                    month.lopAmount = Math.round(lopAmount);
-                    month.salary = targetGross;
+                    month.components = presentation.components;
+                    month.lopAmount = presentation.attendanceLopAmount;
+                    month.salary = presentation.settlementGross;
+                    month.earnedSalary = presentation.earnedSalary;
+                    month.separationProrationDays = presentation.separationProrationDays;
+                    month.separationProrationAmount = presentation.separationProrationAmount;
 
                     // ✅ PT Calculation Logic (Updated to Aggregate Cycle Logic for Manual recalculation)
-                    const lDate = effectiveLeavingDate ? new Date(effectiveLeavingDate) : new Date();
-                    const isLeavingMonth = month.year === lDate.getFullYear() && month.month === (lDate.getMonth() + 1);
                     const lwMonth = lDate.getMonth() + 1;
                     const lwYear = lDate.getFullYear();
                     const isH1_m = lwMonth >= 4 && lwMonth <= 9;
@@ -2820,7 +3432,7 @@ export async function calculateFinalSettlement(
 
                             // totalUnpaidSalary includes all gaps processed before this month
                             // plus current month gross (pg)
-                            const totalCycleGross = prevGross + totalUnpaidSalary + pg;
+                            const totalCycleGross = prevGross + totalEarnedForStatutory + pg;
                             const representativeMonth = isH1_m ? 8 : 2;
                             const totalDue = Math.round(calculatePT(totalCycleGross, representativeMonth));
                             ptAmount = Math.max(0, totalDue - prevPT);
@@ -2840,6 +3452,7 @@ export async function calculateFinalSettlement(
                     month.incomeTax = month.incomeTax || 0;
 
                     totalUnpaidSalary += month.salary;
+                    totalEarnedForStatutory += presentation.earnedSalary;
 
                     // Accumulate Override Stats
                     professionalTax += month.professionalTax;
@@ -2951,8 +3564,10 @@ export async function calculateFinalSettlement(
         // Gratuity calculation logic disabled temporarily
 
         const totalPayable = totalHoldAmount + totalUnpaidSalary + totalLeaveEncashment + totalReimbursements + totalOtherAdditions + gratuity;
-        // ✅ Include LOP Amount in Total Deductions
-        const totalDeductions = noticeRecovery + totalOtherDeductions + professionalTax + providentFund + esi + incomeTax + totalLOPAmount;
+        const combinedLopAmount = totalLOPAmount + additionalLop.additionalLopAmount;
+        // Include attendance and additional manual LOP in total deductions.
+        const totalDeductions = noticeRecovery + totalOtherDeductions + professionalTax +
+            providentFund + esi + incomeTax + combinedLopAmount;
         const netAmount = totalPayable - totalDeductions;
 
         const calculation = {
@@ -2963,6 +3578,7 @@ export async function calculateFinalSettlement(
             otherAdditions: Math.round(totalOtherAdditions),
             gratuity: Math.round(gratuity),
             totalPayable: Math.round(totalPayable),
+            ...additionalLop,
             noticePeriodRecovery: Math.round(noticeRecovery),
             professionalTax: Math.round(professionalTax),
             incomeTax: Math.round(incomeTax),
@@ -2971,7 +3587,10 @@ export async function calculateFinalSettlement(
             epfEmployerEps: Math.round(epfEmployerEpsTotal),  // ✅ Added
             epfEmployerEpf: Math.round(epfEmployerEpfTotal),  // ✅ Added
             esi: Math.round(esi),
-            lopAmount: Math.round(totalLOPAmount), // ✅ Added for consistency with other statutory deductions
+            attendanceLopAmount: Math.round(totalLOPAmount),
+            additionalLopAmount: additionalLop.additionalLopAmount,
+            lopAmount: Math.round(combinedLopAmount),
+            separationProrationAmount: Math.round(totalSeparationProrationAmount),
             otherDeductions: Math.round(totalOtherDeductions),
             totalDeductions: Math.round(totalDeductions),
             netAmount: Math.round(netAmount),
@@ -2995,7 +3614,10 @@ export async function calculateFinalSettlement(
             professionalTax: calculation.professionalTax,
             incomeTax: calculation.incomeTax,
             gratuity: calculation.gratuity,
-            lopAmount: calculation.lopAmount, // ✅ Added for consistency
+            ...additionalLop,
+            attendanceLopAmount: calculation.attendanceLopAmount,
+            lopAmount: calculation.lopAmount,
+            separationProrationAmount: calculation.separationProrationAmount,
 
             // Nested details (for tables)
             workDays: {
@@ -3010,6 +3632,9 @@ export async function calculateFinalSettlement(
 
     } catch (error: any) {
         request.log.error(error);
+        if (error instanceof AdditionalLopValidationError) {
+            return reply.code(400).send({ success: false, error: error.message });
+        }
         return reply.code(500).send({
             success: false,
             error: 'Internal server error',
