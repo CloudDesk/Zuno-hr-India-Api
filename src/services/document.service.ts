@@ -1875,7 +1875,7 @@ export class DocumentService extends BaseService {
                 const itVal = Number((payroll as any).incomeTax ?? 0);
                 const tdsVal = Number((payroll as any).tdsDeduction ?? 0);
                 const noticeVal = Number((payroll as any).noticePeriodRecovery ?? 0);
-                const lopLabel = 'LOSS OF PAY';
+                const lopLabel = 'LOP';
 
                 if (pfVal > 0) deductionsArray.push({ label: 'PROVIDENT FUND', amount: formatCurrency(pfVal, normalizedCountry) });
                 if (lopVal > 0) deductionsArray.push({ label: lopLabel, amount: formatCurrency(lopVal, normalizedCountry) });

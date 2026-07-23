@@ -529,7 +529,7 @@ export class PayslipPdfService extends BaseService {
                 const it = Number(payroll.incomeTax || 0);
                 const tds = Number(payroll.tdsDeduction || 0);
                 const notice = Number(payroll.noticePeriodRecovery || 0);
-                const lopLabel = 'LOSS OF PAY';
+                const lopLabel = 'LOP';
 
                 if (isConsultant) {
                     // Consultants: Show TDS value as "INCOME TAX"

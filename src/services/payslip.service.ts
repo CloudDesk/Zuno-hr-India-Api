@@ -741,7 +741,7 @@ export class PayslipService extends BaseService {
         const itVal = Number(payroll.incomeTax ?? 0);
         const tdsVal = Number(payroll.tdsDeduction ?? 0);
         const noticeVal = Number(payroll.noticePeriodRecovery ?? 0);
-        const lopLabel = 'LOSS OF PAY';
+        const lopLabel = 'LOP';
 
         if (pfVal > 0) deductionsArray.push({ label: 'PROVIDENT FUND', amount: formatCurrency(pfVal, payroll.country) });
         if (lopVal > 0) deductionsArray.push({ label: lopLabel, amount: formatCurrency(lopVal, payroll.country) });

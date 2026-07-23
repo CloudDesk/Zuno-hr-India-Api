@@ -231,7 +231,7 @@ export class SalaryStatementService extends BaseService {
             { header: 'INCOME TAX', key: 'incomeTax', width: 15 },
             { header: 'PROFESSIONAL TAX', key: 'professionalTax', width: 18 },
             { header: 'TDS', key: 'tdsAmount', width: 15 },
-            { header: 'LOSS OF PAY', key: 'lossOfPay', width: 18 },
+            { header: 'LOP', key: 'lossOfPay', width: 18 },
             { header: 'NOTICE PERIOD RECOVERY', key: 'noticePeriodRecovery', width: 24 },
             { header: 'TOTAL DEDUCTIONS', key: 'totalDeductions', width: 20 },
             { header: 'NET PAY', key: 'netPay', width: 15 },
