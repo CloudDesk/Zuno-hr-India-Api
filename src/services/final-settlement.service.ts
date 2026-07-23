@@ -35,6 +35,26 @@ class AdditionalLopValidationError extends Error {
     }
 }
 
+/**
+ * Calculate an F&F LOP deduction from the exact daily gross rate and round only
+ * the final amount. Attendance LOP and manual additional LOP must share this
+ * rule so an equal number of days in the same salary month has the same value.
+ */
+export function calculateFinalSettlementLopAmount(
+    monthlyGross: number,
+    salaryDays: number,
+    lopDays: number
+) {
+    const safeSalaryDays = Math.max(1, Number(salaryDays) || 1);
+    const safeMonthlyGross = Math.max(0, Number(monthlyGross) || 0);
+    const safeLopDays = Math.min(
+        safeSalaryDays,
+        Math.max(0, Number(lopDays) || 0)
+    );
+
+    return Math.round((safeMonthlyGross / safeSalaryDays) * safeLopDays);
+}
+
 function calculateAdditionalLop(
     monthlyGross: number,
     leavingDate: Date | string | null | undefined,
@@ -61,7 +81,11 @@ function calculateAdditionalLop(
         additionalLopDays,
         lopSalaryDays: salaryDays,
         lopPerDayRate: Math.round(exactPerDayRate),
-        additionalLopAmount: Math.round(exactPerDayRate * additionalLopDays)
+        additionalLopAmount: calculateFinalSettlementLopAmount(
+            monthlyGross,
+            salaryDays,
+            additionalLopDays
+        )
     };
 }
 
@@ -257,10 +281,19 @@ function calculateUnpaidMonthPresentation(
     const componentOtherAllowances =
         settlementGross - componentBasic - componentHra - componentConveyance;
 
-    const earnedSalary = Math.round(perDayGross * safePayableDays);
     // Every non-payable day inside the employment period is attendance LOP.
-    // Using the balancing difference also absorbs harmless one-rupee rounding.
-    const attendanceLopAmount = Math.max(0, settlementGross - earnedSalary);
+    // Use the same exact-rate rule as additional LOP and derive earned salary
+    // from the displayed period gross so all report arithmetic remains balanced.
+    const attendanceLopDays = Math.max(
+        0,
+        safeEmploymentDays - safePayableDays
+    );
+    const attendanceLopAmount = calculateFinalSettlementLopAmount(
+        safeMonthlyGross,
+        safeDaysInMonth,
+        attendanceLopDays
+    );
+    const earnedSalary = Math.max(0, settlementGross - attendanceLopAmount);
 
     return {
         settlementGross,

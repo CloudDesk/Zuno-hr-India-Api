@@ -8,11 +8,53 @@ import {
     isPayrollRecordEligibleForPayslip,
     shouldIncludeInactiveFinalSettlementPayslips
 } from '../src/services/payroll.service';
-import { buildFinalSettlementPayrollReconciliation } from '../src/services/final-settlement.service';
+import {
+    buildFinalSettlementPayrollReconciliation,
+    calculateFinalSettlementLopAmount
+} from '../src/services/final-settlement.service';
 import {
     buildPayslipGenerationOutcome,
     isEmployeeAllowedForPayslipGeneration
 } from '../src/services/payslip-generation-result';
+
+const lopMonthScenarios = [
+    { salaryDays: 28, halfDay: 536, oneDay: 1071, twoDays: 2143 },
+    { salaryDays: 29, halfDay: 517, oneDay: 1034, twoDays: 2069 },
+    { salaryDays: 30, halfDay: 500, oneDay: 1000, twoDays: 2000 },
+    { salaryDays: 31, halfDay: 484, oneDay: 968, twoDays: 1935 }
+];
+
+for (const scenario of lopMonthScenarios) {
+    assert.equal(
+        calculateFinalSettlementLopAmount(30000, scenario.salaryDays, 0),
+        0,
+        `${scenario.salaryDays}-day month: zero LOP days must produce no deduction`
+    );
+    assert.equal(
+        calculateFinalSettlementLopAmount(30000, scenario.salaryDays, 0.5),
+        scenario.halfDay,
+        `${scenario.salaryDays}-day month: half-day LOP must use the exact daily rate`
+    );
+    assert.equal(
+        calculateFinalSettlementLopAmount(30000, scenario.salaryDays, 1),
+        scenario.oneDay,
+        `${scenario.salaryDays}-day month: one attendance/additional LOP day must match`
+    );
+    assert.equal(
+        calculateFinalSettlementLopAmount(30000, scenario.salaryDays, 2),
+        scenario.twoDays,
+        `${scenario.salaryDays}-day month: multi-day LOP must round only once`
+    );
+    assert.equal(
+        calculateFinalSettlementLopAmount(
+            30000,
+            scenario.salaryDays,
+            scenario.salaryDays
+        ),
+        30000,
+        `${scenario.salaryDays}-day month: full-month LOP cannot exceed monthly gross`
+    );
+}
 
 const finalSettlementPayroll = {
     status: 'Draft',
