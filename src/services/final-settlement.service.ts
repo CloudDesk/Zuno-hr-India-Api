@@ -65,6 +65,143 @@ function calculateAdditionalLop(
     };
 }
 
+type HoldPayrollAttendanceAudit = {
+    weekendDays: number;
+    holidayDays: number;
+    leaveDays: number;
+};
+
+/**
+ * Enrich a processed HOLD payroll with the attendance categories required by
+ * the Step 4 audit display. The payroll's stored present/payable/LOP values
+ * remain authoritative; this helper only splits its paid non-present days into
+ * weekend, mandatory-holiday and paid-leave presentation fields.
+ */
+async function calculateHoldPayrollAttendanceAudit(
+    employeeId: string | Types.ObjectId,
+    payroll: any
+): Promise<HoldPayrollAttendanceAudit> {
+    const month = Number(payroll.month);
+    const year = Number(payroll.year);
+
+    if (!month || !year) {
+        return { weekendDays: 0, holidayDays: 0, leaveDays: 0 };
+    }
+
+    const userId = typeof employeeId === 'string'
+        ? new Types.ObjectId(employeeId)
+        : employeeId;
+    const firstDay = new Date(year, month - 1, 1);
+    const lastDay = new Date(year, month, 0);
+    const totalDays = Number(
+        payroll.totalDaysInMonth ?? payroll.totalDays ?? lastDay.getDate()
+    ) || lastDay.getDate();
+
+    const [user, shiftAssignments] = await Promise.all([
+        User.findById(userId).select('holidayCalendarHistory').lean(),
+        ShiftAssignment.find({
+            userId,
+            $or: [
+                { endDate: { $exists: false }, startDate: { $lte: lastDay } },
+                { endDate: { $gte: firstDay }, startDate: { $lte: lastDay } },
+            ],
+        }).select('startDate endDate weekendDays').lean(),
+    ]);
+
+    let holidayCalendar: any = null;
+    const historyEntry = (user as any)?.holidayCalendarHistory?.find(
+        (entry: any) => entry.year === year && entry.isActive === true
+    );
+    if (historyEntry?.calendarId) {
+        holidayCalendar = await HolidayCalendar.findById(historyEntry.calendarId)
+            .select('holidays')
+            .lean();
+    }
+
+    const holidayDateKeys = new Set<string>();
+    const mandatoryHolidayDateKeys = new Set<string>();
+    (holidayCalendar?.holidays || []).forEach((holiday: any) => {
+        const holidayDate = new Date(holiday.date);
+        if (
+            holidayDate.getFullYear() !== year ||
+            holidayDate.getMonth() !== month - 1
+        ) {
+            return;
+        }
+
+        const dateKey = `${year}-${String(month).padStart(2, '0')}-${String(
+            holidayDate.getDate()
+        ).padStart(2, '0')}`;
+        holidayDateKeys.add(dateKey);
+        if (holiday.type === 'mandatory') {
+            mandatoryHolidayDateKeys.add(dateKey);
+        }
+    });
+
+    const weekendDayNumbers = new Set<number>();
+    if (shiftAssignments.length === 0) {
+        // Match the normal payroll fallback.
+        weekendDayNumbers.add(0);
+    } else {
+        shiftAssignments.forEach((assignment: any) => {
+            (assignment.weekendDays || []).forEach((day: number) =>
+                weekendDayNumbers.add(day)
+            );
+        });
+    }
+
+    let calendarWeekendDays = 0;
+    for (let day = 1; day <= totalDays; day++) {
+        const dateKey = `${year}-${String(month).padStart(2, '0')}-${String(
+            day
+        ).padStart(2, '0')}`;
+        if (holidayDateKeys.has(dateKey)) continue;
+        if (weekendDayNumbers.has(new Date(year, month - 1, day).getDay())) {
+            calendarWeekendDays++;
+        }
+    }
+
+    const presentDays = Math.max(0, Number(payroll.presentDays) || 0);
+    const payableDays = Math.max(
+        presentDays,
+        Number(payroll.payableDays ?? payroll.daysWorked) || 0
+    );
+    const paidNonPresentDays = Math.max(0, payableDays - presentDays);
+    const weekendDays = Math.min(calendarWeekendDays, paidNonPresentDays);
+    const holidayDays = Math.min(
+        mandatoryHolidayDateKeys.size,
+        Math.max(0, paidNonPresentDays - weekendDays)
+    );
+    const leaveDays = Math.max(
+        0,
+        paidNonPresentDays - weekendDays - holidayDays
+    );
+
+    return { weekendDays, holidayDays, leaveDays };
+}
+
+async function buildHoldPayrollPresentations(
+    employeeId: string | Types.ObjectId,
+    payrolls: any[]
+) {
+    return Promise.all(
+        (payrolls || []).map(async (payroll: any) => ({
+            payrollId: payroll.payrollId || payroll._id,
+            month: payroll.month,
+            year: payroll.year,
+            monthYear: payroll.monthYear,
+            netSalary: payroll.netSalary,
+            monthlyGross: payroll.monthlyGross,
+            totalDays: payroll.totalDaysInMonth ?? payroll.totalDays ?? 0,
+            daysWorked: payroll.payableDays ?? payroll.daysWorked ?? 0,
+            presentDays: payroll.presentDays ?? 0,
+            ...(await calculateHoldPayrollAttendanceAudit(employeeId, payroll)),
+            lopDays: payroll.LOPDays ?? payroll.lopDays ?? 0,
+            status: payroll.status,
+        }))
+    );
+}
+
 /**
  * Build the accounting presentation for an unpaid F&F month.
  *
@@ -1163,19 +1300,10 @@ export async function initializeFinalSettlement(
         );
 
         // Prepare hold payrolls data
-        const holdPayrollsData = filteredHoldPayrolls.map(p => ({
-            payrollId: p._id!,
-            month: p.month,
-            year: p.year,
-            monthYear: p.monthYear,
-            netSalary: p.netSalary,
-            monthlyGross: p.monthlyGross,
-            totalDays: p.totalDaysInMonth || 0,
-            daysWorked: p.payableDays ?? 0,
-            presentDays: p.presentDays ?? 0,
-            lopDays: p.LOPDays ?? 0,
-            status: p.status
-        }));
+        const holdPayrollsData = await buildHoldPayrollPresentations(
+            employeeId,
+            filteredHoldPayrolls
+        );
 
         const totalHoldAmount = filteredHoldPayrolls.reduce((sum, p) => sum + p.netSalary, 0);
 
@@ -1514,6 +1642,10 @@ export async function saveFinalSettlement(
             _id: { $in: holdPayrollIds },
             employeeId: employeeIdObj
         });
+        const holdPayrollsData = await buildHoldPayrollPresentations(
+            employeeIdObj,
+            holdPayrolls
+        );
 
         // ✅ ACTUAL LEGAL: Fetch ALL Salary Assignments to handle historical hikes accurately
         const allSalaryAssignments: any[] = await SalaryAssignment.find({
@@ -1888,6 +2020,7 @@ export async function saveFinalSettlement(
         // packSettlement helper now includes these fields in whitelist
         const enrichedData = {
             ...data,
+            holdPayrolls: holdPayrollsData,
             unpaidMonths,
             totalHoldAmount: holdSalaries,
             totalUnpaidSalary: totalUnpaid,
@@ -2283,6 +2416,10 @@ export async function getFinalSettlement(
 
         // ✅ FIX #2: Return flattened response for GET endpoint
         const settlementData: any = settlement.toObject();
+        settlementData.holdPayrolls = await buildHoldPayrollPresentations(
+            employeeId,
+            settlementData.holdPayrolls || []
+        );
         if (settlement.status === 'Draft') {
             const normalizedDraft = normalizeLegacySeparationPresentation(
                 settlementData.unpaidMonths || []
@@ -2526,19 +2663,10 @@ export async function confirmFinalSettlement(
                 }).session(session);
 
                 // Replace body data with DB data
-                bodyData.holdPayrolls = holdPayrollsDb.map(p => ({
-                    payrollId: p._id,
-                    month: p.month,
-                    year: p.year,
-                    monthYear: p.monthYear,
-                    netSalary: p.netSalary, // AUTHENTIC SOURCE
-                    monthlyGross: p.monthlyGross,
-                    totalDays: p.totalDaysInMonth,
-                    daysWorked: p.payableDays,
-                    presentDays: p.presentDays,
-                    lopDays: p.LOPDays,
-                    status: p.status
-                }));
+                bodyData.holdPayrolls = await buildHoldPayrollPresentations(
+                    employeeId,
+                    holdPayrollsDb
+                );
                 // Recalculate Hold Total
                 bodyData.totalHoldAmount = holdPayrollsDb.reduce((sum, p) => sum + p.netSalary, 0);
             }

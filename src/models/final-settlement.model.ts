@@ -52,6 +52,9 @@ export interface IFinalSettlement extends Document {
         totalDays: number;
         daysWorked: number;
         presentDays: number;
+        weekendDays: number;
+        holidayDays: number;
+        leaveDays: number;
         lopDays: number;
         status: string;
     }>;
@@ -214,6 +217,9 @@ const finalSettlementSchema = new Schema<IFinalSettlement>(
             totalDays: { type: Number, default: 0 },
             daysWorked: { type: Number, default: 0 },
             presentDays: { type: Number, default: 0 },
+            weekendDays: { type: Number, default: 0 },
+            holidayDays: { type: Number, default: 0 },
+            leaveDays: { type: Number, default: 0 },
             lopDays: { type: Number, default: 0 },
             status: { type: String, required: true }
         }],
