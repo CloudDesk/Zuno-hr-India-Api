@@ -616,12 +616,17 @@ export class UserService extends BaseService {
 
       if (statusArray.includes('Resigned' as any)) {
         statusFilters.push({
-          resignations: {
-            $elemMatch: {
-              status: 'Approved',
-              isActive: true,
+          $or: [
+            {
+              resignations: {
+                $elemMatch: {
+                  status: 'Approved',
+                  isActive: true,
+                },
+              },
             },
-          },
+            { finalSettlementDone: true },
+          ],
         });
       }
 

@@ -10,6 +10,7 @@
     "start": "ts-node src/local.ts",
     "dev": "nodemon src/local.ts",
     "test": "jest",
+    "test:fnf-consistency": "ts-node scripts/verify-fnf-report-consistency.ts",
     "lint": "eslint . --ext .ts",
     "package": "NODE_ENV=production npm install && NODE_ENV=production npm run build && NODE_ENV=production npm prune --production && rm -rf node_modules/argon2 && zip -r function.zip dist/* node_modules/* package.json",
     "deploy": "NODE_ENV=production npm run package && aws lambda update-function-code --function-name tendly-api --zip-file fileb://function.zip",

@@ -321,8 +321,10 @@ export class PayslipService extends BaseService {
           // Include only that narrowly identified Draft record.
           {
             status: 'Draft',
-            isFinalSettlement: true,
-            type: 'FinalSettlement'
+            $or: [
+              { isFinalSettlement: true },
+              { type: 'FinalSettlement' }
+            ]
           }
         ]
       });

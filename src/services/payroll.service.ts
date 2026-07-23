@@ -61,6 +61,21 @@ const MAX_CUSTOM_COMPONENTS_PER_TYPE = 25;
 const MAX_CUSTOM_COMPONENT_NAME_LENGTH = 100;
 const MAX_CUSTOM_COMPONENT_VALUE = 1000000;
 
+export function isPayrollRecordEligibleForPayslip(record: any): boolean {
+    return record?.status === 'Completed' ||
+        (
+            record?.status === 'Draft' &&
+            (
+                record?.isFinalSettlement === true ||
+                record?.type === 'FinalSettlement'
+            )
+        );
+}
+
+export function shouldIncludeInactiveFinalSettlementPayslips(status?: string[]): boolean {
+    return !status?.length || status.includes('Resigned');
+}
+
 interface PayrollRecord {
     employeeId: Types.ObjectId;
     salaryAssignmentId: Types.ObjectId;
@@ -625,7 +640,7 @@ export class PayrollService extends BaseService {
             country?: string;
         },
         monthYear: string, // format: YYYY-MM
-        mode: 'excludeBlocked' | 'onlyCompleted' = 'excludeBlocked'
+        mode: 'excludeBlocked' | 'onlyCompleted' | 'payslipEligible' = 'excludeBlocked'
     ): Promise<string[]> {
         const query: any = {};
         const andConditions: any[] = [];
@@ -662,6 +677,10 @@ export class PayrollService extends BaseService {
         if (country) {
             andConditions.push({ country });
         }
+        // Preserve all non-status filters for the narrow inactive F&F lookup.
+        // Normal employees continue to use the existing status-aware query.
+        const nonStatusConditions = [...andConditions];
+
         // 6. Status filter
         if (status?.length) {
             const statusFilters: any[] = [];
@@ -742,6 +761,66 @@ export class PayrollService extends BaseService {
             finalUserIds = payrollRecords
                 .filter((record) => record.status === 'Completed')
                 .map((record) => record.employeeId.toString());
+        }
+
+        else if (mode === 'payslipEligible') {
+            // Preserve the existing Completed-payroll rule for normal payslips,
+            // while allowing the authoritative Draft created by a confirmed F&F.
+            finalUserIds = Array.from(new Set(
+                payrollRecords
+                    .filter(isPayrollRecordEligibleForPayslip)
+                    .map((record) => record.employeeId.toString())
+            ));
+
+            // An employee may already be inactive after F&F confirmation. Include
+            // that employee only when an explicitly-marked, payslip-eligible F&F
+            // payroll exists for this exact month. All department/role/search/
+            // country/join-date filters remain enforced, and Active-only requests
+            // retain the existing normal-payroll behavior.
+            if (shouldIncludeInactiveFinalSettlementPayslips(status)) {
+                const finalSettlementPayrolls = await Payroll.find({
+                    month: Number(month),
+                    year: Number(year),
+                    $or: [
+                        { isFinalSettlement: true },
+                        { type: 'FinalSettlement' }
+                    ]
+                }, {
+                    employeeId: 1,
+                    status: 1,
+                    isFinalSettlement: 1,
+                    type: 1
+                }).lean();
+
+                const eligibleFinalSettlementEmployeeIds = Array.from(new Set(
+                    finalSettlementPayrolls
+                        .filter(isPayrollRecordEligibleForPayslip)
+                        .map((record: any) => record.employeeId.toString())
+                ));
+
+                if (eligibleFinalSettlementEmployeeIds.length > 0) {
+                    const finalSettlementUserCondition = {
+                        _id: { $in: eligibleFinalSettlementEmployeeIds }
+                    };
+                    const finalSettlementUserQuery = nonStatusConditions.length > 0
+                        ? {
+                            $and: [
+                                ...nonStatusConditions,
+                                finalSettlementUserCondition
+                            ]
+                        }
+                        : finalSettlementUserCondition;
+                    const matchingFinalSettlementUsers = await User.find(
+                        finalSettlementUserQuery,
+                        { _id: 1 }
+                    );
+
+                    finalUserIds = Array.from(new Set([
+                        ...finalUserIds,
+                        ...matchingFinalSettlementUsers.map((employee) => employee._id.toString())
+                    ]));
+                }
+            }
         }
 
         console.log(finalUserIds, 'finalUserIds getUserIdsByFilters');
@@ -986,7 +1065,13 @@ export class PayrollService extends BaseService {
             month,
             year
         },
-            { employeeId: 1, status: 1, paymentConfirmedAt: 1, type: 1 }
+            {
+                employeeId: 1,
+                status: 1,
+                paymentConfirmedAt: 1,
+                type: 1,
+                isFinalSettlement: 1
+            }
         )
         console.log(payrollRecords, 'payrollRecords getPayrollRecordsForUsers');
 

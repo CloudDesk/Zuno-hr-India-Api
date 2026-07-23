@@ -90,10 +90,10 @@ export async function generateFNFLetter(settlement: any, employee: any): Promise
     // Prepare Deductions list
     const allDeductions: any[] = [];
     const d = settlement.finalCalculation;
-    if (d.providentFund > 0) allDeductions.push({ label: 'PF', amount: (d.providentFund).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) });
+    if (d.providentFund > 0) allDeductions.push({ label: 'PROVIDENT FUND', amount: (d.providentFund).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) });
     if (attendanceLOPAmount > 0) allDeductions.push({ label: 'LOSS OF PAY', amount: (attendanceLOPAmount).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) });
     if (additionalLOPAmount > 0) allDeductions.push({ label: 'ADDITIONAL LOP', amount: (additionalLOPAmount).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) });
-    if (d.professionalTax > 0) allDeductions.push({ label: 'PROF TAX', amount: (d.professionalTax).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) });
+    if (d.professionalTax > 0) allDeductions.push({ label: 'PROFESSIONAL TAX', amount: (d.professionalTax).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) });
     if (d.incomeTax > 0) allDeductions.push({ label: 'INCOME TAX', amount: (d.incomeTax).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) });
     if (d.noticePeriodRecovery > 0) allDeductions.push({ label: 'NOTICE PERIOD RECOVERY', amount: (d.noticePeriodRecovery).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) });
 

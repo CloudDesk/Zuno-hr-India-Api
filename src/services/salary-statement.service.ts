@@ -5,6 +5,7 @@ import ExcelJS from 'exceljs';
 import { BaseService } from './base.service';
 import { RequestContext } from '../types/context';
 import { Types } from 'mongoose';
+import { synchronizeFinalSettlementPayrollForPayslip } from './final-settlement.service';
 
 const MONTH_NAMES = [
     'January', 'February', 'March', 'April', 'May', 'June',
@@ -25,6 +26,111 @@ const MONTH_SHORT_NAMES: Record<string, string> = {
     November: 'Nov',
     December: 'Dec',
 };
+
+const statementAmount = (value: unknown): number =>
+    Math.round(Number(value) || 0);
+
+export const getSalaryStatementPayrollType = (record: any): string =>
+    record?.isFinalSettlement === true ||
+    record?.type === 'FinalSettlement'
+        ? 'Final Settlement'
+        : 'Normal Payroll';
+
+export function buildSalaryStatementFinancials(record: any) {
+    const customEarnings = (record?.customReimbursements || []).reduce(
+        (sum: number, item: any) => sum + statementAmount(item?.value),
+        0
+    );
+    const customDeductions = (record?.customDeductions || []).reduce(
+        (sum: number, item: any) => sum + statementAmount(item?.value),
+        0
+    );
+    const periodGross = statementAmount(record?.monthlyGross);
+    const holdSalary = statementAmount(record?.holdSalary);
+    const reimbursement = statementAmount(record?.reimbursement);
+    const totalDeductions = statementAmount(
+        statementAmount(record?.totalDeductions) + customDeductions
+    );
+    const netPay = statementAmount(record?.netSalary);
+    const isFinalSettlement =
+        record?.isFinalSettlement === true ||
+        record?.type === 'FinalSettlement';
+    const settlementComponentTotal = statementAmount(
+        periodGross + holdSalary + reimbursement + customEarnings
+    );
+
+    return {
+        periodGross,
+        holdSalary,
+        customEarnings,
+        customDeductions,
+        // The reconciled F&F row exposes every settlement earning separately.
+        // Normal payroll keeps its established net-pay calculation untouched;
+        // derive its report total from the accounting identity so overtime and
+        // any existing payroll adjustments remain represented accurately.
+        totalEarnings: isFinalSettlement
+            ? settlementComponentTotal
+            : statementAmount(netPay + totalDeductions),
+        totalDeductions,
+        netPay
+    };
+}
+
+const payrollEmployeeId = (record: any): string => {
+    const employee = record?.employeeId;
+    const id = employee?._id ?? employee;
+    return id?.toString?.() || '';
+};
+
+/**
+ * Keep the established virtual-preview rows for normal employees, but make an
+ * explicitly-marked F&F payroll authoritative for the same employee/month.
+ * This also appends an inactive F&F employee who was not eligible for the
+ * normal virtual preview and de-duplicates multiple stored rows by employee.
+ */
+export function mergeFinalSettlementPayrollsIntoPreview(
+    virtualPayrolls: any[],
+    finalSettlementPayrolls: any[]
+): any[] {
+    const mergedByEmployee = new Map<string, any>();
+
+    virtualPayrolls.forEach((record) => {
+        const employeeId = payrollEmployeeId(record);
+        if (employeeId) mergedByEmployee.set(employeeId, record);
+    });
+
+    const latestSettlementByEmployee = new Map<string, any>();
+    finalSettlementPayrolls.forEach((record) => {
+        const employeeId = payrollEmployeeId(record);
+        const isFinalSettlement =
+            record?.isFinalSettlement === true ||
+            record?.type === 'FinalSettlement';
+
+        if (
+            !employeeId ||
+            !isFinalSettlement ||
+            record?.status === PayrollStatus.Cancelled ||
+            latestSettlementByEmployee.has(employeeId)
+        ) {
+            return;
+        }
+
+        // The database query supplies newest records first.
+        latestSettlementByEmployee.set(employeeId, record);
+    });
+
+    latestSettlementByEmployee.forEach((record, employeeId) => {
+        mergedByEmployee.set(employeeId, record);
+    });
+
+    return Array.from(mergedByEmployee.values()).sort((left, right) => {
+        const leftName = left?.employeeId?.name || '';
+        const rightName = right?.employeeId?.name || '';
+        return leftName.localeCompare(rightName, undefined, {
+            sensitivity: 'base'
+        });
+    });
+}
 
 /**
  * SalaryStatementService
@@ -47,8 +153,24 @@ export class SalaryStatementService extends BaseService {
         console.log(`[SalaryStatementService] Generating statement for ${month}/${year}, preview=${isPreview}, country=${country || 'All'}`);
 
         if (isPreview) {
-            // Generate virtual payroll data in-memory without saving to DB
-            payrollRecords = await this.getVirtualPayrollData(month, year, country);
+            // Keep normal preview calculation in-memory, then overlay only
+            // explicitly-stored F&F payroll rows for the same month.
+            const virtualPayrollRecords = await this.getVirtualPayrollData(
+                month,
+                year,
+                country
+            );
+            const finalSettlementPayrollRecords =
+                await this.getFinalSettlementPayrollDataForPreview(
+                    month,
+                    year,
+                    country
+                );
+
+            payrollRecords = mergeFinalSettlementPayrollsIntoPreview(
+                virtualPayrollRecords,
+                finalSettlementPayrollRecords
+            );
         } else {
             const query: any = {
                 month,
@@ -61,9 +183,18 @@ export class SalaryStatementService extends BaseService {
             // For now, let's keep it simple or assume records have country field if needed.
             // Actually, Payroll model usually has employeeId populated.
 
-            payrollRecords = await Payroll.find(query)
-                .populate('employeeId')
-                .lean();
+            const storedPayrollRecords = await Payroll.find(query)
+                .populate('employeeId');
+
+            // A confirmed settlement is the source of truth for its generated
+            // monthly payroll. Reconcile only those explicitly-marked records;
+            // regular payroll documents pass through unchanged.
+            payrollRecords = await Promise.all(
+                storedPayrollRecords.map(async (record: any) => {
+                    const reconciled = await synchronizeFinalSettlementPayrollForPayslip(record);
+                    return reconciled?.toObject?.() || reconciled;
+                })
+            );
 
             if (country) {
                 payrollRecords = payrollRecords.filter(r => r.employeeId?.country === country);
@@ -85,30 +216,26 @@ export class SalaryStatementService extends BaseService {
             { header: 'Join Date', key: 'joinDate', width: 18 },
             { header: 'Left?', key: 'left', width: 10 },
             { header: 'Status', key: 'status', width: 15 },
+            { header: 'PAYROLL TYPE', key: 'payrollType', width: 20 },
             { header: 'DAYS IN MONTH', key: 'daysInMonth', width: 15 },
             { header: 'EMP EFFECTIVE WORKDAYS', key: 'effectiveWorkdays', width: 25 },
             { header: 'BASIC', key: 'basic', width: 12 },
             { header: 'HRA', key: 'hra', width: 12 },
             { header: 'CONSULTANCY FEES', key: 'consultancyFees', width: 20 },
             { header: 'OTHER ALLOWANCE', key: 'otherAllowance', width: 20 },
+            { header: 'HOLD SALARY', key: 'holdSalary', width: 18 },
             { header: 'GROSS', key: 'gross', width: 15 },
-            { header: 'PF', key: 'pf', width: 12 },
+            { header: 'TOTAL EARNINGS', key: 'totalEarnings', width: 18 },
+            { header: 'PROVIDENT FUND', key: 'pf', width: 18 },
             { header: 'ESI', key: 'esi', width: 12 },
             { header: 'INCOME TAX', key: 'incomeTax', width: 15 },
-            { header: 'Professional Tax', key: 'professionalTax', width: 18 },
-            { header: 'TDS Amount', key: 'tdsAmount', width: 15 },
+            { header: 'PROFESSIONAL TAX', key: 'professionalTax', width: 18 },
+            { header: 'TDS', key: 'tdsAmount', width: 15 },
+            { header: 'LOSS OF PAY', key: 'lossOfPay', width: 18 },
+            { header: 'NOTICE PERIOD RECOVERY', key: 'noticePeriodRecovery', width: 24 },
             { header: 'TOTAL DEDUCTIONS', key: 'totalDeductions', width: 20 },
             { header: 'NET PAY', key: 'netPay', width: 15 },
         ];
-
-        if (isPreview) {
-            const totalDeductionsIndex = columnDefinitions.findIndex(c => c.key === 'totalDeductions');
-            columnDefinitions.splice(totalDeductionsIndex, 0, {
-                header: 'LOP DEDUCTION',
-                key: 'lopDeduction',
-                width: 18,
-            });
-        }
 
         // --- NEW: DYNAMIC COLUMNS FOR CUSTOM COMPONENTS ---
         const customEarningNames = new Set<string>();
@@ -128,23 +255,25 @@ export class SalaryStatementService extends BaseService {
 
         // Inject dynamic earnings after 'OTHER ALLOWANCE' (key: otherAllowance, index 10 in 0-based is index 11 in table)
         // Actually, let's inject them just before 'GROSS'.
-        const grossIndex = columnDefinitions.findIndex(c => c.key === 'gross');
+        let grossIndex = columnDefinitions.findIndex(c => c.key === 'gross');
         sortedCustomEarnings.forEach(name => {
             columnDefinitions.splice(grossIndex, 0, {
-                header: `${name} (+)`,
+                header: name,
                 key: `custom_earn_${name}`,
                 width: 15
             });
+            grossIndex += 1;
         });
 
         // Inject dynamic deductions after 'PF' or before 'TOTAL DEDUCTIONS'
-        const totalDeductionsIndex = columnDefinitions.findIndex(c => c.key === 'totalDeductions');
+        let totalDeductionsIndex = columnDefinitions.findIndex(c => c.key === 'totalDeductions');
         sortedCustomDeductions.forEach(name => {
             columnDefinitions.splice(totalDeductionsIndex, 0, {
-                header: `${name} (-)`,
+                header: name,
                 key: `custom_ded_${name}`,
                 width: 15
             });
+            totalDeductionsIndex += 1;
         });
         // --- END DYNAMIC COLUMNS ---
 
@@ -157,7 +286,7 @@ export class SalaryStatementService extends BaseService {
             hour: '2-digit', minute: '2-digit', hour12: true
         });
         const row1 = worksheet.getRow(1);
-        const createdOnCell = row1.getCell(18);
+        const createdOnCell = row1.getCell(columnDefinitions.length);
         createdOnCell.value = `Created On: ${createdOn}`;
         createdOnCell.alignment = { horizontal: 'right' };
         createdOnCell.font = { size: 10, italic: true };
@@ -195,13 +324,16 @@ export class SalaryStatementService extends BaseService {
             hra: 0,
             consultancyFees: 0,
             otherAllowance: 0,
+            holdSalary: 0,
             gross: 0,
+            totalEarnings: 0,
             pf: 0,
             esi: 0,
             incomeTax: 0,
             professionalTax: 0,
             tdsAmount: 0,
-            lopDeduction: 0,
+            lossOfPay: 0,
+            noticePeriodRecovery: 0,
             totalDeductions: 0,
             netPay: 0
         };
@@ -217,10 +349,7 @@ export class SalaryStatementService extends BaseService {
         payrollRecords.forEach((record: any) => {
             const user = record.employeeId;
             if (!user) return;
-            const customDeductionTotal = (record.customDeductions || []).reduce(
-                (sum: number, item: any) => sum + Math.round(item?.value || 0),
-                0
-            );
+            const financials = buildSalaryStatementFinancials(record);
 
             const rowData = {
                 employeeNo: user.employeeCode || '',
@@ -228,21 +357,25 @@ export class SalaryStatementService extends BaseService {
                 joinDate: user.joiningDate ? new Date(user.joiningDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '',
                 left: user.active === false ? 'Yes' : 'No',
                 status: isPreview ? (record.status || '') : (user.employmentStatus || ''),
+                payrollType: getSalaryStatementPayrollType(record),
                 daysInMonth: record.totalDaysInMonth || 0,
                 effectiveWorkdays: record.payableDays || 0,
                 basic: Math.round(record.basic || 0),
                 hra: Math.round(record.hra || 0),
                 consultancyFees: Math.round(record.da || 0),
                 otherAllowance: Math.round(record.otherAllowance || 0),
-                gross: Math.round(record.monthlyGross || 0),
+                holdSalary: financials.holdSalary,
+                gross: financials.periodGross,
+                totalEarnings: financials.totalEarnings,
                 pf: Math.round(record.epfEmployee || 0),
                 esi: Math.round(record.esiEmployee || 0),
                 incomeTax: Math.round(record.incomeTax || 0),
                 professionalTax: Math.round(record.professionalTax || 0),
                 tdsAmount: Math.round(record.tdsDeduction || 0),
-                ...(isPreview ? { lopDeduction: Math.round(record.leaveDeductions || 0) } : {}),
-                totalDeductions: Math.round((record.totalDeductions || 0) + customDeductionTotal),
-                netPay: Math.round(record.netSalary || 0)
+                lossOfPay: Math.round(record.leaveDeductions || 0),
+                noticePeriodRecovery: Math.round(record.noticePeriodRecovery || 0),
+                totalDeductions: financials.totalDeductions,
+                netPay: financials.netPay
             };
 
             // Populate dynamic values
@@ -278,13 +411,16 @@ export class SalaryStatementService extends BaseService {
             grandTotals.hra += rowData.hra;
             grandTotals.consultancyFees += rowData.consultancyFees;
             grandTotals.otherAllowance += rowData.otherAllowance;
+            grandTotals.holdSalary += rowData.holdSalary;
             grandTotals.gross += rowData.gross;
+            grandTotals.totalEarnings += rowData.totalEarnings;
             grandTotals.pf += rowData.pf;
             grandTotals.esi += rowData.esi;
             grandTotals.incomeTax += rowData.incomeTax;
             grandTotals.professionalTax += rowData.professionalTax;
             grandTotals.tdsAmount += rowData.tdsAmount;
-            grandTotals.lopDeduction += (rowData as any).lopDeduction || 0;
+            grandTotals.lossOfPay += rowData.lossOfPay;
+            grandTotals.noticePeriodRecovery += rowData.noticePeriodRecovery;
             grandTotals.totalDeductions += rowData.totalDeductions;
             grandTotals.netPay += rowData.netPay;
 
@@ -302,13 +438,16 @@ export class SalaryStatementService extends BaseService {
             hra: Math.round(grandTotals.hra),
             consultancyFees: Math.round(grandTotals.consultancyFees),
             otherAllowance: Math.round(grandTotals.otherAllowance),
+            holdSalary: Math.round(grandTotals.holdSalary),
             gross: Math.round(grandTotals.gross),
+            totalEarnings: Math.round(grandTotals.totalEarnings),
             pf: Math.round(grandTotals.pf),
             esi: Math.round(grandTotals.esi),
             incomeTax: Math.round(grandTotals.incomeTax),
             professionalTax: Math.round(grandTotals.professionalTax),
             tdsAmount: Math.round(grandTotals.tdsAmount),
-            ...(isPreview ? { lopDeduction: Math.round(grandTotals.lopDeduction) } : {}),
+            lossOfPay: Math.round(grandTotals.lossOfPay),
+            noticePeriodRecovery: Math.round(grandTotals.noticePeriodRecovery),
             totalDeductions: Math.round(grandTotals.totalDeductions),
             netPay: Math.round(grandTotals.netPay),
             ...customTotals
@@ -332,6 +471,41 @@ export class SalaryStatementService extends BaseService {
         }
 
         return workbook;
+    }
+
+    /**
+     * Fetches only explicitly-marked F&F payrolls for preview. Normal inactive
+     * employees remain governed by the existing virtual-payroll eligibility
+     * query and never enter this exception.
+     */
+    private async getFinalSettlementPayrollDataForPreview(
+        month: number,
+        year: number,
+        country?: string
+    ): Promise<any[]> {
+        let records = await Payroll.find({
+            month,
+            year,
+            status: { $nin: [PayrollStatus.Cancelled] },
+            $or: [
+                { isFinalSettlement: true },
+                { type: 'FinalSettlement' }
+            ]
+        })
+            .populate('employeeId')
+            .sort({ updatedAt: -1 });
+
+        if (country) {
+            records = records.filter(
+                (record: any) => record.employeeId?.country === country
+            ) as any;
+        }
+
+        // Preview remains read-only: reconciliation/persistence continues in
+        // the established summary, workflow and final-download paths.
+        return records.map(
+            (record: any) => record?.toObject?.() || record
+        );
     }
 
     /**

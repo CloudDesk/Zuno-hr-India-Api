@@ -371,6 +371,7 @@ export const payrollRoutes: RouteHandler = async (fastify: FastifyInstance): Pro
                                         },
                                         paymentConfirmedAt: { type: 'string', format: 'date-time', description: 'Timestamp when payment was confirmed' },
                                         type: { type: 'string', enum: ['Regular', 'FinalSettlement'] },
+                                        isFinalSettlement: { type: 'boolean' },
                                     },
                                     required: ['_id', 'employeeId', 'status']
                                 },

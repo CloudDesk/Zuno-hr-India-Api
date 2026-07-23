@@ -11,25 +11,12 @@ import { formatCurrency } from "../utilis/currency";
 import { formatDateToDDMMYYYY } from "../utilis/dates";
 import { cleanupPayslipTempFile, getPayslipTempFilePath, logPayslipTempFileStats, renderPayslipPdf } from "./payslip-pdf-runtime";
 import { synchronizeFinalSettlementPayrollForPayslip } from "./final-settlement.service";
-
-interface IPayslipGenerationResult {
-    userId: string;
-    status: string;
-    documentId?: string;
-    pdfPath?: string;
-    error?: string;
-}
-
-interface IBulkGenerationResult {
-    success: boolean;
-    payslips: IPayslipGenerationResult[];
-    summary: {
-        total: number;
-        generated: number;
-        failed: number;
-        updated: number;
-    };
-}
+import {
+    buildPayslipGenerationOutcome,
+    isEmployeeAllowedForPayslipGeneration,
+    type IBulkGenerationResult,
+    type IPayslipGenerationResult
+} from "./payslip-generation-result";
 
 interface IdentityDocumentResult {
     panNumber?: string;
@@ -58,7 +45,7 @@ export class PayslipPdfService extends BaseService {
 
         const lastDayOfMonth = new Date(year, month, 0);
         const baseLogContext = { month, year };
-        const employees = await this.measureStep(
+        const matchedEmployees = await this.measureStep(
             baseLogContext,
             'fetch_employee_data',
             async () => User.find({
@@ -67,7 +54,7 @@ export class PayslipPdfService extends BaseService {
             }).populate('departmentId').lean()
         );
 
-        if (!employees.length) {
+        if (!matchedEmployees.length) {
             throw new Error('No eligible employees found for payslip generation.');
         }
 
@@ -86,8 +73,10 @@ export class PayslipPdfService extends BaseService {
                     // nevertheless the record that must feed the final payslip.
                     {
                         status: 'Draft',
-                        isFinalSettlement: true,
-                        type: 'FinalSettlement'
+                        $or: [
+                            { isFinalSettlement: true },
+                            { type: 'FinalSettlement' }
+                        ]
                     }
                 ],
             }).lean()
@@ -95,6 +84,23 @@ export class PayslipPdfService extends BaseService {
 
         if (!payrolls.length) {
             throw new Error('No payroll data found for the specified users.');
+        }
+
+        const employees = matchedEmployees.filter((employee) => {
+            const employeePayrolls = payrolls.filter(
+                (payroll) =>
+                    payroll.employeeId.toString() === employee._id.toString()
+            );
+            return isEmployeeAllowedForPayslipGeneration(
+                employee,
+                employeePayrolls
+            );
+        });
+
+        if (!employees.length) {
+            throw new Error(
+                'No eligible active or Final Settlement employees found for payslip generation.'
+            );
         }
 
         const [departmentLov, locationLov] = await this.measureStep(
@@ -291,16 +297,7 @@ export class PayslipPdfService extends BaseService {
             }
         }
 
-        return {
-            success: true,
-            payslips: results,
-            summary: {
-                total: userIds.length,
-                generated: results.filter((r) => r.status === 'Generated').length,
-                failed: results.filter((r) => r.status === 'Error').length,
-                updated: results.filter((r) => r.status === 'Generated' && r.documentId).length,
-            },
-        };
+        return buildPayslipGenerationOutcome(userIds, results);
     }
 
     private async generatePayslipHtmlToPdf(
