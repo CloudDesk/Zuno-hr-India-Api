@@ -3157,14 +3157,23 @@ export async function confirmFinalSettlement(
                 }
             }
 
-            // 2.5 Update user status and mark as inactive
-            // When final settlement is confirmed, employee should be marked as inactive
+            // 2.5 Update the employee lifecycle from the confirmed settlement.
+            // Keep drafts isolated: the employee separation date changes only
+            // when the settlement is successfully confirmed.
+            const confirmedSeparationDate = settlement.leavingDate
+                ? new Date(settlement.leavingDate)
+                : null;
+            if (!confirmedSeparationDate || Number.isNaN(confirmedSeparationDate.getTime())) {
+                throw new Error('A valid Last Working Day is required to confirm the final settlement');
+            }
+
             await User.updateOne(
                 { _id: new Types.ObjectId(employeeId) },
                 {
                     $set: {
                         finalSettlementDone: true,
-                        active: false  // ✅ Mark employee as inactive on settlement confirmation
+                        active: false,
+                        separationDate: confirmedSeparationDate
                     }
                 },
                 { session }
