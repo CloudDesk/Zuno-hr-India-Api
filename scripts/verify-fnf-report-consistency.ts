@@ -145,6 +145,7 @@ assert.deepEqual(
             status: 'Generated',
             documentId: 'document-1'
         }]
+    ),
     {
         success: true,
         payslips: [{
