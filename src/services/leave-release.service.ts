@@ -18,6 +18,32 @@ export interface ILeaveReleaseCreate {
   leaveType: 'annual' | 'sick' | 'compOff' | 'lossOfPay' | 'otherPaid' | 'otherUnpaid' | 'restricted_holiday';
   daysReleased: number; // Can be decimal (e.g., 4.5)
   notes?: string;
+  requestId?: string;
+  previewOnly?: boolean;
+  skipExisting?: boolean;
+  forceRelease?: boolean;
+  overrideReason?: string;
+}
+
+export interface ILeaveReleaseEmployeePreview {
+  employeeId: string;
+  employeeName?: string;
+  employeeEmail?: string;
+}
+
+export interface ILeaveReleaseDuplicate {
+  employeeId: string;
+  employeeName?: string;
+  employeeEmail?: string;
+  existingReleaseId: string;
+  daysReleased: number;
+  releasedAt: Date;
+  releasedBy?: {
+    _id?: string;
+    name?: string;
+    email?: string;
+  };
+  message: string;
 }
 
 export class LeaveReleaseService extends BaseService {
@@ -36,8 +62,15 @@ export class LeaveReleaseService extends BaseService {
     success: number;
     failed: Array<{ employeeId: string; error: string }>;
     releases: ILeaveRelease[];
+    skipped?: ILeaveReleaseDuplicate[];
+    uncredited?: ILeaveReleaseEmployeePreview[];
+    requiresConfirmation?: boolean;
+    confirmationType?: 'normal' | 'duplicate' | 'mixed';
+    duplicates?: ILeaveReleaseDuplicate[];
   }> {
-    const { employeeIds, releaseType, period, leaveType, daysReleased, notes } = releaseData;
+    const { employeeIds, releaseType, period, leaveType, daysReleased, notes, requestId, previewOnly, skipExisting, forceRelease, overrideReason } = releaseData;
+    const uniqueEmployeeIds = [...new Set(employeeIds)];
+    const normalizedRequestId = requestId?.trim() || undefined;
     const releasedBy = this.context.user?._id;
 
     if (!releasedBy) {
@@ -67,9 +100,18 @@ export class LeaveReleaseService extends BaseService {
     const success: string[] = [];
     const failed: Array<{ employeeId: string; error: string }> = [];
     const releases: ILeaveRelease[] = [];
+    const duplicates: ILeaveReleaseDuplicate[] = [];
+    const skipped: ILeaveReleaseDuplicate[] = [];
+    const uncredited: ILeaveReleaseEmployeePreview[] = [];
+    const employeesToRelease: Array<{
+      employeeId: string;
+      employeeObjectId: Types.ObjectId;
+      employee: any;
+      duplicateOfReleaseId?: Types.ObjectId;
+    }> = [];
 
-    // Process each employee
-    for (const employeeId of employeeIds) {
+    // Validate every employee and detect duplicate releases before changing balances.
+    for (const employeeId of uniqueEmployeeIds) {
       try {
         // Check if employee is from India
         const employee = await User.findById(employeeId).select('country name email');
@@ -83,38 +125,157 @@ export class LeaveReleaseService extends BaseService {
           continue;
         }
 
-        // Get current leave summary for the year
-        const currentSummary = await this.leaveSummaryService.getLeaveSummary(
-          new Types.ObjectId(employeeId),
-          period.year
+        const employeeObjectId = new Types.ObjectId(employeeId);
+
+        if (normalizedRequestId && !previewOnly) {
+          const existingRequestRelease = await this.findReleaseByRequestId(normalizedRequestId, employeeObjectId);
+          if (existingRequestRelease) {
+            releases.push(existingRequestRelease as ILeaveRelease);
+            success.push(employeeId);
+            continue;
+          }
+        }
+
+        const existingRelease = await this.findExistingRelease(
+          employeeObjectId,
+          releaseType,
+          period,
+          leaveType
         );
 
-        // Get current allotted balance
-        const currentAlloted = currentSummary[leaveType as keyof typeof currentSummary]?.alloted || 0;
+        if (existingRelease) {
+          const duplicate = this.formatDuplicateRelease(employeeId, employee, existingRelease, releaseType, period, leaveType);
+          duplicates.push(duplicate);
 
-        // Add daysReleased to existing balance
-        const newAlloted = currentAlloted + daysReleased;
+          if (skipExisting && !forceRelease) {
+            skipped.push(duplicate);
+            continue;
+          }
+        }
+        else if (!existingRelease) {
+          uncredited.push({
+            employeeId,
+            employeeName: employee.name,
+            employeeEmail: employee.email
+          });
+        }
 
-        // Update leave summary - ADD to existing balance (skip email, we'll send release-specific email)
-        const updatedSummary = await this.leaveSummaryService.updateLeaveAllotments(
-          new Types.ObjectId(employeeId),
-          period.year,
-          {
-            [leaveType]: newAlloted
-          },
-          { skipEmail: true }  // Skip allotment email, send release-specific email instead
-        );
+        employeesToRelease.push({
+          employeeId,
+          employeeObjectId,
+          employee,
+          duplicateOfReleaseId: existingRelease?._id
+        });
+      } catch (error: any) {
+        console.error(`Failed to validate leave release for employee ${employeeId}:`, error);
+        failed.push({ employeeId, error: error.message || 'Unknown error' });
+      }
+    }
 
-        // Create leave release record
+    if (previewOnly) {
+      return {
+        success: 0,
+        failed,
+        releases,
+        skipped,
+        uncredited,
+        requiresConfirmation: true,
+        confirmationType: duplicates.length > 0 && uncredited.length > 0
+          ? 'mixed'
+          : duplicates.length > 0
+            ? 'duplicate'
+            : 'normal',
+        duplicates
+      };
+    }
+
+    if (duplicates.length > 0 && !forceRelease && !skipExisting) {
+      return {
+        success: 0,
+        failed,
+        releases,
+        skipped,
+        uncredited,
+        requiresConfirmation: true,
+        confirmationType: duplicates.length > 0 && uncredited.length > 0
+          ? 'mixed'
+          : 'duplicate',
+        duplicates
+      };
+    }
+
+    if (duplicates.length > 0 && forceRelease && !overrideReason?.trim()) {
+      throw new Error('Override reason is required to release leaves again for an already released period');
+    }
+
+    // Process each validated employee
+    for (const releaseTarget of employeesToRelease) {
+      const { employeeId, employeeObjectId, employee, duplicateOfReleaseId } = releaseTarget;
+      try {
+        let isIdempotentReplay = false;
+
+        // Create the release record before mutating balance so a retried request
+        // with the same requestId is stopped before a second credit can happen.
         const release = await LeaveRelease.create({
-          employeeId: new Types.ObjectId(employeeId),
+          employeeId: employeeObjectId,
           releaseType,
           period,
           leaveType,
           daysReleased,
           releasedBy,
-          notes
+          notes,
+          requestId: normalizedRequestId,
+          isOverride: Boolean(duplicateOfReleaseId),
+          overrideReason: duplicateOfReleaseId ? overrideReason?.trim() : undefined,
+          duplicateOfReleaseId
+        }).catch(async (error: any) => {
+          if (normalizedRequestId && error?.code === 11000) {
+            const existingRequestRelease = await this.findReleaseByRequestId(normalizedRequestId, employeeObjectId);
+            if (existingRequestRelease) {
+              isIdempotentReplay = true;
+              return existingRequestRelease;
+            }
+          }
+
+          throw error;
         });
+
+        if (isIdempotentReplay) {
+          releases.push(release as ILeaveRelease);
+          success.push(employeeId);
+          continue;
+        }
+
+        let updatedSummary: any;
+
+        try {
+          // Get current leave summary for the year
+          const currentSummary = await this.leaveSummaryService.getLeaveSummary(
+            employeeObjectId,
+            period.year
+          );
+
+          // Get current allotted balance
+          const currentAlloted = currentSummary[leaveType as keyof typeof currentSummary]?.alloted || 0;
+
+          // Add daysReleased to existing balance
+          const newAlloted = currentAlloted + daysReleased;
+
+          // Update leave summary - ADD to existing balance (skip email, we'll send release-specific email)
+          updatedSummary = await this.leaveSummaryService.updateLeaveAllotments(
+            employeeObjectId,
+            period.year,
+            {
+              [leaveType]: newAlloted
+            },
+            { skipEmail: true }  // Skip allotment email, send release-specific email instead
+          );
+        } catch (balanceError) {
+          await LeaveRelease.findByIdAndDelete(release._id).catch((rollbackError) => {
+            console.error(`Failed to roll back leave release ${release._id}:`, rollbackError);
+          });
+          throw balanceError;
+        }
 
         releases.push(release);
         success.push(employeeId);
@@ -195,7 +356,9 @@ export class LeaveReleaseService extends BaseService {
     return {
       success: success.length,
       failed,
-      releases
+      releases,
+      skipped,
+      uncredited
     };
   }
 
@@ -369,6 +532,102 @@ export class LeaveReleaseService extends BaseService {
     return months[month - 1] || '';
   }
 
+  private async findExistingRelease(
+    employeeId: Types.ObjectId,
+    releaseType: ILeaveReleaseCreate['releaseType'],
+    period: ILeaveReleaseCreate['period'],
+    leaveType: ILeaveReleaseCreate['leaveType']
+  ): Promise<any> {
+    const query: any = {
+      employeeId,
+      releaseType,
+      leaveType,
+      'period.year': period.year
+    };
+
+    if (releaseType === 'monthly' && period.month) {
+      query['period.month'] = period.month;
+    }
+
+    if (releaseType === 'quarterly' && period.quarter) {
+      query['period.quarter'] = period.quarter;
+    }
+
+    return LeaveRelease.findOne(query)
+      .populate('releasedBy', 'name email')
+      .sort({ releasedAt: -1 })
+      .lean();
+  }
+
+  private async findReleaseByRequestId(
+    requestId: string,
+    employeeId: Types.ObjectId
+  ): Promise<any> {
+    return LeaveRelease.findOne({
+      requestId,
+      employeeId
+    }).lean();
+  }
+
+  private formatDuplicateRelease(
+    employeeId: string,
+    employee: any,
+    existingRelease: any,
+    releaseType: ILeaveReleaseCreate['releaseType'],
+    period: ILeaveReleaseCreate['period'],
+    leaveType: ILeaveReleaseCreate['leaveType']
+  ): ILeaveReleaseDuplicate {
+    const periodDescription = this.getPeriodDescription(releaseType, period);
+    const leaveLabel = this.formatLeaveType(leaveType);
+    const releasedBy = existingRelease.releasedBy && typeof existingRelease.releasedBy === 'object'
+      ? {
+        _id: existingRelease.releasedBy._id?.toString(),
+        name: existingRelease.releasedBy.name,
+        email: existingRelease.releasedBy.email
+      }
+      : undefined;
+
+    return {
+      employeeId,
+      employeeName: employee.name,
+      employeeEmail: employee.email,
+      existingReleaseId: existingRelease._id.toString(),
+      daysReleased: existingRelease.daysReleased,
+      releasedAt: existingRelease.releasedAt,
+      releasedBy,
+      message: `${leaveLabel} leave for ${periodDescription} was already released`
+    };
+  }
+
+  private getPeriodDescription(
+    releaseType: ILeaveReleaseCreate['releaseType'],
+    period: ILeaveReleaseCreate['period']
+  ): string {
+    if (releaseType === 'monthly' && period.month) {
+      return `${this.getMonthName(period.month)} ${period.year}`;
+    }
+
+    if (releaseType === 'quarterly' && period.quarter) {
+      return `Q${period.quarter} ${period.year}`;
+    }
+
+    return `${period.year}`;
+  }
+
+  private formatLeaveType(leaveType: ILeaveReleaseCreate['leaveType']): string {
+    const labels: Record<ILeaveReleaseCreate['leaveType'], string> = {
+      annual: 'Annual',
+      sick: 'Sick',
+      compOff: 'Comp Off',
+      lossOfPay: 'Loss Of Pay',
+      otherPaid: 'Other Paid',
+      otherUnpaid: 'Other Unpaid',
+      restricted_holiday: 'Restricted Holiday'
+    };
+
+    return labels[leaveType] || leaveType;
+  }
+
   /**
    * Get quarterly months mapping
    */
@@ -382,4 +641,3 @@ export class LeaveReleaseService extends BaseService {
     return quarterMap[quarter] || [];
   }
 }
-

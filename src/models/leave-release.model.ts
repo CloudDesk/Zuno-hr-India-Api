@@ -14,6 +14,10 @@ export interface ILeaveRelease extends Document {
   releasedAt: Date;
   releasedBy: Types.ObjectId;  // Admin user
   notes?: string;
+  requestId?: string;
+  isOverride?: boolean;
+  overrideReason?: string;
+  duplicateOfReleaseId?: Types.ObjectId;
 }
 
 const leaveReleaseSchema = new Schema<ILeaveRelease>(
@@ -65,7 +69,25 @@ const leaveReleaseSchema = new Schema<ILeaveRelease>(
       ref: 'User',
       required: true
     },
-    notes: String
+    notes: String,
+    requestId: {
+      type: String,
+      trim: true
+    },
+    isOverride: {
+      type: Boolean,
+      default: false
+    },
+    overrideReason: {
+      type: String,
+      required: function (this: ILeaveRelease) {
+        return this.isOverride === true;
+      }
+    },
+    duplicateOfReleaseId: {
+      type: Schema.Types.ObjectId,
+      ref: 'LeaveRelease'
+    }
   },
   {
     timestamps: true
@@ -75,6 +97,15 @@ const leaveReleaseSchema = new Schema<ILeaveRelease>(
 // Indexes for efficient queries
 leaveReleaseSchema.index({ employeeId: 1, 'period.year': -1 });
 leaveReleaseSchema.index({ releaseType: 1, 'period.year': 1 });
+leaveReleaseSchema.index(
+  { requestId: 1, employeeId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      requestId: { $exists: true, $type: 'string' }
+    }
+  }
+);
 
 // Validate period based on release type
 leaveReleaseSchema.pre('save', function (next) {
@@ -119,4 +150,3 @@ leaveReleaseSchema.pre('save', function (next) {
 });
 
 export const LeaveRelease = model<ILeaveRelease>('LeaveRelease', leaveReleaseSchema);
-
