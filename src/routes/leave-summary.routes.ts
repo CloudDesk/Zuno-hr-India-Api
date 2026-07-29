@@ -562,7 +562,28 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
               minimum: 0,
               description: 'Days to release (can be decimal, e.g., 4.5)'
             },
-            notes: { type: 'string' }
+            notes: { type: 'string' },
+            requestId: {
+              type: 'string',
+              minLength: 1,
+              description: 'Client-generated idempotency key for this release submission'
+            },
+            previewOnly: {
+              type: 'boolean',
+              description: 'Validate and classify the release request without crediting balances'
+            },
+            skipExisting: {
+              type: 'boolean',
+              description: 'Skip employees who already have this month/quarter/year release instead of requiring override confirmation'
+            },
+            forceRelease: {
+              type: 'boolean',
+              description: 'Explicitly allow an additional release for an already released month/quarter/year'
+            },
+            overrideReason: {
+              type: 'string',
+              description: 'Required when forceRelease is true for an already released period'
+            }
           }
         }
       },

@@ -62,6 +62,23 @@ export const LEAVE_TYPE_LABELS: Record<LeaveType, string> = {
     no_leave: 'No Leave'
 };
 
+/**
+ * Check whether a stored leave type represents Loss of Pay.
+ *
+ * `lossOfPay` is the canonical value written by the leave service, while
+ * historical records may contain labels such as `LOP`, `Loss Of Pay`, or
+ * `loss_of_pay`. Normalizing here prevents payroll-facing calculations from
+ * accidentally treating an LOP leave as paid leave.
+ */
+export function isLossOfPayLeaveType(leaveType: string | null | undefined): boolean {
+    const normalizedType = String(leaveType || '')
+        .trim()
+        .replace(/[\s_-]+/g, '')
+        .toLowerCase();
+
+    return normalizedType === 'lop' || normalizedType === 'lossofpay';
+}
+
 // Maternity leave configuration for UAE
 export const MATERNITY_LEAVE_CONFIG = {
     country: 'AE',

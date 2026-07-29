@@ -259,7 +259,7 @@ export async function generateFNFLetter(settlement: any, employee: any): Promise
             }
             if (lopVal > 0) {
                 deductionsArray.push({
-                    label: 'Loss of Pay',
+                    label: 'LOP',
                     amount: formatCurrency(lopVal, 'IN')
                 });
             }

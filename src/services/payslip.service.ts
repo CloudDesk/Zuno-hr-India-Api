@@ -15,6 +15,7 @@ import { BaseService } from './base.service';
 import { RequestContext } from '../types/context';
 import { uploadFileToGCP } from '../utilis/gcpStorage';
 import { formatDateToDDMMYYYY } from '../utilis/dates';
+import { synchronizeFinalSettlementPayrollForPayslip } from './final-settlement.service';
 
 //fs-extra ,number-to-words ,pdfkit
 
@@ -313,7 +314,19 @@ export class PayslipService extends BaseService {
         month,
         year,
         employeeId: { $in: userIds },
-        status: 'Completed' // Ensure payroll is completed,
+        $or: [
+          // Regular payrolls must continue to be completed before generation.
+          { status: 'Completed' },
+          // Confirmed F&F payrolls intentionally remain Draft until payout.
+          // Include only that narrowly identified Draft record.
+          {
+            status: 'Draft',
+            $or: [
+              { isFinalSettlement: true },
+              { type: 'FinalSettlement' }
+            ]
+          }
+        ]
       });
       console.log(payrolls.length, "payrolls length")
       if (!payrolls.length) {
@@ -321,10 +334,34 @@ export class PayslipService extends BaseService {
       }
 
       const payslipPromises = employees.map(async (employee) => {
-        const payroll = payrolls.find((p) => p.employeeId.toString() === employee._id.toString());
-        if (!payroll) {
+        const employeePayrolls = payrolls.filter(
+          (p) => p.employeeId.toString() === employee._id.toString()
+        );
+        const payrollRecord = employeePayrolls.find(
+          (p) => p.isFinalSettlement === true || p.type === 'FinalSettlement'
+        ) || employeePayrolls[0];
+        if (!payrollRecord) {
           return { userId: employee._id, status: 'No Payroll Found' };
         }
+        const payroll = await synchronizeFinalSettlementPayrollForPayslip(payrollRecord) as IPayroll;
+        const finalSettlementEarnings = (payroll.customReimbursements || []).reduce(
+          (sum, item) => sum + (Number(item?.value) || 0),
+          0
+        );
+        const finalSettlementDeductions = (payroll.customDeductions || []).reduce(
+          (sum, item) => sum + (Number(item?.value) || 0),
+          0
+        );
+        const summaryGross = payroll.isFinalSettlement
+          ? Math.round(
+            (Number(payroll.monthlyGross) || 0) +
+            (Number(payroll.holdSalary) || 0) +
+            finalSettlementEarnings
+          )
+          : payroll.monthlyGross;
+        const summaryDeductions = payroll.isFinalSettlement
+          ? Math.round((Number(payroll.totalDeductions) || 0) + finalSettlementDeductions)
+          : payroll.totalDeductions;
 
         // Debug: Log payroll data to check if travelAllowance exists
         console.log("=== PAYROLL DEBUG ===");
@@ -345,9 +382,9 @@ export class PayslipService extends BaseService {
           // grossSalary: payroll.monthlyGross,
           netSalary: payroll.netSalary,
           paySummary: {
-            gross: payroll.monthlyGross,
+            gross: summaryGross,
             net: payroll.netSalary,
-            deductions: payroll.totalDeductions,
+            deductions: summaryDeductions,
             bonus: payroll.bonus,
             reimbursement: payroll.reimbursement,
           },
@@ -631,7 +668,6 @@ export class PayslipService extends BaseService {
         const itVal = Number(payroll.incomeTax ?? 0);
         const tdsVal = Number(payroll.tdsDeduction ?? 0);
         const noticeVal = Number(payroll.noticePeriodRecovery ?? 0);
-
         if (pfVal > 0) {
           deductionObj.pf = formatCurrency(pfVal, payroll.country);
         }
@@ -705,9 +741,10 @@ export class PayslipService extends BaseService {
         const itVal = Number(payroll.incomeTax ?? 0);
         const tdsVal = Number(payroll.tdsDeduction ?? 0);
         const noticeVal = Number(payroll.noticePeriodRecovery ?? 0);
+        const lopLabel = 'LOP';
 
         if (pfVal > 0) deductionsArray.push({ label: 'PROVIDENT FUND', amount: formatCurrency(pfVal, payroll.country) });
-        if (lopVal > 0) deductionsArray.push({ label: 'LOSS OF PAY', amount: formatCurrency(lopVal, payroll.country) });
+        if (lopVal > 0) deductionsArray.push({ label: lopLabel, amount: formatCurrency(lopVal, payroll.country) });
         if (itVal > 0) deductionsArray.push({ label: 'INCOME TAX', amount: formatCurrency(itVal, payroll.country) });
         if (ptVal > 0) deductionsArray.push({ label: 'PROFESSIONAL TAX', amount: formatCurrency(ptVal, payroll.country) });
         if (tdsVal > 0) deductionsArray.push({ label: 'TDS (1%)', amount: formatCurrency(tdsVal, payroll.country) });

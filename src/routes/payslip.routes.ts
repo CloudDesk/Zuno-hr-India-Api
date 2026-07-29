@@ -19,8 +19,9 @@ interface PayslipGenerateRequest {
   filters?: {
     departmentId?: string;
     role?: string;
-    status?: string;
+    status?: string[];
     search?: string;
+    country?: string;
   };
 }
 
@@ -70,6 +71,7 @@ export const payslipRoutes: RouteHandler = async (
                   description: 'Statuses like Active, On Hold, Resigned',
                 },
                 search: { type: 'string' },
+                country: { type: 'string' },
               },
               additionalProperties: false,
             },
@@ -105,7 +107,7 @@ export const payslipRoutes: RouteHandler = async (
               ? filters.status
               : ['Active', 'Resigned'],
           };
-          finalUserIds = await request.container!.payrollService.getUserIdsByFilters(finalFilters, monthYear, 'onlyCompleted');
+          finalUserIds = await request.container!.payrollService.getUserIdsByFilters(finalFilters, monthYear, 'payslipEligible');
         }
         console.log(finalUserIds, "finalUserIds")
         if (!finalUserIds || finalUserIds.length === 0) {
@@ -189,6 +191,7 @@ export const payslipRoutes: RouteHandler = async (
                   description: 'Statuses like Active, On Hold, Resigned',
                 },
                 search: { type: 'string' },
+                country: { type: 'string' },
               },
               additionalProperties: false,
             },
@@ -261,9 +264,9 @@ export const payslipRoutes: RouteHandler = async (
             ...filters,
             status: Array.isArray(filters?.status) && filters.status.length > 0
               ? filters.status
-              : ['Active'],
+              : ['Active', 'Resigned'],
           };
-          finalUserIds = await request.container!.payrollService.getUserIdsByFilters(finalFilters, monthYear, 'onlyCompleted');
+          finalUserIds = await request.container!.payrollService.getUserIdsByFilters(finalFilters, monthYear, 'payslipEligible');
         }
         console.log(finalUserIds, "finalUserIds")
         if (!finalUserIds || finalUserIds.length === 0) {

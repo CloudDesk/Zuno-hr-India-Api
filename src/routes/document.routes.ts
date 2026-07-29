@@ -77,8 +77,9 @@ interface PayslipGenerateRequest {
     filters?: {
         departmentId?: string;
         role?: string;
-        status?: string;
+        status?: string[];
         search?: string;
+        country?: string;
     };
 }
 interface GetPayslipRequest {
@@ -278,6 +279,7 @@ export const documentRoutes = async (
                                     description: 'Statuses like Active, On Hold, Resigned',
                                 },
                                 search: { type: 'string' },
+                                country: { type: 'string' },
                             },
                             additionalProperties: false,
                         },
@@ -318,9 +320,9 @@ export const documentRoutes = async (
                         ...filters,
                         status: Array.isArray(filters?.status) && filters.status.length > 0
                             ? filters.status
-                            : ['Active'],
+                            : ['Active', 'Resigned'],
                     };
-                    finalUserIds = await request.container!.payrollService.getUserIdsByFilters(finalFilters, monthYear, 'onlyCompleted');
+                    finalUserIds = await request.container!.payrollService.getUserIdsByFilters(finalFilters, monthYear, 'payslipEligible');
                 }
                 console.log(finalUserIds, "finalUserIds")
                 if (!finalUserIds || finalUserIds.length === 0) {
@@ -341,7 +343,7 @@ export const documentRoutes = async (
                 // );
 
                 return reply.send({
-                    success: true,
+                    success: salary.success,
                     data: salary,
                 });
             } catch (error: any) {
@@ -420,6 +422,7 @@ export const documentRoutes = async (
                                     items: { type: 'string' },
                                 },
                                 search: { type: 'string' },
+                                country: { type: 'string' },
                             },
                             additionalProperties: false,
                         },
@@ -448,9 +451,11 @@ export const documentRoutes = async (
                 } else {
                     const finalFilters = {
                         ...filters,
-                        status: Array.isArray(filters?.status) && filters.status.length > 0 ? filters.status : ['Active'],
+                        status: Array.isArray(filters?.status) && filters.status.length > 0
+                            ? filters.status
+                            : ['Active', 'Resigned'],
                     };
-                    finalUserIds = await request.container!.payrollService.getUserIdsByFilters(finalFilters, monthYear, 'onlyCompleted');
+                    finalUserIds = await request.container!.payrollService.getUserIdsByFilters(finalFilters, monthYear, 'payslipEligible');
                 }
 
                 if (!finalUserIds.length) {

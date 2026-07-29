@@ -10,25 +10,13 @@ import { uploadFileToGCP, deleteFileFromGCP } from "../utilis/gcpStorage";
 import { formatCurrency } from "../utilis/currency";
 import { formatDateToDDMMYYYY } from "../utilis/dates";
 import { cleanupPayslipTempFile, getPayslipTempFilePath, logPayslipTempFileStats, renderPayslipPdf } from "./payslip-pdf-runtime";
-
-interface IPayslipGenerationResult {
-    userId: string;
-    status: string;
-    documentId?: string;
-    pdfPath?: string;
-    error?: string;
-}
-
-interface IBulkGenerationResult {
-    success: boolean;
-    payslips: IPayslipGenerationResult[];
-    summary: {
-        total: number;
-        generated: number;
-        failed: number;
-        updated: number;
-    };
-}
+import { synchronizeFinalSettlementPayrollForPayslip } from "./final-settlement.service";
+import {
+    buildPayslipGenerationOutcome,
+    isEmployeeAllowedForPayslipGeneration,
+    type IBulkGenerationResult,
+    type IPayslipGenerationResult
+} from "./payslip-generation-result";
 
 interface IdentityDocumentResult {
     panNumber?: string;
@@ -57,7 +45,7 @@ export class PayslipPdfService extends BaseService {
 
         const lastDayOfMonth = new Date(year, month, 0);
         const baseLogContext = { month, year };
-        const employees = await this.measureStep(
+        const matchedEmployees = await this.measureStep(
             baseLogContext,
             'fetch_employee_data',
             async () => User.find({
@@ -66,7 +54,7 @@ export class PayslipPdfService extends BaseService {
             }).populate('departmentId').lean()
         );
 
-        if (!employees.length) {
+        if (!matchedEmployees.length) {
             throw new Error('No eligible employees found for payslip generation.');
         }
 
@@ -77,12 +65,42 @@ export class PayslipPdfService extends BaseService {
                 month,
                 year,
                 employeeId: { $in: userIds.map((id) => new Types.ObjectId(id)) },
-                status: 'Completed',
+                $or: [
+                    // Preserve the existing rule for normal payrolls.
+                    { status: 'Completed' },
+                    // A confirmed F&F creates its authoritative payroll as Draft
+                    // so it can still be reviewed/unlocked before payout. It is
+                    // nevertheless the record that must feed the final payslip.
+                    {
+                        status: 'Draft',
+                        $or: [
+                            { isFinalSettlement: true },
+                            { type: 'FinalSettlement' }
+                        ]
+                    }
+                ],
             }).lean()
         );
 
         if (!payrolls.length) {
             throw new Error('No payroll data found for the specified users.');
+        }
+
+        const employees = matchedEmployees.filter((employee) => {
+            const employeePayrolls = payrolls.filter(
+                (payroll) =>
+                    payroll.employeeId.toString() === employee._id.toString()
+            );
+            return isEmployeeAllowedForPayslipGeneration(
+                employee,
+                employeePayrolls
+            );
+        });
+
+        if (!employees.length) {
+            throw new Error(
+                'No eligible active or Final Settlement employees found for payslip generation.'
+            );
         }
 
         const [departmentLov, locationLov] = await this.measureStep(
@@ -110,12 +128,36 @@ export class PayslipPdfService extends BaseService {
             };
 
             try {
-                const payroll = payrolls.find((p) => p.employeeId.toString() === employee._id.toString());
-                if (!payroll) {
+                const employeePayrolls = payrolls.filter(
+                    (p) => p.employeeId.toString() === employee._id.toString()
+                );
+                const payrollRecord = employeePayrolls.find(
+                    (p) => p.isFinalSettlement === true || p.type === 'FinalSettlement'
+                ) || employeePayrolls[0];
+                if (!payrollRecord) {
                     this.logInfo(logContext, 'fetch_payroll_data', { status: 'No Payroll Found' });
                     results.push({ userId: employee._id.toString(), status: 'No Payroll Found' });
                     continue;
                 }
+                const payroll = await synchronizeFinalSettlementPayrollForPayslip(payrollRecord);
+                const finalSettlementEarnings = (payroll.customReimbursements || []).reduce(
+                    (sum: number, item: any) => sum + (Number(item?.value) || 0),
+                    0
+                );
+                const finalSettlementDeductions = (payroll.customDeductions || []).reduce(
+                    (sum: number, item: any) => sum + (Number(item?.value) || 0),
+                    0
+                );
+                const summaryGross = payroll.isFinalSettlement
+                    ? Math.round(
+                        (Number(payroll.monthlyGross) || 0) +
+                        (Number(payroll.holdSalary) || 0) +
+                        finalSettlementEarnings
+                    )
+                    : payroll.monthlyGross;
+                const summaryDeductions = payroll.isFinalSettlement
+                    ? Math.round((Number(payroll.totalDeductions) || 0) + finalSettlementDeductions)
+                    : payroll.totalDeductions;
 
                 const monthStr = month <= 9 ? `0${month}` : `${month}`;
                 const cleanName = employee.name.replace(/[^a-zA-Z0-9]/g, '_');
@@ -185,9 +227,9 @@ export class PayslipPdfService extends BaseService {
                                         year,
                                         netSalary: payroll.netSalary,
                                         paySummary: {
-                                            gross: payroll.monthlyGross,
+                                            gross: summaryGross,
                                             net: payroll.netSalary,
-                                            deductions: payroll.totalDeductions,
+                                            deductions: summaryDeductions,
                                             bonus: payroll.bonus || 0,
                                             reimbursement: payroll.reimbursement || 0,
                                         },
@@ -255,16 +297,7 @@ export class PayslipPdfService extends BaseService {
             }
         }
 
-        return {
-            success: true,
-            payslips: results,
-            summary: {
-                total: userIds.length,
-                generated: results.filter((r) => r.status === 'Generated').length,
-                failed: results.filter((r) => r.status === 'Error').length,
-                updated: results.filter((r) => r.status === 'Generated' && r.documentId).length,
-            },
-        };
+        return buildPayslipGenerationOutcome(userIds, results);
     }
 
     private async generatePayslipHtmlToPdf(
@@ -496,16 +529,17 @@ export class PayslipPdfService extends BaseService {
                 const it = Number(payroll.incomeTax || 0);
                 const tds = Number(payroll.tdsDeduction || 0);
                 const notice = Number(payroll.noticePeriodRecovery || 0);
+                const lopLabel = 'LOP';
 
                 if (isConsultant) {
                     // Consultants: Show TDS value as "INCOME TAX"
                     if (tds > 0) arr.push({ label: 'INCOME TAX', amount: formatCurrency(tds, payroll.country) });
-                    if (lop > 0) arr.push({ label: 'LOSS OF PAY', amount: formatCurrency(lop, payroll.country) });
+                    if (lop > 0) arr.push({ label: lopLabel, amount: formatCurrency(lop, payroll.country) });
                     if (notice > 0) arr.push({ label: 'NOTICE PERIOD RECOVERY', amount: formatCurrency(notice, payroll.country) });
                 } else {
                     // Regular Employees: Existing logic
                     if (pf > 0) arr.push({ label: 'PROVIDENT FUND', amount: formatCurrency(pf, payroll.country) });
-                    if (lop > 0) arr.push({ label: 'LOSS OF PAY', amount: formatCurrency(lop, payroll.country) });
+                    if (lop > 0) arr.push({ label: lopLabel, amount: formatCurrency(lop, payroll.country) });
                     if (it > 0) arr.push({ label: 'INCOME TAX', amount: formatCurrency(it, payroll.country) });
                     if (pt > 0) arr.push({ label: 'PROFESSIONAL TAX', amount: formatCurrency(pt, payroll.country) });
                     if (tds > 0) arr.push({ label: 'TDS (1%)', amount: formatCurrency(tds, payroll.country) });

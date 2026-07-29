@@ -52,6 +52,9 @@ export interface IFinalSettlement extends Document {
         totalDays: number;
         daysWorked: number;
         presentDays: number;
+        weekendDays: number;
+        holidayDays: number;
+        leaveDays: number;
         lopDays: number;
         status: string;
     }>;
@@ -70,6 +73,9 @@ export interface IFinalSettlement extends Document {
         leaveDays: number;
         lopDays: number;
         lopAmount: number;       // ✅ LOP deduction amount
+        earnedSalary: number;    // Prorated earnings before statutory deductions
+        separationProrationDays: number; // Days after LWD (not attendance LOP)
+        separationProrationAmount: number;
 
         // ✅ Salary component breakdown
         components: {
@@ -81,7 +87,7 @@ export interface IFinalSettlement extends Document {
             gross: number;
         };
 
-        salary: number;          // Net salary (gross - LOP)
+        salary: number;          // Gross for the settlement period (through LWD in exit month)
         professionalTax: number;
         incomeTax: number;       // ✅ Added TDS
         providentFund: number;
@@ -90,7 +96,8 @@ export interface IFinalSettlement extends Document {
         epfEmployerEpf: number;   // ✅ Added EPF Split
         esi: number;
     }>;
-    totalUnpaidSalary: number;
+    totalUnpaidSalary: number;   // Full gross for complete months; gross through LWD for exit month
+    separationProrationAmount: number;
 
     totalDaysWorked: number;
 
@@ -103,6 +110,12 @@ export interface IFinalSettlement extends Document {
         encashAmount: number; // Positive = addition, Negative = deduction
     }>;
     totalLeaveEncashment: number; // Net amount (can be negative)
+
+    // Step 5: Additional LOP (manual adjustment, calculated by backend)
+    additionalLopDays: number;
+    lopSalaryDays: number;
+    lopPerDayRate: number;
+    additionalLopAmount: number;
 
     // Step 6: Reimbursements & Deductions
     reimbursements: Array<IReimbursementItem>;
@@ -140,6 +153,10 @@ export interface IFinalSettlement extends Document {
         epfEmployerEps: number;  // ✅ Added EPS Split
         epfEmployerEpf: number;  // ✅ Added EPF Split
         esi: number;             // ✅ Added
+        attendanceLopAmount: number;
+        additionalLopAmount: number;
+        lopAmount: number;
+        separationProrationAmount: number;
         otherDeductions: number;
         totalDeductions: number;
 
@@ -200,6 +217,9 @@ const finalSettlementSchema = new Schema<IFinalSettlement>(
             totalDays: { type: Number, default: 0 },
             daysWorked: { type: Number, default: 0 },
             presentDays: { type: Number, default: 0 },
+            weekendDays: { type: Number, default: 0 },
+            holidayDays: { type: Number, default: 0 },
+            leaveDays: { type: Number, default: 0 },
             lopDays: { type: Number, default: 0 },
             status: { type: String, required: true }
         }],
@@ -217,6 +237,9 @@ const finalSettlementSchema = new Schema<IFinalSettlement>(
             leaveDays: { type: Number, default: 0 },
             lopDays: { type: Number, default: 0 },
             lopAmount: { type: Number, default: 0 },
+            earnedSalary: { type: Number, default: 0 },
+            separationProrationDays: { type: Number, default: 0 },
+            separationProrationAmount: { type: Number, default: 0 },
 
             // Salary component breakdown
             components: {
@@ -238,6 +261,7 @@ const finalSettlementSchema = new Schema<IFinalSettlement>(
             esi: { type: Number, default: 0 }
         }],
         totalUnpaidSalary: { type: Number, default: 0 },
+        separationProrationAmount: { type: Number, default: 0 },
 
         totalDaysWorked: { type: Number, default: 0 },
 
@@ -250,6 +274,12 @@ const finalSettlementSchema = new Schema<IFinalSettlement>(
             encashAmount: { type: Number, default: 0 }
         }],
         totalLeaveEncashment: { type: Number, default: 0 },
+
+        // Additional manual LOP. The backend derives rate/amount from gross salary.
+        additionalLopDays: { type: Number, default: 0, min: 0 },
+        lopSalaryDays: { type: Number, default: 0, min: 0 },
+        lopPerDayRate: { type: Number, default: 0, min: 0 },
+        additionalLopAmount: { type: Number, default: 0, min: 0 },
 
         // Step 6: Reimbursements & Deductions
         reimbursements: [{
@@ -299,7 +329,10 @@ const finalSettlementSchema = new Schema<IFinalSettlement>(
             epfEmployerEps: { type: Number, default: 0 },// ✅ Added
             epfEmployerEpf: { type: Number, default: 0 },// ✅ Added
             esi: { type: Number, default: 0 },            // ✅ Added
-            lopAmount: { type: Number, default: 0 },      // ✅ Added for consistency
+            attendanceLopAmount: { type: Number, default: 0 },
+            additionalLopAmount: { type: Number, default: 0 },
+            lopAmount: { type: Number, default: 0 },
+            separationProrationAmount: { type: Number, default: 0 },
             otherDeductions: { type: Number, default: 0 },
             totalDeductions: { type: Number, default: 0 },
 
