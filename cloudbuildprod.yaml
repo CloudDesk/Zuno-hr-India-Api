@@ -7,21 +7,21 @@ steps:
       - 'config'
       - 'set'
       - 'project'
-      - 'zuno-hr-2025'
+      - 'zuno-hrms'
 
   # Step 2: Build the Docker image
   - name: 'gcr.io/cloud-builders/docker'
     args:
       - 'build'
       - '-t'
-      - 'gcr.io/zuno-hr-2025/zuno-cd-hr-india-prod:latest'
+      - 'gcr.io/zuno-hrms/zuno-cd-hr-india-prod:latest'
       - '.'
 
   # Step 3: Push the Docker image to Google Container Registry
   - name: 'gcr.io/cloud-builders/docker'
     args:
       - 'push'
-      - 'gcr.io/zuno-hr-2025/zuno-cd-hr-india-prod:latest'
+      - 'gcr.io/zuno-hrms/zuno-cd-hr-india-prod:latest'
 
   # Step 4: Deploy the image to Cloud Run
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
@@ -31,14 +31,14 @@ steps:
       - 'deploy'
       - 'zuno-cd-hr-india-prod'
       - '--image'
-      - 'gcr.io/zuno-hr-2025/zuno-cd-hr-india-prod:latest'
+      - 'gcr.io/zuno-hrms/zuno-cd-hr-india-prod:latest'
       - '--region'
       - 'asia-south1'
       - '--platform'
       - 'managed'
       - '--allow-unauthenticated'
       - '--service-account'
-      - 'zunoprod@zuno-hr-2025.iam.gserviceaccount.com'
+      - 'zunoprod@zuno-hrms.iam.gserviceaccount.com'
       - '--execution-environment'
       - 'gen2'
       - '--memory'
