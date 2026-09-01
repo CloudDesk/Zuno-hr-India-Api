@@ -155,6 +155,47 @@ export async function taxDeclarationRoutes(fastify: FastifyInstance): Promise<vo
             }
         }
     )
+    // Get a user's declaration for a selected financial year.
+    fastify.get('/user/:userId/financial-year/:financialYear', { preHandler: [authenticate] },
+        async (request, reply) => {
+            try {
+                const { userId, financialYear } = request.params as {
+                    userId: string;
+                    financialYear: string;
+                };
+
+                const financialYearParts = financialYear.split('-').map(Number);
+                if (
+                    !/^\d{4}-\d{4}$/.test(financialYear) ||
+                    financialYearParts[1] !== financialYearParts[0] + 1
+                ) {
+                    return reply.status(400).send({
+                        success: false,
+                        error: { message: 'Invalid financial year format. Expected YYYY-YYYY.' },
+                    });
+                }
+
+                const declaration = await request.container!.taxDeclarationService.getUserByFinancialYear(
+                    new Types.ObjectId(userId),
+                    financialYear,
+                );
+
+                if (!declaration) {
+                    return reply.status(404).send({
+                        success: false,
+                        error: { message: `Tax declaration not found for FY ${financialYear}` },
+                    });
+                }
+
+                return reply.send({ success: true, data: declaration });
+            } catch (error: any) {
+                return reply.status(400).send({
+                    success: false,
+                    error: { message: error.message },
+                });
+            }
+        }
+    )
     //Tax declartion -declarations documents
     fastify.post<{ Params: { id: string } }>('/:id/update-documents',
         {

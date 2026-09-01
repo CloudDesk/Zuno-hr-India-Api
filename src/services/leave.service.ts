@@ -1171,8 +1171,8 @@ export class LeaveService extends BaseService {
     // This check happens AFTER noOfDays is calculated so we can validate against the actual days requested
     // Skip balance check for leave types that don't require balance: lossOfPay, otherUnpaid
     // Skip balance check for restricted_holiday (has its own annual limit check)
-    const leaveTypesRequiringBalance = ['annual', 'sick', 'compOff', 'otherPaid', 'maternity', 'work_from_home'];
-    if (leaveTypesRequiringBalance.includes(leaveData.leaveType)) {
+    const leaveTypesWithoutBalance = ['lossOfPay', 'loss_of_pay', 'otherUnpaid', 'other_unpaid', 'restricted_holiday'];
+    if (!leaveTypesWithoutBalance.includes(leaveData.leaveType)) {
       const userIdObj = typeof leaveData.userId === 'string'
         ? new Types.ObjectId(leaveData.userId)
         : leaveData.userId;
@@ -1182,11 +1182,23 @@ export class LeaveService extends BaseService {
       const leaveSummary = await this.leaveSummaryService.getLeaveSummary(userIdObj, year);
 
       // Map leave type to category key (handle work_from_home -> workFromHome)
-      const categoryTypeKey = leaveData.leaveType === 'work_from_home'
-        ? 'workFromHome'
-        : leaveData.leaveType;
-
-      const category = leaveSummary[categoryTypeKey as keyof typeof leaveSummary] as any;
+      const categoryAliases: Record<string, string> = {
+        compoff: 'compOff',
+        comp_off: 'compOff',
+        lossofpay: 'lossOfPay',
+        loss_of_pay: 'lossOfPay',
+        otherpaid: 'otherPaid',
+        other_paid: 'otherPaid',
+        otherunpaid: 'otherUnpaid',
+        other_unpaid: 'otherUnpaid',
+        workfromhome: 'workFromHome',
+        work_from_home: 'workFromHome',
+        wfh: 'workFromHome',
+      };
+      const normalizedLeaveType = leaveData.leaveType.toLowerCase().trim();
+      const categoryTypeKey = categoryAliases[normalizedLeaveType] || leaveData.leaveType;
+      const builtInCategory = (leaveSummary as any)[categoryTypeKey];
+      const category = builtInCategory || leaveSummary.customLeaveTypes?.[leaveData.leaveType];
 
       if (!category) {
         throw new Error(`Leave category '${leaveData.leaveType}' not found in leave summary`);

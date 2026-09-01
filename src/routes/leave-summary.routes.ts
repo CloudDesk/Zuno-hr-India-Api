@@ -107,6 +107,18 @@ const getLeaveSummarySchema = {
                 leaveRequests: { type: 'array', items: { type: 'string' } },
               },
             },
+            customLeaveTypes: {
+              type: 'object',
+              additionalProperties: {
+                type: 'object',
+                properties: {
+                  alloted: { type: 'number' },
+                  availed: { type: 'number' },
+                  remaining: { type: 'number' },
+                  leaveRequests: { type: 'array', items: { type: 'string' } },
+                },
+              },
+            },
             editHistory: {
               type: 'array',
               items: {
@@ -255,6 +267,11 @@ const updateLeaveAllotmentSchema = {
         type: 'number',
         minimum: 0,
         description: 'Restricted holiday (optional holiday) allocation count per year',
+      },
+      customLeaveTypes: {
+        type: 'object',
+        additionalProperties: { type: 'number', minimum: 0 },
+        description: 'Allotments keyed by the exact active leavetype LOV value',
       }
     },
   },
@@ -314,6 +331,18 @@ const updateLeaveAllotmentSchema = {
                 alloted: { type: 'number' },
                 availed: { type: 'number' },
                 remaining: { type: 'number' },
+              },
+            },
+            customLeaveTypes: {
+              type: 'object',
+              additionalProperties: {
+                type: 'object',
+                properties: {
+                  alloted: { type: 'number' },
+                  availed: { type: 'number' },
+                  remaining: { type: 'number' },
+                  leaveRequests: { type: 'array', items: { type: 'string' } },
+                },
               },
             },
             editHistory: {
@@ -428,6 +457,7 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
           maternity,
           workFromHome,
           restricted_holiday,
+          customLeaveTypes,
         } = request.body as {
           userId: string;
           year: number;
@@ -439,6 +469,7 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
           maternity?: number;
           workFromHome?: number;
           restricted_holiday?: number;
+          customLeaveTypes?: Record<string, number>;
         };
 
         const updatedSummary = await request.container!.leaveSummaryService.updateLeaveAllotments(
@@ -453,6 +484,7 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
             maternity,
             workFromHome,
             restricted_holiday,
+            customLeaveTypes,
           }
         );
 
@@ -505,6 +537,7 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
             availed: updatedSummary.restricted_holiday?.availed || 0,
             remaining: updatedSummary.restricted_holiday?.remaining || 0,
           },
+          customLeaveTypes: updatedSummary.customLeaveTypes || {},
           editHistory: updatedSummary.editHistory || [],
         };
 

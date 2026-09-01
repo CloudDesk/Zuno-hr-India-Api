@@ -37,6 +37,7 @@ export class LeaveSummaryService extends BaseService {
           maternity: { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] },
           workFromHome: { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] },
           restricted_holiday: { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] }, // Default to 0
+          customLeaveTypes: {},
           editHistory: [] // Initialize editHistory for new documents
         }
       },
@@ -160,6 +161,7 @@ export class LeaveSummaryService extends BaseService {
         maternity: { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] },
         workFromHome: { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] },
         restricted_holiday: { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] }, // Default to 0
+        customLeaveTypes: {},
         editHistory: [] // Initialize editHistory for new documents
       });
       console.log(`✅ [Leave Summary] Created new leave summary for user ${userId}, year ${year}`);
@@ -196,8 +198,12 @@ export class LeaveSummaryService extends BaseService {
           summary.markModified('editHistory');
         }
       }
+      if (summary.customLeaveTypes === undefined || summary.customLeaveTypes === null) {
+        summary.customLeaveTypes = {};
+        summary.markModified('customLeaveTypes');
+      }
       // Save if any fields were initialized
-      if (summary.isModified('workFromHome') || summary.isModified('restricted_holiday') || summary.isModified('editHistory')) {
+      if (summary.isModified('workFromHome') || summary.isModified('restricted_holiday') || summary.isModified('editHistory') || summary.isModified('customLeaveTypes')) {
         await summary.save(); // Save to persist the new field
       }
     }
@@ -244,6 +250,12 @@ export class LeaveSummaryService extends BaseService {
       maternity: formatCategory(summary.maternity),
       workFromHome: formatCategory(summary.workFromHome),
       restricted_holiday: formatCategory(summary.restricted_holiday),
+      customLeaveTypes: Object.fromEntries(
+        Object.entries(summary.customLeaveTypes || {}).map(([value, category]) => [
+          value,
+          formatCategory(category),
+        ])
+      ),
       editHistory: summary.editHistory || []
     };
   }
@@ -279,6 +291,7 @@ export class LeaveSummaryService extends BaseService {
       maternity?: number;
       workFromHome?: number;
       restricted_holiday?: number;
+      customLeaveTypes?: Record<string, number>;
     },
     options?: { skipEmail?: boolean }  // Option to skip email notification
   ): Promise<ILeaveSummary> {
@@ -483,6 +496,42 @@ export class LeaveSummaryService extends BaseService {
         summary.restricted_holiday.alloted = allotments.restricted_holiday;
       }
 
+      for (const [leaveTypeValue, newValue] of Object.entries(allotments.customLeaveTypes || {})) {
+        if (!leaveTypeValue || typeof newValue !== 'number' || newValue < 0) continue;
+
+        const customLeaveTypes = summary.customLeaveTypes || {};
+        const currentCategory = customLeaveTypes[leaveTypeValue] || {
+          alloted: 0,
+          availed: 0,
+          remaining: 0,
+          leaveRequests: [],
+        };
+        const oldValue = currentCategory.alloted || 0;
+
+        if (oldValue !== newValue && editorId) {
+          editHistoryEntries.push({
+            editedBy: {
+              id: typeof editorId === 'string' ? editorId : editorId.toString(),
+              name: editorName,
+            },
+            field: `customLeaveTypes.${leaveTypeValue}.alloted`,
+            oldValue,
+            newValue,
+            editedAt: new Date(),
+          });
+        }
+
+        summary.customLeaveTypes = {
+          ...customLeaveTypes,
+          [leaveTypeValue]: {
+            ...currentCategory,
+            alloted: newValue,
+            remaining: Math.max(0, newValue - (currentCategory.availed || 0)),
+          },
+        };
+        summary.markModified('customLeaveTypes');
+      }
+
       // Add edit history entries to the summary
       if (editHistoryEntries.length > 0 && editorId) {
         // Convert editorId to ObjectId for storage
@@ -650,6 +699,13 @@ export class LeaveSummaryService extends BaseService {
     return normalized as keyof ILeaveSummary;
   }
 
+  private isBuiltInCategory(category: keyof ILeaveSummary): boolean {
+    return [
+      'annual', 'sick', 'compOff', 'lossOfPay', 'otherPaid', 'otherUnpaid',
+      'maternity', 'workFromHome', 'restricted_holiday'
+    ].includes(category as string);
+  }
+
   async updateLeaveBalance(
     userId: Types.ObjectId,
     year: number,
@@ -661,6 +717,34 @@ export class LeaveSummaryService extends BaseService {
 
     // Map leave type to proper category key (camelCase)
     const categoryTypeKey = this.mapLeaveTypeToCategoryKey(categoryType);
+
+    if (!this.isBuiltInCategory(categoryTypeKey)) {
+      const leaveTypeValue = categoryType.trim();
+      const customLeaveTypes = summary.customLeaveTypes || {};
+      const category = customLeaveTypes[leaveTypeValue] || {
+        alloted: 0,
+        availed: 0,
+        remaining: 0,
+        leaveRequests: [],
+      };
+      const leaveRequestIdValue = leaveRequestId.toString();
+      const leaveRequests = category.leaveRequests || [];
+      const hasRequest = leaveRequests.some((id: any) => id.toString() === leaveRequestIdValue);
+      const availed = (category.availed || 0) + daysToDeduct;
+
+      summary.customLeaveTypes = {
+        ...customLeaveTypes,
+        [leaveTypeValue]: {
+          ...category,
+          availed,
+          remaining: Math.max(0, (category.alloted || 0) - availed),
+          leaveRequests: hasRequest ? leaveRequests : [...leaveRequests, leaveRequestId],
+        },
+      };
+      summary.markModified('customLeaveTypes');
+      await summary.save();
+      return summary;
+    }
 
     // Ensure category exists and has availed property
     const category = summary[categoryTypeKey];
@@ -692,6 +776,33 @@ export class LeaveSummaryService extends BaseService {
 
     // Map leave type to proper category key (camelCase)
     const categoryTypeKey = this.mapLeaveTypeToCategoryKey(categoryType);
+
+    if (!this.isBuiltInCategory(categoryTypeKey)) {
+      const leaveTypeValue = categoryType.trim();
+      const customLeaveTypes = summary.customLeaveTypes || {};
+      const category = customLeaveTypes[leaveTypeValue];
+      if (!category) {
+        throw new Error(`Leave category '${categoryType}' not found in leave summary`);
+      }
+
+      const leaveRequestIdValue = leaveRequestId.toString();
+      const leaveRequests = (category.leaveRequests || []).filter(
+        (id: any) => id.toString() !== leaveRequestIdValue
+      );
+      const availed = Math.max(0, (category.availed || 0) - daysToRestore);
+      summary.customLeaveTypes = {
+        ...customLeaveTypes,
+        [leaveTypeValue]: {
+          ...category,
+          availed,
+          remaining: Math.max(0, (category.alloted || 0) - availed),
+          leaveRequests,
+        },
+      };
+      summary.markModified('customLeaveTypes');
+      await summary.save();
+      return summary;
+    }
 
     // Ensure category exists
     const category = summary[categoryTypeKey];
