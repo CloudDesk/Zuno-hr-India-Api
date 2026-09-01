@@ -1565,23 +1565,42 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
     const currentUser = this.context?.user;
     const isAdmin = currentUser && (currentUser.role === 'admin' || (currentUser as any).isSuperAdmin);
     const isManager = currentUser && leave.appliedTo?._id === currentUser._id.toString();
+    const actorId = updateData.approvedById || currentUser?._id;
+    const rawActor = updateData.approvedBy || (currentUser
+      ? {
+        _id: currentUser._id.toString(),
+        name: currentUser.name,
+        email: currentUser.email,
+      }
+      : undefined);
+    const actor = rawActor
+      ? {
+        _id: rawActor._id.toString(),
+        name: rawActor.name,
+        email: rawActor.email,
+      }
+      : undefined;
+    const isApplicant = Boolean(currentUser && leave.userId.toString() === currentUser._id.toString());
 
     // Handle dual approval for applied on behalf
-    if (leave.appliedOnBehalf) {
+    if (updateData.status === 'Cancelled') {
+      leave.status = 'Cancelled';
+      if (isApplicant) {
+        leave.withdrawnById = actorId;
+        leave.withdrawnBy = actor;
+        leave.withdrawnAt = new Date();
+      } else {
+        leave.cancelledById = actorId;
+        leave.cancelledBy = actor;
+        leave.cancelledAt = new Date();
+      }
+    } else if (leave.appliedOnBehalf) {
       // If rejected, reject immediately
       if (updateData.status === 'Rejected') {
         leave.status = 'Rejected';
-        leave.approvedById = updateData.approvedById;
-        leave.approvedBy = updateData.approvedBy
-          ? {
-            _id: typeof updateData.approvedBy._id === 'string'
-              ? updateData.approvedBy._id
-              : updateData.approvedBy._id.toString(),
-            name: updateData.approvedBy.name,
-            email: updateData.approvedBy.email,
-          }
-          : undefined;
-        leave.approvedAt = new Date();
+        leave.rejectedById = actorId;
+        leave.rejectedBy = actor;
+        leave.rejectedAt = new Date();
         if (updateData.remarks) leave.remarks = updateData.remarks;
 
         // Set who rejected (manager or admin)
@@ -1637,18 +1656,15 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
     } else {
       // Normal approval flow (not applied on behalf)
       leave.status = updateData.status;
-      leave.approvedById = updateData.approvedById;
-      leave.approvedBy = updateData.approvedBy
-        ? {
-          _id: typeof updateData.approvedBy._id === 'string'
-            ? updateData.approvedBy._id
-            : updateData.approvedBy._id.toString(),
-          name: updateData.approvedBy.name,
-          email: updateData.approvedBy.email,
-        }
-        : undefined;
-
-      leave.approvedAt = new Date();
+      if (updateData.status === 'Approved') {
+        leave.approvedById = actorId;
+        leave.approvedBy = actor;
+        leave.approvedAt = new Date();
+      } else if (updateData.status === 'Rejected') {
+        leave.rejectedById = actorId;
+        leave.rejectedBy = actor;
+        leave.rejectedAt = new Date();
+      }
     }
 
     // leave.noOfDays = updateData.noOfDays;
@@ -1931,8 +1947,15 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
       // Continue with deletion even if summary update fails
     }
 
-    await leave.deleteOne();
-    return { message: 'Leave request cancelled successfully' };
+    const actor = await User.findById(userId).select('name email').lean();
+    leave.status = 'Cancelled';
+    leave.withdrawnById = userId;
+    leave.withdrawnBy = actor
+      ? { _id: actor._id, name: actor.name, email: actor.email }
+      : undefined;
+    leave.withdrawnAt = new Date();
+    await leave.save();
+    return { message: 'Leave request withdrawn successfully' };
   }
 
   async getLeaveBalance(userId: Types.ObjectId, leaveTypeId: Types.ObjectId | string): Promise<{

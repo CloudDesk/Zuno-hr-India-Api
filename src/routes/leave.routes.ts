@@ -771,6 +771,7 @@ export const leaveRoutes: RouteHandler = async (
         const { id } = request.params as { id: string };
         const updateData = {
           ...(request.body as any),
+          approvedById: (request.user as any)._id,
           approvedBy: { _id: (request.user as any)._id, name: (request.user as any).name, email: (request.user as any).email },
         };
 
@@ -875,6 +876,37 @@ export const leaveRoutes: RouteHandler = async (
                       email: { type: 'string' },
                     },
                   },
+                  approvedAt: { type: 'string', format: 'date-time', nullable: true },
+                  rejectedBy: {
+                    type: 'object',
+                    nullable: true,
+                    properties: {
+                      _id: { type: 'string' },
+                      name: { type: 'string' },
+                      email: { type: 'string' },
+                    },
+                  },
+                  rejectedAt: { type: 'string', format: 'date-time', nullable: true },
+                  cancelledBy: {
+                    type: 'object',
+                    nullable: true,
+                    properties: {
+                      _id: { type: 'string' },
+                      name: { type: 'string' },
+                      email: { type: 'string' },
+                    },
+                  },
+                  cancelledAt: { type: 'string', format: 'date-time', nullable: true },
+                  withdrawnBy: {
+                    type: 'object',
+                    nullable: true,
+                    properties: {
+                      _id: { type: 'string' },
+                      name: { type: 'string' },
+                      email: { type: 'string' },
+                    },
+                  },
+                  withdrawnAt: { type: 'string', format: 'date-time', nullable: true },
                   // Apply on behalf fields
                   appliedOnBehalf: { type: 'boolean' },
                   appliedBy: {
