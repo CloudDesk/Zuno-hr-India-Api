@@ -131,5 +131,32 @@ export class TaxSlabService extends BaseService {
 
         return TaxSlab.find({ financialYear, isActive: true });
     }
+
+    async getByFinancialYear(financialYear: string): Promise<ITaxSlab[]> {
+        const now = new Date();
+        const currentStartYear = now.getMonth() + 1 >= 4
+            ? now.getFullYear()
+            : now.getFullYear() - 1;
+        const currentFinancialYear = `${currentStartYear}-${currentStartYear + 1}`;
+
+        if (financialYear === currentFinancialYear) {
+            return TaxSlab.find({ financialYear, isActive: true });
+        }
+
+        // Historical declarations must remain viewable even when their old slab
+        // configuration was subsequently deactivated. Prefer the active/latest
+        // record for each regime when multiple versions exist.
+        const historicalSlabs = await TaxSlab.find({ financialYear }).sort({
+            isActive: -1,
+            updatedAt: -1,
+        });
+        const slabsByRegime = new Map<string, ITaxSlab>();
+        for (const slab of historicalSlabs) {
+            if (!slabsByRegime.has(slab.regime)) {
+                slabsByRegime.set(slab.regime, slab);
+            }
+        }
+        return [...slabsByRegime.values()];
+    }
 }
 

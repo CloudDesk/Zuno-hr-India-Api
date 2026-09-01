@@ -971,6 +971,12 @@ export class UserService extends BaseService {
     if (!data.joiningDate) {
       throw new Error('Joining date is required');
     }
+    if (
+      data.confirmationDate &&
+      new Date(data.confirmationDate).getTime() < new Date(data.joiningDate).getTime()
+    ) {
+      throw new Error('Confirmation date cannot be earlier than joining date');
+    }
 
 
     // Validate employeeCode uniqueness before creating
@@ -1135,6 +1141,16 @@ export class UserService extends BaseService {
     }
     if (data.joiningDate !== undefined && !data.joiningDate) {
       throw new Error('Joining date is required');
+    }
+
+    const effectiveJoiningDate = data.joiningDate || user.joiningDate;
+    const effectiveConfirmationDate = data.confirmationDate || user.confirmationDate;
+    if (
+      effectiveConfirmationDate &&
+      effectiveJoiningDate &&
+      new Date(effectiveConfirmationDate).getTime() < new Date(effectiveJoiningDate).getTime()
+    ) {
+      throw new Error('Confirmation date cannot be earlier than joining date');
     }
 
 
