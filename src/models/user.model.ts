@@ -819,21 +819,6 @@ userSchema.pre('save', async function (next) {
   }
 });
 
-// Pre-save hook to automatically set employment status to "confirmed" after 180 days from joining date
-userSchema.pre('save', function (next) {
-  if (this.joiningDate && this.employmentStatus) {
-    const joiningDate = new Date(this.joiningDate);
-    const today = new Date();
-    const daysSinceJoining = Math.floor((today.getTime() - joiningDate.getTime()) / (1000 * 60 * 60 * 24));
-
-    // If 180 days or more have passed since joining date, automatically set status to "confirmed"
-    if (daysSinceJoining >= 180 && this.employmentStatus.toLowerCase() !== 'confirmed') {
-      this.employmentStatus = 'Confirmed';
-    }
-  }
-  next();
-});
-
 // Pre-save hook to handle UAE-specific visa validation
 userSchema.pre('save', function (next) {
   if (this.country === 'AE' && this.visaDetails) {

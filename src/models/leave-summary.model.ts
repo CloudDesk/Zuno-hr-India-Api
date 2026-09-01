@@ -1,6 +1,6 @@
 import { Schema, model, Document, Types } from 'mongoose';
 
-interface ILeaveCategoryDetail {
+export interface ILeaveCategoryDetail {
   alloted: number;
   availed: number;
   remaining: number;
@@ -30,6 +30,7 @@ export interface ILeaveSummary extends Document {
   maternity: ILeaveCategoryDetail;
   workFromHome: ILeaveCategoryDetail;
   restricted_holiday: ILeaveCategoryDetail;
+  customLeaveTypes: Record<string, ILeaveCategoryDetail>;
   editHistory: IEditHistory[];
   createdAt: Date;
   updatedAt: Date;
@@ -66,6 +67,9 @@ const leaveSummarySchema = new Schema<ILeaveSummary>(
     maternity: leaveCategoryDetailSchema,
     workFromHome: leaveCategoryDetailSchema,
     restricted_holiday: leaveCategoryDetailSchema,
+    // LOV values that do not have a legacy top-level field are stored here.
+    // Mixed keeps the exact LOV API value as the key (for example, "casualLeave").
+    customLeaveTypes: { type: Schema.Types.Mixed, default: {} },
     editHistory: { type: [editHistorySchema], default: [] }
   },
   {
@@ -87,6 +91,13 @@ leaveSummarySchema.pre('save', function (this: ILeaveSummary & Document, next) {
       leaveCategory.remaining = Math.max(0, leaveCategory.alloted - leaveCategory.availed);
     }
   });
+
+  Object.values(this.customLeaveTypes || {}).forEach((leaveCategory) => {
+    if (leaveCategory) {
+      leaveCategory.remaining = Math.max(0, leaveCategory.alloted - leaveCategory.availed);
+    }
+  });
+  this.markModified('customLeaveTypes');
 
   // Clean up invalid editHistory entries before validation
   // This handles cases where existing documents have partial/invalid entries
@@ -111,4 +122,4 @@ leaveSummarySchema.pre('save', function (this: ILeaveSummary & Document, next) {
 });
 
 
-export const LeaveSummary = model<ILeaveSummary>('LeaveSummary', leaveSummarySchema); 
+export const LeaveSummary = model<ILeaveSummary>('LeaveSummary', leaveSummarySchema);
