@@ -329,6 +329,81 @@ export class CommunicationService extends BaseService {
     }
 
     /**
+     * Build the birthday and work-anniversary calendar for the current month.
+     * This is derived from employee records so future dates do not depend on
+     * the daily milestone job having already created a social-wall post.
+     */
+    async getMonthlyMilestones(referenceDate: Date = new Date()): Promise<any[]> {
+        const month = referenceDate.getMonth() + 1;
+        const year = referenceDate.getFullYear();
+
+        const employees = await User.find({
+            active: true,
+            $or: [
+                { dateOfBirth: { $exists: true, $ne: null } },
+                { joiningDate: { $exists: true, $ne: null } }
+            ]
+        })
+            .select('_id name dateOfBirth joiningDate')
+            .lean();
+
+        const milestones: any[] = [];
+
+        for (const employee of employees) {
+            if (employee.dateOfBirth) {
+                const dateOfBirth = new Date(employee.dateOfBirth);
+                if (dateOfBirth.getMonth() + 1 === month) {
+                    milestones.push({
+                        _id: `birthday-${employee._id}`,
+                        type: 'Birthday',
+                        subject: `${employee.name}'s birthday`,
+                        message: '',
+                        eventDate: new Date(year, month - 1, dateOfBirth.getDate()),
+                        postedBy: 'SYSTEM',
+                        employeeId: {
+                            _id: employee._id,
+                            name: employee.name
+                        },
+                        metadata: { dateOfBirth: employee.dateOfBirth }
+                    });
+                }
+            }
+
+            if (employee.joiningDate) {
+                const joiningDate = new Date(employee.joiningDate);
+                const years = year - joiningDate.getFullYear();
+                if (joiningDate.getMonth() + 1 === month && years > 0) {
+                    milestones.push({
+                        _id: `anniversary-${employee._id}`,
+                        type: 'Anniversary',
+                        subject: `${employee.name}'s work anniversary`,
+                        message: '',
+                        eventDate: new Date(year, month - 1, joiningDate.getDate()),
+                        postedBy: 'SYSTEM',
+                        employeeId: {
+                            _id: employee._id,
+                            name: employee.name
+                        },
+                        metadata: { joiningDate: employee.joiningDate, years }
+                    });
+                }
+            }
+        }
+
+        const monthStart = new Date(year, month - 1, 1);
+        const nextMonthStart = new Date(year, month, 1);
+        const communicationEvents = await SocialEvent.find({
+            type: { $nin: ['Birthday', 'Anniversary'] },
+            eventDate: { $gte: monthStart, $lt: nextMonthStart }
+        })
+            .sort({ eventDate: 1, createdAt: -1 })
+            .lean();
+
+        return [...milestones, ...communicationEvents]
+            .sort((a, b) => new Date(a.eventDate).getTime() - new Date(b.eventDate).getTime());
+    }
+
+    /**
      * Get communication logs (manual dispatches) including past events
      */
     async getCommunicationLogs(query: { page?: number; limit?: number; search?: string; month?: number; year?: number } = {}): Promise<any> {

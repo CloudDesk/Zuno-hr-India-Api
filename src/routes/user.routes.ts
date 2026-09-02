@@ -4,6 +4,11 @@ import { authenticate } from '../middleware/auth';
 import * as ExcelJS from 'exceljs';
 import { messaging } from '../config/firebase/firebaseConfig';
 import { filesUpload } from '../config/multer';
+import {
+  EmployeeListPreference,
+  EMPLOYEE_LIST_COLUMN_KEYS,
+  type EmployeeListColumnKey,
+} from '../models/employee-list-preference.model';
 // import { IAcademicDetails, IExperienceDetails } from '../models';
 
 const shiftAssignmentDataSchema = {
@@ -253,6 +258,62 @@ const userResponseSchema = {
 export const userRoutes: RouteHandler = async (
   fastify: FastifyInstance,
 ): Promise<void> => {
+
+  const defaultEmployeeListColumns: EmployeeListColumnKey[] = [
+    'name', 'role', 'licenseType', 'country', 'departmentId', 'isActive', 'portalAccess', '_id',
+  ];
+
+  fastify.get(
+    '/preferences/employee-list',
+    { onRequest: [authenticate] },
+    async (_request, reply) => {
+      const preference = await EmployeeListPreference.findOne({ scope: 'organization' }).lean();
+      return reply.send({
+        success: true,
+        data: { columns: preference?.columns?.length ? preference.columns : defaultEmployeeListColumns },
+      });
+    },
+  );
+
+  fastify.put(
+    '/preferences/employee-list',
+    {
+      onRequest: [authenticate],
+      schema: {
+        body: {
+          type: 'object',
+          required: ['columns'],
+          properties: {
+            columns: {
+              type: 'array',
+              minItems: 2,
+              uniqueItems: true,
+              items: { type: 'string', enum: EMPLOYEE_LIST_COLUMN_KEYS },
+            },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const currentUser = request.user as any;
+      if (String(currentUser?.role || '').toLowerCase() !== 'admin') {
+        return reply.status(403).send({ success: false, error: { message: 'Only administrators can update employee columns' } });
+      }
+
+      const requestedColumns = (request.body as { columns: EmployeeListColumnKey[] }).columns;
+      if (!requestedColumns.includes('name') || !requestedColumns.includes('_id')) {
+        return reply.status(400).send({ success: false, error: { message: 'Name and Actions columns are required' } });
+      }
+
+      const preference = await EmployeeListPreference.findOneAndUpdate(
+        { scope: 'organization' },
+        { columns: requestedColumns, updatedBy: currentUser._id },
+        { upsert: true, new: true, setDefaultsOnInsert: true },
+      ).lean();
+
+      return reply.send({ success: true, data: { columns: preference.columns } });
+    },
+  );
 
   // Unified GET users endpoint
   fastify.get(

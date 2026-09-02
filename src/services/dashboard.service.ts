@@ -670,11 +670,7 @@ export class DashboardService extends BaseService {
 
         // Fetch Social Wall Events
         const communicationService = new CommunicationService(this.context);
-        dashboardMetrics.socialEvents = await communicationService.getSocialWall({
-            limit: 10,
-            viewerId: this.context.user?._id.toString(),
-            viewerRole: this.context.user?.role
-        }) as any;
+        dashboardMetrics.socialEvents = await communicationService.getMonthlyMilestones() as any;
 
         console.log('🔍 COMPLETE ADMIN DATA:', JSON.stringify(dashboardMetrics, null, 2));
 
