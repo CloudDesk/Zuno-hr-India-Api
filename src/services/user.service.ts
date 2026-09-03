@@ -11,6 +11,7 @@ import { getSubordinateUserIds } from '../utilis/userHierarchy';
 import { uploadFileToGCP } from '../utilis/gcpStorage';
 import * as fs from 'fs';
 import * as path from 'path';
+import type { SendResponse } from 'firebase-admin/messaging';
 
 // import { MultipartFile } from '@fastify/multipart';
 
@@ -21,6 +22,19 @@ interface IBankDetails {
   ifscCode: string;
   isActive: boolean; // Main salary account
 }
+
+type BulkNotificationResult =
+  | {
+      success: false;
+      message: string;
+      results: never[];
+    }
+  | {
+      success: true;
+      successCount: number;
+      failureCount: number;
+      responses: SendResponse[];
+    };
 
 interface IGovernmentIds {
   pan: { number?: string; documentUrl?: string; file?: any; verificationStatus?: 'Pending' | 'Verified' | 'Rejected' };
@@ -2510,7 +2524,7 @@ export class UserService extends BaseService {
     title: string,
     body: string,
     data?: Record<string, string>
-  ) {
+  ): Promise<BulkNotificationResult> {
     try {
       const users = await this.getUsersWithFcmTokens(userIds);
       const validTokens = users.filter(user => user.fcmToken).map(user => user.fcmToken!);

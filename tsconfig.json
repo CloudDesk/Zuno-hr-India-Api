@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
     "target": "ES2020",
-    "module": "commonjs",
+    "module": "Node16",
     "lib": ["ES2020"],
     "outDir": "./dist",
     "rootDir": "./src",
@@ -9,7 +9,7 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "moduleResolution": "node",
+    "moduleResolution": "Node16",
     "resolveJsonModule": true,
     "sourceMap": true,
     "declaration": true,
@@ -31,4 +31,4 @@
   },
   "include": ["src/**/*", "src/**/*.hbs"],
   "exclude": ["node_modules", "dist", "**/*.test.ts", "node_modules/fastify/**", "src/run-migration.ts"]
-} 
+}

@@ -3056,7 +3056,7 @@ export class DataMigrationService extends BaseService {
     let created = 0;
 
     // Import UserService to use its create method
-    const { UserService } = await import('./user.service');
+    const { UserService } = await import('./user.service.js');
     const userService = new UserService(this.context);
 
     for (const row of rows) {

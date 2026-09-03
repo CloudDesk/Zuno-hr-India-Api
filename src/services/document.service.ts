@@ -3935,7 +3935,7 @@ export class DocumentService extends BaseService {
         }
 
         // 2. Call Refined Helper for PDF Generation and GCP Upload
-        const { generateHikeLetterPDF } = await import('./hike-letter-puppeteer.helper');
+        const { generateHikeLetterPDF } = await import('./hike-letter-puppeteer.helper.js');
         const fileUrl = await generateHikeLetterPDF({
             employees: employeesToProcess,
             signatory: {
@@ -3978,7 +3978,7 @@ export class DocumentService extends BaseService {
         if (!salaryStructure) throw new Error(`Salary structure not found for ${employee.name}`);
 
         // 2. Call Refined Helper for PDF Generation and GCP Upload
-        const { generateHikeLetterPDF } = await import('./hike-letter-puppeteer.helper');
+        const { generateHikeLetterPDF } = await import('./hike-letter-puppeteer.helper.js');
         const fileUrl = await generateHikeLetterPDF({
             employees: [{
                 employee,
@@ -4032,7 +4032,7 @@ export class DocumentService extends BaseService {
 
         // 4. Send Email (Fetch PDF buffer from GCP URL for attachment)
         const pdfBuffer = await emailService.fetchPdfBuffer(fileUrl);
-        const { formatOrdinalDate } = await import('./hike-letter-puppeteer.helper');
+        const { formatOrdinalDate } = await import('./hike-letter-puppeteer.helper.js');
         const effectiveDateStr = formatOrdinalDate((salaryAssignment as any).effectiveFrom || new Date());
         const firstName = employee.name.split(' ')[0];
 

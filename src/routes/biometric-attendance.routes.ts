@@ -2,6 +2,11 @@ import { FastifyInstance } from 'fastify';
 import { RouteHandler } from '../types/routes';
 import { authenticate } from '../middleware/auth';
 
+const formatReportDate = (date: string): string => {
+  const [year, month, day] = date.split('-');
+  return `${day}-${month}-${year}`;
+};
+
 export const biometricAttendanceRoutes: RouteHandler = async (
   fastify: FastifyInstance,
 ): Promise<void> => {
@@ -862,10 +867,10 @@ export const biometricAttendanceRoutes: RouteHandler = async (
         const excelBuffer = await request.container!.biometricAttendanceService.generateWeeklyReportByMonth(month);
 
         // Set response headers for file download
-        const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
-          'July', 'August', 'September', 'October', 'November', 'December'];
-        const monthName = monthNames[monthNum - 1];
-        const filename = `Weekly_Report_${monthName}_${year}.xlsx`;
+        const firstDate = `01-${String(monthNum).padStart(2, '0')}-${year}`;
+        const lastDay = new Date(Date.UTC(year, monthNum, 0)).getUTCDate();
+        const lastDate = `${String(lastDay).padStart(2, '0')}-${String(monthNum).padStart(2, '0')}-${year}`;
+        const filename = `Weekly_Report_${firstDate}_to_${lastDate}.xlsx`;
         reply.header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
         reply.header('Content-Disposition', `attachment; filename="${filename}"`);
         reply.header('Content-Length', excelBuffer.length.toString());
@@ -1103,7 +1108,7 @@ export const biometricAttendanceRoutes: RouteHandler = async (
         );
 
         // Set response headers for file download
-        const filename = `Attendance_Report_${startDate}_to_${endDate}.xlsx`;
+        const filename = `Attendance_Report_${formatReportDate(startDate)}_to_${formatReportDate(endDate)}.xlsx`;
         reply.header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
         reply.header('Content-Disposition', `attachment; filename="${filename}"`);
         reply.header('Content-Length', excelBuffer.length.toString());
@@ -1118,4 +1123,4 @@ export const biometricAttendanceRoutes: RouteHandler = async (
       }
     }
   );
-}; 
+};

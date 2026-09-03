@@ -610,9 +610,9 @@ export class AttendanceOverrideService extends BaseService {
     wasAbsent: boolean; // True if marked as Absent due to no leave balance
   }> {
     // Import Leave and LeaveSummary models
-    const { Leave } = await import('../models/leave.model');
-    const { LeaveService } = await import('./leave.service');
-    const { LeaveSummaryService } = await import('./leave-summary.service');
+    const { Leave } = await import('../models/leave.model.js');
+    const { LeaveService } = await import('./leave.service.js');
+    const { LeaveSummaryService } = await import('./leave-summary.service.js');
 
     // Step 1: Check if leave request exists for this date
     // Normalize shiftDay to start of day for comparison
@@ -671,7 +671,7 @@ export class AttendanceOverrideService extends BaseService {
       );
 
       // Get leave type details to check balance
-      const { LOV } = await import('../models/lov.model');
+      const { LOV } = await import('../models/lov.model.js');
       const leaveType = await LOV.findById(leaveTypeId);
       if (!leaveType) {
         throw new Error('Leave type not found');
@@ -955,7 +955,7 @@ export class AttendanceOverrideService extends BaseService {
    */
   private async getShiftAssignment(userId: string, shiftDay: Date) {
     // Use BiometricAttendanceService to get shift assignment (consistent with other services)
-    const { BiometricAttendanceService } = await import('./biometric-attendance.service');
+    const { BiometricAttendanceService } = await import('./biometric-attendance.service.js');
     const biometricService = new BiometricAttendanceService(this.context);
     
     // Get user to determine country for timezone conversion
@@ -1030,7 +1030,7 @@ export class AttendanceOverrideService extends BaseService {
       const lastOut = new Date(shiftEnd);
 
       // Use BiometricAttendanceService's calculateAttendanceMetrics for consistency
-      const { BiometricAttendanceService } = await import('./biometric-attendance.service');
+      const { BiometricAttendanceService } = await import('./biometric-attendance.service.js');
       const biometricService = new BiometricAttendanceService(this.context);
       
       // Use the same calculation method as normal attendance processing
@@ -1061,7 +1061,7 @@ export class AttendanceOverrideService extends BaseService {
     } else if (isAbsent) {
       // Absent: No work hours
       // Calculate shift hours using the same method
-      const { BiometricAttendanceService } = await import('./biometric-attendance.service');
+      const { BiometricAttendanceService } = await import('./biometric-attendance.service.js');
       const biometricService = new BiometricAttendanceService(this.context);
       const shiftMinutes = (shiftEnd.getTime() - shiftStart.getTime()) / (1000 * 60);
       const shiftHoursStr = await (biometricService as any).formatDuration(shiftMinutes);
@@ -1082,7 +1082,7 @@ export class AttendanceOverrideService extends BaseService {
     } else if (isHoliday) {
       // Holiday: No work hours
       // Calculate shift hours using the same method
-      const { BiometricAttendanceService } = await import('./biometric-attendance.service');
+      const { BiometricAttendanceService } = await import('./biometric-attendance.service.js');
       const biometricService = new BiometricAttendanceService(this.context);
       const shiftMinutes = (shiftEnd.getTime() - shiftStart.getTime()) / (1000 * 60);
       const shiftHoursStr = await (biometricService as any).formatDuration(shiftMinutes);

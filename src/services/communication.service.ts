@@ -344,7 +344,7 @@ export class CommunicationService extends BaseService {
                 { joiningDate: { $exists: true, $ne: null } }
             ]
         })
-            .select('_id name dateOfBirth joiningDate')
+            .select('_id name dateOfBirth joiningDate profilePicture')
             .lean();
 
         const milestones: any[] = [];

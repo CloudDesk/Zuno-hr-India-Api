@@ -687,7 +687,17 @@ export class DashboardService extends BaseService {
             throw new Error('User not found');
         }
 
-        const stats = await this.getIndividualAverages([user], startOfMonthDate, endOfMonthDate);
+        const communicationService = new CommunicationService(this.context);
+        const [stats, weekdayAverageHours, monthlyMilestones, postedEvents] = await Promise.all([
+            this.getIndividualAverages([user], startOfMonthDate, endOfMonthDate),
+            this.getWeekdayAverages(user._id.toString(), startOfMonthDate, endOfMonthDate),
+            communicationService.getMonthlyMilestones(today),
+            communicationService.getSocialWall({
+                limit: 10,
+                viewerId: this.context.user?._id.toString(),
+                viewerRole: this.context.user?.role
+            })
+        ]);
         const userStats = stats[0];
 
         const totalWorkingDays = this.getWorkingDaysCount(startOfMonthDate, endOfMonthDate);
@@ -697,13 +707,19 @@ export class DashboardService extends BaseService {
                 averageWorkHours: userStats?.averageWorkHours || '00:00',
                 attendancePercentage: userStats?.attendancePercentage || 0,
                 presentDays: userStats?.presentDays || 0,
-                totalWorkingDays: totalWorkingDays
+                totalWorkingDays: totalWorkingDays,
+                weekdayAverageHours
             },
-            socialEvents: await (new CommunicationService(this.context)).getSocialWall({
-                limit: 10,
-                viewerId: this.context.user?._id.toString(),
-                viewerRole: this.context.user?.role
-            }) as any
+            socialEvents: [
+                ...monthlyMilestones.filter((event: any) =>
+                    event.type === 'Birthday' || event.type === 'Anniversary'
+                ),
+                ...postedEvents.filter((event: any) =>
+                    event.type !== 'Birthday' && event.type !== 'Anniversary'
+                )
+            ].sort((a: any, b: any) =>
+                new Date(a.eventDate).getTime() - new Date(b.eventDate).getTime()
+            ) as any
         };
     }
 
@@ -1059,6 +1075,44 @@ export class DashboardService extends BaseService {
         const minutes = parseInt(parts[1], 10);
         const seconds = parts[2] ? parseInt(parts[2], 10) : 0;
         return hours + (minutes / 60) + (seconds / 3600);
+    }
+
+    private async getWeekdayAverages(userId: string, startDate: Date, endDate: Date): Promise<Array<{
+        day: string;
+        averageWorkHours: string;
+        minutes: number;
+    }>> {
+        const records = await AttendanceRecord.find({
+            userId,
+            shiftDay: { $gte: startDate, $lte: endDate }
+        }).select('shiftDay totalWorkHours').lean();
+
+        const weekdayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+        const weekdayOrder = [1, 2, 3, 4, 5, 6, 0];
+        const totals = new Map<number, { totalHours: number; days: number }>(
+            weekdayOrder.map(day => [day, { totalHours: 0, days: 0 }])
+        );
+
+        for (const record of records as any[]) {
+            const hours = this.timeStringToHours(record.totalWorkHours || '00:00');
+            if (hours <= 0 || !record.shiftDay) continue;
+
+            const weekday = new Date(record.shiftDay).getDay();
+            const bucket = totals.get(weekday);
+            if (!bucket) continue;
+            bucket.totalHours += hours;
+            bucket.days += 1;
+        }
+
+        return weekdayOrder.map(weekday => {
+            const bucket = totals.get(weekday)!;
+            const averageHours = bucket.days > 0 ? bucket.totalHours / bucket.days : 0;
+            return {
+                day: weekdayLabels[weekday],
+                averageWorkHours: this.hoursToTimeString(averageHours),
+                minutes: Math.round(averageHours * 60)
+            };
+        });
     }
 
     private hoursToTimeString(hours: number): string {

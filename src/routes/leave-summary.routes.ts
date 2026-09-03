@@ -1,6 +1,8 @@
 import { FastifyInstance } from 'fastify';
 import { Types } from 'mongoose';
 import { authenticate } from '../middleware/auth';
+import { LeaveReleaseService } from '../services/leave-release.service';
+import { LeaveCarryForwardService } from '../services/leave-carry-forward.service';
 
 const getLeaveSummarySchema = {
   tags: ['Leave Summary'],
@@ -624,7 +626,6 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
     },
     async (request, reply) => {
       try {
-        const { LeaveReleaseService } = await import('../services/leave-release.service');
         const leaveReleaseService = new LeaveReleaseService(request.container!.requestContext);
 
         const result = await leaveReleaseService.releaseLeaves(request.body as any);
@@ -665,7 +666,6 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
         const { userId } = request.params as { userId: string };
         const { year, yearLessThan } = request.query as { year?: number; yearLessThan?: number };
 
-        const { LeaveReleaseService } = await import('../services/leave-release.service');
         const leaveReleaseService = new LeaveReleaseService(request.container!.requestContext);
 
         const history = await leaveReleaseService.getReleaseHistory(userId, year, yearLessThan);
@@ -716,7 +716,6 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
     },
     async (request, reply) => {
       try {
-        const { LeaveCarryForwardService } = await import('../services/leave-carry-forward.service');
         const carryForwardService = new LeaveCarryForwardService(request.container!.requestContext);
 
         const result = await carryForwardService.processCarryForward(request.body as any);
@@ -772,7 +771,6 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
     },
     async (request, reply) => {
       try {
-        const { LeaveCarryForwardService } = await import('../services/leave-carry-forward.service');
         const carryForwardService = new LeaveCarryForwardService(request.container!.requestContext);
 
         const result = await carryForwardService.batchProcessCarryForward(request.body as any);
@@ -813,7 +811,6 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
         const { userId } = request.params as { userId: string };
         const { fromYear, toYear } = request.query as { fromYear?: number; toYear?: number };
 
-        const { LeaveCarryForwardService } = await import('../services/leave-carry-forward.service');
         const carryForwardService = new LeaveCarryForwardService(request.container!.requestContext);
 
         const details = await carryForwardService.getCarryForwardDetails(userId, fromYear, toYear);
@@ -855,7 +852,6 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
         const { userId } = request.params as { userId: string };
         const { year } = request.query as { year: number };
 
-        const { LeaveCarryForwardService } = await import('../services/leave-carry-forward.service');
         const carryForwardService = new LeaveCarryForwardService(request.container!.requestContext);
 
         const balance = await carryForwardService.getAvailableBalanceForCarryForward(userId, year);
@@ -957,7 +953,6 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
         const page = queryParams.page ? parseInt(queryParams.page, 10) : 1;
         const limit = queryParams.limit ? parseInt(queryParams.limit, 10) : 50;
 
-        const { LeaveReleaseService } = await import('../services/leave-release.service');
         const leaveReleaseService = new LeaveReleaseService(request.container!.requestContext);
 
         const result = await leaveReleaseService.getAllReleases({
@@ -1064,7 +1059,6 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
         const page = queryParams.page ? parseInt(queryParams.page, 10) : 1;
         const limit = queryParams.limit ? parseInt(queryParams.limit, 10) : 50;
 
-        const { LeaveCarryForwardService } = await import('../services/leave-carry-forward.service');
         const carryForwardService = new LeaveCarryForwardService(request.container!.requestContext);
 
         const result = await carryForwardService.getAllCarryForwards({

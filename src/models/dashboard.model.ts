@@ -99,6 +99,11 @@ export interface IUserDashboardMetrics {
         attendancePercentage: number;
         presentDays: number;
         totalWorkingDays: number;
+        weekdayAverageHours: Array<{
+            day: string;
+            averageWorkHours: string;
+            minutes: number;
+        }>;
     };
     socialEvents?: ISocialEventSummary[];
 }

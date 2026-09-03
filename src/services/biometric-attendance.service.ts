@@ -651,7 +651,7 @@ export class BiometricAttendanceService extends BaseService {
     // This handles the case where swipes are added AFTER half-day leave approval
     if (record.halfType && !record.attendanceStatus.includes('On-Leave')) {
       // Check if there's an approved half-day leave for this date
-      const { Leave } = await import('../models/leave.model');
+      const { Leave } = await import('../models/leave.model.js');
       const approvedHalfDayLeave = await Leave.findOne({
         userId: record.userId,
         shiftDay: record.shiftDay,
@@ -764,7 +764,7 @@ export class BiometricAttendanceService extends BaseService {
     // This handles the case where swipes are added AFTER half-day leave approval
     if (record.halfType && !record.attendanceStatus.includes('On-Leave')) {
       // Check if there's an approved half-day leave for this date
-      const { Leave } = await import('../models/leave.model');
+      const { Leave } = await import('../models/leave.model.js');
       const approvedHalfDayLeave = await Leave.findOne({
         userId: record.userId,
         shiftDay: record.shiftDay,
@@ -1986,13 +1986,13 @@ export class BiometricAttendanceService extends BaseService {
         return false;
       };
 
-      // Helper function to format date
+      // Format report-facing dates as DD-MM-YYYY.
       const formatDate = (date: Date): string => {
         const d = new Date(date);
         const day = String(d.getUTCDate()).padStart(2, '0');
+        const month = String(d.getUTCMonth() + 1).padStart(2, '0');
         const year = d.getUTCFullYear();
-        const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-        return `${day} ${monthNames[d.getUTCMonth()]} ${year}`;
+        return `${day}-${month}-${year}`;
       };
 
       // Group attendance records by user and week
@@ -2653,6 +2653,10 @@ export class BiometricAttendanceService extends BaseService {
 
       const { data, meta } = result;
       const dateRange = meta.dateRange as string[];
+      const formatReportDate = (date: string): string => {
+        const [year, month, day] = date.split('-');
+        return `${day}-${month}-${year}`;
+      };
 
       // Fetch WFH data for all users in the date range
       const start = new Date(startDate);
@@ -2735,7 +2739,7 @@ export class BiometricAttendanceService extends BaseService {
       // Add title row
       worksheet.mergeCells('A1:' + this.getColumnLetter(3 + dateRange.length) + '1');
       const titleCell = worksheet.getCell('A1');
-      titleCell.value = `Attendance Report: ${startDate} to ${endDate}`;
+      titleCell.value = `Attendance Report: ${formatReportDate(startDate)} to ${formatReportDate(endDate)}`;
       titleCell.font = { bold: true, size: 14 };
       titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
 
@@ -2748,7 +2752,7 @@ export class BiometricAttendanceService extends BaseService {
       // Add date columns
       dateRange.forEach((date, index) => {
         const colIndex = 4 + index;
-        headerRow.getCell(colIndex).value = date;
+        headerRow.getCell(colIndex).value = formatReportDate(date);
       });
 
       // Style header row

@@ -846,14 +846,22 @@ userSchema.virtual('currentCompanyExperience').get(function () {
   if (isNaN(start.getTime())) return null;
 
   const now = new Date();
-  const diffMs = now.getTime() - start.getTime();
-  if (diffMs <= 0) {
+  if (now.getTime() <= start.getTime()) {
     return { years: 0, months: 0, totalMonths: 0 };
   }
 
-  const totalMonths = Math.floor(diffMs / (1000 * 60 * 60 * 24 * 30));
-  const years = parseFloat((totalMonths / 12).toFixed(1));
-  const months = parseFloat(((totalMonths % 12) / 12).toFixed(2));
+  // Count completed calendar months instead of approximating every month as 30 days.
+  let totalMonths =
+    (now.getFullYear() - start.getFullYear()) * 12 +
+    (now.getMonth() - start.getMonth());
+
+  if (now.getDate() < start.getDate()) {
+    totalMonths -= 1;
+  }
+
+  totalMonths = Math.max(0, totalMonths);
+  const years = Math.floor(totalMonths / 12);
+  const months = totalMonths % 12;
 
   return { years, months, totalMonths };
 });
