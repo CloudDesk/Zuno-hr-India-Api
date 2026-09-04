@@ -12,7 +12,9 @@ import { emailService } from './email.service';
 import { validateLeaveTypeForCountry } from '../utilis/leave-type-constants';
 import { ShiftAssignment, IShiftAssignment } from '../models/shift.model';
 import { HolidayCalendar } from '../models/holiday-calendar.model';
+import { WFH } from '../models/wfh.model';
 import { calculateBusinessDays } from '../utilis/dates';
+import { getExpectedWorkMinutes } from '../utilis/attendance-duration';
 
 export interface ILeaveCreate {
   userId: string | Types.ObjectId;
@@ -92,6 +94,21 @@ export class LeaveService extends BaseService {
   constructor(context: RequestContext) {
     super(context);
     this.leaveSummaryService = new LeaveSummaryService(context);
+  }
+
+  private durationToMinutes(duration?: string): number {
+    if (!duration) return 0;
+    const parts = duration.split(':').map(Number);
+    if (parts.some(Number.isNaN)) return 0;
+    return (parts[0] || 0) * 60 + (parts[1] || 0) + (parts[2] || 0) / 60;
+  }
+
+  private minutesToDuration(minutes: number): string {
+    const safeMinutes = Math.max(0, minutes);
+    const hours = Math.floor(safeMinutes / 60);
+    const mins = Math.floor(safeMinutes % 60);
+    const seconds = Math.floor((safeMinutes % 1) * 60);
+    return `${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
   }
 
   /**
@@ -1090,6 +1107,35 @@ export class LeaveService extends BaseService {
       }
     }
 
+
+    // Keep leave and WFH mutually consistent. A half-day leave may coexist
+    // only with an approved/pending WFH request for the opposite half.
+    const leaveStart = new Date(leaveData.startDate);
+    const leaveEnd = new Date(leaveData.endDate);
+    const overlappingWFH = await WFH.findOne({
+      userId: leaveData.userId,
+      status: { $nin: ['Rejected', 'Cancelled'] },
+      startDate: { $lte: leaveEnd },
+      endDate: { $gte: leaveStart },
+      ...(leaveData.leaveDuration === 'half-day'
+        ? {
+            $or: [
+              { wfhDuration: { $ne: 'half-day' } },
+              { wfhDuration: { $exists: false } },
+              { wfhDuration: 'half-day', halfDayType: leaveData.halfDayType },
+            ],
+          }
+        : {}),
+    }).select('_id').lean();
+
+    if (overlappingWFH) {
+      throw new Error(
+        leaveData.leaveDuration === 'half-day'
+          ? 'Leave overlaps with WFH for the same half of this date'
+          : 'Leave dates overlap with an existing WFH request'
+      );
+    }
+
     // Calculate noOfDays excluding weekends and mandatory holidays for full-day leaves.
     // Scenario: optional/restricted holiday → ALLOW leave (e.g. annual leave on Dec 25). Weekend/mandatory → NOT allow (existing).
     // getMandatoryHolidays returns only type === 'mandatory'; optional holidays are not excluded.
@@ -1779,6 +1825,24 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
           if (leave.leaveDuration === 'half-day' && leave.halfDayType) {
             // ✅ halfType is SET ONLY for half-day leaves
             updateFields.halfType = leave.halfDayType === 'first-half' ? 'First Half' : 'Second Half';
+
+            // Recalculate an already-recorded workday against 50% of the
+            // employee's assigned shift duration. No fixed clock half is used.
+            if (existingRecord?.shiftStart && existingRecord?.shiftEnd) {
+              const expectedMinutes = getExpectedWorkMinutes(
+                existingRecord.shiftStart,
+                existingRecord.shiftEnd,
+                true
+              );
+              const workedMinutes = this.durationToMinutes(existingRecord.totalWorkHours);
+              const difference = workedMinutes - expectedMinutes;
+              updateFields.shiftHours = this.minutesToDuration(expectedMinutes);
+              updateFields.shortfallHours =
+                difference < 0 ? this.minutesToDuration(Math.abs(difference)) : '00:00:00';
+              updateFields.excessHours =
+                difference > 0 ? this.minutesToDuration(difference) : '00:00:00';
+              updateFields.needsRegularization = difference < 0 || !existingRecord.isWithinWindow;
+            }
 
             // For half-day leave: Check if employee has swipes (worked the other half)
             // If swipes exist, add both 'On-Leave' and 'Present' to attendanceStatus

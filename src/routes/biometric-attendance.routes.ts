@@ -360,6 +360,8 @@ export const biometricAttendanceRoutes: RouteHandler = async (
                           isLateEntry: { type: 'boolean' },
                           isEarlyExit: { type: 'boolean' },
                           isWFH: { type: 'boolean' },
+                          wfhDuration: { type: 'string', enum: ['full-day', 'half-day'], nullable: true },
+                          wfhHalfType: { type: 'string', enum: ['first-half', 'second-half'], nullable: true },
                           halfType: { type: 'string', nullable: true },
                           needsRegularization: { type: 'boolean' },
                           exceessHours: { type: 'string' },
@@ -938,6 +940,8 @@ export const biometricAttendanceRoutes: RouteHandler = async (
                           isWeekend: { type: 'boolean' },  // Only included if true
                           isHoliday: { type: 'boolean' },   // Only included if true
                           isWFH: { type: 'boolean' },   // Only included if true (approved WFH)
+                          wfhDuration: { type: 'string', enum: ['full-day', 'half-day'], nullable: true },
+                          wfhHalfType: { type: 'string', enum: ['first-half', 'second-half'], nullable: true },
                           halfType: { type: 'string', nullable: true }
                         }
                       }

@@ -2,10 +2,12 @@ import { Types } from 'mongoose';
 import { AttendanceRegularization, IAttendanceRegularization } from '../models/attendance-regularization.model';
 import { AttendanceRecord } from '../models/attendance-record.model';
 import { IShift, IUser, ShiftAssignment, User } from '../models';
+import { Leave } from '../models/leave.model';
 import { BaseService } from './base.service';
 import { RequestContext } from '../types/context';
 import { generateEmailTemplate } from '../emails/templates';
 import { emailService } from './email.service';
+import { getExpectedWorkMinutes } from '../utilis/attendance-duration';
 
 interface IAttendanceMetrics {
     totalWorkHours: string;
@@ -756,7 +758,10 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
                 const parseLocalTime = (timeStr: string, baseDate: Date): Date => {
                     const [hours, minutes] = timeStr.split(':').map(Number);
                     const localDate = new Date(baseDate);
-                    localDate.setHours(hours, minutes, 0, 0);
+                    // baseDate is a UTC-normalized calendar day. Build the local
+                    // wall-clock value with UTC setters before applying the user's
+                    // offset so the result does not depend on the API host timezone.
+                    localDate.setUTCHours(hours, minutes, 0, 0);
                     // Convert local time to UTC based on user's country
                     return new Date(localDate.getTime() - timezoneOffset * 60 * 60 * 1000);
                 };
@@ -802,8 +807,12 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
                         // }
 
                         // Check if the day is marked as leave
-                        if (attendance.attendanceStatus.some((status: string) => ['On-Leave', 'Absent'].includes(status))) {
-                            throw new Error('Regularization not allowed for leave or absent days');
+                        const hasHalfDayLeave = await this.hasApprovedHalfDayLeave(attendance.userId, shiftDay);
+                        const hasBlockedAttendanceStatus = attendance.attendanceStatus.some(
+                            (status: string) => ['On-Leave', 'Absent'].includes(status)
+                        );
+                        if (hasBlockedAttendanceStatus && !hasHalfDayLeave) {
+                            throw new Error('Regularization not allowed for full-day leave or absent days');
                         }
                     }
                 }
@@ -1432,6 +1441,21 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
             (status: string) => status !== 'Pending-Regularization'
         );
 
+        // Submission temporarily promotes ordinary attendance records to
+        // pending_regularization. Rejection must return that top-level field to
+        // a real swipe-derived state; otherwise the UI continues to show the
+        // request as pending after it has already been rejected.
+        if (attendanceRecord.status === 'pending_regularization') {
+            const validSwipeCount = attendanceRecord.swipes.filter(
+                (swipe: any) => swipe.direction === 'IN' || swipe.direction === 'OUT'
+            ).length;
+            attendanceRecord.status = validSwipeCount > 2
+                ? 'duplicate_swipes'
+                : validSwipeCount === 2
+                    ? 'complete'
+                    : 'incomplete';
+        }
+
         // Step 2: Check leave balance
         const year = regularization.shiftDay.getFullYear();
         // const leaveSummary = await this.leaveSummaryService.getLeaveSummary(
@@ -1540,6 +1564,13 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
 
         const shiftStart = attendanceRecord.shiftStart;
         const shiftEnd = attendanceRecord.shiftEnd;
+        const isHalfDayLeave = await this.hasApprovedHalfDayLeave(
+            attendanceRecord.userId,
+            attendanceRecord.shiftDay
+        );
+        const expectedMinutes = isHalfDayLeave
+            ? getExpectedWorkMinutes(shiftStart, shiftEnd, true)
+            : undefined;
 
         // Check if we have existing biometric swipes to preserve
         const hasExistingBiometricSwipes = attendanceRecord.swipes &&
@@ -1564,7 +1595,8 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
             metrics = await this.calculateMultipleSwipeMetrics(
                 validSwipes,
                 shiftStart,
-                shiftEnd
+                shiftEnd,
+                expectedMinutes
             );
         } else {
             // No existing swipes or only 2 swipes - replace with regularization swipes
@@ -1602,7 +1634,8 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
                 regularization.from,
                 regularization.to,
                 shiftStart,
-                shiftEnd
+                shiftEnd,
+                expectedMinutes
             );
         }
 
@@ -1716,17 +1749,34 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
         return true;
     }
 
+    private async hasApprovedHalfDayLeave(userId: Types.ObjectId, shiftDay: Date): Promise<boolean> {
+        const dayStart = new Date(shiftDay);
+        dayStart.setUTCHours(0, 0, 0, 0);
+        const dayEnd = new Date(shiftDay);
+        dayEnd.setUTCHours(23, 59, 59, 999);
+
+        return Boolean(await Leave.exists({
+            userId,
+            status: 'Approved',
+            leaveDuration: 'half-day',
+            startDate: { $lte: dayEnd },
+            endDate: { $gte: dayStart },
+        }));
+    }
+
     private async calculateAttendanceMetrics(
         firstIn: Date,
         lastOut: Date,
         shiftStart: Date,
-        shiftEnd: Date
+        shiftEnd: Date,
+        expectedMinutesOverride?: number
     ): Promise<IAttendanceMetrics> {
         console.log("c firstIn", firstIn, "c lastOut", lastOut);
         console.log("c shiftStart", shiftStart, "c shiftEnd", shiftEnd);
         // Calculate total duration in minutes
         const totalMinutes = (lastOut.getTime() - firstIn.getTime()) / (1000 * 60);
-        const shiftMinutes = (shiftEnd.getTime() - shiftStart.getTime()) / (1000 * 60);
+        const fullShiftMinutes = getExpectedWorkMinutes(shiftStart, shiftEnd);
+        const shiftMinutes = expectedMinutesOverride ?? fullShiftMinutes;
 
         // Default break calculation (can be customized based on your rules)
         const breakMinutes = totalMinutes > 360 ? 30 : 0; // 30 min break for > 6 hours
@@ -1941,14 +1991,16 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
     private async calculateMultipleSwipeMetrics(
         swipes: Array<{ timestamp: Date; direction: 'IN' | 'OUT' }>,
         shiftStart: Date,
-        shiftEnd: Date
+        shiftEnd: Date,
+        expectedMinutesOverride?: number
     ): Promise<IAttendanceMetrics> {
         const workSessions = this.calculateWorkSessions(swipes, shiftStart, shiftEnd);
         const breakPeriods = this.calculateBreakPeriods(swipes);
         const totalWorkMinutes = workSessions.reduce((sum, session) => sum + session.durationMinutes, 0);
         const totalBreakMinutes = breakPeriods.reduce((sum, breakPeriod) => sum + breakPeriod.durationMinutes, 0);
         const actualWorkMinutes = totalWorkMinutes;
-        const shiftMinutes = (shiftEnd.getTime() - shiftStart.getTime()) / (1000 * 60);
+        const fullShiftMinutes = getExpectedWorkMinutes(shiftStart, shiftEnd);
+        const shiftMinutes = expectedMinutesOverride ?? fullShiftMinutes;
         // Calculate shortfall/excess based on TOTAL work time (not actual work time)
         const difference = totalWorkMinutes - shiftMinutes;
 

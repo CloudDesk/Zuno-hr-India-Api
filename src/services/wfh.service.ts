@@ -9,12 +9,16 @@ import { emailService } from './email.service';
 import { calculateBusinessDays } from '../utilis/dates';
 import { ShiftAssignment, IShiftAssignment } from '../models/shift.model';
 import { HolidayCalendar } from '../models/holiday-calendar.model';
+import { Leave } from '../models/leave.model';
+import { getRequestedWFHDays, getWFHOverlapConflict } from '../utilis/wfh-policy';
 
 export interface IWFHCreate {
   userId: string | Types.ObjectId;
   startDate: Date;
   endDate: Date;
   noOfDays?: number;
+  wfhDuration?: 'full-day' | 'half-day';
+  halfDayType?: 'first-half' | 'second-half';
   remarks?: string;
   reason?: string; // Optional field
   appliedTo?: {
@@ -77,6 +81,15 @@ export class WFHService extends BaseService {
     this.leaveSummaryService = new LeaveSummaryService(context);
   }
 
+  private getDurationLabel(wfh: Pick<IWFH, 'wfhDuration' | 'halfDayType' | 'noOfDays'>): string {
+    if (wfh.wfhDuration === 'half-day') {
+      const half = wfh.halfDayType === 'first-half' ? 'First Half' : 'Second Half';
+      return `Half Day - ${half} (0.5 day)`;
+    }
+
+    return `Full Day (${wfh.noOfDays} ${wfh.noOfDays === 1 ? 'day' : 'days'})`;
+  }
+
   // ─── Weekend / Holiday helpers (mirrors LeaveService) ────────────────────
 
   /**
@@ -136,7 +149,7 @@ export class WFHService extends BaseService {
     end.setUTCHours(23, 59, 59, 999);
     const startTime = start.getTime();
     const endTime = end.getTime();
-    const year = new Date(startDate).getFullYear();
+    const year = new Date(startDate).getUTCFullYear();
 
     // Resolve calendar: year-specific history first, then default
     let calendarId: Types.ObjectId | undefined;
@@ -190,10 +203,10 @@ export class WFHService extends BaseService {
     let workingDays = 0;
     const current = new Date(start);
     while (current <= end) {
-      if (!weekendDays.includes(current.getDay()) && !holidayDatesSet.has(current.getTime())) {
+      if (!weekendDays.includes(current.getUTCDay()) && !holidayDatesSet.has(current.getTime())) {
         workingDays++;
       }
-      current.setDate(current.getDate() + 1);
+      current.setUTCDate(current.getUTCDate() + 1);
     }
     return workingDays;
   }
@@ -226,14 +239,14 @@ export class WFHService extends BaseService {
 
     while (current <= end) {
       const copy = new Date(current);
-      if (weekendDays.includes(current.getDay())) {
+      if (weekendDays.includes(current.getUTCDay())) {
         excludedDates.push(copy);
       }
       if (holidayDatesSet.has(current.getTime())) {
         excludedDates.push(copy);
         excludedHolidays.push(copy);
       }
-      current.setDate(current.getDate() + 1);
+      current.setUTCDate(current.getUTCDate() + 1);
     }
     return { excludedDates, excludedHolidays };
   }
@@ -557,6 +570,24 @@ export class WFHService extends BaseService {
 
     const startDate = new Date(wfhData.startDate);
     const endDate   = new Date(wfhData.endDate);
+    const wfhDuration = wfhData.wfhDuration || 'full-day';
+
+    if (wfhDuration === 'half-day') {
+      if (process.env.HALF_DAY_WFH_ENABLED === 'false') {
+        throw new Error('Half-day WFH is currently disabled');
+      }
+      const startDateKey = startDate.toISOString().split('T')[0];
+      const endDateKey = endDate.toISOString().split('T')[0];
+      if (startDateKey !== endDateKey) {
+        throw new Error('Half-day WFH must be requested for a single date');
+      }
+      if (!wfhData.halfDayType) {
+        throw new Error('Please select First Half or Second Half for half-day WFH');
+      }
+    } else {
+      wfhData.halfDayType = undefined;
+    }
+    wfhData.wfhDuration = wfhDuration;
 
     // Resolve weekendDays from the user's active ShiftAssignment
     const shiftAssignment = await this.getShiftAssignmentForDateRange(
@@ -586,12 +617,17 @@ export class WFHService extends BaseService {
     if (workingDays <= 0) {
       const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
       const weekendNames = weekendDays.map(d => dayNames[d]).join(', ');
-      const holidayText = mandatoryHolidays.length > 0
-        ? ` and ${mandatoryHolidays.length} mandatory holiday(s)`
-        : '';
+      const reasons: string[] = [];
+      if (weekendDays.includes(startDate.getUTCDay())) {
+        reasons.push(`a configured weekend (${weekendNames})`);
+      }
+      if (mandatoryHolidays.length > 0) {
+        reasons.push('a mandatory holiday');
+      }
       throw new Error(
-        `All days in the requested WFH date range fall on weekends (${weekendNames})${holidayText}. ` +
-        `Please select dates that include at least one working day.`
+        `WFH cannot be requested because the selected date range contains no working days` +
+        `${reasons.length ? ` (${reasons.join(' and ')})` : ''}. ` +
+        'Please select a working day.'
       );
     }
 
@@ -604,15 +640,19 @@ export class WFHService extends BaseService {
     );
     const totalCalendarDays = this.calculateTotalCalendarDays(startDate, endDate);
 
+    // Half-day WFH consumes 0.5 day. Keep weekendExclusion.actualDays in
+    // sync so the model pre-save hook preserves the authoritative value.
+    const requestedDays = getRequestedWFHDays(wfhDuration, workingDays);
+
     // Store computed exclusion metadata and set noOfDays
     wfhData.weekendExclusion = {
       weekendDays,
       excludedDates,
       excludedHolidays,
       totalCalendarDays,
-      actualDays: workingDays,
+      actualDays: requestedDays,
     };
-    wfhData.noOfDays = workingDays;
+    wfhData.noOfDays = requestedDays;
 
     console.log(
       `✅ [WFH Weekend & Holiday Exclusion] ${workingDays} working day(s) ` +
@@ -621,9 +661,9 @@ export class WFHService extends BaseService {
     );
 
     // ── daysDiff is now workingDays (used for balance check below) ──
-    const daysDiff = workingDays;
+    const daysDiff = requestedDays;
 
-    // Check for overlapping WFH requests
+    // Reject overlapping WFH requests with a conflict-specific user message.
     const overlappingWFH = await WFH.findOne({
       userId: wfhData.userId,
       status: { $nin: ['Rejected', 'Cancelled'] },
@@ -633,13 +673,55 @@ export class WFHService extends BaseService {
           endDate: { $gte: startDate },
         },
       ],
-    });
+    }).select('startDate endDate wfhDuration halfDayType status').lean();
 
     if (overlappingWFH) {
-      throw new Error('WFH dates overlap with existing WFH request');
+      const overlapDate = new Date(Math.max(
+        startDate.getTime(),
+        new Date(overlappingWFH.startDate).getTime()
+      ));
+      const conflictDate = overlapDate
+        .toISOString()
+        .slice(0, 10)
+        .split('-')
+        .reverse()
+        .join('-');
+
+      throw new Error(getWFHOverlapConflict(
+        overlappingWFH,
+        wfhDuration,
+        wfhData.halfDayType,
+        conflictDate
+      ));
     }
 
-    const year = startDate.getFullYear();
+    // A full-day request conflicts with any leave on the date. Half-day WFH
+    // may coexist only with leave assigned to the opposite half.
+    const overlappingLeave = await Leave.findOne({
+      userId: wfhData.userId,
+      status: { $nin: ['Rejected', 'Cancelled'] },
+      startDate: { $lte: endDate },
+      endDate: { $gte: startDate },
+      ...(wfhDuration === 'half-day'
+        ? {
+            $or: [
+              { leaveDuration: { $ne: 'half-day' } },
+              { leaveDuration: { $exists: false } },
+              { leaveDuration: 'half-day', halfDayType: wfhData.halfDayType },
+            ],
+          }
+        : {}),
+    }).select('_id').lean();
+
+    if (overlappingLeave) {
+      throw new Error(
+        wfhDuration === 'half-day'
+          ? 'WFH overlaps with leave for the same half of this date'
+          : 'WFH dates overlap with an existing leave request'
+      );
+    }
+
+    const year = startDate.getUTCFullYear();
 
     // Get WFH balance for the year (from LeaveSummary workFromHome category)
     const leaveSummary = await this.leaveSummaryService.getLeaveSummary(
@@ -711,7 +793,7 @@ export class WFHService extends BaseService {
       const htmlContent = generateEmailTemplate('leaveApplyEmail', {
         managerName: manager.name,
         employeeName: user.name,
-        leaveType: 'Work From Home',
+        leaveType: `Work From Home - ${this.getDurationLabel(wfh)}`,
         fromDate: wfh.startDate.toDateString(),
         toDate: wfh.endDate.toDateString(),
         totalDays: wfh.noOfDays,
@@ -722,14 +804,18 @@ export class WFHService extends BaseService {
         appliedByName: wfh.appliedBy?.name || '',
       });
 
-      await emailService.sendEmail({
-        body: {
-          to: manager.email,
-          subject: `WFH Request from ${user.name}`,
-          text: `${user.name} has requested WFH from ${wfh.startDate.toDateString()} to ${wfh.endDate.toDateString()} (${wfh.noOfDays} days).`,
-          html: htmlContent,
-        },
-      });
+      try {
+        await emailService.sendEmail({
+          body: {
+            to: manager.email,
+            subject: `WFH Request from ${user.name}`,
+            text: `${user.name} has requested WFH from ${wfh.startDate.toDateString()} to ${wfh.endDate.toDateString()} (${this.getDurationLabel(wfh)}).`,
+            html: htmlContent,
+          },
+        });
+      } catch (managerEmailError) {
+        console.error('Failed to send manager email for saved WFH request:', managerEmailError);
+      }
     }
 
     // Send Email Notification to All Admins
@@ -772,6 +858,7 @@ Request Details:
 - From Date: ${fromDateFormatted}
 - To Date: ${toDateFormatted}
 - Total Days: ${wfh.noOfDays}
+- Duration: ${this.getDurationLabel(wfh)}
 - Reason: ${wfh.reason || 'N/A'}
 - Status: Pending${wfh.appliedOnBehalf ? ' (Can be approved by Manager or Admin)' : ''}${appliedOnBehalfText}
 - Manager: ${manager?.name || 'N/A'}
@@ -910,7 +997,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
     await wfh.save();
 
     // Update WFH summary based on status change (using LeaveSummary workFromHome category)
-    const year = new Date(wfh.startDate).getFullYear();
+    const year = new Date(wfh.startDate).getUTCFullYear();
     const totalUsedThisYear = await this.getTotalDaysUsedInYear(
       new Types.ObjectId(wfh.userId.toString()),
       year
@@ -974,7 +1061,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
           const htmlContent = generateEmailTemplate('leaveApprovalEmail', {
             employeeName: employee.name,
             approverName: approver?.name || 'Manager',
-            leaveType: 'Work From Home',
+            leaveType: `Work From Home - ${this.getDurationLabel(wfh)}`,
             fromDate: fromDateFormatted,
             toDate: toDateFormatted,
             totalDays: wfh.noOfDays,
@@ -998,6 +1085,7 @@ WFH Details:
 - From Date: ${fromDateFormatted}
 - To Date: ${toDateFormatted}
 - Total Days: ${wfh.noOfDays}
+- Duration: ${this.getDurationLabel(wfh)}
 - Reason: ${wfh.reason || 'N/A'}${appliedByText}
 - Approved By: ${approver?.name || 'Manager'}
 ${wfh.remarks ? `- Remarks: ${wfh.remarks}` : ''}
@@ -1073,6 +1161,7 @@ Request Details:
 - From Date: ${fromDateFormatted}
 - To Date: ${toDateFormatted}
 - Total Days: ${wfh.noOfDays}
+- Duration: ${this.getDurationLabel(wfh)}
 - Reason: ${wfh.reason || 'N/A'}
 - Status: ${wfh.status}
 ${wfh.remarks ? `- Remarks: ${wfh.remarks}` : ''}
@@ -1122,7 +1211,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
     await wfh.save();
 
     // Update summary (using LeaveSummary workFromHome category)
-    const year = new Date(wfh.startDate).getFullYear();
+    const year = new Date(wfh.startDate).getUTCFullYear();
     const totalUsedThisYear = await this.getTotalDaysUsedInYear(
       new Types.ObjectId(wfh.userId.toString()),
       year
@@ -1156,8 +1245,8 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
   }
 
   private async getTotalDaysUsedInYear(userId: Types.ObjectId, year: number): Promise<number> {
-    const startDate = new Date(year, 0, 1);
-    const endDate = new Date(year, 11, 31, 23, 59, 59, 999);
+    const startDate = new Date(Date.UTC(year, 0, 1));
+    const endDate = new Date(Date.UTC(year, 11, 31, 23, 59, 59, 999));
 
     const approvedWFHs = await WFH.find({
       userId,
@@ -1177,8 +1266,8 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
     userId: Types.ObjectId,
     year: number
   ): Promise<number> {
-    const startDate = new Date(year, 0, 1);
-    const endDate = new Date(year, 11, 31, 23, 59, 59, 999);
+    const startDate = new Date(Date.UTC(year, 0, 1));
+    const endDate = new Date(Date.UTC(year, 11, 31, 23, 59, 59, 999));
 
     const pendingWFHs = await WFH.find({
       userId,
