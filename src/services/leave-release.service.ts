@@ -15,7 +15,7 @@ export interface ILeaveReleaseCreate {
     quarter?: number;  // 1-4 (required for quarterly: Q1=Jan-Mar, Q2=Apr-Jun, Q3=Jul-Sep, Q4=Oct-Dec)
     year: number;      // Required for all types
   };
-  leaveType: 'annual' | 'sick' | 'compOff' | 'lossOfPay' | 'otherPaid' | 'otherUnpaid' | 'restricted_holiday';
+  leaveType: string;
   daysReleased: number; // Can be decimal (e.g., 4.5)
   notes?: string;
   requestId?: string;
@@ -23,6 +23,9 @@ export interface ILeaveReleaseCreate {
   skipExisting?: boolean;
   forceRelease?: boolean;
   overrideReason?: string;
+  source?: 'manual' | 'automatic';
+  automationConfigurationId?: string;
+  scheduledFor?: Date;
 }
 
 export interface ILeaveReleaseEmployeePreview {
@@ -68,7 +71,7 @@ export class LeaveReleaseService extends BaseService {
     confirmationType?: 'normal' | 'duplicate' | 'mixed';
     duplicates?: ILeaveReleaseDuplicate[];
   }> {
-    const { employeeIds, releaseType, period, leaveType, daysReleased, notes, requestId, previewOnly, skipExisting, forceRelease, overrideReason } = releaseData;
+    const { employeeIds, releaseType, period, leaveType, daysReleased, notes, requestId, previewOnly, skipExisting, forceRelease, overrideReason, source, automationConfigurationId, scheduledFor } = releaseData;
     const uniqueEmployeeIds = [...new Set(employeeIds)];
     const normalizedRequestId = requestId?.trim() || undefined;
     const releasedBy = this.context.user?._id;
@@ -227,7 +230,12 @@ export class LeaveReleaseService extends BaseService {
           requestId: normalizedRequestId,
           isOverride: Boolean(duplicateOfReleaseId),
           overrideReason: duplicateOfReleaseId ? overrideReason?.trim() : undefined,
-          duplicateOfReleaseId
+          duplicateOfReleaseId,
+          source: source || 'manual',
+          automationConfigurationId: automationConfigurationId
+            ? new Types.ObjectId(automationConfigurationId)
+            : undefined,
+          scheduledFor
         }).catch(async (error: any) => {
           if (normalizedRequestId && error?.code === 11000) {
             const existingRequestRelease = await this.findReleaseByRequestId(normalizedRequestId, employeeObjectId);
@@ -255,8 +263,14 @@ export class LeaveReleaseService extends BaseService {
             period.year
           );
 
-          // Get current allotted balance
-          const currentAlloted = currentSummary[leaveType as keyof typeof currentSummary]?.alloted || 0;
+          const builtInLeaveTypes = new Set([
+            'annual', 'sick', 'compOff', 'lossOfPay', 'otherPaid', 'otherUnpaid',
+            'maternity', 'workFromHome', 'restricted_holiday'
+          ]);
+          const isBuiltInLeaveType = builtInLeaveTypes.has(leaveType);
+          const currentAlloted = isBuiltInLeaveType
+            ? (currentSummary as any)[leaveType]?.alloted || 0
+            : currentSummary.customLeaveTypes?.[leaveType]?.alloted || 0;
 
           // Add daysReleased to existing balance
           const newAlloted = currentAlloted + daysReleased;
@@ -265,9 +279,9 @@ export class LeaveReleaseService extends BaseService {
           updatedSummary = await this.leaveSummaryService.updateLeaveAllotments(
             employeeObjectId,
             period.year,
-            {
-              [leaveType]: newAlloted
-            },
+            isBuiltInLeaveType
+              ? { [leaveType]: newAlloted }
+              : { customLeaveTypes: { [leaveType]: newAlloted } },
             { skipEmail: true }  // Skip allotment email, send release-specific email instead
           );
         } catch (balanceError) {

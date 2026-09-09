@@ -8,7 +8,7 @@ export interface ILeaveRelease extends Document {
     quarter?: number;    // 1-4 (required for quarterly, Q1=Jan-Mar, Q2=Apr-Jun, Q3=Jul-Sep, Q4=Oct-Dec)
     year: number;        // Required for all types. For carryforward, this is the toYear (year the leaves are carried forward to)
   };
-  leaveType: 'annual' | 'sick' | 'compOff' | 'lossOfPay' | 'otherPaid' | 'otherUnpaid' | 'restricted_holiday';
+  leaveType: string;
   daysReleased: number;  // Can be decimal (e.g., 4.5)
 
   releasedAt: Date;
@@ -18,6 +18,9 @@ export interface ILeaveRelease extends Document {
   isOverride?: boolean;
   overrideReason?: string;
   duplicateOfReleaseId?: Types.ObjectId;
+  source?: 'manual' | 'automatic';
+  automationConfigurationId?: Types.ObjectId;
+  scheduledFor?: Date;
 }
 
 const leaveReleaseSchema = new Schema<ILeaveRelease>(
@@ -52,7 +55,6 @@ const leaveReleaseSchema = new Schema<ILeaveRelease>(
     },
     leaveType: {
       type: String,
-      enum: ['annual', 'sick', 'compOff', 'lossOfPay', 'otherPaid', 'otherUnpaid', 'restricted_holiday'],
       required: true
     },
     daysReleased: {
@@ -87,6 +89,18 @@ const leaveReleaseSchema = new Schema<ILeaveRelease>(
     duplicateOfReleaseId: {
       type: Schema.Types.ObjectId,
       ref: 'LeaveRelease'
+    },
+    source: {
+      type: String,
+      enum: ['manual', 'automatic'],
+      default: 'manual'
+    },
+    automationConfigurationId: {
+      type: Schema.Types.ObjectId,
+      ref: 'LeaveReleaseConfiguration'
+    },
+    scheduledFor: {
+      type: Date
     }
   },
   {
