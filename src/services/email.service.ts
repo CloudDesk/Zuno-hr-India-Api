@@ -39,36 +39,69 @@ interface EmailRequest {
 export class EmailService {
     private readonly transporter: nodemailer.Transporter;
     private readonly parentDir: string;
+    private readonly fromEmail: string;
+    private readonly fromName: string;
 
     constructor() {
         this.parentDir = process.cwd();
-        const port = Number(config.GMAIL_PORT);
+        const hasOutlookConfig = Boolean(
+            config.OUTLOOK_HOST &&
+            config.OUTLOOK_AUTH_USER &&
+            config.OUTLOOK_AUTH_PASSWORD
+        );
+        const emailConfig = hasOutlookConfig
+            ? {
+                service: config.OUTLOOK_SERVICE,
+                host: config.OUTLOOK_HOST as string,
+                port: Number(config.OUTLOOK_PORT || 587),
+                user: config.OUTLOOK_AUTH_USER as string,
+                pass: config.OUTLOOK_AUTH_PASSWORD as string,
+                fromEmail: config.OUTLOOK_FROM_EMAIL || (config.OUTLOOK_AUTH_USER as string),
+                fromName: config.OUTLOOK_FROM_NAME || 'Zuno HR',
+            }
+            : {
+                service: config.GMAIL_SERVICE,
+                host: config.GMAIL_HOST,
+                port: Number(config.GMAIL_PORT),
+                user: config.GMAIL_AUTH_USER,
+                pass: config.GMAIL_AUTH_PASSWORD,
+                fromEmail: config.GMAIL_AUTH_USER,
+                fromName: 'Zuno HR',
+            };
+        this.fromEmail = emailConfig.fromEmail;
+        this.fromName = emailConfig.fromName;
+        const port = emailConfig.port;
         const hasCustomService =
-            Boolean(config.GMAIL_SERVICE) &&
-            !config.GMAIL_SERVICE.startsWith('default-');
+            Boolean(emailConfig.service) &&
+            !emailConfig.service?.startsWith('default-');
         const transportOptions: SMTPTransport.Options = {
-            host: config.GMAIL_HOST,
+            host: emailConfig.host,
             port,
             secure: port === 465,
             auth: {
-                user: config.GMAIL_AUTH_USER,
-                pass: config.GMAIL_AUTH_PASSWORD,
+                user: emailConfig.user,
+                pass: emailConfig.pass,
             },
             connectionTimeout: 30000,
             greetingTimeout: 30000,
             socketTimeout: 60000,
+            requireTLS: port === 587,
             tls: {
-                servername: config.GMAIL_HOST,
+                servername: emailConfig.host,
                 minVersion: 'TLSv1.2',
             },
         };
 
         if (hasCustomService) {
-            transportOptions.service = config.GMAIL_SERVICE;
+            transportOptions.service = emailConfig.service;
         }
 
         // Initialize nodemailer transporter with env variables
         this.transporter = nodemailer.createTransport(transportOptions);
+    }
+
+    public getFromHeader(displayName?: string): string {
+        return `"${displayName || this.fromName}" <${this.fromEmail}>`;
     }
 
     private getMailErrorMessage(error: any): string {
@@ -85,7 +118,7 @@ export class EmailService {
 
             // Configure mail options
             const mailOptions: nodemailer.SendMailOptions = {
-                from: `"Zuno HR" <${config.GMAIL_AUTH_USER}>`,
+                from: this.getFromHeader(),
                 to,
                 cc,
                 subject,
@@ -179,7 +212,7 @@ export class EmailService {
                 const pdfBuffer = await this.fetchPdfBuffer(payslip.payslipUrl);
                 console.log(pdfBuffer, "pdfBuffer service");
                 const mailOptions: nodemailer.SendMailOptions = {
-                    from: `"Zuno HR" <${config.GMAIL_AUTH_USER}>`,
+                    from: this.getFromHeader(),
                     to: payslip.email,
                     subject: `Your Payslip for ${month} ${year}`,
                     html: `

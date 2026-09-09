@@ -4037,7 +4037,7 @@ export class DocumentService extends BaseService {
         const firstName = employee.name.split(' ')[0];
 
         await (emailService as any).transporter.sendMail({
-            from: `"Cloud Desk HR" <${(config as any).GMAIL_AUTH_USER}>`,
+            from: emailService.getFromHeader('Cloud Desk HR'),
             to: (employee as any).email,
             subject: `Salary Revision Letter - ${(employee as any).name}`,
             html: `

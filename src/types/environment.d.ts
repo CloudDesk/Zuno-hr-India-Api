@@ -7,6 +7,18 @@ declare global {
       MONGODB_URI: string;
       JWT_SECRET: string;
       CORS_ORIGINS: string;
+      GMAIL_SERVICE?: string;
+      GMAIL_HOST?: string;
+      GMAIL_PORT?: string;
+      GMAIL_AUTH_USER?: string;
+      GMAIL_AUTH_PASSWORD?: string;
+      OUTLOOK_SERVICE?: string;
+      OUTLOOK_HOST?: string;
+      OUTLOOK_PORT?: string;
+      OUTLOOK_AUTH_USER?: string;
+      OUTLOOK_AUTH_PASSWORD?: string;
+      OUTLOOK_FROM_EMAIL?: string;
+      OUTLOOK_FROM_NAME?: string;
       PROJECT_ID: string;
       GCP_STORAGE_BUCKET: string;
       GCP_SERVICE_ACCOUNT_JSON?: string;
