@@ -100,6 +100,39 @@ export const communicationRoutes = async (fastify: FastifyInstance) => {
         }
     });
 
+    fastify.get('/my-history', {
+        preHandler: [authenticate],
+        schema: {
+            querystring: Type.Object({
+                limit: Type.Optional(Type.Number({ default: 10 })),
+                page: Type.Optional(Type.Number({ default: 1 })),
+                search: Type.Optional(Type.String()),
+                type: Type.Optional(Type.String()),
+                month: Type.Optional(Type.Number()),
+                year: Type.Optional(Type.Number())
+            }),
+            response: {
+                200: Type.Object({
+                    success: Type.Boolean(),
+                    data: Type.Object({
+                        data: Type.Array(Type.Any()),
+                        meta: Type.Object({
+                            total: Type.Number(),
+                            page: Type.Number(),
+                            limit: Type.Number(),
+                            totalPages: Type.Number()
+                        })
+                    })
+                })
+            }
+        },
+        handler: async (request, _reply) => {
+            const { communicationService } = request.container!;
+            const events = await communicationService.getMyCommunicationHistory(request.query as any);
+            return { success: true, data: events };
+        }
+    });
+
     // 4. Trigger Milestones (Admin only / Manual trigger)
     fastify.post('/trigger-milestones', {
         preHandler: [authenticate],

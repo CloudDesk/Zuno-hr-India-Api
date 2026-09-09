@@ -6,6 +6,7 @@ import { emailService } from './email.service';
 import { Types } from 'mongoose';
 import { saveMultipartFile } from '../utilis/parseMultiPartForm';
 import * as path from 'path';
+import { config } from '../config';
 
 const getDateKeyInTimeZone = (date: Date, timeZone: string): string => {
     const parts = new Intl.DateTimeFormat('en-US', {
@@ -24,6 +25,49 @@ export class CommunicationService extends BaseService {
     constructor(context: RequestContext) {
         super(context);
         this.context = context;
+    }
+
+    private buildAttachmentUrl(storedPath: string): string {
+        const baseUrl = (process.env.API_URL || config.apiUrl || '').replace(/\/$/, '');
+        const normalizedPath = storedPath
+            .replace(/\\/g, '/')
+            .replace(/^\/+/, '')
+            .replace(/^uploads\//, '');
+        return `${baseUrl}/${normalizedPath}`;
+    }
+
+    private getAttachmentLabel(storedPath: string): string {
+        return storedPath.split('/').pop()?.split('-').slice(1).join('-') || 'Attachment';
+    }
+
+    private escapeHtml(value: string): string {
+        return value
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    private buildCommunicationHtml(data: {
+        firstName: string;
+        message: string;
+        attachmentPaths: string[];
+    }): string {
+        const attachmentList = data.attachmentPaths.length > 0
+            ? `<p><strong>Attachments:</strong></p><ul>${data.attachmentPaths.map(attachment => {
+                const label = this.escapeHtml(this.getAttachmentLabel(attachment));
+                const url = this.escapeHtml(this.buildAttachmentUrl(attachment));
+                return `<li><a href="${url}">${label}</a></li>`;
+            }).join('')}</ul>`
+            : '';
+
+        return [
+            `<p>Hi ${this.escapeHtml(data.firstName)},</p>`,
+            `<p>${this.escapeHtml(data.message).replace(/\n/g, '<br>')}</p>`,
+            attachmentList,
+            '<p>Best Regards,<br>Management Team - Cloud Desk Technology Pvt Ltd.</p>'
+        ].filter(Boolean).join('');
     }
 
     /**
@@ -128,17 +172,31 @@ export class CommunicationService extends BaseService {
                 }).save();
             }
 
+            const storedAttachmentPaths = Array.isArray(socialEvent.attachments)
+                ? socialEvent.attachments
+                : [];
+            const attachmentText = storedAttachmentPaths.length > 0
+                ? `\n\nAttachments:\n${storedAttachmentPaths
+                    .map((attachment: string) => `- ${this.getAttachmentLabel(attachment)}: ${this.buildAttachmentUrl(attachment)}`)
+                    .join('\n')}`
+                : '';
+
             // 2. Send Emails to all selected recipients (allows for re-dispatch/corrections)
             for (const employee of employees) {
                 const firstName = employee.name.split(' ')[0];
-                const text = `Hi ${firstName},\n\n${message}\n\nBest Regards,\nManagement Team - Cloud Desk Technology Pvt Ltd.`;
+                const text = `Hi ${firstName},\n\n${message}${attachmentText}\n\nBest Regards,\nManagement Team - Cloud Desk Technology Pvt Ltd.`;
 
                 try {
                     await emailService.sendEmail({
                         body: {
                             to: employee.email,
                             subject: subject || `${type} from Cloud Desk`,
-                            text
+                            text,
+                            html: this.buildCommunicationHtml({
+                                firstName,
+                                message,
+                                attachmentPaths: storedAttachmentPaths
+                            })
                         },
                         files: emailAttachments // Note: only new attachments are sent in the new emails
                     });
@@ -464,6 +522,73 @@ export class CommunicationService extends BaseService {
                 .skip(skip)
                 .limit(Number(limit))
                 .populate('employeeId', 'name profilePicture')
+                .lean()
+        ]);
+
+        return {
+            data: results,
+            meta: {
+                total,
+                page: Number(page),
+                limit: Number(limit),
+                totalPages: Math.ceil(total / Number(limit))
+            }
+        };
+    }
+
+    async getMyCommunicationHistory(query: { page?: number; limit?: number; search?: string; type?: string; month?: number; year?: number } = {}): Promise<any> {
+        const { page = 1, limit = 10, search, type, month, year } = query;
+        const skip = (Number(page) - 1) * Number(limit);
+        const viewer = this.context.user;
+
+        if (!viewer?._id) {
+            throw new Error('User context is required');
+        }
+
+        const viewerObjectId = new Types.ObjectId(viewer._id.toString());
+        const roleVariants = [
+            viewer.role,
+            viewer.role?.toLowerCase(),
+            viewer.role?.toUpperCase()
+        ].filter(Boolean);
+
+        const allowedTypes = ['Event', 'Policy', 'Other', 'Greeting'];
+        const finalQuery: any = {
+            type: type && allowedTypes.includes(type) ? type : { $in: allowedTypes },
+            $or: [
+                { 'targets.employees': viewerObjectId },
+                { 'targets.departments': viewer.departmentId },
+                { 'targets.roles': { $in: roleVariants } },
+                { 'targets.employees': { $exists: false } },
+                { 'targets.employees': { $size: 0 } }
+            ]
+        };
+
+        if (search) {
+            finalQuery.$and = [
+                {
+                    $or: [
+                        { subject: new RegExp(search, 'i') },
+                        { message: new RegExp(search, 'i') },
+                        { type: new RegExp(search, 'i') }
+                    ]
+                }
+            ];
+        }
+
+        if (month !== undefined || year !== undefined) {
+            const start = new Date(year || new Date().getFullYear(), (month !== undefined ? month - 1 : 0), 1);
+            const end = new Date(year || new Date().getFullYear(), (month !== undefined ? month : 12), 0, 23, 59, 59, 999);
+            finalQuery.eventDate = { $gte: start, $lte: end };
+        }
+
+        const [total, results] = await Promise.all([
+            SocialEvent.countDocuments(finalQuery),
+            SocialEvent.find(finalQuery)
+                .sort({ eventDate: -1, createdAt: -1 })
+                .skip(skip)
+                .limit(Number(limit))
+                .populate('postedBy', 'name')
                 .lean()
         ]);
 
