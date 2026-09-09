@@ -29,6 +29,7 @@ export interface IDashboardMetrics {
         leaves: number;
         regularizations: number;
         overtime: number;
+        permissions: number;
         wfh: number;
         total: number;
         byDepartment: Array<{
@@ -77,6 +78,7 @@ export interface IDashboardMetrics {
         present: number;
         leave: number;
         absent: number;
+        wfh: number;
         totalActive: number;
     };
     upcomingHolidays: Array<{

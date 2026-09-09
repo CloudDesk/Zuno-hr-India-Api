@@ -10,7 +10,6 @@ import { SalaryStructure } from '../models/salary-structure.model';
 import { AttendanceRecord } from '../models/attendance-record.model';
 import { LOV } from '../models/lov.model';
 import { HolidayCalendar } from '../models/holiday-calendar.model';
-import { ALL_LEAVE_TYPES, LEAVE_TYPE_LABELS } from '../utilis/leave-type-constants';
 
 export type ExportableObject = 'user' | 'shift' | 'leave' | 'salary-assignment' | 'salary-structure' | 'attendance-record';
 
@@ -2127,26 +2126,21 @@ export class DataMigrationService extends BaseService {
     // Batch validate user IDs and get User Joining Dates
     const userIds = [...new Set(rows.map(r => r.userId).filter(Boolean).filter(id => this.isValidObjectId(id)))];
 
-    // Ensure "Leave Types" LOV exists (for ID reference required by Leave Model)
-    // Try to find 'leavetype' first (system standard), then fallback to 'leave_type'
-    let leaveTypeLov = await LOV.findOne({ type: 'leavetype' });
-    if (!leaveTypeLov) {
-      leaveTypeLov = await LOV.findOne({ type: 'leave_type' });
-    }
-
-    if (!leaveTypeLov) {
-      console.log('ℹ️ [Data Migration] Creating missing "leavetype" LOV document...');
-      leaveTypeLov = await LOV.create({
-        name: 'Leave Types',
-        type: 'leavetype', // Use system default 'leavetype' 
-        values: ALL_LEAVE_TYPES.map(t => ({
-          label: LEAVE_TYPE_LABELS[t] || t,
-          value: t,
-          isActive: true
-        }))
-      });
-    }
-    const leaveTypeLovId = leaveTypeLov._id.toString();
+    const leaveTypeLov = await LOV.findOne({ type: 'leavetype' }).lean();
+    const activeLeaveTypeValues = (leaveTypeLov?.values || []).filter((value: any) =>
+      value?.value && value.isActive !== false
+    );
+    const leaveTypeLovId = leaveTypeLov?._id.toString();
+    const leaveTypeLookup = new Map<string, string>();
+    activeLeaveTypeValues.forEach((value: any) => {
+      leaveTypeLookup.set(String(value.value).trim().toLowerCase(), value.value);
+      if (value.label) {
+        leaveTypeLookup.set(String(value.label).trim().toLowerCase(), value.value);
+      }
+    });
+    const allowedLeaveTypeLabels = activeLeaveTypeValues
+      .map((value: any) => value.label || value.value)
+      .join(', ');
 
     const [existingUsers, existingLeaves] = await Promise.all([
       userIds.length > 0
@@ -2250,14 +2244,14 @@ export class DataMigrationService extends BaseService {
       let matchedType: string | undefined = undefined;
 
       if (inputTypeName) {
-        matchedType = ALL_LEAVE_TYPES.find(t => t.toLowerCase() === inputTypeName!.toLowerCase());
+        matchedType = leaveTypeLookup.get(inputTypeName.toLowerCase());
       } else if (row.leaveTypeId) {
         const potentialType = row.leaveTypeId.toString().trim();
-        matchedType = ALL_LEAVE_TYPES.find(t => t.toLowerCase() === potentialType.toLowerCase());
+        matchedType = leaveTypeLookup.get(potentialType.toLowerCase());
       }
 
       let isValidType = false;
-      if (matchedType) {
+      if (matchedType && leaveTypeLovId) {
         isValidType = true;
         row.leaveTypeId = leaveTypeLovId; // Set the LOV Group ID as required by Model
         row.leaveType = matchedType;      // Set the correctly cased type string (e.g., 'compOff')
@@ -2267,8 +2261,10 @@ export class DataMigrationService extends BaseService {
         const displayValue = inputTypeName || row.leaveTypeId || 'Unknown';
         if (!displayValue || displayValue === 'Unknown') {
           rowErrors.push({ rowNumber: row.rowNumber, field: 'leaveTypeName', message: 'Leave Type Name is required', severity: 'error' });
+        } else if (!leaveTypeLovId || activeLeaveTypeValues.length === 0) {
+          rowErrors.push({ rowNumber: row.rowNumber, field: 'leaveTypeId', message: 'No active leavetype configuration values found', severity: 'error' });
         } else {
-          rowErrors.push({ rowNumber: row.rowNumber, field: 'leaveTypeId', message: `Invalid Leave Type: '${displayValue}'. Allowed: ${ALL_LEAVE_TYPES.join(', ')}`, severity: 'error' });
+          rowErrors.push({ rowNumber: row.rowNumber, field: 'leaveTypeId', message: `Invalid Leave Type: '${displayValue}'. Allowed: ${allowedLeaveTypeLabels}`, severity: 'error' });
         }
       }
 

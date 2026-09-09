@@ -423,7 +423,7 @@ export class UserService extends BaseService {
     sortObj[sort] = sortOrder === 'desc' ? -1 : 1;
 
     // Build select string
-    const selectFields = select || 'name email role specificRole departmentId active joiningDate managerId managerName employeeCode checkinId biometricId location phone emergencyContact address bloodGroup upcomingShiftAssignmentData currentShiftAssignmentData upcomingShiftAssignment currentShiftAssignment dateOfBirth holidayCalendarId holidayCalendarHistory weekendId createdAt updatedAt country currency licenseType portalAccess visaDetails isConsultancy isIntern';
+    const selectFields = select || 'name email role specificRole departmentId active joiningDate managerId managerName employeeCode checkinId biometricId location phone emergencyContact address bloodGroup upcomingShiftAssignmentData currentShiftAssignmentData upcomingShiftAssignment currentShiftAssignment dateOfBirth holidayCalendarId holidayCalendarHistory weekendId createdAt updatedAt country currency licenseType portalAccess employmentStatus costCenter gender visaDetails isConsultancy isIntern';
 
     console.log('Unified getUsers query:', { filter, page, limit, sort: sortObj, select: selectFields });
 
@@ -470,7 +470,7 @@ export class UserService extends BaseService {
       reportingToId,
       id,
       sort = 'name',
-      select = 'name email role specificRole departmentId active joiningDate managerId managerName employeeCode checkinId biometricId location phone emergencyContact address bloodGroup upcomingShiftAssignmentData currentShiftAssignmentData upcomingShiftAssignment currentShiftAssignment dateOfBirth holidayCalendarId holidayCalendarHistory weekendId createdAt updatedAt visaDetails',
+      select = 'name email role specificRole departmentId active joiningDate managerId managerName employeeCode checkinId biometricId location phone emergencyContact address bloodGroup upcomingShiftAssignmentData currentShiftAssignmentData upcomingShiftAssignment currentShiftAssignment dateOfBirth holidayCalendarId holidayCalendarHistory weekendId createdAt updatedAt employmentStatus costCenter gender visaDetails',
     } = query;
 
     const skip = (page - 1) * limit;

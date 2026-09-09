@@ -4,6 +4,50 @@ import { authenticate } from '../middleware/auth';
 import { LeaveReleaseService } from '../services/leave-release.service';
 import { LeaveCarryForwardService } from '../services/leave-carry-forward.service';
 
+const quarterlySummarySchema = {
+  type: 'object',
+  properties: {
+    year: { type: 'number' },
+    totals: {
+      type: 'object',
+      properties: {
+        totalAllotted: { type: 'number' },
+        totalAvailed: { type: 'number' },
+        remaining: { type: 'number' },
+        utilization: { type: 'number' },
+      },
+    },
+    quarters: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          quarter: { type: 'string', enum: ['Q1', 'Q2', 'Q3', 'Q4'] },
+          startDate: { type: 'string' },
+          endDate: { type: 'string' },
+          totalAllotted: { type: 'number' },
+          totalAvailed: { type: 'number' },
+          remaining: { type: 'number' },
+          utilization: { type: 'number' },
+          leaveTypes: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                label: { type: 'string' },
+                value: { type: 'string' },
+                alloted: { type: 'number' },
+                availed: { type: 'number' },
+                remaining: { type: 'number' },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+};
+
 const getLeaveSummarySchema = {
   tags: ['Leave Summary'],
   summary: 'Get leave summary for logged-in user',
@@ -140,6 +184,7 @@ const getLeaveSummarySchema = {
                 },
               },
             },
+            quarterlySummary: quarterlySummarySchema,
           },
         },
       },

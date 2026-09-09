@@ -10,6 +10,7 @@ import { IDashboardMetrics, IEmployeeAverage, IUserDashboardMetrics } from '../m
 import { startOfDay, endOfDay, startOfMonth, addMonths, getYear } from 'date-fns';
 import { LeaveSummary } from '../models/leave-summary.model';
 import { WFH } from '../models/wfh.model';
+import { Permission } from '../models/permission.model';
 import { CommunicationService } from './communication.service';
 
 export class DashboardService extends BaseService {
@@ -134,7 +135,7 @@ export class DashboardService extends BaseService {
         });
 
         // Get pending approvals for ACTIVE users only
-        const [pendingLeaves, pendingRegularizations, pendingOvertime, pendingWFH] = await Promise.all([
+        const [pendingLeaves, pendingRegularizations, pendingOvertime, pendingWFH, pendingPermissions] = await Promise.all([
             Leave.aggregate([
                 { $match: { status: 'Pending' } },
                 { $lookup: { from: 'users', localField: 'userId', foreignField: '_id', as: 'user' } },
@@ -160,6 +161,14 @@ export class DashboardService extends BaseService {
             ]).exec().then(res => res[0]?.count || 0),
 
             WFH.aggregate([
+                { $match: { status: 'Pending' } },
+                { $lookup: { from: 'users', localField: 'userId', foreignField: '_id', as: 'user' } },
+                { $unwind: '$user' },
+                { $match: { 'user.active': true } },
+                { $count: 'count' }
+            ]).exec().then(res => res[0]?.count || 0),
+
+            Permission.aggregate([
                 { $match: { status: 'Pending' } },
                 { $lookup: { from: 'users', localField: 'userId', foreignField: '_id', as: 'user' } },
                 { $unwind: '$user' },
@@ -209,7 +218,8 @@ export class DashboardService extends BaseService {
             regularizations: pendingRegularizations,
             overtime: pendingOvertime,
             wfh: pendingWFH,
-            total: pendingLeaves + pendingRegularizations + pendingOvertime + pendingWFH,
+            permissions: pendingPermissions,
+            total: pendingLeaves + pendingRegularizations + pendingWFH + pendingPermissions,
             byDepartment: pendingByDepartment,
             byType: pendingByType
         });
@@ -350,7 +360,7 @@ export class DashboardService extends BaseService {
         });
 
         // Get today's attendance and leave status for active employees only
-        const [todayAttendance, todayLeaves] = await Promise.all([
+        const [todayAttendance, todayLeaves, todayWFH] = await Promise.all([
             AttendanceRecord.aggregate([
                 {
                     $match: {
@@ -411,6 +421,34 @@ export class DashboardService extends BaseService {
                 {
                     $count: 'count'
                 }
+            ]).exec(),
+
+            WFH.aggregate([
+                {
+                    $match: {
+                        status: 'Approved',
+                        startDate: { $lte: endOfToday },
+                        endDate: { $gte: startOfToday }
+                    }
+                },
+                {
+                    $lookup: {
+                        from: 'users',
+                        localField: 'userId',
+                        foreignField: '_id',
+                        as: 'user'
+                    }
+                },
+                { $unwind: '$user' },
+                { $match: { 'user.active': true } },
+                {
+                    $group: {
+                        _id: '$userId'
+                    }
+                },
+                {
+                    $count: 'count'
+                }
             ]).exec()
         ]);
 
@@ -419,12 +457,14 @@ export class DashboardService extends BaseService {
 
         const presentCount = todayAttendance[0]?.count || 0;
         const leaveCount = todayLeaves[0]?.count || 0;
+        const wfhCount = todayWFH[0]?.count || 0;
         const absentCount = Math.max(0, totalActiveEmployees - presentCount - leaveCount);
 
         console.log('5. Today Attendance:', {
             present: presentCount,
             leave: leaveCount,
             absent: absentCount,
+            wfh: wfhCount,
             totalActive: totalActiveEmployees,
             date: today.toISOString(),
             startOfToday: startOfToday.toISOString(),
@@ -538,8 +578,9 @@ export class DashboardService extends BaseService {
             leaves: pendingLeaves,
             regularizations: pendingRegularizations,
             overtime: pendingOvertime,
+            permissions: pendingPermissions,
             wfh: pendingWFH,
-            total: pendingLeaves + pendingRegularizations + pendingOvertime + pendingWFH,
+            total: pendingLeaves + pendingRegularizations + pendingWFH + pendingPermissions,
             byDepartment: pendingByDepartment.map(dept => ({
                 departmentId: dept._id,
                 count: dept.count
@@ -571,6 +612,7 @@ export class DashboardService extends BaseService {
             present: presentCount,
             leave: leaveCount,
             absent: absentCount,
+            wfh: wfhCount,
             totalActive: totalActiveEmployees
         };
 
