@@ -20,6 +20,7 @@ interface Config {
   OUTLOOK_FROM_NAME?: string;
   NODE_ENV: string;
 
+
   // GCP Configuration
   PROJECT_ID: string;
   GCP_STORAGE_BUCKET: string;
