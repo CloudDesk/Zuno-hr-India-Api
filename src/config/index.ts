@@ -6,7 +6,6 @@ interface Config {
   cookieSecret?: string;
   corsOrigins: boolean | string[];
   apiUrl: string;
-
   GMAIL_SERVICE: string;
   GMAIL_HOST: string
   GMAIL_PORT: number;
