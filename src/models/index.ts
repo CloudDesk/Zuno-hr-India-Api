@@ -18,6 +18,8 @@ export * from './timesheet.model';
 export * from './holiday-calendar.model';
 export * from './attendance-regularization.model';
 export * from './leave-release.model';
+export * from './leave-release-configuration.model';
+export * from './attendance-reminder.model';
 export * from './leave-carry-forward.model';
 export * from './permission.model';
 export * from './permission-summary.model';

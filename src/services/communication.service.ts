@@ -7,6 +7,17 @@ import { Types } from 'mongoose';
 import { saveMultipartFile } from '../utilis/parseMultiPartForm';
 import * as path from 'path';
 
+const getDateKeyInTimeZone = (date: Date, timeZone: string): string => {
+    const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+    }).formatToParts(date);
+    const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
+    return `${values.year}-${values.month}-${values.day}`;
+};
+
 export class CommunicationService extends BaseService {
     protected context: RequestContext;
 
@@ -29,6 +40,24 @@ export class CommunicationService extends BaseService {
         socialEventId?: string; // Optional: for re-dispatching to existing event
     }): Promise<any> {
         const { employeeIds, type, subject, message, eventDate, adminId, files, socialEventId } = data;
+
+        const parsedEventDate = new Date(eventDate);
+        if (Number.isNaN(parsedEventDate.getTime())) {
+            throw new Error('Please provide a valid event date');
+        }
+
+        // Historical events may still be edited, but newly created events cannot
+        // be dated before the current business day in India.
+        if (!socialEventId) {
+            const selectedEventDate = typeof eventDate === 'string' && /^\d{4}-\d{2}-\d{2}/.test(eventDate)
+                ? eventDate.slice(0, 10)
+                : getDateKeyInTimeZone(parsedEventDate, 'Asia/Kolkata');
+            const todayInIndia = getDateKeyInTimeZone(new Date(), 'Asia/Kolkata');
+
+            if (selectedEventDate < todayInIndia) {
+                throw new Error('Event date cannot be in the past');
+            }
+        }
 
         let socialEvent: any;
         let newEmployeeIds = [...employeeIds];

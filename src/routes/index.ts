@@ -51,6 +51,7 @@ import { shiftChangeRoutes } from "./shift-change.routes";
 import { optionalHolidayRoutes } from "./optional-holiday.routes";
 import finalSettlementRoutes from "./final-settlement.routes";
 import { communicationRoutes } from "./communication.routes";
+import { leaveReleaseConfigurationRoutes } from "./leave-release-configuration.routes";
 import mongoose from "mongoose";
 
 export async function routes(fastify: FastifyInstance) {
@@ -97,6 +98,7 @@ export async function routes(fastify: FastifyInstance) {
   fastify.register(optionalHolidayRoutes, { prefix: "/optional-holidays" });
   fastify.register(finalSettlementRoutes, { prefix: "/" });
   fastify.register(communicationRoutes, { prefix: "/communications" });
+  fastify.register(leaveReleaseConfigurationRoutes, { prefix: "/leave-release-configurations" });
 
   fastify.get("/dev/run-shift-cron", async (_request, reply) => {
     await updateShiftAssignmentStatuses();
