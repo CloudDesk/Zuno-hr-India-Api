@@ -2,9 +2,18 @@ import { Types } from 'mongoose';
 import { LeaveSummary, ILeaveSummary } from '../models/leave-summary.model';
 import { BaseService } from './base.service';
 import { RequestContext } from '../types/context';
-import { User } from '../models';
+import { Leave, LeaveRelease, LOV, User } from '../models';
 import { emailService } from './email.service';
 import { generateEmailTemplate } from '../emails/templates';
+
+type ConfiguredLeaveType = {
+  label: string;
+  value: string;
+  categoryKey: keyof ILeaveSummary;
+  isBuiltIn: boolean;
+};
+
+type QuarterKey = 'Q1' | 'Q2' | 'Q3' | 'Q4';
 
 export class LeaveSummaryService extends BaseService {
   constructor(context: RequestContext) {
@@ -256,8 +265,266 @@ export class LeaveSummaryService extends BaseService {
           formatCategory(category),
         ])
       ),
-      editHistory: summary.editHistory || []
+      editHistory: summary.editHistory || [],
+      quarterlySummary: await this.getQuarterlyLeaveSummary(userId, year, summary)
     };
+  }
+
+  private async getQuarterlyLeaveSummary(userId: Types.ObjectId, year: number, summary: ILeaveSummary) {
+    const configuredLeaveTypes = await this.getActiveConfiguredLeaveTypes();
+    const quarters = this.createEmptyQuarterSummary(configuredLeaveTypes);
+
+    if (configuredLeaveTypes.length === 0) {
+      return this.formatQuarterlySummary(year, quarters);
+    }
+
+    await this.applyQuarterlyAllotments(userId, year, summary, configuredLeaveTypes, quarters);
+    await this.applyQuarterlyAvailedLeaves(userId, year, configuredLeaveTypes, quarters);
+
+    return this.formatQuarterlySummary(year, quarters);
+  }
+
+  private async getActiveConfiguredLeaveTypes(): Promise<ConfiguredLeaveType[]> {
+    const lov = await LOV.findOne({ type: 'leavetype' }).lean();
+    const values = Array.isArray(lov?.values) ? lov.values : [];
+
+    return values
+      .filter((value: any) => value && value.isActive !== false && value.value)
+      .map((value: any) => {
+        const categoryKey = this.mapLeaveTypeToCategoryKey(String(value.value));
+        return {
+          label: String(value.label || value.value),
+          value: String(value.value),
+          categoryKey,
+          isBuiltIn: this.isBuiltInCategory(categoryKey)
+        };
+      });
+  }
+
+  private createEmptyQuarterSummary(configuredLeaveTypes: ConfiguredLeaveType[]) {
+    return ([1, 2, 3, 4] as const).map((quarter) => ({
+      quarter: `Q${quarter}` as QuarterKey,
+      totalAllotted: 0,
+      totalAvailed: 0,
+      remaining: 0,
+      utilization: 0,
+      leaveTypes: configuredLeaveTypes.map((leaveType) => ({
+        label: leaveType.label,
+        value: leaveType.value,
+        alloted: 0,
+        availed: 0,
+        remaining: 0,
+      })),
+    }));
+  }
+
+  private async applyQuarterlyAllotments(
+    userId: Types.ObjectId,
+    year: number,
+    summary: ILeaveSummary,
+    configuredLeaveTypes: ConfiguredLeaveType[],
+    quarters: ReturnType<LeaveSummaryService['createEmptyQuarterSummary']>
+  ) {
+    const builtInLeaveTypes = configuredLeaveTypes
+      .filter((leaveType) => leaveType.isBuiltIn)
+      .map((leaveType) => leaveType.categoryKey as string);
+
+    const releaseAllotments = new Map<string, number[]>();
+    const releases = builtInLeaveTypes.length > 0
+      ? await LeaveRelease.find({
+        employeeId: userId,
+        'period.year': year,
+        leaveType: { $in: builtInLeaveTypes },
+      }).lean()
+      : [];
+
+    releases.forEach((release: any) => {
+      const leaveType = String(release.leaveType || '');
+      const values = releaseAllotments.get(leaveType) || [0, 0, 0, 0];
+      const daysReleased = this.roundLeaveDays(Number(release.daysReleased) || 0);
+
+      if (release.releaseType === 'monthly' && release.period?.month) {
+        values[this.getQuarterIndexFromMonth(Number(release.period.month))] += daysReleased;
+      } else if (release.releaseType === 'quarterly' && release.period?.quarter) {
+        values[Math.max(0, Math.min(3, Number(release.period.quarter) - 1))] += daysReleased;
+      } else if (release.releaseType === 'carryforward') {
+        values[0] += daysReleased;
+      } else {
+        const perQuarter = daysReleased / 4;
+        values.forEach((_value, index) => {
+          values[index] += perQuarter;
+        });
+      }
+
+      releaseAllotments.set(leaveType, values);
+    });
+
+    configuredLeaveTypes.forEach((leaveType, leaveTypeIndex) => {
+      const category = this.getSummaryCategory(summary, leaveType);
+      const yearlyAlloted = this.roundLeaveDays(category?.alloted || 0);
+      let quarterAllotments = releaseAllotments.get(leaveType.categoryKey as string) || [0, 0, 0, 0];
+      const releasedTotal = this.roundLeaveDays(quarterAllotments.reduce((total, value) => total + value, 0));
+
+      if (releasedTotal === 0 && yearlyAlloted > 0) {
+        quarterAllotments = [yearlyAlloted / 4, yearlyAlloted / 4, yearlyAlloted / 4, yearlyAlloted / 4];
+      } else if (yearlyAlloted > 0 && Math.abs(yearlyAlloted - releasedTotal) > 0.01) {
+        const adjustment = (yearlyAlloted - releasedTotal) / 4;
+        quarterAllotments = quarterAllotments.map((value) => Math.max(0, value + adjustment));
+      }
+
+      quarters.forEach((quarter, quarterIndex) => {
+        quarter.leaveTypes[leaveTypeIndex].alloted = this.roundLeaveDays(quarterAllotments[quarterIndex] || 0);
+      });
+    });
+  }
+
+  private async applyQuarterlyAvailedLeaves(
+    userId: Types.ObjectId,
+    year: number,
+    configuredLeaveTypes: ConfiguredLeaveType[],
+    quarters: ReturnType<LeaveSummaryService['createEmptyQuarterSummary']>
+  ) {
+    const configuredTypeByValue = new Map<string, number>();
+    const configuredTypeByCategory = new Map<string, number>();
+
+    configuredLeaveTypes.forEach((leaveType, index) => {
+      configuredTypeByValue.set(this.normalizeLeaveTypeValue(leaveType.value), index);
+      configuredTypeByCategory.set(this.normalizeLeaveTypeValue(leaveType.categoryKey as string), index);
+    });
+
+    const yearStart = new Date(Date.UTC(year, 0, 1));
+    const yearEnd = new Date(Date.UTC(year, 11, 31, 23, 59, 59, 999));
+    const approvedLeaves = await Leave.find({
+      userId,
+      status: 'Approved',
+      startDate: { $lte: yearEnd },
+      endDate: { $gte: yearStart },
+    }).select('leaveType startDate endDate noOfDays').lean();
+
+    approvedLeaves.forEach((leave: any) => {
+      const leaveType = String(leave.leaveType || '');
+      const leaveTypeIndex = configuredTypeByValue.get(this.normalizeLeaveTypeValue(leaveType))
+        ?? configuredTypeByCategory.get(this.normalizeLeaveTypeValue(this.mapLeaveTypeToCategoryKey(leaveType) as string));
+
+      if (leaveTypeIndex === undefined) return;
+
+      const noOfDays = Number(leave.noOfDays) || 0;
+      if (noOfDays <= 0) return;
+
+      const distribution = this.distributeLeaveAcrossQuarters(leave.startDate, leave.endDate, noOfDays, year);
+      distribution.forEach((days, quarterIndex) => {
+        quarters[quarterIndex].leaveTypes[leaveTypeIndex].availed += days;
+      });
+    });
+  }
+
+  private distributeLeaveAcrossQuarters(startDate: Date, endDate: Date, noOfDays: number, year: number) {
+    const values = [0, 0, 0, 0];
+    const start = this.toUtcDate(startDate);
+    const end = this.toUtcDate(endDate);
+    const yearStart = new Date(Date.UTC(year, 0, 1));
+    const yearEnd = new Date(Date.UTC(year, 11, 31));
+    const clampedStart = start < yearStart ? yearStart : start;
+    const clampedEnd = end > yearEnd ? yearEnd : end;
+
+    if (Number.isNaN(clampedStart.getTime()) || Number.isNaN(clampedEnd.getTime()) || clampedStart > clampedEnd) {
+      return values;
+    }
+
+    const calendarDaysByQuarter = [0, 0, 0, 0];
+    let calendarDays = 0;
+    const cursor = new Date(clampedStart);
+
+    while (cursor <= clampedEnd) {
+      calendarDaysByQuarter[this.getQuarterIndexFromMonth(cursor.getUTCMonth() + 1)] += 1;
+      calendarDays += 1;
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+
+    if (calendarDays === 0) return values;
+
+    calendarDaysByQuarter.forEach((daysInQuarter, quarterIndex) => {
+      values[quarterIndex] = this.roundLeaveDays(noOfDays * (daysInQuarter / calendarDays));
+    });
+
+    return values;
+  }
+
+  private formatQuarterlySummary(
+    year: number,
+    quarters: ReturnType<LeaveSummaryService['createEmptyQuarterSummary']>
+  ) {
+    const quarterBoundaries = [
+      { startDate: `${year}-01-01`, endDate: `${year}-03-31` },
+      { startDate: `${year}-04-01`, endDate: `${year}-06-30` },
+      { startDate: `${year}-07-01`, endDate: `${year}-09-30` },
+      { startDate: `${year}-10-01`, endDate: `${year}-12-31` },
+    ];
+
+    const formattedQuarters = quarters.map((quarter, quarterIndex) => {
+      const leaveTypes = quarter.leaveTypes.map((leaveType) => {
+        const alloted = this.roundLeaveDays(leaveType.alloted);
+        const availed = this.roundLeaveDays(leaveType.availed);
+        return {
+          ...leaveType,
+          alloted,
+          availed,
+          remaining: this.roundLeaveDays(Math.max(0, alloted - availed)),
+        };
+      });
+      const totalAllotted = this.roundLeaveDays(leaveTypes.reduce((total, leaveType) => total + leaveType.alloted, 0));
+      const totalAvailed = this.roundLeaveDays(leaveTypes.reduce((total, leaveType) => total + leaveType.availed, 0));
+      const remaining = this.roundLeaveDays(Math.max(0, totalAllotted - totalAvailed));
+
+      return {
+        quarter: quarter.quarter,
+        ...quarterBoundaries[quarterIndex],
+        totalAllotted,
+        totalAvailed,
+        remaining,
+        utilization: totalAllotted > 0 ? Math.round((totalAvailed / totalAllotted) * 100) : 0,
+        leaveTypes,
+      };
+    });
+
+    const totalAllotted = this.roundLeaveDays(formattedQuarters.reduce((total, quarter) => total + quarter.totalAllotted, 0));
+    const totalAvailed = this.roundLeaveDays(formattedQuarters.reduce((total, quarter) => total + quarter.totalAvailed, 0));
+    const remaining = this.roundLeaveDays(Math.max(0, totalAllotted - totalAvailed));
+
+    return {
+      year,
+      quarters: formattedQuarters,
+      totals: {
+        totalAllotted,
+        totalAvailed,
+        remaining,
+        utilization: totalAllotted > 0 ? Math.round((totalAvailed / totalAllotted) * 100) : 0,
+      },
+    };
+  }
+
+  private getSummaryCategory(summary: ILeaveSummary, leaveType: ConfiguredLeaveType) {
+    if (leaveType.isBuiltIn) {
+      return summary[leaveType.categoryKey] as any;
+    }
+    return summary.customLeaveTypes?.[leaveType.value];
+  }
+
+  private getQuarterIndexFromMonth(month: number) {
+    return Math.max(0, Math.min(3, Math.ceil(month / 3) - 1));
+  }
+
+  private normalizeLeaveTypeValue(value: string) {
+    return value.toLowerCase().replace(/[^a-z0-9]/g, '');
+  }
+
+  private roundLeaveDays(value: number) {
+    return Math.round((Number(value) || 0) * 100) / 100;
+  }
+
+  private toUtcDate(value: Date) {
+    const date = new Date(value);
+    return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
   }
 
   async getAllUserLeaveSummaries(

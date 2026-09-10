@@ -2622,6 +2622,27 @@ export class BiometricAttendanceService extends BaseService {
             attendanceEntry.isWFH = true;
             attendanceEntry.wfhDuration = wfhDetails?.duration || 'full-day';
             attendanceEntry.wfhHalfType = wfhDetails?.halfDayType || null;
+
+            // Approved WFH is the effective attendance mode. Preserve stored
+            // leave/attendance data for audit and balance calculations, but
+            // prevent an older leave marker from remaining the display label.
+            if (!isMandatoryHolidayDate) {
+              if (attendanceEntry.wfhDuration === 'half-day') {
+                const isFirstHalfWFH = attendanceEntry.wfhHalfType === 'first-half';
+                if (leaveDetails?.duration === 'half-day') {
+                  const leaveAbbr = this.getLeaveAbbr(leaveDetails.type);
+                  attendanceEntry.displayLabel = isFirstHalfWFH
+                    ? `WFH/${leaveAbbr}`
+                    : `${leaveAbbr}/WFH`;
+                } else {
+                  attendanceEntry.displayLabel = isFirstHalfWFH
+                    ? 'WFH/Office'
+                    : 'Office/WFH';
+                }
+              } else {
+                attendanceEntry.displayLabel = 'WFH';
+              }
+            }
           }
 
           attendance.push(attendanceEntry);
@@ -2859,6 +2880,22 @@ export class BiometricAttendanceService extends BaseService {
           } else if (isApprovedRestrictedHoliday) {
             cellValue = 'RH';
             fontColor = 'FF800080'; // Purple for restricted/optional holiday
+          } else if (isWFH) {
+            // Export the approved WFH mode instead of a stale leave status.
+            // Opposite-half leave/WFH combinations retain both halves.
+            if (wfhDuration === 'half-day') {
+              if (leaveDetails?.duration === 'half-day') {
+                const leaveAbbr = this.getLeaveAbbr(leaveDetails.type);
+                cellValue = wfhHalfType === 'first-half'
+                  ? `WFH/${leaveAbbr}`
+                  : `${leaveAbbr}/WFH`;
+              } else {
+                cellValue = wfhLabel;
+              }
+            } else {
+              cellValue = 'WFH';
+            }
+            fontColor = 'FF008B8B';
           } else if (isLeave) {
             const typeStr = (leaveDetails as any).type;
             const duration = (leaveDetails as any).duration;
@@ -2908,7 +2945,7 @@ export class BiometricAttendanceService extends BaseService {
             fontColor = leaveColor;
           }
 
-          if (!isMandatoryHoliday && !isApprovedRestrictedHoliday && !isLeave) {
+          if (!isMandatoryHoliday && !isApprovedRestrictedHoliday && !isWFH && !isLeave) {
             // Continue with normal logic if not leave or holiday
             if (cellDate.getTime() === today.getTime()) {
               // PRIORITY 3: Check if date is today
