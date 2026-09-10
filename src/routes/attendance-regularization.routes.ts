@@ -507,6 +507,7 @@ export const attendanceRegularizeRoutes: RouteHandler = async (
                                     type: 'object',
                                     properties: {
                                         _id: { type: 'string' },
+                                        applicationGroupId: { type: 'string', nullable: true },
                                         attendanceId: { type: 'string' },
                                         shiftDay: { type: 'string', format: 'date-time' },
                                         from: { type: 'string', format: 'date-time' },
@@ -704,6 +705,7 @@ export const attendanceRegularizeRoutes: RouteHandler = async (
             search?: string;
             sortBy?: string;
             sortOrder?: 'asc' | 'desc';
+            grouped?: boolean;
         };
     }>(
         '/assigned/:approverId',
@@ -783,6 +785,11 @@ export const attendanceRegularizeRoutes: RouteHandler = async (
                             type: 'string',
                             enum: ['asc', 'desc'],
                             description: 'Optional sort direction'
+                        },
+                        grouped: {
+                            type: 'boolean',
+                            default: false,
+                            description: 'Group records created by the same bulk application'
                         }
                     }
                 },
@@ -797,14 +804,18 @@ export const attendanceRegularizeRoutes: RouteHandler = async (
                                     type: 'object',
                                     properties: {
                                         _id: { type: 'string' },
+                                        applicationGroupId: { type: 'string', nullable: true },
+                                        groupId: { type: 'string' },
                                         attendanceId: { type: 'string' },
                                         shiftDay: { type: 'string', format: 'date-time' },
+                                        endShiftDay: { type: 'string', format: 'date-time' },
+                                        dayCount: { type: 'number' },
                                         from: { type: 'string', format: 'date-time' },
                                         to: { type: 'string', format: 'date-time' },
                                         reason: { type: 'string' },
                                         status: {
                                             type: 'string',
-                                            enum: ['Approved', 'Rejected', 'Pending', 'Rejected-Absent', 'Rejected-Leave', 'Withdrawn']
+                                            enum: ['Approved', 'Rejected', 'Pending', 'Rejected-Absent', 'Rejected-Leave', 'Withdrawn', 'Mixed']
                                         },
                                         approver: {
                                             type: 'object',
@@ -816,7 +827,34 @@ export const attendanceRegularizeRoutes: RouteHandler = async (
                                         approvedDate: { type: 'string', format: 'date-time', nullable: true },
                                         comments: { type: 'string', nullable: true },
                                         userId: { type: 'string' },
-                                        userName: { type: 'string' }
+                                        userName: { type: 'string' },
+                                        records: {
+                                            type: 'array',
+                                            items: {
+                                                type: 'object',
+                                                properties: {
+                                                    _id: { type: 'string' },
+                                                    applicationGroupId: { type: 'string', nullable: true },
+                                                    attendanceId: { type: 'string' },
+                                                    shiftDay: { type: 'string', format: 'date-time' },
+                                                    from: { type: 'string', format: 'date-time' },
+                                                    to: { type: 'string', format: 'date-time' },
+                                                    reason: { type: 'string' },
+                                                    status: { type: 'string' },
+                                                    approver: {
+                                                        type: 'object',
+                                                        properties: {
+                                                            id: { type: 'string' },
+                                                            name: { type: 'string' }
+                                                        }
+                                                    },
+                                                    approvedDate: { type: 'string', format: 'date-time', nullable: true },
+                                                    comments: { type: 'string', nullable: true },
+                                                    userId: { type: 'string' },
+                                                    userName: { type: 'string' }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             },
@@ -844,7 +882,7 @@ export const attendanceRegularizeRoutes: RouteHandler = async (
         async (request, reply) => {
             try {
                 const { approverId } = request.params;
-                const { status = 'Pending', statuses, allStatus, date, search, startDate, endDate, isAdmin, page, limit, sortBy, sortOrder } = request.query as any;
+                const { status = 'Pending', statuses, allStatus, date, search, startDate, endDate, isAdmin, page, limit, sortBy, sortOrder, grouped } = request.query as any;
 
                 // Ensure boolean flags are correctly parsed from strings if necessary
                 const isAllStatus = String(allStatus) === 'true';
@@ -865,7 +903,8 @@ export const attendanceRegularizeRoutes: RouteHandler = async (
                         page: pageNum,
                         limit: limitNum,
                         sortBy,
-                        sortOrder
+                        sortOrder,
+                        grouped: String(grouped) === 'true'
                     }
                 );
 

@@ -42,6 +42,7 @@ interface AssignedRegularizationListOptions {
     limit?: number;
     sortBy?: string;
     sortOrder?: 'asc' | 'desc';
+    grouped?: boolean;
 }
 
 
@@ -183,6 +184,7 @@ export class AttendanceRegularizationService extends BaseService {
 
         return records.map(record => ({
             _id: record._id.toString(),
+            applicationGroupId: record.applicationGroupId?.toString() || null,
             attendanceId: record.attendanceId?.toString(),
             shiftDay: record.shiftDay.toISOString(),
             from: record.from.toISOString(),
@@ -371,6 +373,139 @@ export class AttendanceRegularizationService extends BaseService {
                 ? { statusRank: 1, createdAt: -1, shiftDay: -1, _id: -1 }
                 : { createdAt: -1, shiftDay: -1, _id: -1 };
 
+        if (options.grouped) {
+            const groupedSortFieldMap: Record<string, string> = {
+                shiftDay: 'shiftDay',
+                from: 'from',
+                to: 'to',
+                reason: 'reason',
+                status: 'status',
+                createdAt: 'createdAt',
+                userName: 'userName',
+                user: 'userName',
+            };
+            const groupedSortField = options.sortBy ? groupedSortFieldMap[options.sortBy] : undefined;
+            const groupedSort: Record<string, 1 | -1> = groupedSortField
+                ? { [groupedSortField]: sortDirection, groupId: -1 }
+                : { statusRank: 1, createdAt: -1, shiftDay: -1, groupId: -1 };
+
+            const basePipeline: any[] = [
+                { $match: query },
+                {
+                    $lookup: {
+                        from: 'users',
+                        localField: 'userId',
+                        foreignField: '_id',
+                        as: 'user',
+                        pipeline: [{ $project: { _id: 1, name: 1 } }]
+                    }
+                },
+                { $unwind: { path: '$user', preserveNullAndEmptyArrays: true } },
+                { $addFields: { effectiveGroupId: { $ifNull: ['$applicationGroupId', '$_id'] } } },
+                { $sort: { shiftDay: 1, _id: 1 } },
+                {
+                    $group: {
+                        _id: '$effectiveGroupId',
+                        firstRecordId: { $first: '$_id' },
+                        applicationGroupId: { $first: '$applicationGroupId' },
+                        attendanceId: { $first: '$attendanceId' },
+                        shiftDay: { $min: '$shiftDay' },
+                        endShiftDay: { $max: '$shiftDay' },
+                        from: { $min: '$from' },
+                        to: { $max: '$to' },
+                        reason: { $first: '$reason' },
+                        reasons: { $addToSet: '$reason' },
+                        statuses: { $addToSet: '$status' },
+                        approver: { $first: '$approver' },
+                        approvedDate: { $max: '$approvedDate' },
+                        comments: { $first: '$comments' },
+                        userId: { $first: '$user._id' },
+                        userName: { $first: '$user.name' },
+                        createdAt: { $max: '$createdAt' },
+                        records: {
+                            $push: {
+                                _id: '$_id',
+                                applicationGroupId: '$applicationGroupId',
+                                attendanceId: '$attendanceId',
+                                shiftDay: '$shiftDay',
+                                from: '$from',
+                                to: '$to',
+                                reason: '$reason',
+                                status: '$status',
+                                approver: '$approver',
+                                approvedDate: '$approvedDate',
+                                comments: '$comments',
+                                userId: '$user._id',
+                                userName: '$user.name'
+                            }
+                        }
+                    }
+                },
+                {
+                    $addFields: {
+                        groupId: '$_id',
+                        dayCount: { $size: '$records' },
+                        status: {
+                            $cond: [
+                                { $eq: [{ $size: '$statuses' }, 1] },
+                                { $arrayElemAt: ['$statuses', 0] },
+                                'Mixed'
+                            ]
+                        },
+                        statusRank: { $cond: [{ $in: ['Pending', '$statuses'] }, 0, 1] },
+                        reason: {
+                            $cond: [
+                                { $eq: [{ $size: '$reasons' }, 1] },
+                                { $arrayElemAt: ['$reasons', 0] },
+                                'Multiple reasons'
+                            ]
+                        }
+                    }
+                },
+                { $set: { _id: '$firstRecordId' } }
+            ];
+
+            const [records, totals] = await Promise.all([
+                AttendanceRegularization.aggregate([
+                    ...basePipeline,
+                    { $sort: groupedSort },
+                    { $skip: skip },
+                    { $limit: limit },
+                    { $project: { firstRecordId: 0, reasons: 0, statuses: 0, statusRank: 0 } }
+                ]),
+                AttendanceRegularization.aggregate([
+                    ...basePipeline,
+                    { $count: 'total' }
+                ])
+            ]);
+
+            const data = records.map((group: any) => ({
+                ...group,
+                _id: group._id.toString(),
+                groupId: group.groupId.toString(),
+                applicationGroupId: group.applicationGroupId?.toString() || null,
+                attendanceId: group.attendanceId?.toString(),
+                userId: group.userId?.toString() || '',
+                records: (group.records || []).map((record: any) => ({
+                    ...record,
+                    _id: record._id.toString(),
+                    applicationGroupId: record.applicationGroupId?.toString() || null,
+                    attendanceId: record.attendanceId?.toString(),
+                    userId: record.userId?.toString() || ''
+                }))
+            }));
+
+            return {
+                data,
+                meta: {
+                    page,
+                    limit,
+                    total: totals[0]?.total || 0,
+                    totalPages: Math.ceil((totals[0]?.total || 0) / limit)
+                }
+            };
+        }
+
         const [records, total] = await Promise.all([
             AttendanceRegularization.aggregate([
                 { $match: query },
@@ -394,6 +529,7 @@ export class AttendanceRegularizationService extends BaseService {
                 { $limit: limit },
                 {
                     $project: {
+                        applicationGroupId: 1,
                         attendanceId: 1,
                         shiftDay: 1,
                         from: 1,
@@ -413,6 +549,7 @@ export class AttendanceRegularizationService extends BaseService {
 
         const data = records.map(record => ({
             _id: record._id.toString(),
+            applicationGroupId: record.applicationGroupId?.toString() || null,
             attendanceId: record.attendanceId?.toString(),
             shiftDay: record.shiftDay.toISOString(),
             from: record.from.toISOString(),
@@ -460,6 +597,7 @@ export class AttendanceRegularizationService extends BaseService {
 
         return {
             _id: record._id.toString(),
+            applicationGroupId: record.applicationGroupId?.toString() || null,
             attendanceId: record.attendanceId?.toString(),
             shiftDay: record.shiftDay.toISOString(),
             from: record.from.toISOString(),
@@ -637,6 +775,9 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
             toTime: string;
             reason: string;
         }> = [];
+        // One persisted group per employee/approver pair in this submission.
+        // The group id is metadata only; each date remains an independent record.
+        const applicationGroupIds = new Map<string, Types.ObjectId>();
 
         const normalizeObjectId = (id: string): string => new Types.ObjectId(id).toString();
 
@@ -742,6 +883,12 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
                 const { userId, date, fromTime, toTime, reason, approver, attendanceId } = entry;
                 const normalizedUserId = normalizeObjectId(userId);
                 const normalizedApproverId = normalizeObjectId(approver.id);
+                const applicationGroupKey = `${normalizedUserId}:${normalizedApproverId}`;
+                let applicationGroupId = applicationGroupIds.get(applicationGroupKey);
+                if (!applicationGroupId) {
+                    applicationGroupId = new Types.ObjectId();
+                    applicationGroupIds.set(applicationGroupKey, applicationGroupId);
+                }
                 // 1. Parse date and convert local times to UTC
                 const shiftDay = new Date(date);
                 shiftDay.setUTCHours(0, 0, 0, 0);
@@ -863,6 +1010,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
 
                 // 5. Create regularization record
                 const regularization = new AttendanceRegularization({
+                    applicationGroupId,
                     attendanceId: attendance._id,
                     userId: new Types.ObjectId(userId),
                     from: requestedFrom,
