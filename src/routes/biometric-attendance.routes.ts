@@ -668,6 +668,18 @@ export const biometricAttendanceRoutes: RouteHandler = async (
                       },
                     },
                   },
+                  holidays: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      properties: {
+                        date: { type: 'string', format: 'date-time' },
+                        name: { type: 'string' },
+                        type: { type: 'string', enum: ['mandatory', 'optional', 'client-specific'] },
+                        description: { type: 'string' },
+                      },
+                    },
+                  },
                 },
               },
             },

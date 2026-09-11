@@ -46,6 +46,7 @@ const attendanceRegularizationSchema = new Schema<IAttendanceRegularization>(
         reason: {
             type: String,
             required: true,
+            trim: true,
         },
         status: {
             type: String,

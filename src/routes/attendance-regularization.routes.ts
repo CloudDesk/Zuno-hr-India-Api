@@ -593,6 +593,43 @@ export const attendanceRegularizeRoutes: RouteHandler = async (
             }
         }
     );
+    // Get all daily records belonging to a grouped application. For legacy
+    // records without a group ID, this returns the single requested record.
+    fastify.get(
+        '/group/:id',
+        {
+            onRequest: [authenticate],
+            schema: {
+                tags: ['Attendance Regularization'],
+                summary: 'Get regularization application group by ID',
+                params: {
+                    type: 'object',
+                    required: ['id'],
+                    properties: {
+                        id: { type: 'string', description: 'Application group ID or regularization record ID' }
+                    }
+                }
+            }
+        },
+        async (request, reply) => {
+            try {
+                const { id } = request.params as { id: string };
+                const result = await request.container!.attendanceRegularizationService
+                    .getRegularizationGroupById(id, request.user);
+                return reply.send({ success: true, data: result });
+            } catch (error: any) {
+                const errorMessage = error.message;
+                let statusCode = 400;
+                if (errorMessage.includes('Forbidden')) statusCode = 403;
+                else if (errorMessage.includes('not found')) statusCode = 404;
+                return reply.status(statusCode).send({
+                    success: false,
+                    error: { message: errorMessage }
+                });
+            }
+        }
+    );
+
     // Get single regularization record by ID
     fastify.get(
         '/record/:id',

@@ -1563,6 +1563,44 @@ export class BiometricAttendanceService extends BaseService {
           }
           : null,
       }));
+
+      const requestedDateKeys = new Set(dates);
+      const requestedYears = new Set(dates.map(date => Number(date.slice(0, 4))));
+      const calendarIds = new Set<string>();
+
+      if ((user as any).holidayCalendarId) {
+        calendarIds.add((user as any).holidayCalendarId.toString());
+      }
+      if (Array.isArray((user as any).holidayCalendarHistory)) {
+        (user as any).holidayCalendarHistory.forEach((entry: any) => {
+          if (entry?.isActive === true && requestedYears.has(entry.year) && entry.calendarId) {
+            calendarIds.add(entry.calendarId.toString());
+          }
+        });
+      }
+
+      const calendarObjectIds = Array.from(calendarIds)
+        .filter(id => Types.ObjectId.isValid(id))
+        .map(id => new Types.ObjectId(id));
+      const holidayCalendars = await HolidayCalendar.find({
+        $or: [
+          { _id: { $in: calendarObjectIds } },
+          { assignedTo: new Types.ObjectId(userId) },
+        ],
+      }).select('_id holidays assignedTo year').lean();
+
+      const holidays = holidayCalendars
+        .filter(calendar => {
+          const assignedDirectly = (calendar.assignedTo || [])
+            .some(id => id.toString() === userId);
+          return assignedDirectly || calendarIds.has(calendar._id.toString());
+        })
+        .flatMap(calendar => calendar.holidays || [])
+        .filter(holiday => {
+          const holidayDate = new Date(holiday.date);
+          const dateKey = `${holidayDate.getUTCFullYear()}-${String(holidayDate.getUTCMonth() + 1).padStart(2, '0')}-${String(holidayDate.getUTCDate()).padStart(2, '0')}`;
+          return requestedDateKeys.has(dateKey);
+        });
       console.log(transformedShiftAssignments, "5 getAttendanceAndShiftRecords transformedShiftAssignments")
       // Combine attendance and shift assignment data
       return {
@@ -1570,6 +1608,7 @@ export class BiometricAttendanceService extends BaseService {
         data: {
           attendanceRecords,
           shiftAssignments: transformedShiftAssignments,
+          holidays,
         },
       };
     } catch (error: any) {
