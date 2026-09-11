@@ -8,6 +8,7 @@ import { RequestContext } from '../types/context';
 import { generateEmailTemplate } from '../emails/templates';
 import { emailService } from './email.service';
 import { getExpectedWorkMinutes } from '../utilis/attendance-duration';
+import { HolidayCalendar } from '../models/holiday-calendar.model';
 
 interface IAttendanceMetrics {
     totalWorkHours: string;
@@ -42,6 +43,7 @@ interface AssignedRegularizationListOptions {
     limit?: number;
     sortBy?: string;
     sortOrder?: 'asc' | 'desc';
+    grouped?: boolean;
 }
 
 
@@ -183,6 +185,7 @@ export class AttendanceRegularizationService extends BaseService {
 
         return records.map(record => ({
             _id: record._id.toString(),
+            applicationGroupId: record.applicationGroupId?.toString() || null,
             attendanceId: record.attendanceId?.toString(),
             shiftDay: record.shiftDay.toISOString(),
             from: record.from.toISOString(),
@@ -371,6 +374,139 @@ export class AttendanceRegularizationService extends BaseService {
                 ? { statusRank: 1, createdAt: -1, shiftDay: -1, _id: -1 }
                 : { createdAt: -1, shiftDay: -1, _id: -1 };
 
+        if (options.grouped) {
+            const groupedSortFieldMap: Record<string, string> = {
+                shiftDay: 'shiftDay',
+                from: 'from',
+                to: 'to',
+                reason: 'reason',
+                status: 'status',
+                createdAt: 'createdAt',
+                userName: 'userName',
+                user: 'userName',
+            };
+            const groupedSortField = options.sortBy ? groupedSortFieldMap[options.sortBy] : undefined;
+            const groupedSort: Record<string, 1 | -1> = groupedSortField
+                ? { [groupedSortField]: sortDirection, groupId: -1 }
+                : { statusRank: 1, createdAt: -1, shiftDay: -1, groupId: -1 };
+
+            const basePipeline: any[] = [
+                { $match: query },
+                {
+                    $lookup: {
+                        from: 'users',
+                        localField: 'userId',
+                        foreignField: '_id',
+                        as: 'user',
+                        pipeline: [{ $project: { _id: 1, name: 1 } }]
+                    }
+                },
+                { $unwind: { path: '$user', preserveNullAndEmptyArrays: true } },
+                { $addFields: { effectiveGroupId: { $ifNull: ['$applicationGroupId', '$_id'] } } },
+                { $sort: { shiftDay: 1, _id: 1 } },
+                {
+                    $group: {
+                        _id: '$effectiveGroupId',
+                        firstRecordId: { $first: '$_id' },
+                        applicationGroupId: { $first: '$applicationGroupId' },
+                        attendanceId: { $first: '$attendanceId' },
+                        shiftDay: { $min: '$shiftDay' },
+                        endShiftDay: { $max: '$shiftDay' },
+                        from: { $min: '$from' },
+                        to: { $max: '$to' },
+                        reason: { $first: '$reason' },
+                        reasons: { $addToSet: '$reason' },
+                        statuses: { $addToSet: '$status' },
+                        approver: { $first: '$approver' },
+                        approvedDate: { $max: '$approvedDate' },
+                        comments: { $first: '$comments' },
+                        userId: { $first: '$user._id' },
+                        userName: { $first: '$user.name' },
+                        createdAt: { $max: '$createdAt' },
+                        records: {
+                            $push: {
+                                _id: '$_id',
+                                applicationGroupId: '$applicationGroupId',
+                                attendanceId: '$attendanceId',
+                                shiftDay: '$shiftDay',
+                                from: '$from',
+                                to: '$to',
+                                reason: '$reason',
+                                status: '$status',
+                                approver: '$approver',
+                                approvedDate: '$approvedDate',
+                                comments: '$comments',
+                                userId: '$user._id',
+                                userName: '$user.name'
+                            }
+                        }
+                    }
+                },
+                {
+                    $addFields: {
+                        groupId: '$_id',
+                        dayCount: { $size: '$records' },
+                        status: {
+                            $cond: [
+                                { $eq: [{ $size: '$statuses' }, 1] },
+                                { $arrayElemAt: ['$statuses', 0] },
+                                'Mixed'
+                            ]
+                        },
+                        statusRank: { $cond: [{ $in: ['Pending', '$statuses'] }, 0, 1] },
+                        reason: {
+                            $cond: [
+                                { $eq: [{ $size: '$reasons' }, 1] },
+                                { $arrayElemAt: ['$reasons', 0] },
+                                'Multiple reasons'
+                            ]
+                        }
+                    }
+                },
+                { $set: { _id: '$firstRecordId' } }
+            ];
+
+            const [records, totals] = await Promise.all([
+                AttendanceRegularization.aggregate([
+                    ...basePipeline,
+                    { $sort: groupedSort },
+                    { $skip: skip },
+                    { $limit: limit },
+                    { $project: { firstRecordId: 0, reasons: 0, statuses: 0, statusRank: 0 } }
+                ]),
+                AttendanceRegularization.aggregate([
+                    ...basePipeline,
+                    { $count: 'total' }
+                ])
+            ]);
+
+            const data = records.map((group: any) => ({
+                ...group,
+                _id: group._id.toString(),
+                groupId: group.groupId.toString(),
+                applicationGroupId: group.applicationGroupId?.toString() || null,
+                attendanceId: group.attendanceId?.toString(),
+                userId: group.userId?.toString() || '',
+                records: (group.records || []).map((record: any) => ({
+                    ...record,
+                    _id: record._id.toString(),
+                    applicationGroupId: record.applicationGroupId?.toString() || null,
+                    attendanceId: record.attendanceId?.toString(),
+                    userId: record.userId?.toString() || ''
+                }))
+            }));
+
+            return {
+                data,
+                meta: {
+                    page,
+                    limit,
+                    total: totals[0]?.total || 0,
+                    totalPages: Math.ceil((totals[0]?.total || 0) / limit)
+                }
+            };
+        }
+
         const [records, total] = await Promise.all([
             AttendanceRegularization.aggregate([
                 { $match: query },
@@ -394,6 +530,7 @@ export class AttendanceRegularizationService extends BaseService {
                 { $limit: limit },
                 {
                     $project: {
+                        applicationGroupId: 1,
                         attendanceId: 1,
                         shiftDay: 1,
                         from: 1,
@@ -413,6 +550,7 @@ export class AttendanceRegularizationService extends BaseService {
 
         const data = records.map(record => ({
             _id: record._id.toString(),
+            applicationGroupId: record.applicationGroupId?.toString() || null,
             attendanceId: record.attendanceId?.toString(),
             shiftDay: record.shiftDay.toISOString(),
             from: record.from.toISOString(),
@@ -460,6 +598,7 @@ export class AttendanceRegularizationService extends BaseService {
 
         return {
             _id: record._id.toString(),
+            applicationGroupId: record.applicationGroupId?.toString() || null,
             attendanceId: record.attendanceId?.toString(),
             shiftDay: record.shiftDay.toISOString(),
             from: record.from.toISOString(),
@@ -474,11 +613,67 @@ export class AttendanceRegularizationService extends BaseService {
         };
     }
 
+    async getRegularizationGroupById(id: string, user: any) {
+        if (!Types.ObjectId.isValid(id)) {
+            throw new Error('Invalid regularization group ID');
+        }
+
+        const objectId = new Types.ObjectId(id);
+        const representative = await AttendanceRegularization.findOne({
+            $or: [{ _id: objectId }, { applicationGroupId: objectId }],
+        }).lean();
+
+        if (!representative) {
+            throw new Error('Regularization group not found');
+        }
+
+        const query = representative.applicationGroupId
+            ? { applicationGroupId: representative.applicationGroupId }
+            : { _id: representative._id };
+        const records = await AttendanceRegularization.find(query)
+            .sort({ shiftDay: 1, _id: 1 })
+            .populate('userId', '_id name')
+            .lean();
+
+        const isAdmin = user.role?.toLowerCase() === 'admin';
+        const isOwner = records.every((record: any) =>
+            record.userId?._id?.toString() === user._id.toString()
+        );
+        const isApprover = records.every((record: any) =>
+            record.approver?.id?.toString() === user._id.toString()
+        );
+
+        if (!isAdmin && !isOwner && !isApprover) {
+            throw new Error('Forbidden: You are not authorized to view this group');
+        }
+
+        return records.map((record: any) => ({
+            _id: record._id.toString(),
+            applicationGroupId: record.applicationGroupId?.toString() || null,
+            attendanceId: record.attendanceId?.toString(),
+            shiftDay: record.shiftDay.toISOString(),
+            from: record.from.toISOString(),
+            to: record.to.toISOString(),
+            reason: record.reason,
+            status: record.status,
+            approver: record.approver,
+            approvedDate: record.approvedDate ? record.approvedDate.toISOString() : null,
+            comments: record.comments || null,
+            userId: record.userId?._id?.toString() || '',
+            userName: record.userId?.name || '',
+        }));
+    }
+
 
     async createRegularization(data: Partial<IAttendanceRegularization>): Promise<IAttendanceRegularization> {
 
         console.log("0 create Att-Regularization", data)
 
+        const normalizedReason = typeof data.reason === 'string' ? data.reason.trim() : '';
+        if (!normalizedReason) {
+            throw new Error('Please provide a valid reason for regularization');
+        }
+        data = { ...data, reason: normalizedReason };
 
         await this.validateRegularization(data as IAttendanceRegularization)
         const regularization = new AttendanceRegularization(data);
@@ -623,6 +818,14 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
         attendanceId?: string | null;
         approver: { id: string; name: string };
     }>): Promise<any> {
+        if (!Array.isArray(data) || data.length === 0) {
+            throw new Error('At least one regularization date is required');
+        }
+        if (data.some(entry => typeof entry.reason !== 'string' || !entry.reason.trim())) {
+            throw new Error('Please provide a valid reason for every regularization date');
+        }
+        data = data.map(entry => ({ ...entry, reason: entry.reason.trim() }));
+
         const results = [];
         const appUrl = process.env.APP_URL || 'http://localhost:5173';
         const companyName = process.env.COMPANY_NAME || 'CloudDesk HRMS';
@@ -637,6 +840,9 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
             toTime: string;
             reason: string;
         }> = [];
+        // One persisted group per employee/approver pair in this submission.
+        // The group id is metadata only; each date remains an independent record.
+        const applicationGroupIds = new Map<string, Types.ObjectId>();
 
         const normalizeObjectId = (id: string): string => new Types.ObjectId(id).toString();
 
@@ -676,7 +882,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
         const [users, admins, attendanceRecords, shiftAssignments, existingRegularizations] = await Promise.all([
             uniqueValidIds.length
                 ? User.find({ _id: { $in: uniqueValidIds.map(id => new Types.ObjectId(id)) } })
-                    .select('name email country')
+                    .select('name email country holidayCalendarId holidayCalendarHistory')
                     .lean()
                 : [],
             User.find({
@@ -686,8 +892,16 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
                 ],
                 active: true
             }).select('name email').lean(),
-            uniqueValidAttendanceIds.length
-                ? AttendanceRecord.find({ _id: { $in: uniqueValidAttendanceIds.map(id => new Types.ObjectId(id)) } })
+            uniqueValidIds.length && validShiftDays.length
+                ? AttendanceRecord.find({
+                    $or: [
+                        { _id: { $in: uniqueValidAttendanceIds.map(id => new Types.ObjectId(id)) } },
+                        {
+                            userId: { $in: uniqueValidIds.map(id => new Types.ObjectId(id)) },
+                            shiftDay: { $in: validShiftDays },
+                        },
+                    ],
+                })
                 : [],
             uniqueValidIds.length && validShiftDays.length
                 ? ShiftAssignment.find({
@@ -710,6 +924,65 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
 
         const usersById = new Map(users.map((user: any) => [user._id.toString(), user]));
         const attendanceById = new Map(attendanceRecords.map((attendance: any) => [attendance._id.toString(), attendance]));
+        const attendanceByUserAndDate = new Map(
+            attendanceRecords.map((attendance: any) => [
+                `${attendance.userId.toString()}:${new Date(attendance.shiftDay).getTime()}`,
+                attendance,
+            ])
+        );
+
+        const relevantYears = new Set(validShiftDays.map(day => day.getUTCFullYear()));
+        const calendarIds = new Set<string>();
+        users.forEach((user: any) => {
+            if (user.holidayCalendarId) calendarIds.add(user.holidayCalendarId.toString());
+            if (Array.isArray(user.holidayCalendarHistory)) {
+                user.holidayCalendarHistory.forEach((entry: any) => {
+                    if (entry?.isActive === true && relevantYears.has(entry.year) && entry.calendarId) {
+                        calendarIds.add(entry.calendarId.toString());
+                    }
+                });
+            }
+        });
+        const holidayCalendars = uniqueValidIds.length
+            ? await HolidayCalendar.find({
+                $or: [
+                    {
+                        _id: {
+                            $in: Array.from(calendarIds)
+                                .filter(id => Types.ObjectId.isValid(id))
+                                .map(id => new Types.ObjectId(id)),
+                        },
+                    },
+                    { assignedTo: { $in: uniqueValidIds.map(id => new Types.ObjectId(id)) } },
+                ],
+            }).select('_id holidays assignedTo year').lean()
+            : [];
+
+        const getBlockingHoliday = (user: any, shiftDay: Date) => {
+            const activeCalendarIds = new Set<string>();
+            if (user.holidayCalendarId) activeCalendarIds.add(user.holidayCalendarId.toString());
+            if (Array.isArray(user.holidayCalendarHistory)) {
+                user.holidayCalendarHistory.forEach((entry: any) => {
+                    if (entry?.isActive === true && entry.year === shiftDay.getUTCFullYear() && entry.calendarId) {
+                        activeCalendarIds.add(entry.calendarId.toString());
+                    }
+                });
+            }
+
+            return holidayCalendars
+                .filter((calendar: any) =>
+                    activeCalendarIds.has(calendar._id.toString()) ||
+                    (calendar.assignedTo || []).some((id: any) => id.toString() === user._id.toString())
+                )
+                .flatMap((calendar: any) => calendar.holidays || [])
+                .find((holiday: any) => {
+                    const holidayDate = new Date(holiday.date);
+                    return holiday.type !== 'optional' &&
+                        holidayDate.getUTCFullYear() === shiftDay.getUTCFullYear() &&
+                        holidayDate.getUTCMonth() === shiftDay.getUTCMonth() &&
+                        holidayDate.getUTCDate() === shiftDay.getUTCDate();
+                });
+        };
         const existingRegularizationKeys = new Set(
             existingRegularizations.map((regularization: any) =>
                 `${regularization.userId.toString()}:${new Date(regularization.shiftDay).getTime()}`
@@ -742,6 +1015,12 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
                 const { userId, date, fromTime, toTime, reason, approver, attendanceId } = entry;
                 const normalizedUserId = normalizeObjectId(userId);
                 const normalizedApproverId = normalizeObjectId(approver.id);
+                const applicationGroupKey = `${normalizedUserId}:${normalizedApproverId}`;
+                let applicationGroupId = applicationGroupIds.get(applicationGroupKey);
+                if (!applicationGroupId) {
+                    applicationGroupId = new Types.ObjectId();
+                    applicationGroupIds.set(applicationGroupKey, applicationGroupId);
+                }
                 // 1. Parse date and convert local times to UTC
                 const shiftDay = new Date(date);
                 shiftDay.setUTCHours(0, 0, 0, 0);
@@ -784,6 +1063,23 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
                 }
                 const shift = shiftAssignment.shiftId;
 
+                const attendanceKey = `${normalizedUserId}:${shiftDay.getTime()}`;
+                const existingAttendanceForDate = attendanceByUserAndDate.get(attendanceKey) as any;
+                const attendanceWithSwipes = attendanceId
+                    ? attendanceById.get(attendanceId) as any
+                    : existingAttendanceForDate;
+                const hasSwipeActivity = Boolean(attendanceWithSwipes?.swipes?.length);
+                const isConfiguredWeekend = Array.isArray(shiftAssignment.weekendDays) &&
+                    shiftAssignment.weekendDays.includes(shiftDay.getUTCDay());
+                const blockingHoliday = getBlockingHoliday(user, shiftDay);
+
+                if (!hasSwipeActivity && isConfiguredWeekend) {
+                    throw new Error('Regularization is not required for a configured weekly-off day without swipe activity');
+                }
+                if (!hasSwipeActivity && blockingHoliday) {
+                    throw new Error(`Regularization is not required for holiday ${blockingHoliday.name} without swipe activity`);
+                }
+
                 //3. shift window
                 const shiftWindow = this.getShiftTimings(shift, shiftDay, user.country);
 
@@ -815,6 +1111,9 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
                             throw new Error('Regularization not allowed for full-day leave or absent days');
                         }
                     }
+                }
+                if (!attendance && existingAttendanceForDate) {
+                    attendance = existingAttendanceForDate;
                 }
                 if (!attendance) {
                     // Create new attendance
@@ -863,6 +1162,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
 
                 // 5. Create regularization record
                 const regularization = new AttendanceRegularization({
+                    applicationGroupId,
                     attendanceId: attendance._id,
                     userId: new Types.ObjectId(userId),
                     from: requestedFrom,
