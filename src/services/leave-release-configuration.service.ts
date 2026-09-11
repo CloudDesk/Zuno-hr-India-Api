@@ -48,6 +48,11 @@ const addFrequencyFromAnchor = (
   frequency: LeaveReleaseFrequency,
   occurrence: number
 ): Date => {
+  if (frequency === 'daily') {
+    const candidate = new Date(anchor);
+    candidate.setUTCDate(candidate.getUTCDate() + occurrence);
+    return candidate;
+  }
   const months = frequency === 'monthly' ? occurrence : frequency === 'quarterly' ? occurrence * 3 : occurrence * 12;
   const targetMonthIndex = anchor.getUTCMonth() + months;
   const targetYear = anchor.getUTCFullYear() + Math.floor(targetMonthIndex / 12);
@@ -100,8 +105,11 @@ export class LeaveReleaseConfigurationService {
   }> {
     if (!input.name?.trim()) throw new Error('Configuration name is required');
     if (!input.leaveType?.trim()) throw new Error('Leave type is required');
-    if (!['monthly', 'quarterly', 'yearly'].includes(input.frequency)) {
+    if (!['daily', 'monthly', 'quarterly', 'yearly'].includes(input.frequency)) {
       throw new Error('Release frequency is invalid');
+    }
+    if (!['active', 'paused', 'inactive'].includes(input.status)) {
+      throw new Error('Invalid activation status');
     }
     if (!Number.isFinite(input.daysPerRelease) || input.daysPerRelease <= 0) {
       throw new Error('Number of days must be greater than zero');
@@ -176,23 +184,40 @@ export class LeaveReleaseConfigurationService {
     const actorId = this.getActorId();
     const existing = await LeaveReleaseConfiguration.findById(id);
     if (!existing) throw new Error('Leave release configuration not found');
-    const { startDate, endDate, employeeIds } = await this.validateInput(input);
-    const today = indiaBusinessDate();
-    const scheduleChanged =
+
+    const requestedStartDate = startOfUtcDate(input.effectiveStartDate);
+    const requestedEndDate = input.effectiveEndDate
+      ? startOfUtcDate(input.effectiveEndDate)
+      : undefined;
+    const existingEndTime = existing.effectiveEndDate?.getTime();
+    const requestedEndTime = requestedEndDate?.getTime();
+    const immutableFieldChanged =
+      existing.leaveType !== input.leaveType ||
       existing.frequency !== input.frequency ||
-      existing.effectiveStartDate.getTime() !== startDate.getTime();
+      existing.daysPerRelease !== input.daysPerRelease ||
+      existing.effectiveStartDate.getTime() !== requestedStartDate.getTime() ||
+      existingEndTime !== requestedEndTime;
+
+    if (immutableFieldChanged) {
+      throw new Error(
+        'Only configuration name, activation status, and eligible employees can be edited after creation'
+      );
+    }
+
+    const { employeeIds } = await this.validateInput(input);
+    const today = indiaBusinessDate();
+    const previousStatus = existing.status;
 
     existing.name = input.name.trim();
-    existing.leaveType = input.leaveType;
-    existing.frequency = input.frequency;
-    existing.daysPerRelease = input.daysPerRelease;
-    existing.effectiveStartDate = startDate;
-    existing.effectiveEndDate = endDate;
     existing.employeeIds = employeeIds;
     existing.status = input.status;
     existing.updatedBy = actorId;
-    if (scheduleChanged || input.status === 'active' && existing.nextRunAt < today) {
-      existing.nextRunAt = nextOccurrenceOnOrAfter(startDate, input.frequency, today);
+    if (input.status === 'active' && (previousStatus !== 'active' || existing.nextRunAt < today)) {
+      existing.nextRunAt = nextOccurrenceOnOrAfter(
+        existing.effectiveStartDate,
+        existing.frequency,
+        today
+      );
     }
     return existing.save();
   }
@@ -279,7 +304,9 @@ export class LeaveReleaseConfigurationService {
         const releaseType = configuration.frequency === 'yearly'
           ? 'annual'
           : configuration.frequency;
-        const period = releaseType === 'monthly'
+        const period = releaseType === 'daily'
+          ? { year: dueDate.getUTCFullYear(), month, day: dueDate.getUTCDate() }
+          : releaseType === 'monthly'
           ? { year: dueDate.getUTCFullYear(), month }
           : releaseType === 'quarterly'
             ? { year: dueDate.getUTCFullYear(), quarter: Math.ceil(month / 3) }

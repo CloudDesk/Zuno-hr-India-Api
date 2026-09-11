@@ -9,8 +9,9 @@ import { generateEmailTemplate } from '../emails/templates';
 
 export interface ILeaveReleaseCreate {
   employeeIds: string[]; // Array of employee IDs
-  releaseType: 'monthly' | 'quarterly' | 'annual';
+  releaseType: 'daily' | 'monthly' | 'quarterly' | 'annual';
   period: {
+    day?: number;
     month?: number;    // 1-12 (required for monthly, except restricted_holiday)
     quarter?: number;  // 1-4 (required for quarterly: Q1=Jan-Mar, Q2=Apr-Jun, Q3=Jul-Sep, Q4=Oct-Dec)
     year: number;      // Required for all types
@@ -81,6 +82,9 @@ export class LeaveReleaseService extends BaseService {
     }
 
     // Validate period
+    if (releaseType === 'daily' && (!period.day || !period.month)) {
+      throw new Error('Day and month are required for daily release');
+    }
     if (releaseType === 'monthly' && leaveType !== 'restricted_holiday' && !period.month) {
       throw new Error('Month is required for monthly release');
     }
@@ -296,7 +300,9 @@ export class LeaveReleaseService extends BaseService {
 
         // Send email notification to employee
         try {
-          const periodDescription = releaseType === 'monthly'
+          const periodDescription = releaseType === 'daily'
+            ? `${period.day}/${period.month}/${period.year}`
+            : releaseType === 'monthly'
             ? `${this.getMonthName(period.month!)} ${period.year}`
             : releaseType === 'quarterly'
               ? `Q${period.quarter} ${period.year}`
@@ -401,6 +407,7 @@ export class LeaveReleaseService extends BaseService {
 
     return await LeaveRelease.find(query)
       .populate('releasedBy', 'name email')
+      .populate('adjustments.adjustedBy', 'name email')
       .sort({ releasedAt: -1 })
       .lean();
   }
@@ -414,7 +421,8 @@ export class LeaveReleaseService extends BaseService {
     year?: number;
     yearLessThan?: number;
     leaveType?: string;
-    releaseType?: 'monthly' | 'quarterly' | 'annual' | 'carryforward';
+    releaseType?: 'daily' | 'monthly' | 'quarterly' | 'annual' | 'carryforward';
+    source?: 'manual' | 'automatic';
     page?: number;
     limit?: number;
   }): Promise<{
@@ -511,6 +519,15 @@ export class LeaveReleaseService extends BaseService {
       }
     }
 
+    if (filters?.source) {
+      const sourceFilter = filters.source === 'manual'
+        // Legacy release records predate the source field and are manual.
+        ? { $or: [{ source: 'manual' }, { source: { $exists: false } }] }
+        : { source: filters.source };
+      if (query.$and) query.$and.push(sourceFilter);
+      else Object.assign(query, sourceFilter);
+    }
+
     const page = filters?.page || 1;
     const limit = filters?.limit || 50;
     const skip = (page - 1) * limit;
@@ -519,6 +536,7 @@ export class LeaveReleaseService extends BaseService {
       LeaveRelease.find(query)
         .populate('employeeId', 'name email employeeCode country')
         .populate('releasedBy', 'name email')
+        .populate('adjustments.adjustedBy', 'name email')
         .sort({ releasedAt: -1 })
         .skip(skip)
         .limit(limit)
@@ -533,6 +551,97 @@ export class LeaveReleaseService extends BaseService {
       limit,
       totalPages: Math.ceil(total / limit)
     };
+  }
+
+  /**
+   * Reduce part of an automatic employee release while preserving the original
+   * release as an immutable audit record.
+   */
+  async reduceAutomaticRelease(
+    releaseId: string,
+    daysReduced: number,
+    reason: string
+  ): Promise<ILeaveRelease> {
+    const actorId = this.context.user?._id;
+    if (!actorId) throw new Error('User not authenticated');
+    if (!Types.ObjectId.isValid(releaseId)) throw new Error('Invalid leave release ID');
+    if (!Number.isFinite(daysReduced) || daysReduced < 0.5 || daysReduced * 2 % 1 !== 0) {
+      throw new Error('Reduction days must be in increments of 0.5');
+    }
+
+    const normalizedReason = reason?.trim();
+    if (!normalizedReason) throw new Error('Reduction reason is required');
+
+    const release = await LeaveRelease.findById(releaseId);
+    if (!release) throw new Error('Leave release not found');
+    if (release.source !== 'automatic') {
+      throw new Error('Only automated leave releases can be reduced here');
+    }
+
+    const alreadyReduced = (release.adjustments || []).reduce(
+      (total, adjustment) => total + Number(adjustment.daysReduced || 0),
+      0
+    );
+    const availableToReduce = Math.max(0, Number(release.daysReleased) - alreadyReduced);
+    if (daysReduced > availableToReduce) {
+      throw new Error(`Reduction cannot exceed the remaining released amount of ${availableToReduce} days`);
+    }
+
+    const employeeId = new Types.ObjectId(release.employeeId.toString());
+    const summary = await this.leaveSummaryService.getLeaveSummary(employeeId, release.period.year);
+    const builtInLeaveTypes = new Set([
+      'annual', 'sick', 'compOff', 'lossOfPay', 'otherPaid', 'otherUnpaid',
+      'maternity', 'workFromHome', 'restricted_holiday'
+    ]);
+    const isBuiltIn = builtInLeaveTypes.has(release.leaveType);
+    const currentSummary: any = summary;
+    const current = isBuiltIn
+      ? Number(currentSummary[release.leaveType]?.alloted || 0)
+      : Number(currentSummary.customLeaveTypes?.[release.leaveType]?.alloted || 0);
+    if (daysReduced > current) {
+      throw new Error(`Reduction cannot exceed the employee's current allotment of ${current} days`);
+    }
+
+    const reducedAllotment = Math.round((current - daysReduced) * 100) / 100;
+    const allotmentUpdate = isBuiltIn
+      ? { [release.leaveType]: reducedAllotment }
+      : { customLeaveTypes: { [release.leaveType]: reducedAllotment } };
+
+    await this.leaveSummaryService.updateLeaveAllotments(
+      employeeId,
+      release.period.year,
+      allotmentUpdate,
+      { skipEmail: true }
+    );
+
+    try {
+      if (!release.adjustments) release.adjustments = [];
+      release.adjustments.push({
+        daysReduced,
+        reason: normalizedReason,
+        adjustedBy: new Types.ObjectId(actorId.toString()),
+        adjustedAt: new Date()
+      });
+      await release.save();
+    } catch (error) {
+      // Keep the balance and audit trail consistent if recording the adjustment fails.
+      await this.leaveSummaryService.updateLeaveAllotments(
+        employeeId,
+        release.period.year,
+        isBuiltIn
+          ? { [release.leaveType]: current }
+          : { customLeaveTypes: { [release.leaveType]: current } },
+        { skipEmail: true }
+      );
+      throw error;
+    }
+
+    const updated = await LeaveRelease.findById(release._id)
+      .populate('employeeId', 'name email employeeCode country')
+      .populate('releasedBy', 'name email')
+      .populate('adjustments.adjustedBy', 'name email');
+    if (!updated) throw new Error('Failed to retrieve adjusted leave release');
+    return updated;
   }
 
   /**
@@ -561,6 +670,11 @@ export class LeaveReleaseService extends BaseService {
 
     if (releaseType === 'monthly' && period.month) {
       query['period.month'] = period.month;
+    }
+
+    if (releaseType === 'daily' && period.month && period.day) {
+      query['period.month'] = period.month;
+      query['period.day'] = period.day;
     }
 
     if (releaseType === 'quarterly' && period.quarter) {
@@ -617,6 +731,9 @@ export class LeaveReleaseService extends BaseService {
     releaseType: ILeaveReleaseCreate['releaseType'],
     period: ILeaveReleaseCreate['period']
   ): string {
+    if (releaseType === 'daily' && period.day && period.month) {
+      return `${String(period.day).padStart(2, '0')}/${String(period.month).padStart(2, '0')}/${period.year}`;
+    }
     if (releaseType === 'monthly' && period.month) {
       return `${this.getMonthName(period.month)} ${period.year}`;
     }

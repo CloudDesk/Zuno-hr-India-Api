@@ -914,6 +914,49 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
     }
   );
 
+  // Admin: Reduce one employee's automated release with an audit reason.
+  fastify.post(
+    '/releases/:releaseId/reductions',
+    {
+      schema: {
+        tags: ['Leave Summary'],
+        summary: 'Reduce an automated leave release for one employee',
+        security: [{ bearerAuth: [] }],
+        body: {
+          type: 'object',
+          required: ['daysReduced', 'reason'],
+          properties: {
+            daysReduced: { type: 'number', minimum: 0.5, multipleOf: 0.5 },
+            reason: { type: 'string', minLength: 1 }
+          }
+        }
+      },
+      preHandler: [authenticate]
+    },
+    async (request, reply) => {
+      try {
+        const userRole = (request.user as any)?.role?.toLowerCase();
+        if (userRole !== 'admin' && userRole !== 'superadmin') {
+          return reply.status(403).send({
+            success: false,
+            error: { message: 'Access denied. Admin role required.' }
+          });
+        }
+
+        const { releaseId } = request.params as { releaseId: string };
+        const { daysReduced, reason } = request.body as { daysReduced: number; reason: string };
+        const service = new LeaveReleaseService(request.container!.requestContext);
+        const release = await service.reduceAutomaticRelease(releaseId, daysReduced, reason);
+        return reply.send({ success: true, data: release });
+      } catch (error: any) {
+        return reply.status(400).send({
+          success: false,
+          error: { message: error.message }
+        });
+      }
+    }
+  );
+
   // Admin: Get all leave releases with employee details
   fastify.get(
     '/releases',
@@ -937,8 +980,13 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
             },
             releaseType: {
               type: 'string',
-              enum: ['monthly', 'quarterly', 'carryforward'],
+              enum: ['daily', 'monthly', 'quarterly', 'annual', 'carryforward'],
               description: 'Filter by release type'
+            },
+            source: {
+              type: 'string',
+              enum: ['manual', 'automatic'],
+              description: 'Filter by manual or automatic releases'
             },
             page: { type: 'number', minimum: 1, default: 1, description: 'Page number' },
             limit: { type: 'number', minimum: 1, maximum: 100, default: 50, description: 'Items per page' }
@@ -994,6 +1042,7 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
         const yearLessThan = queryParams.yearLessThan ? parseInt(queryParams.yearLessThan, 10) : undefined;
         const leaveType = queryParams.leaveType || undefined;
         const releaseType = queryParams.releaseType || undefined;
+        const source = queryParams.source || undefined;
         const search = queryParams.search || undefined;
         const page = queryParams.page ? parseInt(queryParams.page, 10) : 1;
         const limit = queryParams.limit ? parseInt(queryParams.limit, 10) : 50;
@@ -1006,6 +1055,7 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
           yearLessThan,
           leaveType,
           releaseType,
+          source,
           search,
           page,
           limit

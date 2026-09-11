@@ -2,8 +2,9 @@ import { Schema, model, Document, Types } from 'mongoose';
 
 export interface ILeaveRelease extends Document {
   employeeId: Types.ObjectId;
-  releaseType: 'monthly' | 'quarterly' | 'annual' | 'carryforward'; // monthly = 1 month, quarterly = 3 months, annual = yearly allocation, carryforward = year-end carry forward
+  releaseType: 'daily' | 'monthly' | 'quarterly' | 'annual' | 'carryforward';
   period: {
+    day?: number;
     month?: number;      // 1-12 (required for monthly)
     quarter?: number;    // 1-4 (required for quarterly, Q1=Jan-Mar, Q2=Apr-Jun, Q3=Jul-Sep, Q4=Oct-Dec)
     year: number;        // Required for all types. For carryforward, this is the toYear (year the leaves are carried forward to)
@@ -21,6 +22,12 @@ export interface ILeaveRelease extends Document {
   source?: 'manual' | 'automatic';
   automationConfigurationId?: Types.ObjectId;
   scheduledFor?: Date;
+  adjustments?: Array<{
+    daysReduced: number;
+    reason: string;
+    adjustedBy: Types.ObjectId;
+    adjustedAt: Date;
+  }>;
 }
 
 const leaveReleaseSchema = new Schema<ILeaveRelease>(
@@ -28,10 +35,18 @@ const leaveReleaseSchema = new Schema<ILeaveRelease>(
     employeeId: { type: Schema.Types.ObjectId, required: true, ref: 'User' },
     releaseType: {
       type: String,
-      enum: ['monthly', 'quarterly', 'annual', 'carryforward'],
+      enum: ['daily', 'monthly', 'quarterly', 'annual', 'carryforward'],
       required: true
     },
     period: {
+      day: {
+        type: Number,
+        min: 1,
+        max: 31,
+        required: function (this: ILeaveRelease) {
+          return this.releaseType === 'daily';
+        }
+      },
       month: {
         type: Number,
         min: 1,
@@ -101,7 +116,13 @@ const leaveReleaseSchema = new Schema<ILeaveRelease>(
     },
     scheduledFor: {
       type: Date
-    }
+    },
+    adjustments: [{
+      daysReduced: { type: Number, required: true, min: 0.5 },
+      reason: { type: String, required: true, trim: true },
+      adjustedBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+      adjustedAt: { type: Date, default: Date.now, required: true }
+    }]
   },
   {
     timestamps: true
@@ -123,6 +144,14 @@ leaveReleaseSchema.index(
 
 // Validate period based on release type
 leaveReleaseSchema.pre('save', function (next) {
+  if (this.releaseType === 'daily') {
+    if (!this.period.day || !this.period.month) {
+      return next(new Error('Day and month are required for daily release'));
+    }
+    if (this.period.quarter) {
+      return next(new Error('Quarter should not be set for daily release'));
+    }
+  }
   if (this.releaseType === 'monthly') {
     // For restricted_holiday, month is optional, only year is required
     if (this.leaveType !== 'restricted_holiday' && !this.period.month) {

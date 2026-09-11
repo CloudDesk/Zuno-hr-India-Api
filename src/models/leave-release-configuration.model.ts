@@ -1,6 +1,6 @@
 import { Schema, model, Document, Types } from 'mongoose';
 
-export type LeaveReleaseFrequency = 'monthly' | 'quarterly' | 'yearly';
+export type LeaveReleaseFrequency = 'daily' | 'monthly' | 'quarterly' | 'yearly';
 export type LeaveReleaseConfigurationStatus = 'active' | 'paused' | 'inactive';
 
 export interface ILeaveReleaseConfiguration extends Document {
@@ -30,7 +30,7 @@ const leaveReleaseConfigurationSchema = new Schema<ILeaveReleaseConfiguration>(
     leaveType: { type: String, required: true, trim: true },
     frequency: {
       type: String,
-      enum: ['monthly', 'quarterly', 'yearly'],
+      enum: ['daily', 'monthly', 'quarterly', 'yearly'],
       required: true
     },
     daysPerRelease: { type: Number, required: true, min: 0.5 },
