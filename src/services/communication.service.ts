@@ -299,30 +299,52 @@ export class CommunicationService extends BaseService {
                     .join('\n')}`
                 : '';
 
-            // 2. Notify the initial recipients, or only newly assigned recipients during edits.
-            for (const employee of employees) {
-                const firstName = employee.name.split(' ')[0];
-                const text = `Hi ${firstName},\n\n${message}${attachmentText}\n\nBest Regards,\nManagement Team - Cloud Desk Technology Pvt Ltd.`;
+            // 2. Notify recipients with bounded concurrency. Each employee still
+            // receives an individual personalized email, while multiple SMTP
+            // round trips can progress together for large broadcasts.
+            const emailConcurrency = Math.min(5, Math.max(1, employees.length));
+            const emailResults: any[] = new Array(employees.length);
+            let nextEmployeeIndex = 0;
 
-                try {
-                    await emailService.sendEmail({
-                        body: {
-                            to: employee.email,
-                            subject: subject || `${effectiveType} from Cloud Desk`,
-                            text,
-                            html: this.buildCommunicationHtml({
-                                firstName,
-                                message,
-                                attachmentPaths: storedAttachmentPaths
-                            })
-                        },
-                        files: emailAttachments // Note: only new attachments are sent in the new emails
-                    });
-                    results.push({ employeeId: employee._id, status: 'success' });
-                } catch (err: any) {
-                    results.push({ employeeId: employee._id, status: 'failed', error: err.message });
+            const sendEmailWorker = async () => {
+                while (nextEmployeeIndex < employees.length) {
+                    const employeeIndex = nextEmployeeIndex++;
+                    const employee = employees[employeeIndex];
+                    const firstName = employee.name.split(' ')[0];
+                    const text = `Hi ${firstName},\n\n${message}${attachmentText}\n\nBest Regards,\nManagement Team - Cloud Desk Technology Pvt Ltd.`;
+
+                    try {
+                        await emailService.sendEmail({
+                            body: {
+                                to: employee.email,
+                                subject: subject || `${effectiveType} from Cloud Desk`,
+                                text,
+                                html: this.buildCommunicationHtml({
+                                    firstName,
+                                    message,
+                                    attachmentPaths: storedAttachmentPaths
+                                })
+                            },
+                            files: emailAttachments // Only newly uploaded files are attached to new emails.
+                        });
+                        emailResults[employeeIndex] = {
+                            employeeId: employee._id,
+                            status: 'success'
+                        };
+                    } catch (err: any) {
+                        emailResults[employeeIndex] = {
+                            employeeId: employee._id,
+                            status: 'failed',
+                            error: err.message
+                        };
+                    }
                 }
-            }
+            };
+
+            await Promise.all(
+                Array.from({ length: emailConcurrency }, () => sendEmailWorker())
+            );
+            results.push(...emailResults);
 
             const assignedRecipientIds = (socialEvent.targets?.employees || []).map(
                 (id: Types.ObjectId) => id.toString()
@@ -525,8 +547,8 @@ export class CommunicationService extends BaseService {
     /**
      * Get events for the Social Wall
      */
-    async getSocialWall(query: { limit?: number; offset?: number; viewerId?: string; viewerRole?: string; teamOnly?: boolean } = {}): Promise<ISocialEvent[]> {
-        const { limit, viewerId, viewerRole, teamOnly } = query;
+    async getSocialWall(query: { limit?: number; offset?: number; viewerId?: string; viewerRole?: string; teamOnly?: boolean; viewerOnly?: boolean } = {}): Promise<ISocialEvent[]> {
+        const { limit, viewerId, viewerRole, teamOnly, viewerOnly } = query;
         // Event dates are stored as UTC calendar dates. Derive today's calendar
         // date in IST so visibility is consistent regardless of server timezone.
         const todayInIST = getDateKeyInTimeZone(new Date(), 'Asia/Kolkata');
@@ -559,9 +581,47 @@ export class CommunicationService extends BaseService {
             ]
         };
 
-        // If not an admin/HR, add restrictive filters for manual events
-        // OR if teamOnly flag is true (even for admins), enforce strict team filtering
-        if (viewerId && (teamOnly || (viewerRole !== 'admin' && viewerRole !== 'humanResources'))) {
+        // The personal dashboard must respect assignments for every role. Without
+        // this explicit branch, Admin/HR users received every manual event even
+        // when the event was assigned only to specific employees.
+        if (viewerId && viewerOnly) {
+            const viewerObjectId = new Types.ObjectId(viewerId);
+            const viewerTargetFilters: any[] = [
+                { 'targets.employees': viewerObjectId }
+            ];
+
+            if (this.context.user?.departmentId) {
+                viewerTargetFilters.push({ 'targets.departments': this.context.user.departmentId });
+            }
+
+            if (viewerRole) {
+                const roleVariants = Array.from(new Set([
+                    viewerRole,
+                    viewerRole.toLowerCase(),
+                    viewerRole.toUpperCase()
+                ]));
+                viewerTargetFilters.push({ 'targets.roles': { $in: roleVariants } });
+            }
+
+            viewerTargetFilters.push(
+                { 'targets.employees': { $exists: false } },
+                { 'targets.employees': { $size: 0 } }
+            );
+
+            finalQuery = {
+                $or: [
+                    milestoneVisibilityQuery,
+                    {
+                        $and: [
+                            manualVisibilityQuery,
+                            { $or: viewerTargetFilters }
+                        ]
+                    }
+                ]
+            };
+            // If not an admin/HR, add restrictive filters for manual events,
+            // or enforce strict team filtering when teamOnly is requested.
+        } else if (viewerId && (teamOnly || (viewerRole !== 'admin' && viewerRole !== 'humanResources'))) {
             // Find all employees managed by this user
             const managedEmployees = await User.find({ managerId: viewerId }, '_id').lean();
             const managedIds = managedEmployees.map(e => e._id);
