@@ -5,6 +5,8 @@ import { User } from '../models/user.model';
 import { emailService } from './email.service';
 import { Types } from 'mongoose';
 import { saveMultipartFile } from '../utilis/parseMultiPartForm';
+import { deleteFileFromGCP, uploadFileToGCP } from '../utilis/gcpStorage';
+import * as fs from 'fs';
 import * as path from 'path';
 import { config } from '../config';
 
@@ -28,6 +30,10 @@ export class CommunicationService extends BaseService {
     }
 
     private buildAttachmentUrl(storedPath: string): string {
+        if (/^https?:\/\//i.test(storedPath)) {
+            return storedPath;
+        }
+
         const baseUrl = (process.env.API_URL || config.apiUrl || '').replace(/\/$/, '');
         const normalizedPath = storedPath
             .replace(/\\/g, '/')
@@ -82,8 +88,21 @@ export class CommunicationService extends BaseService {
         adminId: string;
         files?: any[]; // Multipart parts
         socialEventId?: string; // Optional: for re-dispatching to existing event
+        active?: boolean;
+        retainedAttachments?: string[];
     }): Promise<any> {
-        const { employeeIds, type, subject, message, eventDate, adminId, files, socialEventId } = data;
+        const {
+            employeeIds,
+            type,
+            subject,
+            message,
+            eventDate,
+            adminId,
+            files,
+            socialEventId,
+            active,
+            retainedAttachments
+        } = data;
 
         const parsedEventDate = new Date(eventDate);
         if (Number.isNaN(parsedEventDate.getTime())) {
@@ -104,38 +123,115 @@ export class CommunicationService extends BaseService {
         }
 
         let socialEvent: any;
-        let newEmployeeIds = [...employeeIds];
+        let newEmployeeIds = [
+            ...new Set((employeeIds || []).map(id => id.toString()))
+        ];
+        if (newEmployeeIds.some(id => !Types.ObjectId.isValid(id))) {
+            throw new Error('One or more employee IDs are invalid');
+        }
 
         if (socialEventId) {
             socialEvent = await SocialEvent.findById(socialEventId);
             if (!socialEvent) throw new Error('Existing event not found');
+
+            // Editing must not resend the communication to recipients who are
+            // already assigned. Only genuinely new selections are notified.
+            const assignedIds = new Set(
+                (socialEvent.targets?.employees || []).map((id: Types.ObjectId) => id.toString())
+            );
+            newEmployeeIds = newEmployeeIds.filter(id => !assignedIds.has(id.toString()));
         }
 
+        const effectiveType = socialEvent?.type || type;
+        const existingAttachmentPaths: string[] = Array.isArray(socialEvent?.attachments)
+            ? socialEvent.attachments
+            : [];
+        let attachmentsToRetain = existingAttachmentPaths;
+
+        if (socialEvent && retainedAttachments !== undefined) {
+            const invalidAttachment = retainedAttachments.some(
+                attachment => !existingAttachmentPaths.includes(attachment)
+            );
+            if (invalidAttachment) {
+                throw new Error('One or more retained attachments are invalid');
+            }
+            attachmentsToRetain = existingAttachmentPaths.filter(
+                attachment => retainedAttachments.includes(attachment)
+            );
+        }
+
+        const removedAttachmentPaths = existingAttachmentPaths.filter(
+            attachment => !attachmentsToRetain.includes(attachment)
+        );
         const employees = await User.find({ _id: { $in: newEmployeeIds.map(id => new Types.ObjectId(id)) } }).lean();
+        const employeeById = new Map(
+            employees.map(employee => [employee._id.toString(), employee])
+        );
+        newEmployeeIds = newEmployeeIds.filter(id => employeeById.has(id.toString()));
+        if (!socialEventId && newEmployeeIds.length === 0) {
+            throw new Error('Please select at least one valid employee');
+        }
+        const assignedByObjectId = new Types.ObjectId(adminId);
+        const assignmentTimestamp = new Date();
+        const assignmentEntries = newEmployeeIds.map(id => {
+            const employee = employeeById.get(id.toString())!;
+            return {
+                employeeId: new Types.ObjectId(id),
+                employeeName: employee.name,
+                employeeCode: employee.employeeCode,
+                employeeEmail: employee.email,
+                assignedAt: assignmentTimestamp,
+                assignedBy: assignedByObjectId,
+                assignedByName: this.context.user?.name || 'Admin'
+            };
+        });
 
         const attachmentPaths: string[] = [];
         const emailAttachments: any[] = [];
+        const temporaryAttachmentPaths: string[] = [];
+        const uploadedAttachmentUrls: string[] = [];
         const results = [];
-
-        // Save files (only if new files are provided)
-        if (files && files.length > 0) {
-            const uploadDir = path.join(process.cwd(), 'uploads', 'communications');
-            for (const file of files) {
-                const filename = `${Date.now()}-${file.filename}`;
-                const targetPath = path.join(uploadDir, filename);
-                await saveMultipartFile(file, targetPath);
-
-                attachmentPaths.push(`uploads/communications/${filename}`);
-                emailAttachments.push({
-                    filename: file.filename,
-                    path: targetPath,
-                    mimetype: file.mimetype
-                });
-            }
-        }
-
+        const eventStorageId = socialEvent?._id || new Types.ObjectId();
+        let attachmentsPersisted = false;
         let updateData: any = {};
         try {
+            // Follow the same temporary-file -> GCP -> database flow used by
+            // documents and payslips. One event owns one shared copy of each
+            // attachment, regardless of how many employees receive it.
+            if (files && files.length > 0) {
+                const uploadDir = path.join(process.cwd(), 'uploads', 'communications');
+
+                for (const [index, file] of files.entries()) {
+                    const originalFileName = path.basename(file.filename || `attachment-${index + 1}`);
+                    const safeFileName = originalFileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+                    const storedFileName = `${Date.now() + index}-${safeFileName}`;
+                    const targetPath = path.join(uploadDir, storedFileName);
+
+                    await saveMultipartFile(file, targetPath);
+                    temporaryAttachmentPaths.push(targetPath);
+
+                    const gcpResult = await uploadFileToGCP({
+                        filePath: targetPath,
+                        fileName: storedFileName,
+                        employeeId: eventStorageId.toString(),
+                        category: 'Communication',
+                        type: effectiveType
+                    });
+
+                    if (!gcpResult.success || !gcpResult.fileUrl) {
+                        throw new Error(`Failed to upload communication attachment to GCP: ${gcpResult.error || 'Unknown error'}`);
+                    }
+
+                    attachmentPaths.push(gcpResult.fileUrl);
+                    uploadedAttachmentUrls.push(gcpResult.fileUrl);
+                    emailAttachments.push({
+                        filename: originalFileName,
+                        path: targetPath,
+                        mimetype: file.mimetype
+                    });
+                }
+            }
+
             // 1. Record/Update the event for the Social Wall
             if (socialEventId && socialEvent) {
                 // Update existing event using safer findByIdAndUpdate
@@ -143,15 +239,19 @@ export class CommunicationService extends BaseService {
                     $set: {
                         subject,
                         message,
-                        eventDate: new Date(eventDate)
+                        eventDate: parsedEventDate,
+                        active: active ?? socialEvent.active !== false,
+                        attachments: [...attachmentsToRetain, ...attachmentPaths]
                     },
                     $addToSet: {
                         "targets.employees": { $each: newEmployeeIds.map(id => new Types.ObjectId(id)) }
                     }
                 };
 
-                if (attachmentPaths.length > 0) {
-                    (updateData as any).$push = { attachments: { $each: attachmentPaths } };
+                if (assignmentEntries.length > 0) {
+                    updateData.$push = {
+                        assignmentHistory: { $each: assignmentEntries }
+                    };
                 }
 
                 await SocialEvent.findByIdAndUpdate(socialEventId, updateData);
@@ -160,16 +260,34 @@ export class CommunicationService extends BaseService {
             } else {
                 // Create new event
                 socialEvent = await new SocialEvent({
+                    _id: eventStorageId,
                     type,
                     subject,
                     message,
-                    eventDate: new Date(eventDate),
+                    eventDate: parsedEventDate,
+                    active: active ?? true,
                     attachments: attachmentPaths,
                     postedBy: new Types.ObjectId(adminId),
                     targets: {
                         employees: newEmployeeIds.map(id => new Types.ObjectId(id))
-                    }
+                    },
+                    assignmentHistory: assignmentEntries
                 }).save();
+            }
+            attachmentsPersisted = true;
+
+            if (removedAttachmentPaths.length > 0) {
+                const deletionResults = await Promise.all(
+                    removedAttachmentPaths.map(async fileUrl => ({
+                        fileUrl,
+                        result: await deleteFileFromGCP(fileUrl)
+                    }))
+                );
+                deletionResults.forEach(({ fileUrl, result }) => {
+                    if (!result.success) {
+                        console.error(`Failed to delete removed communication attachment ${fileUrl}:`, result.error);
+                    }
+                });
             }
 
             const storedAttachmentPaths = Array.isArray(socialEvent.attachments)
@@ -181,7 +299,7 @@ export class CommunicationService extends BaseService {
                     .join('\n')}`
                 : '';
 
-            // 2. Send Emails to all selected recipients (allows for re-dispatch/corrections)
+            // 2. Notify the initial recipients, or only newly assigned recipients during edits.
             for (const employee of employees) {
                 const firstName = employee.name.split(' ')[0];
                 const text = `Hi ${firstName},\n\n${message}${attachmentText}\n\nBest Regards,\nManagement Team - Cloud Desk Technology Pvt Ltd.`;
@@ -190,7 +308,7 @@ export class CommunicationService extends BaseService {
                     await emailService.sendEmail({
                         body: {
                             to: employee.email,
-                            subject: subject || `${type} from Cloud Desk`,
+                            subject: subject || `${effectiveType} from Cloud Desk`,
                             text,
                             html: this.buildCommunicationHtml({
                                 firstName,
@@ -206,16 +324,85 @@ export class CommunicationService extends BaseService {
                 }
             }
 
+            const assignedRecipientIds = (socialEvent.targets?.employees || []).map(
+                (id: Types.ObjectId) => id.toString()
+            );
+            const assignedRecipientRecords = await User.find(
+                { _id: { $in: assignedRecipientIds.map((id: string) => new Types.ObjectId(id)) } },
+                '_id name email employeeCode'
+            ).lean();
+            const historyEvent: any = await SocialEvent.findById(socialEvent._id)
+                .select('assignmentHistory createdAt')
+                .populate('assignmentHistory.employeeId', 'name email employeeCode')
+                .populate('assignmentHistory.assignedBy', 'name email employeeCode')
+                .lean();
+            const assignmentHistory = historyEvent?.assignmentHistory?.length > 0
+                ? historyEvent.assignmentHistory
+                : assignedRecipientRecords.map(recipient => ({
+                    employeeId: {
+                        _id: recipient._id.toString(),
+                        name: recipient.name,
+                        email: recipient.email,
+                        employeeCode: recipient.employeeCode
+                    },
+                    assignedAt: historyEvent?.createdAt || socialEvent.createdAt,
+                    assignedBy: null,
+                    legacy: true
+                }));
+
             return {
                 success: true,
                 socialEventId: socialEvent._id,
                 total: employees.length,
-                results
+                results,
+                assignedRecipients: assignedRecipientRecords.map(recipient => ({
+                    _id: recipient._id.toString(),
+                    name: recipient.name,
+                    email: recipient.email,
+                    employeeCode: recipient.employeeCode
+                })),
+                assignmentHistory,
+                attachments: storedAttachmentPaths,
+                active: socialEvent.active !== false,
+                type: socialEvent.type
             };
         } catch (error: any) {
+            // If persistence failed, avoid leaving uploaded GCP objects that no
+            // event references. Once the event is saved, its attachments must
+            // remain available even if an individual email later fails.
+            if (!attachmentsPersisted && uploadedAttachmentUrls.length > 0) {
+                await Promise.allSettled(
+                    uploadedAttachmentUrls.map(fileUrl => deleteFileFromGCP(fileUrl))
+                );
+            }
             console.error('Error in sendPersonalizedGreeting:', error);
             throw error;
+        } finally {
+            await Promise.allSettled(
+                temporaryAttachmentPaths.map(filePath => fs.promises.unlink(filePath))
+            );
         }
+    }
+
+    async updateCommunicationStatus(id: string, active: boolean): Promise<ISocialEvent> {
+        if (!Types.ObjectId.isValid(id)) {
+            throw new Error('Invalid communication ID');
+        }
+
+        const event = await SocialEvent.findOneAndUpdate(
+            {
+                _id: new Types.ObjectId(id),
+                type: { $nin: ['Birthday', 'Anniversary'] }
+            },
+            { $set: { active } },
+            { new: true }
+        ).lean();
+
+        if (!event) {
+            throw new Error('Communication not found');
+        }
+
+        return event as ISocialEvent;
     }
 
     /**
@@ -340,21 +527,35 @@ export class CommunicationService extends BaseService {
      */
     async getSocialWall(query: { limit?: number; offset?: number; viewerId?: string; viewerRole?: string; teamOnly?: boolean } = {}): Promise<ISocialEvent[]> {
         const { limit, viewerId, viewerRole, teamOnly } = query;
-        // Calculate boundaries using project-standard IST to prevent UTC-offset hidden milestones
-        const nowIST = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
-        nowIST.setHours(0, 0, 0, 0);
-
-        // This today starts at 00:00 IST of the current project day
-        const todayAtStartOfIST = new Date(nowIST.getTime() - (nowIST.getTimezoneOffset() * 60000));
+        // Event dates are stored as UTC calendar dates. Derive today's calendar
+        // date in IST so visibility is consistent regardless of server timezone.
+        const todayInIST = getDateKeyInTimeZone(new Date(), 'Asia/Kolkata');
+        const todayAtStartOfIST = new Date(`${todayInIST}T00:00:00.000Z`);
         const tomorrowAtStartOfIST = new Date(todayAtStartOfIST.getTime() + 86400000);
+
+        const milestoneVisibilityQuery = {
+            type: { $in: ['Birthday', 'Anniversary'] },
+            eventDate: { $gte: todayAtStartOfIST, $lt: tomorrowAtStartOfIST }
+        };
+        const manualVisibilityQuery = {
+            $or: [
+                // Policies remain available every day, irrespective of their issue date.
+                { type: 'Policy' },
+                // Event, Other and legacy Greeting communications are date-specific.
+                {
+                    type: { $in: ['Event', 'Other', 'Greeting'] },
+                    eventDate: { $gte: todayAtStartOfIST, $lt: tomorrowAtStartOfIST }
+                }
+            ]
+        };
 
         let finalQuery: any = {
             $or: [
                 // 1. All Milestones (Global - everyone sees birthdays/anniversaries)
-                { type: { $in: ['Birthday', 'Anniversary'] }, eventDate: { $gte: todayAtStartOfIST, $lt: tomorrowAtStartOfIST } },
+                milestoneVisibilityQuery,
 
-                // 2. Future Manual Events
-                { type: { $nin: ['Birthday', 'Anniversary'] }, eventDate: { $gte: todayAtStartOfIST } }
+                // 2. Manual communications following their type-based visibility window
+                manualVisibilityQuery
             ]
         };
 
@@ -369,22 +570,25 @@ export class CommunicationService extends BaseService {
             finalQuery = {
                 $or: [
                     // Milestones stay global
-                    { type: { $in: ['Birthday', 'Anniversary'] }, eventDate: { $gte: todayAtStartOfIST, $lt: tomorrowAtStartOfIST } },
+                    milestoneVisibilityQuery,
 
                     // Manual events restricted to Target list or Team Context
                     {
-                        type: { $nin: ['Birthday', 'Anniversary'] },
-                        eventDate: { $gte: todayAtStartOfIST },
-                        $or: [
-                            { 'targets.employees': viewerObjectId }, // Directly targeted (Self)
-                            { 'targets.employees': { $in: managedIds } }, // Targeted at team member (Only Team)
-                            // Include Dept/Role only if NOT in strict 'teamOnly' mode
-                            ...(!teamOnly ? [
-                                { 'targets.departments': this.context.user?.departmentId },
-                                { 'targets.roles': this.context.user?.role }
-                            ] : []),
-                            { 'targets.employees': { $exists: false } }, // Public Global fallback
-                            { 'targets.employees': { $size: 0 } } // Public Global fallback
+                        $and: [
+                            manualVisibilityQuery,
+                            {
+                                $or: [
+                                    { 'targets.employees': viewerObjectId }, // Directly targeted (Self)
+                                    { 'targets.employees': { $in: managedIds } }, // Targeted at team member (Only Team)
+                                    // Include Dept/Role only if NOT in strict 'teamOnly' mode
+                                    ...(!teamOnly ? [
+                                        { 'targets.departments': this.context.user?.departmentId },
+                                        { 'targets.roles': this.context.user?.role }
+                                    ] : []),
+                                    { 'targets.employees': { $exists: false } }, // Public Global fallback
+                                    { 'targets.employees': { $size: 0 } } // Public Global fallback
+                                ]
+                            }
                         ]
                     }
                 ]
@@ -395,18 +599,31 @@ export class CommunicationService extends BaseService {
             // This fixes the "Global Leak" where private events were visible to anonymous/unmapped users.
             finalQuery = {
                 $or: [
-                    { type: { $in: ['Birthday', 'Anniversary'] }, eventDate: { $gte: todayAtStartOfIST, $lt: tomorrowAtStartOfIST } },
-                    { 
-                        type: { $nin: ['Birthday', 'Anniversary'] }, 
-                        eventDate: { $gte: todayAtStartOfIST },
-                        $or: [
-                            { 'targets.employees': { $exists: false } },
-                            { 'targets.employees': { $size: 0 } }
+                    milestoneVisibilityQuery,
+                    {
+                        $and: [
+                            manualVisibilityQuery,
+                            {
+                                $or: [
+                                    { 'targets.employees': { $exists: false } },
+                                    { 'targets.employees': { $size: 0 } }
+                                ]
+                            }
                         ]
                     }
                 ]
             };
         }
+
+        // Keep inactive communications in admin history while removing them
+        // from every user-facing social-wall response. `$ne: false` preserves
+        // visibility for legacy records created before the field existed.
+        finalQuery = {
+            $and: [
+                { active: { $ne: false } },
+                finalQuery
+            ]
+        };
 
         return SocialEvent.find(finalQuery)
             .sort({ eventDate: 1, createdAt: -1 })
@@ -522,11 +739,30 @@ export class CommunicationService extends BaseService {
                 .skip(skip)
                 .limit(Number(limit))
                 .populate('employeeId', 'name profilePicture')
+                .populate('targets.employees', 'name email employeeCode active')
+                .populate('assignmentHistory.employeeId', 'name email employeeCode active')
+                .populate('assignmentHistory.assignedBy', 'name email employeeCode')
                 .lean()
         ]);
 
+        const resultsWithAssignmentHistory = results.map((event: any) => {
+            if (event.assignmentHistory?.length > 0) return event;
+
+            return {
+                ...event,
+                assignmentHistory: (event.targets?.employees || [])
+                    .filter(Boolean)
+                    .map((employee: any) => ({
+                        employeeId: employee,
+                        assignedAt: event.createdAt,
+                        assignedBy: null,
+                        legacy: true
+                    }))
+            };
+        });
+
         return {
-            data: results,
+            data: resultsWithAssignmentHistory,
             meta: {
                 total,
                 page: Number(page),
@@ -555,6 +791,7 @@ export class CommunicationService extends BaseService {
         const allowedTypes = ['Event', 'Policy', 'Other', 'Greeting'];
         const finalQuery: any = {
             type: type && allowedTypes.includes(type) ? type : { $in: allowedTypes },
+            active: { $ne: false },
             $or: [
                 { 'targets.employees': viewerObjectId },
                 { 'targets.departments': viewer.departmentId },

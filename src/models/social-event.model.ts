@@ -6,6 +6,7 @@ export interface ISocialEvent extends Document {
     subject: string;
     message: string;
     eventDate: Date; // For sorting and persistence logic
+    active: boolean; // Inactive communications remain in admin history but are hidden from users
     attachments?: string[]; // Array of file paths/URLs
     expiryDate?: Date; // Optional: when the post should disappear
     postedBy: Types.ObjectId | 'SYSTEM';
@@ -19,6 +20,15 @@ export interface ISocialEvent extends Document {
         departments?: string[];
         employees?: Types.ObjectId[];
     };
+    assignmentHistory?: Array<{
+        employeeId: Types.ObjectId;
+        employeeName?: string;
+        employeeCode?: string;
+        employeeEmail?: string;
+        assignedAt: Date;
+        assignedBy: Types.ObjectId;
+        assignedByName?: string;
+    }>;
     createdAt: Date;
     updatedAt: Date;
 }
@@ -34,6 +44,7 @@ const socialEventSchema = new Schema<ISocialEvent>(
         subject: { type: String, required: true },
         message: { type: String, required: true },
         eventDate: { type: Date, required: true },
+        active: { type: Boolean, default: true, index: true },
         attachments: [{ type: String }],
         expiryDate: { type: Date },
         postedBy: { type: Schema.Types.Mixed, required: true },
@@ -43,6 +54,16 @@ const socialEventSchema = new Schema<ISocialEvent>(
             departments: [{ type: String }],
             employees: [{ type: Schema.Types.ObjectId, ref: 'User' }],
         },
+        assignmentHistory: [{
+            employeeId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+            employeeName: { type: String },
+            employeeCode: { type: String },
+            employeeEmail: { type: String },
+            assignedAt: { type: Date, default: Date.now, required: true },
+            assignedBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+            assignedByName: { type: String },
+            _id: false
+        }],
     },
     { timestamps: true }
 );
