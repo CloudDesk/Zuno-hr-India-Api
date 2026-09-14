@@ -341,9 +341,15 @@ export class LeaveSummaryService extends BaseService {
     releases.forEach((release: any) => {
       const leaveType = String(release.leaveType || '');
       const values = releaseAllotments.get(leaveType) || [0, 0, 0, 0];
-      const daysReleased = this.roundLeaveDays(Number(release.daysReleased) || 0);
+      const totalReduced = (release.adjustments || []).reduce(
+        (total: number, adjustment: any) => total + Number(adjustment.daysReduced || 0),
+        0
+      );
+      const daysReleased = this.roundLeaveDays(
+        Math.max(0, (Number(release.daysReleased) || 0) - totalReduced)
+      );
 
-      if (release.releaseType === 'monthly' && release.period?.month) {
+      if ((release.releaseType === 'daily' || release.releaseType === 'monthly') && release.period?.month) {
         values[this.getQuarterIndexFromMonth(Number(release.period.month))] += daysReleased;
       } else if (release.releaseType === 'quarterly' && release.period?.quarter) {
         values[Math.max(0, Math.min(3, Number(release.period.quarter) - 1))] += daysReleased;
@@ -552,6 +558,7 @@ export class LeaveSummaryService extends BaseService {
     allotments: {
       annual?: number;
       sick?: number;
+      lossOfPay?: number;
       otherPaid?: number;
       otherUnpaid?: number;
       compOff?: number;
@@ -651,6 +658,23 @@ export class LeaveSummaryService extends BaseService {
           });
         }
         summary.sick.alloted = allotments.sick;
+      }
+      if (allotments.lossOfPay !== undefined) {
+        const oldValue = summary.lossOfPay?.alloted || 0;
+        const newValue = allotments.lossOfPay;
+        if (oldValue !== newValue && editorId) {
+          editHistoryEntries.push({
+            editedBy: {
+              id: typeof editorId === 'string' ? editorId : editorId.toString(),
+              name: editorName
+            },
+            field: 'lossOfPay.alloted',
+            oldValue,
+            newValue,
+            editedAt: new Date()
+          });
+        }
+        summary.lossOfPay.alloted = allotments.lossOfPay;
       }
       if (allotments.otherPaid !== undefined) {
         const oldValue = summary.otherPaid?.alloted || 0;

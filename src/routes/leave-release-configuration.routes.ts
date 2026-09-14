@@ -16,7 +16,7 @@ const configurationBodySchema = {
   properties: {
     name: { type: 'string', minLength: 1 },
     leaveType: { type: 'string', minLength: 1 },
-    frequency: { type: 'string', enum: ['monthly', 'quarterly', 'yearly'] },
+    frequency: { type: 'string', enum: ['daily', 'monthly', 'quarterly', 'yearly'] },
     daysPerRelease: { type: 'number', exclusiveMinimum: 0 },
     effectiveStartDate: { type: 'string' },
     effectiveEndDate: { anyOf: [{ type: 'string' }, { type: 'null' }] },

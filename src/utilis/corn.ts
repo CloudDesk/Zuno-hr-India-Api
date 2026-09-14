@@ -8,6 +8,9 @@ import { LeaveReleaseConfigurationService } from '../services/leave-release-conf
 const DEFAULT_MISSING_CHECKOUT_CRON = '0 0 * * *';
 const DEFAULT_MISSING_CHECKOUT_TIME = '00:00';
 const DEFAULT_MISSING_CHECKOUT_TIMEZONE = 'Asia/Kolkata';
+const DEFAULT_AUTOMATED_LEAVE_RELEASE_CRON = '5 0 * * *';
+const DEFAULT_AUTOMATED_LEAVE_RELEASE_TIME = '00:05';
+const DEFAULT_AUTOMATED_LEAVE_RELEASE_TIMEZONE = 'Asia/Kolkata';
 
 const configuredMissingCheckoutTime =
     process.env.MISSING_CHECKOUT_REMINDER_TIME?.trim() || DEFAULT_MISSING_CHECKOUT_TIME;
@@ -34,6 +37,19 @@ const missingCheckoutTimezone = isValidTimezone(configuredMissingCheckoutTimezon
     ? configuredMissingCheckoutTimezone
     : DEFAULT_MISSING_CHECKOUT_TIMEZONE;
 
+const configuredAutomatedLeaveReleaseTime =
+    process.env.AUTOMATED_LEAVE_RELEASE_TIME?.trim() || DEFAULT_AUTOMATED_LEAVE_RELEASE_TIME;
+const automatedLeaveReleaseTimeMatch =
+    /^([01]\d|2[0-3]):([0-5]\d)$/.exec(configuredAutomatedLeaveReleaseTime);
+const automatedLeaveReleaseCron = automatedLeaveReleaseTimeMatch
+    ? `${Number(automatedLeaveReleaseTimeMatch[2])} ${Number(automatedLeaveReleaseTimeMatch[1])} * * *`
+    : DEFAULT_AUTOMATED_LEAVE_RELEASE_CRON;
+const configuredAutomatedLeaveReleaseTimezone =
+    process.env.AUTOMATED_LEAVE_RELEASE_TIMEZONE?.trim() || DEFAULT_AUTOMATED_LEAVE_RELEASE_TIMEZONE;
+const automatedLeaveReleaseTimezone = isValidTimezone(configuredAutomatedLeaveReleaseTimezone)
+    ? configuredAutomatedLeaveReleaseTimezone
+    : DEFAULT_AUTOMATED_LEAVE_RELEASE_TIMEZONE;
+
 if (missingCheckoutCron !== configuredMissingCheckoutCron) {
     console.warn(
         `[CRON] Invalid MISSING_CHECKOUT_REMINDER_CRON "${configuredMissingCheckoutCron}"; ` +
@@ -52,6 +68,20 @@ if (missingCheckoutTimezone !== configuredMissingCheckoutTimezone) {
     console.warn(
         `[CRON] Invalid MISSING_CHECKOUT_REMINDER_TIMEZONE "${configuredMissingCheckoutTimezone}"; ` +
         `using ${DEFAULT_MISSING_CHECKOUT_TIMEZONE}.`
+    );
+}
+
+if (!automatedLeaveReleaseTimeMatch) {
+    console.warn(
+        `[CRON] Invalid AUTOMATED_LEAVE_RELEASE_TIME "${configuredAutomatedLeaveReleaseTime}"; ` +
+        `expected HH:mm and using ${DEFAULT_AUTOMATED_LEAVE_RELEASE_TIME}.`
+    );
+}
+
+if (automatedLeaveReleaseTimezone !== configuredAutomatedLeaveReleaseTimezone) {
+    console.warn(
+        `[CRON] Invalid AUTOMATED_LEAVE_RELEASE_TIMEZONE "${configuredAutomatedLeaveReleaseTimezone}"; ` +
+        `using ${DEFAULT_AUTOMATED_LEAVE_RELEASE_TIMEZONE}.`
     );
 }
 
@@ -93,8 +123,12 @@ cron.schedule(missingCheckoutCron, async () => {
     }
 }, { timezone: missingCheckoutTimezone });
 
-// 12:05 AM IST: process leave credits due for the new business date.
-cron.schedule('5 0 * * *', async () => {
+// Process automatic leave credits at the configured daily business time.
+console.log(
+    `[CRON] Automated leave release scheduled as "${automatedLeaveReleaseCron}" ` +
+    `in ${automatedLeaveReleaseTimezone}.`
+);
+cron.schedule(automatedLeaveReleaseCron, async () => {
     try {
         console.log('[CRON] Running scheduled leave releases...');
         const result = await LeaveReleaseConfigurationService.processDueConfigurations();
@@ -102,4 +136,4 @@ cron.schedule('5 0 * * *', async () => {
     } catch (err) {
         console.error('[CRON] Error processing scheduled leave releases', err);
     }
-}, { timezone: 'Asia/Kolkata' });
+}, { timezone: automatedLeaveReleaseTimezone });

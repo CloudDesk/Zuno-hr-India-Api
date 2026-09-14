@@ -737,7 +737,8 @@ export class DashboardService extends BaseService {
             communicationService.getSocialWall({
                 limit: 10,
                 viewerId: this.context.user?._id.toString(),
-                viewerRole: this.context.user?.role
+                viewerRole: this.context.user?.role,
+                viewerOnly: true
             })
         ]);
         const userStats = stats[0];
