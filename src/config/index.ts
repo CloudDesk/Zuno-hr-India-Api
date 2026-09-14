@@ -6,6 +6,7 @@ interface Config {
   cookieSecret?: string;
   corsOrigins: boolean | string[];
   apiUrl: string;
+  EMAIL_PROVIDER: 'gmail' | 'outlook';
   GMAIL_SERVICE: string;
   GMAIL_HOST: string
   GMAIL_PORT: number;
@@ -36,6 +37,9 @@ export const config: Config = {
   apiUrl: process.env.API_URL || 'http://localhost:5800',
 
   // Email configuration
+  EMAIL_PROVIDER: process.env.EMAIL_PROVIDER?.trim().toLowerCase() === 'outlook'
+    ? 'outlook'
+    : 'gmail',
   GMAIL_SERVICE: process.env.GMAIL_SERVICE || 'default-gmail-service',
   GMAIL_HOST: process.env.GMAIL_HOST || 'default-gmail-host',
   GMAIL_PORT: process.env.GMAIL_PORT ? parseInt(process.env.GMAIL_PORT, 10) : 123,

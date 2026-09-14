@@ -44,12 +44,14 @@ export class EmailService {
 
     constructor() {
         this.parentDir = process.cwd();
-        const hasOutlookConfig = Boolean(
-            config.OUTLOOK_HOST &&
-            config.OUTLOOK_AUTH_USER &&
-            config.OUTLOOK_AUTH_PASSWORD
-        );
-        const emailConfig = hasOutlookConfig
+        const requestedProvider = process.env.EMAIL_PROVIDER?.trim().toLowerCase();
+        if (requestedProvider && requestedProvider !== 'gmail' && requestedProvider !== 'outlook') {
+            console.warn(
+                `[EMAIL] Unsupported EMAIL_PROVIDER="${requestedProvider}". Falling back to Gmail.`
+            );
+        }
+
+        const emailConfig = config.EMAIL_PROVIDER === 'outlook'
             ? {
                 service: config.OUTLOOK_SERVICE,
                 host: config.OUTLOOK_HOST as string,
@@ -68,6 +70,29 @@ export class EmailService {
                 fromEmail: config.GMAIL_AUTH_USER,
                 fromName: 'Zuno HR',
             };
+
+        const requiredProviderVariables = config.EMAIL_PROVIDER === 'outlook'
+            ? [
+                ['OUTLOOK_HOST', emailConfig.host],
+                ['OUTLOOK_AUTH_USER', emailConfig.user],
+                ['OUTLOOK_AUTH_PASSWORD', emailConfig.pass]
+            ]
+            : [
+                ['GMAIL_HOST', emailConfig.host],
+                ['GMAIL_AUTH_USER', emailConfig.user],
+                ['GMAIL_AUTH_PASSWORD', emailConfig.pass]
+            ];
+        const missingVariableNames = requiredProviderVariables
+            .filter(([, value]) => !value || String(value).startsWith('default-'))
+            .map(([name]) => name);
+
+        if (missingVariableNames.length > 0) {
+            throw new Error(
+                `[EMAIL] ${config.EMAIL_PROVIDER} provider is missing required configuration: ${missingVariableNames.join(', ')}`
+            );
+        }
+
+        console.info(`[EMAIL] Using ${config.EMAIL_PROVIDER} SMTP provider.`);
         this.fromEmail = emailConfig.fromEmail;
         this.fromName = emailConfig.fromName;
         const port = emailConfig.port;

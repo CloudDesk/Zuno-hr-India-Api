@@ -7,6 +7,7 @@ declare global {
       MONGODB_URI: string;
       JWT_SECRET: string;
       CORS_ORIGINS: string;
+      EMAIL_PROVIDER?: 'gmail' | 'outlook' | string;
       GMAIL_SERVICE?: string;
       GMAIL_HOST?: string;
       GMAIL_PORT?: string;
