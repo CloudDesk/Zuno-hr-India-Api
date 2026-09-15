@@ -6,6 +6,7 @@ import { User } from '../models';
 import { Types } from 'mongoose';
 import { emailService } from './email.service';
 import { generateEmailTemplate } from '../emails/templates';
+import mongoose from 'mongoose';
 
 export interface ILeaveReleaseCreate {
   employeeIds: string[]; // Array of employee IDs
@@ -79,6 +80,10 @@ export class LeaveReleaseService extends BaseService {
 
     if (!releasedBy) {
       throw new Error('User not authenticated');
+    }
+
+    if (!previewOnly && !normalizedRequestId) {
+      throw new Error('A requestId is required to safely process a leave release');
     }
 
     // Validate period
@@ -218,53 +223,51 @@ export class LeaveReleaseService extends BaseService {
     // Process each validated employee
     for (const releaseTarget of employeesToRelease) {
       const { employeeId, employeeObjectId, employee, duplicateOfReleaseId } = releaseTarget;
+      const session = await mongoose.startSession();
       try {
+        let release: ILeaveRelease | null = null;
+        let updatedSummary: any;
         let isIdempotentReplay = false;
 
-        // Create the release record before mutating balance so a retried request
-        // with the same requestId is stopped before a second credit can happen.
-        const release = await LeaveRelease.create({
-          employeeId: employeeObjectId,
-          releaseType,
-          period,
-          leaveType,
-          daysReleased,
-          releasedBy,
-          notes,
-          requestId: normalizedRequestId,
-          isOverride: Boolean(duplicateOfReleaseId),
-          overrideReason: duplicateOfReleaseId ? overrideReason?.trim() : undefined,
-          duplicateOfReleaseId,
-          source: source || 'manual',
-          automationConfigurationId: automationConfigurationId
-            ? new Types.ObjectId(automationConfigurationId)
-            : undefined,
-          scheduledFor
-        }).catch(async (error: any) => {
-          if (normalizedRequestId && error?.code === 11000) {
-            const existingRequestRelease = await this.findReleaseByRequestId(normalizedRequestId, employeeObjectId);
+        await session.withTransaction(async () => {
+          if (normalizedRequestId) {
+            const existingRequestRelease = await LeaveRelease.findOne({
+              requestId: normalizedRequestId,
+              employeeId: employeeObjectId
+            }).session(session);
             if (existingRequestRelease) {
               isIdempotentReplay = true;
-              return existingRequestRelease;
+              release = existingRequestRelease;
+              return;
             }
           }
 
-          throw error;
-        });
+          // History and balance are committed together. A retry with the same
+          // requestId either sees the committed release or safely retries the transaction.
+          [release] = await LeaveRelease.create([{
+            employeeId: employeeObjectId,
+            releaseType,
+            period,
+            leaveType,
+            daysReleased,
+            releasedBy,
+            notes,
+            requestId: normalizedRequestId,
+            isOverride: Boolean(duplicateOfReleaseId),
+            overrideReason: duplicateOfReleaseId ? overrideReason?.trim() : undefined,
+            duplicateOfReleaseId,
+            source: source || 'manual',
+            automationConfigurationId: automationConfigurationId
+              ? new Types.ObjectId(automationConfigurationId)
+              : undefined,
+            scheduledFor
+          }], { session });
 
-        if (isIdempotentReplay) {
-          releases.push(release as ILeaveRelease);
-          success.push(employeeId);
-          continue;
-        }
-
-        let updatedSummary: any;
-
-        try {
           // Get current leave summary for the year
           const currentSummary = await this.leaveSummaryService.getLeaveSummary(
             employeeObjectId,
-            period.year
+            period.year,
+            { session }
           );
 
           const builtInLeaveTypes = new Set([
@@ -286,13 +289,21 @@ export class LeaveReleaseService extends BaseService {
             isBuiltInLeaveType
               ? { [leaveType]: newAlloted }
               : { customLeaveTypes: { [leaveType]: newAlloted } },
-            { skipEmail: true }  // Skip allotment email, send release-specific email instead
+            {
+              skipEmail: true,
+              session,
+              reason: notes || `${source === 'automatic' ? 'Automatic' : 'Manual'} leave release`,
+              operationType: 'release'
+            }
           );
-        } catch (balanceError) {
-          await LeaveRelease.findByIdAndDelete(release._id).catch((rollbackError) => {
-            console.error(`Failed to roll back leave release ${release._id}:`, rollbackError);
-          });
-          throw balanceError;
+        });
+
+        if (!release) throw new Error('Leave release transaction did not return a release');
+
+        if (isIdempotentReplay) {
+          releases.push(release);
+          success.push(employeeId);
+          continue;
         }
 
         releases.push(release);
@@ -368,8 +379,25 @@ export class LeaveReleaseService extends BaseService {
         }
 
       } catch (error: any) {
+        // Two identical requests can both pass the initial lookup before one wins
+        // the unique-key race. Treat the loser as a successful idempotent replay.
+        const duplicateKeyError = error?.code === 11000 || error?.cause?.code === 11000;
+        if (duplicateKeyError && normalizedRequestId) {
+          const existingRelease = await this.findReleaseByRequestId(
+            normalizedRequestId,
+            employeeObjectId
+          );
+          if (existingRelease) {
+            releases.push(existingRelease as ILeaveRelease);
+            success.push(employeeId);
+            continue;
+          }
+        }
+
         console.error(`Failed to release leave for employee ${employeeId}:`, error);
         failed.push({ employeeId, error: error.message || 'Unknown error' });
+      } finally {
+        await session.endSession();
       }
     }
 
@@ -561,7 +589,7 @@ export class LeaveReleaseService extends BaseService {
     releaseId: string,
     daysReduced: number,
     reason: string
-  ): Promise<ILeaveRelease> {
+  ): Promise<ILeaveRelease & { leaveSummary?: any }> {
     const actorId = this.context.user?._id;
     if (!actorId) throw new Error('User not authenticated');
     if (!Types.ObjectId.isValid(releaseId)) throw new Error('Invalid leave release ID');
@@ -572,76 +600,101 @@ export class LeaveReleaseService extends BaseService {
     const normalizedReason = reason?.trim();
     if (!normalizedReason) throw new Error('Reduction reason is required');
 
-    const release = await LeaveRelease.findById(releaseId);
-    if (!release) throw new Error('Leave release not found');
-    if (release.source !== 'automatic') {
-      throw new Error('Only automated leave releases can be reduced here');
-    }
-
-    const alreadyReduced = (release.adjustments || []).reduce(
-      (total, adjustment) => total + Number(adjustment.daysReduced || 0),
-      0
-    );
-    const availableToReduce = Math.max(0, Number(release.daysReleased) - alreadyReduced);
-    if (daysReduced > availableToReduce) {
-      throw new Error(`Reduction cannot exceed the remaining released amount of ${availableToReduce} days`);
-    }
-
-    const employeeId = new Types.ObjectId(release.employeeId.toString());
-    const summary = await this.leaveSummaryService.getLeaveSummary(employeeId, release.period.year);
-    const builtInLeaveTypes = new Set([
-      'annual', 'sick', 'compOff', 'lossOfPay', 'otherPaid', 'otherUnpaid',
-      'maternity', 'workFromHome', 'restricted_holiday'
-    ]);
-    const isBuiltIn = builtInLeaveTypes.has(release.leaveType);
-    const currentSummary: any = summary;
-    const current = isBuiltIn
-      ? Number(currentSummary[release.leaveType]?.alloted || 0)
-      : Number(currentSummary.customLeaveTypes?.[release.leaveType]?.alloted || 0);
-    if (daysReduced > current) {
-      throw new Error(`Reduction cannot exceed the employee's current allotment of ${current} days`);
-    }
-
-    const reducedAllotment = Math.round((current - daysReduced) * 100) / 100;
-    const allotmentUpdate = isBuiltIn
-      ? { [release.leaveType]: reducedAllotment }
-      : { customLeaveTypes: { [release.leaveType]: reducedAllotment } };
-
-    await this.leaveSummaryService.updateLeaveAllotments(
-      employeeId,
-      release.period.year,
-      allotmentUpdate,
-      { skipEmail: true }
-    );
-
+    const session = await mongoose.startSession();
+    let releaseEmployeeId: Types.ObjectId | null = null;
+    let releaseYear: number | null = null;
     try {
-      if (!release.adjustments) release.adjustments = [];
-      release.adjustments.push({
-        daysReduced,
-        reason: normalizedReason,
-        adjustedBy: new Types.ObjectId(actorId.toString()),
-        adjustedAt: new Date()
+      await session.withTransaction(async () => {
+        const release = await LeaveRelease.findById(releaseId).session(session);
+        if (!release) throw new Error('Leave release not found');
+        if (release.source !== 'automatic') {
+          throw new Error('Only automated leave releases can be reduced here');
+        }
+
+        const alreadyReduced = (release.adjustments || []).reduce(
+          (total, adjustment) => total + Number(adjustment.daysReduced || 0),
+          0
+        );
+        const availableToReduce = Math.max(0, Number(release.daysReleased) - alreadyReduced);
+        if (daysReduced > availableToReduce) {
+          throw new Error(`Reduction cannot exceed the remaining released amount of ${availableToReduce} days`);
+        }
+
+        const employeeId = new Types.ObjectId(release.employeeId.toString());
+        const summary = await this.leaveSummaryService.getLeaveSummary(
+          employeeId,
+          release.period.year,
+          { session }
+        );
+        const builtInLeaveTypes = new Set([
+          'annual', 'sick', 'compOff', 'lossOfPay', 'otherPaid', 'otherUnpaid',
+          'maternity', 'workFromHome', 'restricted_holiday'
+        ]);
+        const isBuiltIn = builtInLeaveTypes.has(release.leaveType);
+        const currentSummary: any = summary;
+        const category = isBuiltIn
+          ? currentSummary[release.leaveType]
+          : currentSummary.customLeaveTypes?.[release.leaveType];
+        const current = Number(category?.alloted || 0);
+        const availed = Number(category?.availed || 0);
+        if (daysReduced > current) {
+          throw new Error(`Reduction cannot exceed the employee's current allotment of ${current} days`);
+        }
+
+        const reducedAllotment = Math.round((current - daysReduced) * 100) / 100;
+        if (reducedAllotment < availed) {
+          throw new Error(
+            `Reduction would lower the allotment to ${reducedAllotment} days, below the ${availed} days already reserved or availed`
+          );
+        }
+        const allotmentUpdate = isBuiltIn
+          ? { [release.leaveType]: reducedAllotment }
+          : { customLeaveTypes: { [release.leaveType]: reducedAllotment } };
+
+        await this.leaveSummaryService.updateLeaveAllotments(
+          employeeId,
+          release.period.year,
+          allotmentUpdate,
+          {
+            skipEmail: true,
+            session,
+            reason: normalizedReason,
+            operationType: 'reduction'
+          }
+        );
+
+        if (!release.adjustments) release.adjustments = [];
+        release.adjustments.push({
+          daysReduced,
+          reason: normalizedReason,
+          adjustedBy: new Types.ObjectId(actorId.toString()),
+          adjustedAt: new Date()
+        });
+        await release.save({ session });
+        releaseEmployeeId = employeeId;
+        releaseYear = release.period.year;
       });
-      await release.save();
-    } catch (error) {
-      // Keep the balance and audit trail consistent if recording the adjustment fails.
-      await this.leaveSummaryService.updateLeaveAllotments(
-        employeeId,
-        release.period.year,
-        isBuiltIn
-          ? { [release.leaveType]: current }
-          : { customLeaveTypes: { [release.leaveType]: current } },
-        { skipEmail: true }
-      );
-      throw error;
+    } finally {
+      await session.endSession();
     }
 
-    const updated = await LeaveRelease.findById(release._id)
+    if (!releaseEmployeeId || releaseYear === null) {
+      throw new Error('Leave reduction transaction did not complete');
+    }
+
+    const updated = await LeaveRelease.findById(releaseId)
       .populate('employeeId', 'name email employeeCode country')
       .populate('releasedBy', 'name email')
       .populate('adjustments.adjustedBy', 'name email');
     if (!updated) throw new Error('Failed to retrieve adjusted leave release');
-    return updated;
+    const leaveSummary = await this.leaveSummaryService.getFormattedLeaveSummary(
+      releaseEmployeeId,
+      releaseYear
+    );
+    return {
+      ...(updated.toObject() as any),
+      leaveSummary
+    } as ILeaveRelease & { leaveSummary: any };
   }
 
   /**

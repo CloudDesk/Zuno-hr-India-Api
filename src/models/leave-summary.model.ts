@@ -5,6 +5,8 @@ export interface ILeaveCategoryDetail {
   availed: number;
   remaining: number;
   leaveRequests: Types.ObjectId[];
+  carriedForwardOut?: number;
+  forfeited?: number;
 }
 
 export interface IEditHistory {
@@ -16,6 +18,8 @@ export interface IEditHistory {
   oldValue: number;
   newValue: number;
   editedAt: Date;
+  reason?: string;
+  operationType?: 'manual_edit' | 'release' | 'reduction' | 'carryforward';
 }
 
 export interface ILeaveSummary extends Document {
@@ -40,7 +44,9 @@ const leaveCategoryDetailSchema = new Schema<ILeaveCategoryDetail>({
   alloted: { type: Number, default: 0 },
   availed: { type: Number, default: 0 },
   remaining: { type: Number, default: 0 },
-  leaveRequests: [{ type: Schema.Types.ObjectId, ref: 'Leave' }]
+  leaveRequests: [{ type: Schema.Types.ObjectId, ref: 'Leave' }],
+  carriedForwardOut: { type: Number, default: 0, min: 0 },
+  forfeited: { type: Number, default: 0, min: 0 }
 });
 
 const editHistorySchema = new Schema<IEditHistory>({
@@ -51,7 +57,12 @@ const editHistorySchema = new Schema<IEditHistory>({
   field: { type: String, required: true }, // e.g., "annual.alloted", "sick.alloted"
   oldValue: { type: Number, required: true },
   newValue: { type: Number, required: true },
-  editedAt: { type: Date, default: Date.now }
+  editedAt: { type: Date, default: Date.now },
+  reason: { type: String, trim: true },
+  operationType: {
+    type: String,
+    enum: ['manual_edit', 'release', 'reduction', 'carryforward']
+  }
 }, { _id: false });
 
 const leaveSummarySchema = new Schema<ILeaveSummary>(
@@ -88,13 +99,23 @@ leaveSummarySchema.pre('save', function (this: ILeaveSummary & Document, next) {
   categories.forEach(category => {
     const leaveCategory = this[category];
     if (leaveCategory) {
-      leaveCategory.remaining = Math.max(0, leaveCategory.alloted - leaveCategory.availed);
+      leaveCategory.remaining = Math.max(
+        0,
+        leaveCategory.alloted - leaveCategory.availed
+          - (leaveCategory.carriedForwardOut || 0)
+          - (leaveCategory.forfeited || 0)
+      );
     }
   });
 
   Object.values(this.customLeaveTypes || {}).forEach((leaveCategory) => {
     if (leaveCategory) {
-      leaveCategory.remaining = Math.max(0, leaveCategory.alloted - leaveCategory.availed);
+      leaveCategory.remaining = Math.max(
+        0,
+        leaveCategory.alloted - leaveCategory.availed
+          - (leaveCategory.carriedForwardOut || 0)
+          - (leaveCategory.forfeited || 0)
+      );
     }
   });
   this.markModified('customLeaveTypes');

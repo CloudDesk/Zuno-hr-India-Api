@@ -1,4 +1,4 @@
-import { Types } from 'mongoose';
+import { ClientSession, Types } from 'mongoose';
 import { LeaveSummary, ILeaveSummary } from '../models/leave-summary.model';
 import { BaseService } from './base.service';
 import { RequestContext } from '../types/context';
@@ -153,12 +153,18 @@ export class LeaveSummaryService extends BaseService {
     return summary;
   }
 
-  async getLeaveSummary(userId: Types.ObjectId, year: number): Promise<ILeaveSummary> {
-    let summary = await LeaveSummary.findOne({ userId, year });
+  async getLeaveSummary(
+    userId: Types.ObjectId,
+    year: number,
+    options?: { session?: ClientSession }
+  ): Promise<ILeaveSummary> {
+    const summaryQuery = LeaveSummary.findOne({ userId, year });
+    if (options?.session) summaryQuery.session(options.session);
+    let summary = await summaryQuery;
     if (!summary) {
       // Create and save the leave summary record immediately
       // This ensures one user has one leave summary record per year
-      summary = await LeaveSummary.create({
+      const summaryData = {
         userId,
         year,
         annual: { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] },
@@ -172,7 +178,12 @@ export class LeaveSummaryService extends BaseService {
         restricted_holiday: { alloted: 0, availed: 0, remaining: 0, leaveRequests: [] }, // Default to 0
         customLeaveTypes: {},
         editHistory: [] // Initialize editHistory for new documents
-      });
+      };
+      if (options?.session) {
+        [summary] = await LeaveSummary.create([summaryData], { session: options.session });
+      } else {
+        summary = await LeaveSummary.create(summaryData);
+      }
       console.log(`✅ [Leave Summary] Created new leave summary for user ${userId}, year ${year}`);
     } else {
       // Initialize workFromHome if it doesn't exist (for backward compatibility with existing documents)
@@ -213,7 +224,7 @@ export class LeaveSummaryService extends BaseService {
       }
       // Save if any fields were initialized
       if (summary.isModified('workFromHome') || summary.isModified('restricted_holiday') || summary.isModified('editHistory') || summary.isModified('customLeaveTypes')) {
-        await summary.save(); // Save to persist the new field
+        await summary.save(options?.session ? { session: options.session } : undefined); // Save to persist the new field
       }
     }
     return summary;
@@ -242,7 +253,9 @@ export class LeaveSummaryService extends BaseService {
         alloted: category?.alloted || 0,
         availed: category?.availed || 0,
         remaining: category?.remaining || 0,
-        leaveRequests: category?.leaveRequests || []
+        leaveRequests: category?.leaveRequests || [],
+        carriedForwardOut: category?.carriedForwardOut || 0,
+        forfeited: category?.forfeited || 0
       };
     };
 
@@ -400,14 +413,16 @@ export class LeaveSummaryService extends BaseService {
 
     const yearStart = new Date(Date.UTC(year, 0, 1));
     const yearEnd = new Date(Date.UTC(year, 11, 31, 23, 59, 59, 999));
-    const approvedLeaves = await Leave.find({
+    // Match the annual summary contract: Pending requests reserve balance and
+    // Approved requests consume it, so both contribute to `availed`.
+    const reservedLeaves = await Leave.find({
       userId,
-      status: 'Approved',
+      status: { $in: ['Pending', 'Approved'] },
       startDate: { $lte: yearEnd },
       endDate: { $gte: yearStart },
     }).select('leaveType startDate endDate noOfDays').lean();
 
-    approvedLeaves.forEach((leave: any) => {
+    reservedLeaves.forEach((leave: any) => {
       const leaveType = String(leave.leaveType || '');
       const leaveTypeIndex = configuredTypeByValue.get(this.normalizeLeaveTypeValue(leaveType))
         ?? configuredTypeByCategory.get(this.normalizeLeaveTypeValue(this.mapLeaveTypeToCategoryKey(leaveType) as string));
@@ -567,11 +582,16 @@ export class LeaveSummaryService extends BaseService {
       restricted_holiday?: number;
       customLeaveTypes?: Record<string, number>;
     },
-    options?: { skipEmail?: boolean }  // Option to skip email notification
+    options?: {
+      skipEmail?: boolean;
+      session?: ClientSession;
+      reason?: string;
+      operationType?: 'manual_edit' | 'release' | 'reduction' | 'carryforward';
+    }
   ): Promise<ILeaveSummary> {
     // getLeaveSummary ensures the record exists (creates if not found)
     // This guarantees one user has one leave summary record per year
-    let summary = await this.getLeaveSummary(userId, year);
+    let summary = await this.getLeaveSummary(userId, year, { session: options?.session });
 
     // Check if this is a newly created summary (no record existed for this year)
     // A record is considered "new" if ALL leave types have 0 alloted (freshly created record)
@@ -839,7 +859,9 @@ export class LeaveSummaryService extends BaseService {
             field: entry.field,
             oldValue: entry.oldValue,
             newValue: entry.newValue,
-            editedAt: entry.editedAt || new Date()
+            editedAt: entry.editedAt || new Date(),
+            reason: options?.reason,
+            operationType: options?.operationType
           }));
         
         // Only append if we have valid entries
@@ -850,19 +872,21 @@ export class LeaveSummaryService extends BaseService {
         }
       }
 
-      await summary.save();
+      await summary.save(options?.session ? { session: options.session } : undefined);
       // return summary;
     }
 
     // Reload the summary to ensure we have the latest data after all hooks have run
-    const reloadedSummary = await LeaveSummary.findOne({ userId, year });
+    const reloadQuery = LeaveSummary.findOne({ userId, year });
+    if (options?.session) reloadQuery.session(options.session);
+    const reloadedSummary = await reloadQuery;
     if (!reloadedSummary) {
       throw new Error('Failed to retrieve leave summary after update');
     }
     summary = reloadedSummary;
 
     // Send email notification only once with the latest data (unless skipped)
-    if (options?.skipEmail) {
+    if (options?.skipEmail || options?.session) {
       return summary;
     }
 
@@ -1061,9 +1085,12 @@ export class LeaveSummaryService extends BaseService {
     year: number,
     categoryType: string,
     daysToRestore: number,
-    leaveRequestId: Types.ObjectId
+    leaveRequestId: Types.ObjectId,
+    options?: { session?: ClientSession }
   ): Promise<ILeaveSummary> {
-    const summary: ILeaveSummary = await this.getLeaveSummary(userId, year);
+    const summary: ILeaveSummary = await this.getLeaveSummary(userId, year, {
+      session: options?.session,
+    });
 
     // Map leave type to proper category key (camelCase)
     const categoryTypeKey = this.mapLeaveTypeToCategoryKey(categoryType);
@@ -1077,6 +1104,11 @@ export class LeaveSummaryService extends BaseService {
       }
 
       const leaveRequestIdValue = leaveRequestId.toString();
+      const hasReservation = (category.leaveRequests || []).some(
+        (id: any) => id.toString() === leaveRequestIdValue
+      );
+      if (!hasReservation) return summary;
+
       const leaveRequests = (category.leaveRequests || []).filter(
         (id: any) => id.toString() !== leaveRequestIdValue
       );
@@ -1086,12 +1118,17 @@ export class LeaveSummaryService extends BaseService {
         [leaveTypeValue]: {
           ...category,
           availed,
-          remaining: Math.max(0, (category.alloted || 0) - availed),
+          remaining: Math.max(
+            0,
+            (category.alloted || 0) - availed
+              - (category.carriedForwardOut || 0)
+              - (category.forfeited || 0)
+          ),
           leaveRequests,
         },
       };
       summary.markModified('customLeaveTypes');
-      await summary.save();
+      await summary.save(options?.session ? { session: options.session } : undefined);
       return summary;
     }
 
@@ -1108,6 +1145,11 @@ export class LeaveSummaryService extends BaseService {
 
     // Remove leaveRequestId from the array
     const leaveRequestIdStr = leaveRequestId.toString();
+    const hasReservation = currentLeaveRequests.some((id: any) =>
+      (typeof id === 'string' ? id : id.toString()) === leaveRequestIdStr
+    );
+    if (!hasReservation) return summary;
+
     const updatedLeaveRequests = currentLeaveRequests.filter((id: any) =>
       (typeof id === 'string' ? id : id.toString()) !== leaveRequestIdStr
     );
@@ -1116,7 +1158,12 @@ export class LeaveSummaryService extends BaseService {
     const newAvailed = Math.max(0, currentAvailed - daysToRestore);
 
     // Calculate remaining
-    const newRemaining = Math.max(0, currentAlloted - newAvailed);
+    const newRemaining = Math.max(
+      0,
+      currentAlloted - newAvailed
+        - (category.carriedForwardOut || 0)
+        - (category.forfeited || 0)
+    );
 
     // Update leave summary directly (since we need to update leaveRequests array which createOrUpdateLeaveSummary doesn't handle)
     const updatedSummary = await LeaveSummary.findOneAndUpdate(
@@ -1128,7 +1175,7 @@ export class LeaveSummaryService extends BaseService {
           [`${categoryTypeKey}.leaveRequests`]: updatedLeaveRequests
         }
       },
-      { new: true }
+      { new: true, session: options?.session }
     );
 
     if (!updatedSummary) {
