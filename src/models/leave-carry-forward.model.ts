@@ -45,6 +45,10 @@ const leaveCarryForwardSchema = new Schema<ILeaveCarryForward>(
 // Indexes for efficient queries
 leaveCarryForwardSchema.index({ employeeId: 1, fromYear: -1, toYear: -1 });
 leaveCarryForwardSchema.index({ fromYear: 1, toYear: 1 });
+leaveCarryForwardSchema.index(
+  { employeeId: 1, fromYear: 1, toYear: 1, leaveType: 1 },
+  { unique: true }
+);
 
 // Validate carry-forward rules
 leaveCarryForwardSchema.pre('save', function (next) {

@@ -43,6 +43,11 @@ const indiaBusinessDate = (value = new Date()): Date => {
 const daysInUtcMonth = (year: number, month: number): number =>
   new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
 
+const AUTOMATIC_RELEASE_RETRY_DELAY_MS = Math.max(
+  60_000,
+  Number(process.env.AUTOMATED_LEAVE_RELEASE_RETRY_DELAY_MS || 15 * 60_000)
+);
+
 const addFrequencyFromAnchor = (
   anchor: Date,
   frequency: LeaveReleaseFrequency,
@@ -218,6 +223,7 @@ export class LeaveReleaseConfigurationService {
         existing.frequency,
         today
       );
+      existing.retryAfter = undefined;
     }
     return existing.save();
   }
@@ -237,6 +243,7 @@ export class LeaveReleaseConfigurationService {
         configuration.frequency,
         indiaBusinessDate()
       );
+      configuration.retryAfter = undefined;
     }
     return configuration.save();
   }
@@ -270,6 +277,13 @@ export class LeaveReleaseConfigurationService {
                 { processingAt: { $exists: false } },
                 { processingAt: null },
                 { processingAt: { $lt: staleLock } }
+              ]
+            },
+            {
+              $or: [
+                { retryAfter: { $exists: false } },
+                { retryAfter: null },
+                { retryAfter: { $lte: now } }
               ]
             }
           ]
@@ -328,26 +342,39 @@ export class LeaveReleaseConfigurationService {
         totals.credited += result.success;
         totals.skipped += result.skipped?.length || 0;
         totals.failed += result.failed.length;
-        const nextRunAt = nextOccurrenceAfter(
-          configuration.effectiveStartDate,
-          configuration.frequency,
-          dueDate
-        );
+        const hasFailures = result.failed.length > 0;
+        const nextRunAt = hasFailures
+          ? dueDate
+          : nextOccurrenceAfter(
+              configuration.effectiveStartDate,
+              configuration.frequency,
+              dueDate
+            );
         const shouldDeactivate = Boolean(
-          configuration.effectiveEndDate && nextRunAt > configuration.effectiveEndDate
+          !hasFailures && configuration.effectiveEndDate && nextRunAt > configuration.effectiveEndDate
         );
+        const update: any = {
+          $set: {
+            nextRunAt,
+            lastRunAt: now,
+            lastRunStatus: !hasFailures ? 'success' : result.success > 0 ? 'partial' : 'failed',
+            lastRunMessage: `${result.success} credited, ${result.skipped?.length || 0} skipped, ${result.failed.length} failed`,
+            lastRunFailures: result.failed.map(failure => ({
+              employeeId: new Types.ObjectId(failure.employeeId),
+              error: failure.error
+            })),
+            ...(hasFailures ? { retryAfter: new Date(now.getTime() + AUTOMATIC_RELEASE_RETRY_DELAY_MS) } : {}),
+            ...(shouldDeactivate ? { status: 'inactive' } : {})
+          },
+          $unset: {
+            processingAt: 1,
+            processingToken: 1,
+            ...(!hasFailures ? { retryAfter: 1 } : {})
+          }
+        };
         await LeaveReleaseConfiguration.updateOne(
           { _id: configuration._id, processingToken },
-          {
-            $set: {
-              nextRunAt,
-              lastRunAt: now,
-              lastRunStatus: result.failed.length === 0 ? 'success' : result.success > 0 ? 'partial' : 'failed',
-              lastRunMessage: `${result.success} credited, ${result.skipped?.length || 0} skipped, ${result.failed.length} failed`,
-              ...(shouldDeactivate ? { status: 'inactive' } : {})
-            },
-            $unset: { processingAt: 1, processingToken: 1 }
-          }
+          update
         );
       } catch (error: any) {
         totals.failed += configuration.employeeIds.length;

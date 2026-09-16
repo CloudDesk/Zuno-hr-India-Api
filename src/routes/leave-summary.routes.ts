@@ -263,7 +263,7 @@ const updateLeaveAllotmentSchema = {
   security: [{ bearerAuth: [] }],
   body: {
     type: 'object',
-    required: ['userId', 'year'],
+    required: ['userId', 'year', 'reason'],
     properties: {
       userId: {
         type: 'string',
@@ -273,6 +273,11 @@ const updateLeaveAllotmentSchema = {
         type: 'number',
         description: 'Year for leave allotments',
         default: new Date().getFullYear(),
+      },
+      reason: {
+        type: 'string',
+        minLength: 1,
+        description: 'Required audit reason for changing the employee allocation',
       },
 
       annual: {
@@ -458,6 +463,7 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
       );
       // Use formatted summary that returns country-specific fields
       const summary = await request.container!.leaveSummaryService.getFormattedLeaveSummary(userId, year);
+      reply.header('Cache-Control', 'no-store, no-cache, must-revalidate');
       return reply.send({
         success: true,
         data: summary,
@@ -505,6 +511,7 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
           workFromHome,
           restricted_holiday,
           customLeaveTypes,
+          reason,
         } = request.body as {
           userId: string;
           year: number;
@@ -517,7 +524,15 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
           workFromHome?: number;
           restricted_holiday?: number;
           customLeaveTypes?: Record<string, number>;
+          reason: string;
         };
+
+        if (!reason?.trim()) {
+          return reply.status(400).send({
+            success: false,
+            error: { message: 'A reason is required to change leave allotments' }
+          });
+        }
 
         const updatedSummary = await request.container!.leaveSummaryService.updateLeaveAllotments(
           new Types.ObjectId(userId),
@@ -532,6 +547,10 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
             workFromHome,
             restricted_holiday,
             customLeaveTypes,
+          },
+          {
+            reason: reason.trim(),
+            operationType: 'manual_edit'
           }
         );
 
@@ -646,7 +665,7 @@ export async function leaveSummaryRoutes(fastify: FastifyInstance): Promise<void
             requestId: {
               type: 'string',
               minLength: 1,
-              description: 'Client-generated idempotency key for this release submission'
+              description: 'Client-generated idempotency key; required unless previewOnly is true'
             },
             previewOnly: {
               type: 'boolean',

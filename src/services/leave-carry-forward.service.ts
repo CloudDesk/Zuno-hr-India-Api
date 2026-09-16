@@ -8,6 +8,7 @@ import { User } from '../models';
 import { Types } from 'mongoose';
 import { emailService } from './email.service';
 import { generateEmailTemplate } from '../emails/templates';
+import mongoose from 'mongoose';
 
 export interface ILeaveCarryForwardRequest {
   employeeId: string;
@@ -41,6 +42,150 @@ export class LeaveCarryForwardService extends BaseService {
    * Process carry-forward for a single employee (India only)
    */
   async processCarryForward(carryForwardData: ILeaveCarryForwardRequest): Promise<ILeaveCarryForward> {
+    const { employeeId, fromYear, toYear, leaveType, daysCarriedForward, notes } = carryForwardData;
+    const processedBy = this.context.user?._id;
+    if (!processedBy) throw new Error('User not authenticated');
+    if (toYear !== fromYear + 1) throw new Error('toYear must be fromYear + 1');
+    if (!Number.isFinite(daysCarriedForward) || daysCarriedForward <= 0) {
+      throw new Error('Days to carry forward must be greater than 0');
+    }
+
+    const employee = await User.findById(employeeId).select('country name email');
+    if (!employee) throw new Error('Employee not found');
+    if (employee.country !== 'IN') {
+      throw new Error('Leave carry-forward is only available for India employees');
+    }
+
+    const employeeObjectId = new Types.ObjectId(employeeId);
+    const actorObjectId = new Types.ObjectId(processedBy.toString());
+    const session = await mongoose.startSession();
+    let carryForwardId: Types.ObjectId | null = null;
+    let daysForfeited = 0;
+
+    try {
+      await session.withTransaction(async () => {
+        const fromSummary = await LeaveSummary.findOne({
+          userId: employeeObjectId,
+          year: fromYear
+        }).session(session);
+        if (!fromSummary) {
+          throw new Error(
+            `Cannot carry forward from year ${fromYear}. No leave summary record exists for this year. Please create leave allotments first.`
+          );
+        }
+
+        const category = (fromSummary as any)[leaveType];
+        if (!category) throw new Error(`Leave type ${leaveType} not found`);
+        const balanceBefore = Math.max(
+          0,
+          Number(category.alloted || 0) - Number(category.availed || 0)
+            - Number(category.carriedForwardOut || 0) - Number(category.forfeited || 0)
+        );
+        if (balanceBefore <= 0) {
+          throw new Error(`Cannot carry forward ${leaveType} leave. Employee has no remaining balance (${balanceBefore} days).`);
+        }
+        if (daysCarriedForward > balanceBefore) {
+          throw new Error(
+            `Cannot carry forward ${daysCarriedForward} days. Employee only has ${balanceBefore} days remaining balance for ${leaveType} leave.`
+          );
+        }
+
+        daysForfeited = Math.round((balanceBefore - daysCarriedForward) * 100) / 100;
+        const [carryForward] = await LeaveCarryForward.create([{
+          employeeId: employeeObjectId,
+          fromYear,
+          toYear,
+          leaveType,
+          balanceBefore,
+          daysCarriedForward,
+          daysForfeited,
+          processedBy: actorObjectId,
+          notes
+        }], { session });
+        carryForwardId = carryForward._id;
+
+        category.carriedForwardOut = Number(category.carriedForwardOut || 0) + daysCarriedForward;
+        category.forfeited = Number(category.forfeited || 0) + daysForfeited;
+        category.remaining = 0;
+        fromSummary.markModified(leaveType);
+        await fromSummary.save({ session });
+
+        const toSummary = await this.leaveSummaryService.getLeaveSummary(
+          employeeObjectId,
+          toYear,
+          { session }
+        );
+        const destinationCategory = (toSummary as any)[leaveType];
+        const finalAlloted = Number(destinationCategory?.alloted || 0) + daysCarriedForward;
+        await this.leaveSummaryService.updateLeaveAllotments(
+          employeeObjectId,
+          toYear,
+          { [leaveType]: finalAlloted },
+          {
+            skipEmail: true,
+            session,
+            reason: notes || `Carry forward from ${fromYear} to ${toYear}`,
+            operationType: 'carryforward'
+          }
+        );
+
+        await LeaveRelease.create([{
+          employeeId: employeeObjectId,
+          releaseType: 'carryforward',
+          period: { year: toYear },
+          leaveType,
+          daysReleased: daysCarriedForward,
+          releasedBy: actorObjectId,
+          notes: notes || `Carried forward from ${fromYear} to ${toYear}`,
+          requestId: `carryforward:${employeeId}:${fromYear}:${toYear}:${leaveType}`,
+          source: 'manual'
+        }], { session });
+      });
+    } catch (error: any) {
+      if (error?.code === 11000) {
+        throw new Error(`Carry-forward already processed for ${leaveType} from ${fromYear} to ${toYear}`);
+      }
+      throw error;
+    } finally {
+      await session.endSession();
+    }
+
+    if (!carryForwardId) throw new Error('Carry-forward transaction did not complete');
+    const carryForward = await LeaveCarryForward.findById(carryForwardId);
+    if (!carryForward) throw new Error('Failed to retrieve completed carry-forward');
+
+    try {
+      const html = generateEmailTemplate('leaveBalanceAllotmentEmail', {
+        userName: employee.name,
+        year: toYear,
+        releaseInfo: `${daysCarriedForward} days carried forward from ${fromYear}`,
+        leaveType,
+        carriedForwardDays: `${daysCarriedForward} days carried forward`,
+        forfeitedDays: daysForfeited > 0 ? `${daysForfeited} days forfeited` : '',
+        companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS'
+      });
+      await emailService.sendEmail({
+        body: {
+          to: employee.email,
+          subject: `Leave Carry-Forward Processed: ${daysCarriedForward} days for ${toYear}`,
+          text: `Dear ${employee.name},\n\n${daysCarriedForward} days of ${leaveType} leave have been carried forward from ${fromYear} to ${toYear}.${daysForfeited > 0 ? ` ${daysForfeited} days were forfeited.` : ''}\n\nRegards,\n${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`,
+          html
+        }
+      });
+    } catch (emailError) {
+      console.error(`Failed to send email to ${employee.email}:`, emailError);
+    }
+
+    return carryForward;
+  }
+
+  /** @deprecated Kept temporarily for reference; all callers use the transactional implementation above. */
+  async processCarryForwardLegacy(carryForwardData: ILeaveCarryForwardRequest): Promise<ILeaveCarryForward> {
+    // Preserve binary compatibility for any older internal caller while making
+    // it impossible to execute the former non-transactional write sequence.
+    return this.processCarryForward(carryForwardData);
+
+    /* Retained reference implementation (disabled):
     const { employeeId, fromYear, toYear, leaveType, daysCarriedForward, notes } = carryForwardData;
     const processedBy = this.context.user?._id;
 
@@ -314,6 +459,7 @@ export class LeaveCarryForwardService extends BaseService {
     }
 
     return carryForward;
+    */
   }
 
   /**

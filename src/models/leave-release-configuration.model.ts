@@ -16,6 +16,8 @@ export interface ILeaveReleaseConfiguration extends Document {
   lastRunAt?: Date;
   lastRunStatus?: 'success' | 'partial' | 'failed';
   lastRunMessage?: string;
+  lastRunFailures?: Array<{ employeeId: Types.ObjectId; error: string }>;
+  retryAfter?: Date;
   processingAt?: Date;
   processingToken?: string;
   createdBy: Types.ObjectId;
@@ -47,6 +49,11 @@ const leaveReleaseConfigurationSchema = new Schema<ILeaveReleaseConfiguration>(
     lastRunAt: { type: Date },
     lastRunStatus: { type: String, enum: ['success', 'partial', 'failed'] },
     lastRunMessage: { type: String },
+    lastRunFailures: [{
+      employeeId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+      error: { type: String, required: true }
+    }],
+    retryAfter: { type: Date },
     processingAt: { type: Date },
     processingToken: { type: String },
     createdBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
