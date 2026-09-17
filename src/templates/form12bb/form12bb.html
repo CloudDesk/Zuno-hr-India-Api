@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<style>
+  @page { size: A4 portrait; margin: 8mm; }
+  * { box-sizing: border-box; }
+  body { margin: 0; color: #111; font-family: Arial, Helvetica, sans-serif; font-size: 10px; line-height: 1.25; }
+  .title { text-align: center; font-weight: 700; font-size: 14px; }
+  .rule { text-align: center; font-size: 10px; margin-top: 2px; }
+  .subtitle { text-align: center; font-weight: 700; font-size: 11px; margin: 5px 0 8px; }
+  .employee-grid { width: 100%; border-collapse: collapse; margin-bottom: 7px; }
+  .employee-grid td { padding: 2px 3px; vertical-align: top; }
+  .employee-grid .label { width: 49%; }
+  .employee-grid .separator { width: 3%; text-align: center; }
+  .claims { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  .claims th, .claims td { border: 0.7px solid #222; padding: 2.5px 3px; vertical-align: top; }
+  .claims th { text-align: center; font-weight: 700; }
+  .claims .sl { text-align: center; }
+  .claims .amount { text-align: right; white-space: nowrap; }
+  .claims .evidence, .claims .particular { overflow-wrap: anywhere; }
+  .claims .sl-col { width: 4%; }
+  .claims .nature-col { width: 55%; }
+  .claims .amount-col { width: 15%; }
+  .claims .evidence-col { width: 26%; }
+  .section-title, .subgroup-row td { font-weight: 700; }
+  .group-row td { font-weight: 700; background: #fafafa; }
+  .group-row td.section-number { background: #fff; vertical-align: top; }
+  .note { margin: 5px 1px; font-size: 9px; }
+  .verification-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  .verification-table td { border: 0.7px solid #222; padding: 3px 6px; vertical-align: middle; }
+  .verification-table .verification-title { text-align: center; font-weight: 700; }
+  .verification-table .declaration { padding-top: 5px; padding-bottom: 5px; }
+  .verification-table .verification-left { width: 57%; }
+  .verification-table .verification-right { width: 43%; }
+  .verification-parent { display: inline-block; min-width: 130px; padding: 0 3px 1px; border-bottom: 0.7px solid #222; vertical-align: baseline; }
+  .verification-table .signature { text-align: center; vertical-align: bottom; padding-bottom: 4px; }
+  .muted { color: #333; }
+</style>
+</head>
+<body>
+  <div class="title">FORM NO. 12BB</div>
+  <div class="rule">(See rule 26C)</div>
+  <div class="subtitle">Statement showing particulars of claims by an employee for deduction of tax under section 192</div>
+  <table class="employee-grid">
+    <tr><td class="label">1. Name and address of the employee</td><td class="separator">:</td><td><strong>{{employeeName}}</strong><br>{{employeeAddress}}</td></tr>
+    <tr><td class="label">2. Permanent Account Number or Aadhaar Number of the employee</td><td class="separator">:</td><td>{{panOrAadhaar}}</td></tr>
+    <tr><td class="label">3. Financial year</td><td class="separator">:</td><td>{{financialYear}}</td></tr>
+    <tr><td class="label">4. Tax Regime</td><td class="separator">:</td><td>{{taxRegime}}</td></tr>
+  </table>
+  <table class="claims">
+    <colgroup><col class="sl-col"><col class="nature-col"><col class="amount-col"><col class="evidence-col"></colgroup>
+    <thead>
+      <tr><th colspan="4">Details of claims and evidence thereof</th></tr>
+      <tr><th class="sl">Sl.<br>No.</th><th class="nature">Nature of claim</th><th class="amount">Amount<br>(Rs.)</th><th class="evidence">Evidence / particulars</th></tr>
+      <tr><th>(1)</th><th>(2)</th><th>(3)</th><th>(4)</th></tr>
+    </thead>
+    <tbody>
+      <tr class="group-row"><td class="sl section-number" rowspan="6">1.</td><td class="nature">House Rent Allowance</td><td class="amount"></td><td class="evidence"></td></tr>
+      <tr><td class="nature">(i) Rent paid to the landlord</td><td class="amount">{{currency rentPaid}}</td><td class="evidence particular">{{hraEvidence}}</td></tr>
+      <tr><td class="nature">(ii) Name of the landlord</td><td class="amount"></td><td class="evidence particular">{{landlordName}}</td></tr>
+      <tr><td class="nature">(iii) Address of the landlord</td><td class="amount"></td><td class="evidence particular">{{landlordAddress}}</td></tr>
+      <tr><td class="nature">(iv) PAN or Aadhaar Number of the landlord</td><td class="amount"></td><td class="evidence particular">{{landlordPan}}</td></tr>
+      <tr><td class="nature muted">PAN/Aadhaar shall be furnished if aggregate annual rent exceeds one lakh rupees.</td><td class="amount"></td><td class="evidence"></td></tr>
+      <tr><td class="sl">2.</td><td class="nature"><span class="section-title">Leave travel concessions or assistance</span></td><td class="amount">{{currency ltcAmount}}</td><td class="evidence">{{ltcEvidence}}</td></tr>
+      <tr class="group-row"><td class="sl section-number" rowspan="10">3.</td><td class="nature">Deduction of interest on borrowing: Interest on Housing Loan (Self-occupied)</td><td class="amount"></td><td class="evidence"></td></tr>
+      <tr><td class="nature">(i) Interest payable/paid to the lender</td><td class="amount">{{currency housingLoanInterest}}</td><td class="evidence particular">{{housingLoanEvidence}}</td></tr>
+      <tr><td class="nature">(ii) Name of the lender</td><td class="amount"></td><td class="evidence particular">{{lenderName}}</td></tr>
+      <tr><td class="nature">(iii) Address of the lender</td><td class="amount"></td><td class="evidence particular">{{lenderAddress}}</td></tr>
+      <tr><td class="nature">(iv) PAN or Aadhaar Number of the lender</td><td class="amount"></td><td class="evidence particular">{{lenderPan}}</td></tr>
+      <tr><td class="nature">Lender type</td><td class="amount"></td><td class="evidence particular">{{lenderType}}</td></tr>
+      <tr class="subgroup-row"><td class="nature">Total Income/Loss from let out property</td><td class="amount"></td><td class="evidence"></td></tr>
+      <tr><td class="nature">(i) Income/Loss from let out property</td><td class="amount">{{currency housePropertyAmount}}</td><td class="evidence particular">{{housePropertyEvidence}}</td></tr>
+      <tr><td class="nature">(ii) Name of the lender</td><td class="amount"></td><td class="evidence particular">{{housePropertyLenderName}}</td></tr>
+      <tr><td class="nature">(iii) PAN of the lender</td><td class="amount"></td><td class="evidence particular">{{housePropertyLenderPan}}</td></tr>
+      <tr class="group-row"><td class="sl section-number" rowspan="{{chapterVIARowspan section80C section80CCC section80CCD otherChapterVIA}}">4.</td><td class="nature">Deduction under Chapter VI-A</td><td class="amount"></td><td class="evidence"></td></tr>
+      <tr class="subgroup-row"><td class="nature">(A) Section 80C, 80CCC and 80CCD</td><td class="amount"></td><td class="evidence"></td></tr>
+      <tr class="subgroup-row"><td class="nature">(i) Section 80C</td><td class="amount"></td><td class="evidence"></td></tr>
+      {{#each section80C}}<tr><td class="nature">{{label}}</td><td class="amount">{{currency amount}}</td><td class="evidence">{{evidence}}</td></tr>{{/each}}
+      <tr class="subgroup-row"><td class="nature">(ii) Section 80CCC</td><td class="amount"></td><td class="evidence"></td></tr>
+      {{#each section80CCC}}<tr><td class="nature">{{label}}</td><td class="amount">{{currency amount}}</td><td class="evidence">{{evidence}}</td></tr>{{/each}}
+      <tr class="subgroup-row"><td class="nature">(iii) Section 80CCD</td><td class="amount"></td><td class="evidence"></td></tr>
+      {{#each section80CCD}}<tr><td class="nature">{{label}}</td><td class="amount">{{currency amount}}</td><td class="evidence">{{evidence}}</td></tr>{{/each}}
+      <tr class="subgroup-row"><td class="nature">(B) Other sections under Chapter VI-A</td><td class="amount"></td><td class="evidence"></td></tr>
+      {{#each otherChapterVIA}}<tr><td class="nature">{{label}}</td><td class="amount">{{currency amount}}</td><td class="evidence">{{evidence}}</td></tr>{{/each}}
+      <tr><td class="sl">5.</td><td class="nature"><span class="section-title">Other Income</span></td><td class="amount">{{currency otherIncome}}</td><td class="evidence"></td></tr>
+      <tr><td class="sl">6.</td><td class="nature"><span class="section-title">TCS/TDS Deduction</span></td><td class="amount">{{currency tdsDeduction}}</td><td class="evidence"></td></tr>
+    </tbody>
+  </table>
+  <div class="note"><strong>Note:</strong> If declarations were submitted under the above sections while the employee opted for the new regime, those declarations are not considered for tax computation where the deductions are not permitted.</div>
+  <table class="verification-table">
+    <colgroup><col class="verification-left"><col class="verification-right"></colgroup>
+    <tr><td colspan="2" class="verification-title">Verification</td></tr>
+    <tr><td colspan="2" class="declaration">I, {{employeeName}}, son/daughter of <span class="verification-parent">{{#if fatherName}}{{fatherName}}{{else}}&nbsp;{{/if}}</span>, certify that the information given above is complete and correct.</td></tr>
+    <tr><td>Place: {{place}}</td><td rowspan="2" class="signature">(Signature of the employee)</td></tr>
+    <tr><td>Date: {{reportDate}}</td></tr>
+    <tr><td>Designation: {{designation}}</td><td>Full Name: {{employeeName}}</td></tr>
+  </table>
+</body>
+</html>

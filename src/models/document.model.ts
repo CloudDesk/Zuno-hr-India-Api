@@ -66,8 +66,10 @@ export interface IDocument extends DocumentM {
             isLocked: boolean;
         };
         form12BB?: {
+            employeeId: Types.ObjectId;
             financialYear: string; // e.g., '2024-25'
             regime: string
+            templateVersion?: number; // Missing on legacy reports; set on generation/regeneration
             taxDeclarationId: Types.ObjectId; // Reference to TaxDeclaration collection
             totalIncome: number; // Total income for the financial year
             deductions: number; // Total deductions claimed
@@ -75,6 +77,17 @@ export interface IDocument extends DocumentM {
             isLocked: boolean; // Prevents further modifications once submitted
             isPreviewEnabled: boolean; // Allows preview for employees
             tdsPaid: number; // Total TDS paid for the financial year
+            generationStatus?: 'Completed' | 'Failed';
+            generatedAt?: Date;
+            generatedBy?: Types.ObjectId;
+            lastRegeneratedAt?: Date;
+    generationError?: string;
+    previousVersions?: Array<{
+        version: number;
+        fileName: string;
+        filePath: string;
+        generatedAt: Date;
+    }>;
         };
         offerLetter?: {
             offerDate?: Date; // Date the offer was issued
@@ -371,6 +384,10 @@ const documentSchema = new Schema<IDocument>(
 
 // Indexes for efficient queries
 documentSchema.index({ employeeId: 1, type: 1 });
+documentSchema.index(
+    { employeeId: 1, type: 1, 'metadata.form12BB.financialYear': 1 },
+    { unique: true, partialFilterExpression: { type: 'Form12BB' } },
+);
 documentSchema.index({ type: 1, 'metadata.payslip.monthYear': 1 });
 documentSchema.index({ type: 1, 'metadata.timesheet.month': 1, 'metadata.timesheet.year': 1 });
 documentSchema.index({ type: 1, 'metadata.form16.financialYear': 1 });

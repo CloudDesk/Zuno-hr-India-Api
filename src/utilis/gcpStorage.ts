@@ -64,6 +64,7 @@ export interface IGCPUploadParams {
   category: string;
   type: string;
   public?: boolean;
+  cacheControl?: string;
 }
 
 export interface IGCPUploadResult {
@@ -72,12 +73,51 @@ export interface IGCPUploadResult {
   error?: string;
 }
 
+export async function getSignedFileUrl(
+  fileUrl: string,
+  options: { downloadFileName?: string; expiresInMinutes?: number } = {},
+): Promise<string> {
+  if (!bucketName) throw new Error('GCP_STORAGE_BUCKET is not configured');
+  const prefix = `https://storage.googleapis.com/${bucketName}/`;
+  if (!fileUrl.startsWith(prefix)) throw new Error('Unsupported storage URL');
+
+  const objectPath = decodeURIComponent(fileUrl.slice(prefix.length));
+  try {
+    const [signedUrl] = await storage.bucket(bucketName).file(objectPath).getSignedUrl({
+      version: 'v4',
+      action: 'read',
+      expires: Date.now() + (options.expiresInMinutes || 10) * 60 * 1000,
+      ...(options.downloadFileName
+        ? { responseDisposition: `attachment; filename="${options.downloadFileName.replace(/["\r\n]/g, '')}"` }
+        : {}),
+    });
+    return signedUrl;
+  } catch (error: any) {
+    // Local developer credentials and some workload identities can read/write GCS
+    // but cannot cryptographically sign a V4 URL. Existing document URLs already
+    // target the configured bucket, so retain local/public-bucket compatibility.
+    console.warn('Unable to create a signed GCS URL; using the stored object URL.', {
+      objectPath,
+      message: error?.message || String(error),
+    });
+    const fallbackUrl = new URL(fileUrl);
+    // Regenerated reports reuse their object path, so force PDF viewers to
+    // request the latest object when signed URLs are unavailable locally.
+    fallbackUrl.searchParams.set('generated', Date.now().toString());
+    if (!options.downloadFileName) return fallbackUrl.toString();
+
+    const safeFileName = options.downloadFileName.replace(/["\r\n]/g, '');
+    fallbackUrl.searchParams.set('response-content-disposition', `attachment; filename="${safeFileName}"`);
+    return fallbackUrl.toString();
+  }
+}
+
 /**
  * Upload file to GCP Cloud Storage with organized folder structure
  */
 export async function uploadFileToGCP(params: IGCPUploadParams): Promise<IGCPUploadResult> {
   try {
-    const { filePath, fileName, employeeId, category, type, public: makePublic } = params;
+    const { filePath, fileName, employeeId, category, type, public: makePublic, cacheControl } = params;
 
     if (!bucketName) {
       return {
@@ -103,6 +143,7 @@ export async function uploadFileToGCP(params: IGCPUploadParams): Promise<IGCPUpl
     await file.save(buffer, {
       metadata: {
         contentType: getContentType(fileName),
+        ...(cacheControl ? { cacheControl } : {}),
       },
       resumable: false,
       timeout: uploadTimeoutMs,
