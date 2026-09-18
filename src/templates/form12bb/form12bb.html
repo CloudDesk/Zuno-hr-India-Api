@@ -19,6 +19,8 @@
   .claims .sl { text-align: center; }
   .claims .amount { text-align: right; white-space: nowrap; }
   .claims .evidence, .claims .particular { overflow-wrap: anywhere; }
+  .covered-members { margin-top: 2px; font-size: 8.5px; line-height: 1.15; }
+  .covered-members-label { font-weight: 700; }
   .claims .sl-col { width: 5.25%; }
   .claims .nature-col { width: 55%; }
   .claims .amount-col { width: 13.25%; }
@@ -83,7 +85,7 @@
       <tr class="subgroup-row"><td class="nature">(iii) Section 80CCD</td><td class="amount"></td><td class="evidence"></td></tr>
       {{#each section80CCD}}<tr><td class="nature">{{label}}</td><td class="amount">{{currency amount}}</td><td class="evidence">{{evidence}}</td></tr>{{/each}}
       <tr class="subgroup-row"><td class="nature">(B) Other sections (e.g., 80E, 80G, 80TTA, etc.) under Chapter VI-A.</td><td class="amount"></td><td class="evidence"></td></tr>
-      {{#each otherChapterVIA}}<tr><td class="nature">{{label}}</td><td class="amount">{{currency amount}}</td><td class="evidence">{{evidence}}</td></tr>{{/each}}
+      {{#each otherChapterVIA}}<tr><td class="nature">{{label}}{{#if coveredMembers}}<div class="covered-members"><span class="covered-members-label">Covered members:</span> {{#each coveredMembers}}{{name}} ({{relationship}}, Age {{age}}){{#unless @last}}; {{/unless}}{{/each}}</div>{{/if}}</td><td class="amount">{{currency amount}}</td><td class="evidence">{{evidence}}</td></tr>{{/each}}
       <tr><td class="sl">5.</td><td class="nature"><span class="section-title">Other Income</span></td><td class="amount">{{currency otherIncome}}</td><td class="evidence"></td></tr>
       <tr><td class="sl">6.</td><td class="nature"><span class="section-title">TCS/TDS Deduction</span></td><td class="amount">{{currency tdsDeduction}}</td><td class="evidence"></td></tr>
       <tr class="note-row"><td class="sl"></td><td colspan="3"><span class="note-label">Note:</span> If you have declared under any of the above sections and opted for the new regime, then those declarations won't be considered for tax computations. This is because none of the above deductions are allowed in the new regime.</td></tr>

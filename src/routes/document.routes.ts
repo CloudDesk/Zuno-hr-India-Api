@@ -2446,6 +2446,8 @@ export const documentRoutes = async (
             return reply
                 .header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
                 .header('Content-Length', buffer.length)
+                .header('Cache-Control', 'no-store, max-age=0')
+                .header('Pragma', 'no-cache')
                 .header('Content-Disposition', `attachment; filename="${safeFileName}"; filename*=UTF-8''${encodeURIComponent(safeFileName)}`)
                 .send(buffer);
         } catch (error) {

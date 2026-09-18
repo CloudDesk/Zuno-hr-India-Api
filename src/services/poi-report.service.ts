@@ -24,6 +24,16 @@ const validFinancialYear = (value: string): boolean => {
     return Boolean(match && Number(match[2]) === Number(match[1]) + 1);
 };
 
+export const shouldReuseCompletedPOIReport = (
+    existingDocument: any,
+    fingerprint: string,
+    forceRegenerate = false,
+): boolean => Boolean(
+    !forceRegenerate
+    && existingDocument?.metadata?.poiReport?.sourceFingerprint === fingerprint
+    && existingDocument?.metadata?.poiReport?.generationStatus === 'Completed',
+);
+
 const safeReportFilePart = (value: unknown, fallback: string): string => {
     const sanitized = String(value || '')
         .replace(/[<>:"/\\|?*\u0000-\u001F]/g, '')
@@ -59,6 +69,19 @@ const sectionLabel = (sectionId: unknown): string => {
 const reportRemark = (review: any): string => {
     const comment = String(review?.comments || '').trim();
     return /^(approved|verified)$/i.test(comment) ? '' : comment;
+};
+
+const formatCoveredMembers = (value: unknown): string => {
+    if (!Array.isArray(value)) return String(value || '');
+    return value.map((member: any) => {
+        if (typeof member === 'string') return member;
+        const name = String(member?.name || '').trim();
+        const relationship = String(member?.relationship || '').trim();
+        const age = Number(member?.age);
+        return [name, relationship, Number.isFinite(age) ? `Age ${age}` : '']
+            .filter(Boolean)
+            .join(' - ');
+    }).filter(Boolean).join('\n');
 };
 
 export class POIReportService extends BaseService {
@@ -138,6 +161,12 @@ export class POIReportService extends BaseService {
                 declaredAmount: Number(item.declaredAmount || 0),
                 verifiedAmount: Number(item.verifiedAmount || 0),
                 status: item.status,
+                coveredMembers: (item.coveredMembers || []).map((member: any) => ({
+                    name: member.name,
+                    relationship: member.relationship,
+                    age: Number(member.age),
+                    capturedAt: member.capturedAt,
+                })),
                 documents: (item.documents || [])
                     .filter((document: any) => document.isLatestVersion === true)
                     .map((document: any) => ({ name: document.documentName, path: document.documentPath, uploadedAt: document.uploadDate }))
@@ -190,7 +219,7 @@ export class POIReportService extends BaseService {
                     lenderName: String(item.lenderName || item.lenderDetails?.name || ''),
                     lenderPan: String(item.lenderPan || item.lenderDetails?.pan || ''),
                     remarks: reportRemark(latestReview),
-                    coveredMemberDetails: Array.isArray(coveredMembers) ? coveredMembers.join(', ') : String(coveredMembers),
+                    coveredMemberDetails: formatCoveredMembers(coveredMembers),
                 };
             }),
         );
@@ -210,7 +239,7 @@ export class POIReportService extends BaseService {
                     lenderName: String(item.lenderName || item.lenderDetails?.name || ''),
                     lenderPan: String(item.lenderPan || item.lenderDetails?.pan || ''),
                     remarks: reportRemark(latestReview),
-                    coveredMemberDetails: Array.isArray(coveredMembers) ? coveredMembers.join(', ') : String(coveredMembers),
+                    coveredMemberDetails: formatCoveredMembers(coveredMembers),
                 };
             });
 
@@ -264,7 +293,11 @@ export class POIReportService extends BaseService {
         });
     }
 
-    async generate(employeeId: string, financialYear: string): Promise<IDocument> {
+    async generate(
+        employeeId: string,
+        financialYear: string,
+        options: { forceRegenerate?: boolean } = {},
+    ): Promise<IDocument> {
         if (!Types.ObjectId.isValid(employeeId)) throw new Error('A valid employee ID is required');
         if (!validFinancialYear(financialYear)) throw new Error('Financial year must be a consecutive range in YYYY-YYYY format');
         if (!this.context.user?._id) throw new Error('Authenticated administrator is required');
@@ -282,8 +315,8 @@ export class POIReportService extends BaseService {
 
         const fingerprint = this.buildFingerprint(taxDeclaration);
         const existingDocument = await Document.findOne({ employeeId, type: 'POIReport', 'metadata.poiReport.financialYear': financialYear });
-        if (existingDocument?.metadata?.poiReport?.sourceFingerprint === fingerprint && existingDocument.metadata.poiReport.generationStatus === 'Completed') {
-            return existingDocument;
+        if (shouldReuseCompletedPOIReport(existingDocument, fingerprint, options.forceRegenerate)) {
+            return existingDocument!;
         }
 
         const rows = this.mapRows(taxDeclaration);
@@ -396,7 +429,7 @@ export class POIReportService extends BaseService {
         if (!document) throw new Error('POI report not found');
         const financialYear = document.metadata.poiReport?.financialYear;
         if (!financialYear) throw new Error('POI report financial year is missing');
-        return this.generate(document.employeeId.toString(), financialYear);
+        return this.generate(document.employeeId.toString(), financialYear, { forceRegenerate: true });
     }
 
     async getDetails(documentId: string): Promise<any> {

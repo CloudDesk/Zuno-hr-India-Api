@@ -6,12 +6,19 @@ import { renderPayslipPdf } from './payslip-pdf-runtime';
 
 // Increment when the persisted PDF layout changes. Existing generated files are
 // intentionally left untouched until an admin regenerates them.
-export const FORM12BB_TEMPLATE_VERSION = 11;
+export const FORM12BB_TEMPLATE_VERSION = 12;
+
+export interface Form12BBCoveredMember {
+    name: string;
+    relationship: string;
+    age: number;
+}
 
 export interface Form12BBLineItem {
     label: string;
     amount: number;
     evidence?: string;
+    coveredMembers?: Form12BBCoveredMember[];
 }
 
 export interface Form12BBPdfData {

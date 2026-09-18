@@ -2518,11 +2518,27 @@ export class DocumentService extends BaseService {
             this.humanizeForm12BBIdentifier(declaration.subSection || declaration.section);
         const itemLabel = subsection?.name || fallbackLabel;
         const sectionLabel = section?.title || this.humanizeForm12BBIdentifier(declaration.section);
+        const coveredMembers = declaration.section === '80D' && Array.isArray(declaration.coveredMembers)
+            ? declaration.coveredMembers
+                .map((member: any) => ({
+                    name: String(member?.name || '').trim(),
+                    relationship: String(member?.relationship || '').trim(),
+                    age: Number(member?.age),
+                }))
+                .filter((member: any) =>
+                    member.name &&
+                    member.relationship &&
+                    Number.isInteger(member.age) &&
+                    member.age >= 0 &&
+                    member.age <= 120,
+                )
+            : [];
 
         return {
             label: includeSection ? `${sectionLabel} - ${itemLabel}` : itemLabel,
             amount: Number(declaration.verifiedAmount || 0),
             evidence: this.mapForm12BBEvidence(declaration),
+            coveredMembers,
         };
     }
 

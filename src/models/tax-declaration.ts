@@ -28,6 +28,12 @@ interface IDocument {
     isLatestVersion: boolean;
     documentType?: string;
 }
+interface ICoveredMember {
+    name: string;
+    relationship: "Self" | "Parent" | "Spouse" | "Child";
+    age: number;
+    capturedAt: Date;
+}
 interface IMonthlyTaxDeduction {
     month: string;              // e.g., "Apr", "May", etc.
     financialYear: string;               // e.g., 2023, 2024
@@ -70,6 +76,7 @@ interface IDeclaration {
         landlordName?: string;
         landlordPan?: string;
     }[];
+    coveredMembers?: ICoveredMember[];
     reviewHistory: {
         reviewedBy: Types.ObjectId;
         reviewDate: Date;
@@ -183,6 +190,17 @@ const RentDetailSchema = new Schema({
     landlordPan: { type: String }
 }, { _id: false });
 
+const CoveredMemberSchema = new Schema<ICoveredMember>({
+    name: { type: String, required: true, trim: true, maxlength: 100 },
+    relationship: {
+        type: String,
+        required: true,
+        enum: ["Self", "Parent", "Spouse", "Child"],
+    },
+    age: { type: Number, required: true, min: 0, max: 120 },
+    capturedAt: { type: Date, required: true },
+}, { _id: false });
+
 const DeclarationSchema = new Schema<IDeclaration>({
 
     section: {
@@ -211,6 +229,7 @@ const DeclarationSchema = new Schema<IDeclaration>({
         enum: ["income", "loss"]
     },
     rentDetails: { type: [RentDetailSchema], default: undefined },
+    coveredMembers: { type: [CoveredMemberSchema], default: undefined },
     documents: [DocumentSchema],
     reviewHistory: [{
         reviewedBy: { type: Schema.Types.ObjectId, ref: 'User' },

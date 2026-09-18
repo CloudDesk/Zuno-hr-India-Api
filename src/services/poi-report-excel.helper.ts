@@ -70,13 +70,23 @@ export async function generatePOIWorkbook(data: POIReportWorkbookData, outputPat
         values.forEach((value, columnIndex) => {
             const cell = worksheet.getCell(rowNumber, columnIndex + 1);
             cell.value = value;
-            cell.style = { ...(templateStyles[columnIndex] || templateStyles[9]) };
+            // The template's first Covered Member Details data cell has no
+            // style. Reuse the adjacent Remarks cell style so column K keeps
+            // the same complete border grid as the rest of the report.
+            const styleIndex = columnIndex === 10 ? 9 : columnIndex;
+            cell.style = { ...(templateStyles[styleIndex] || templateStyles[9]) };
         });
         worksheet.getCell(rowNumber, 4).alignment = { ...worksheet.getCell(rowNumber, 4).alignment, wrapText: true };
         worksheet.getCell(rowNumber, 10).alignment = { ...worksheet.getCell(rowNumber, 10).alignment, wrapText: true };
         worksheet.getCell(rowNumber, 11).alignment = { ...worksheet.getCell(rowNumber, 11).alignment, wrapText: true };
         worksheet.getCell(rowNumber, 5).numFmt = '#,##0.00';
         worksheet.getCell(rowNumber, 6).numFmt = '#,##0.00';
+        const wrappedLineCount = Math.max(
+            String(item.description || '').split('\n').length,
+            String(item.remarks || '').split('\n').length,
+            String(item.coveredMemberDetails || '').split('\n').length,
+        );
+        worksheet.getRow(rowNumber).height = Math.max(30, wrappedLineCount * 15);
     });
 
     // Group contiguous subsections under one section label instead of repeating

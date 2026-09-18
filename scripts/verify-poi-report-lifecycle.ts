@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { Types } from 'mongoose';
 import { recomputePOISubmissionState } from '../src/services/tax-declaration.service';
-import { POIReportService } from '../src/services/poi-report.service';
+import { POIReportService, shouldReuseCompletedPOIReport } from '../src/services/poi-report.service';
 
 const currentProof = (suffix: string) => [{
     documentName: `${suffix}.pdf`,
@@ -33,6 +33,10 @@ const declaration: any = {
             verifiedAmount: 0,
             status: 'rejected',
             documents: currentProof('health-insurance-rejected'),
+            coveredMembers: [
+                { name: 'POI Test Employee', relationship: 'Self', age: 34, capturedAt: new Date('2026-09-18T00:00:00.000Z') },
+                { name: 'POI Test Spouse', relationship: 'Spouse', age: 32, capturedAt: new Date('2026-09-18T00:00:00.000Z') },
+            ],
         },
     ],
 };
@@ -59,5 +63,20 @@ assert.equal(service.evaluateEligibility(declaration).status, 'Eligible');
 const approvedFingerprint = service.buildFingerprint(declaration);
 assert.notEqual(approvedFingerprint, beforeApprovalFingerprint);
 assert.equal(service.buildFingerprint(declaration), approvedFingerprint);
+const completedReport = {
+    metadata: { poiReport: { sourceFingerprint: approvedFingerprint, generationStatus: 'Completed' } },
+};
+assert.equal(shouldReuseCompletedPOIReport(completedReport, approvedFingerprint), true);
+assert.equal(shouldReuseCompletedPOIReport(completedReport, approvedFingerprint, true), false);
+
+const reportRows = (service as any).mapRows(declaration);
+const healthInsuranceRow = reportRows.find((row: any) => row.description === 'Health Insurance for self, spouse, children');
+assert.equal(
+    healthInsuranceRow.coveredMemberDetails,
+    'POI Test Employee - Self - Age 34\nPOI Test Spouse - Spouse - Age 32',
+);
+
+declaration.declarations[1].coveredMembers[1].age = 33;
+assert.notEqual(service.buildFingerprint(declaration), approvedFingerprint);
 
 console.log('POI lifecycle verification passed: rejected -> submitted -> verified/eligible with stable source fingerprint.');
