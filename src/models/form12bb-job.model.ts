@@ -1,6 +1,7 @@
 import { Document, Schema, Types, model } from 'mongoose';
 
 export interface IForm12BBJob extends Document {
+    activeKey?: string;
     financialYear: string;
     requestedBy: Types.ObjectId;
     selectionMode: 'explicit' | 'allMatching';
@@ -25,6 +26,7 @@ export interface IForm12BBJob extends Document {
 }
 
 const form12BBJobSchema = new Schema<IForm12BBJob>({
+    activeKey: { type: String },
     financialYear: { type: String, required: true },
     requestedBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     selectionMode: { type: String, enum: ['explicit', 'allMatching'], required: true },
@@ -57,5 +59,6 @@ const form12BBJobSchema = new Schema<IForm12BBJob>({
 }, { timestamps: true });
 
 form12BBJobSchema.index({ requestedBy: 1, createdAt: -1 });
+form12BBJobSchema.index({ activeKey: 1 }, { unique: true, sparse: true });
 
 export const Form12BBJob = model<IForm12BBJob>('Form12BBJob', form12BBJobSchema);

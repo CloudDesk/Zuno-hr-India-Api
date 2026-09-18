@@ -78,6 +78,7 @@ export interface IDocument extends DocumentM {
             isPreviewEnabled: boolean; // Allows preview for employees
             tdsPaid: number; // Total TDS paid for the financial year
             generationStatus?: 'Completed' | 'Failed';
+            generationRequestId?: string;
             generatedAt?: Date;
             generatedBy?: Types.ObjectId;
             lastRegeneratedAt?: Date;

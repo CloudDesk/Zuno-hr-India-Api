@@ -25,6 +25,20 @@ import { formatCurrency } from "../utilis/currency";
 import { FORM12BB_TEMPLATE_VERSION, Form12BBLineItem, Form12BBPdfData, generateForm12BBPDF } from "./form12bb-puppeteer.helper";
 import { deductionSections } from "../constants/tax-deduction-sections";
 import { POIReportService } from './poi-report.service';
+import { randomUUID } from 'node:crypto';
+import { Form12BBJobItem } from '../models/form12bb-job-item.model';
+import {
+    assertForm12BBDispatcherConfigured,
+    enqueueForm12BBJob,
+    getForm12BBChunkSize,
+    getForm12BBLeaseMilliseconds,
+    getForm12BBMaxAttempts,
+    isForm12BBCloudTasksMode,
+} from './form12bb-job-dispatcher';
+import {
+    assertForm12BBJoiningDateEligible,
+    getForm12BBJoiningDateQuery,
+} from '../utilis/form12bb-eligibility';
 // import AdmZip from 'adm-zip';
 // import { mkdirSync } from 'fs';
 
@@ -2609,7 +2623,7 @@ export class DocumentService extends BaseService {
     private async getForm12BBSourceData(employeeId: string, financialYear: string): Promise<{ user: any; taxDeclaration: any }> {
         const [user, taxDeclaration] = await Promise.all([
             User.findById(employeeId)
-                .select('name email address location fatherName specificRole governmentIds employeeCode departmentId active')
+                .select('name email address location fatherName specificRole governmentIds employeeCode departmentId active joiningDate')
                 .lean(),
             TaxDeclaration.findOne({ employeeId, financialYear }).lean(),
         ]);
@@ -2674,6 +2688,7 @@ export class DocumentService extends BaseService {
         existingDocument: IDocument | null;
         user: any;
         taxDeclaration: any;
+        generationRequestId?: string;
     }): Promise<IDocument> {
         const {
             employeeId,
@@ -2684,6 +2699,7 @@ export class DocumentService extends BaseService {
             existingDocument,
             user,
             taxDeclaration,
+            generationRequestId,
         } = params;
         const performedBy = new Types.ObjectId(this.context.user!._id);
         const previewEnabled = existingDocument?.metadata?.form12BB?.isPreviewEnabled || false;
@@ -2713,6 +2729,7 @@ export class DocumentService extends BaseService {
                     isPreviewEnabled: previewEnabled,
                     tdsPaid: Number(taxDeclaration.taxPaid || 0),
                     generationStatus: 'Completed' as const,
+                    generationRequestId,
                     generatedAt,
                     generatedBy: performedBy,
                     lastRegeneratedAt: existingDocument ? generatedAt : undefined,
@@ -2771,6 +2788,7 @@ export class DocumentService extends BaseService {
         }
 
         const { user, taxDeclaration } = await this.getForm12BBSourceData(employeeId, effectiveFY);
+        assertForm12BBJoiningDateEligible(user.joiningDate, effectiveFY, user.name || 'Employee');
 
         const mappedData = this.mapForm12BBData(user, taxDeclaration);
         // effectiveFY is already validated as YYYY-YYYY. Use it directly so
@@ -2782,6 +2800,10 @@ export class DocumentService extends BaseService {
             type: 'Form12BB',
             'metadata.form12BB.financialYear': effectiveFY,
         });
+        if (data.generationRequestId
+            && existingDoc?.metadata?.form12BB?.generationRequestId === data.generationRequestId) {
+            return existingDoc;
+        }
         const nextVersion = existingDoc ? Number(existingDoc.version || 1) + 1 : 1;
         const form12BBDir = path.join(process.cwd(), 'uploads');
         await fsPromises.mkdir(form12BBDir, { recursive: true });
@@ -2805,6 +2827,7 @@ export class DocumentService extends BaseService {
                 existingDocument: existingDoc,
                 user,
                 taxDeclaration,
+                generationRequestId: data.generationRequestId,
             });
         } catch (error: any) {
             if (uploadedFileUrl) {
@@ -2846,9 +2869,22 @@ export class DocumentService extends BaseService {
             if (!ids.length || ids.some((id) => !Types.ObjectId.isValid(id))) {
                 throw new Error('At least one valid employee ID is required');
             }
-            employeeIds = (await User.find({ _id: { $in: ids } }).select('_id').lean()).map((user) => user._id);
+            const users = await User.find({ _id: { $in: ids } })
+                .select('_id name joiningDate')
+                .lean();
+            if (users.length !== ids.length) {
+                throw new Error('One or more selected employees no longer exist');
+            }
+            users.forEach((user) => assertForm12BBJoiningDateEligible(
+                user.joiningDate,
+                data.financialYear,
+                user.name || 'Employee',
+            ));
+            employeeIds = users.map((user) => user._id);
         } else if (data.selectionMode === 'allMatching') {
-            const query: any = {};
+            const query: any = {
+                joiningDate: getForm12BBJoiningDateQuery(data.financialYear),
+            };
             if (data.filters?.departmentId) query.departmentId = data.filters.departmentId;
             if (typeof data.filters?.activeStatus === 'boolean') query.active = data.filters.activeStatus;
             if (data.filters?.search?.trim()) {
@@ -2948,6 +2984,10 @@ export class DocumentService extends BaseService {
         }
         if (!this.context.user?._id) throw new Error('Authenticated administrator is required');
 
+        // Production bulk jobs must be handed to a request-driven worker. This
+        // check deliberately happens before writing anything to MongoDB.
+        assertForm12BBDispatcherConfigured();
+
         const employeeIds = await this.resolveForm12BBEmployeeIds(data);
 
         if (!employeeIds.length) throw new Error('No employees match the selection');
@@ -2958,95 +2998,352 @@ export class DocumentService extends BaseService {
         }).select('_id').lean();
         if (conflictingJob) throw new Error('Another Form 12BB generation request is already in progress');
 
-        const job = await Form12BBJob.create({
-            financialYear: data.financialYear,
-            requestedBy: new Types.ObjectId(this.context.user._id),
-            selectionMode: data.selectionMode,
-            employeeIds,
-            filters: data.filters || {},
-            excludedEmployeeIds: (data.excludedEmployeeIds || [])
-                .filter((id) => Types.ObjectId.isValid(id))
-                .map((id) => new Types.ObjectId(id)),
-            status: 'Queued',
-            total: employeeIds.length,
-        });
-
-        setImmediate(() => {
-            void this.processForm12BBBulkJob(job._id.toString()).catch((error) => {
-                console.error('Form 12BB bulk job failed:', error);
-            });
-        });
-        return job.toObject();
-    }
-
-    async processForm12BBBulkJob(jobId: string): Promise<void> {
-        const job = await Form12BBJob.findOneAndUpdate(
-            { _id: jobId, status: 'Queued' },
-            { $set: { status: 'Processing', startedAt: new Date() } },
-            { new: true },
-        );
-        if (!job) return;
-
+        const requesterId = new Types.ObjectId(this.context.user._id);
+        let job: any;
         try {
-            const employees = await User.find({ _id: { $in: job.employeeIds } }).select('_id name').lean();
-            const employeeNames = new Map(employees.map((employee) => [employee._id.toString(), employee.name]));
-            let cursor = 0;
-            const worker = async () => {
-                while (cursor < job.employeeIds.length) {
-                    const employeeId = job.employeeIds[cursor++];
-                    try {
-                        await this.generateForm12BB({
-                            employeeId: employeeId.toString(),
-                            financialYear: job.financialYear,
-                        });
-                        await Form12BBJob.updateOne(
-                            { _id: job._id },
-                            { $inc: { processed: 1, succeeded: 1 } },
-                        );
-                    } catch (error: any) {
-                        await Form12BBJob.updateOne(
-                            { _id: job._id },
-                            {
-                                $inc: { processed: 1, failed: 1 },
-                                $push: {
-                                    failures: {
-                                        employeeId,
-                                        employeeName: employeeNames.get(employeeId.toString()),
-                                        error: String(error?.message || error).slice(0, 500),
-                                    },
-                                },
-                            },
-                        );
-                    }
-                }
-            };
+            job = await Form12BBJob.create({
+                activeKey: requesterId.toString(),
+                financialYear: data.financialYear,
+                requestedBy: requesterId,
+                selectionMode: data.selectionMode,
+                employeeIds,
+                filters: data.filters || {},
+                excludedEmployeeIds: (data.excludedEmployeeIds || [])
+                    .filter((id) => Types.ObjectId.isValid(id))
+                    .map((id) => new Types.ObjectId(id)),
+                status: 'Queued',
+                total: employeeIds.length,
+            });
 
-            await Promise.all(Array.from({ length: Math.min(2, job.employeeIds.length) }, () => worker()));
-            const completedJob = await Form12BBJob.findById(job._id).lean();
-            await Form12BBJob.updateOne(
-                { _id: job._id },
-                {
-                    $set: {
-                        status: completedJob?.failed ? 'CompletedWithErrors' : 'Completed',
-                        completedAt: new Date(),
-                    },
-                },
-            );
+            const employees = await User.find({ _id: { $in: employeeIds } }).select('_id name').lean();
+            const employeeNames = new Map(employees.map((employee) => [employee._id.toString(), employee.name]));
+            await Form12BBJobItem.insertMany(employeeIds.map((employeeId) => ({
+                activeKey: `${employeeId.toString()}:${data.financialYear}`,
+                jobId: job._id,
+                employeeId,
+                employeeName: employeeNames.get(employeeId.toString()),
+                financialYear: data.financialYear,
+                status: 'Queued',
+                attempts: 0,
+            })));
+
+            await this.dispatchForm12BBJob(job._id.toString());
+            return job.toObject();
         } catch (error: any) {
-            await Form12BBJob.updateOne(
-                { _id: job._id },
-                {
-                    $set: { status: 'Failed', completedAt: new Date() },
-                    $push: {
-                        failures: {
-                            employeeId: job.employeeIds[0],
-                            error: String(error?.message || error).slice(0, 500),
+            if (job?._id) {
+                await Promise.all([
+                    Form12BBJob.updateOne(
+                        { _id: job._id },
+                        {
+                            $set: { status: 'Failed', completedAt: new Date() },
+                            $unset: { activeKey: 1 },
                         },
-                    },
-                },
-            );
+                    ),
+                    Form12BBJobItem.updateMany(
+                        { jobId: job._id },
+                        {
+                            $set: { status: 'Failed', completedAt: new Date(), lastError: String(error?.message || error).slice(0, 500) },
+                            $unset: { activeKey: 1, leaseOwner: 1, leaseExpiresAt: 1 },
+                        },
+                    ),
+                ]);
+            }
+            if (error?.code === 11000) {
+                throw new Error('One or more selected employees are already part of an active Form 12BB generation job');
+            }
             throw error;
         }
+    }
+
+    private async dispatchForm12BBJob(jobId: string, delaySeconds = 0): Promise<void> {
+        if (isForm12BBCloudTasksMode()) {
+            await enqueueForm12BBJob(jobId, delaySeconds);
+            return;
+        }
+        const run = () => void this.processForm12BBJobChunk(jobId).catch((error) => {
+            console.error('Form 12BB inline worker failed:', error);
+        });
+        if (delaySeconds > 0) setTimeout(run, Math.min(delaySeconds, 5) * 1000);
+        else setImmediate(run);
+    }
+
+    private isRetryableForm12BBError(error: unknown): boolean {
+        const message = String((error as any)?.message || error).toLowerCase();
+        return ![
+            'tax declaration not found',
+            'employee not found',
+            'valid employee id',
+            'financial year must',
+            'required to generate',
+            'invalid amount',
+            'not eligible for form 12bb',
+        ].some((value) => message.includes(value));
+    }
+
+    private async setForm12BBWorkerActor(requestedBy: Types.ObjectId): Promise<void> {
+        const actor: any = await User.findById(requestedBy)
+            .select('_id email name role departmentId active country currency licenseType portalAccess')
+            .lean();
+        if (!actor) throw new Error('The administrator who requested this Form 12BB job no longer exists');
+        this.context.user = {
+            _id: actor._id,
+            email: actor.email || '',
+            name: actor.name || 'Administrator',
+            role: actor.role || 'admin',
+            departmentId: actor.departmentId?.toString() || '',
+            active: actor.active !== false,
+            country: actor.country || 'IN',
+            currency: actor.currency || 'INR',
+            licenseType: actor.licenseType || '',
+            portalAccess: actor.portalAccess !== false,
+        };
+    }
+
+    private async ensureForm12BBJobItems(job: any): Promise<void> {
+        if (await Form12BBJobItem.exists({ jobId: job._id })) return;
+        const employees = await User.find({ _id: { $in: job.employeeIds } }).select('_id name').lean();
+        const employeeNames = new Map(employees.map((employee) => [employee._id.toString(), employee.name]));
+        const records = job.employeeIds.map((employeeId: Types.ObjectId) => ({
+            activeKey: `${employeeId.toString()}:${job.financialYear}`,
+            jobId: job._id,
+            employeeId,
+            employeeName: employeeNames.get(employeeId.toString()),
+            financialYear: job.financialYear,
+            status: 'Queued',
+            attempts: 0,
+        }));
+        try {
+            await Form12BBJobItem.insertMany(records, { ordered: false });
+        } catch (error: any) {
+            if (error?.code !== 11000) throw error;
+            // Jobs created by the old in-memory implementation have no item
+            // records. If an employee is now locked by a newer job, retain a
+            // terminal item so this legacy job can still finish deterministically.
+            const inserted = await Form12BBJobItem.find({ jobId: job._id }).distinct('employeeId');
+            const insertedIds = new Set(inserted.map((id: any) => id.toString()));
+            const blocked = records.filter((record: any) => !insertedIds.has(record.employeeId.toString()));
+            if (blocked.length) {
+                await Form12BBJobItem.insertMany(blocked.map((record: any) => ({
+                    ...record,
+                    activeKey: undefined,
+                    status: 'Failed',
+                    completedAt: new Date(),
+                    lastError: 'Employee is already part of another active Form 12BB generation job',
+                })), { ordered: false });
+            }
+        }
+    }
+
+    private async refreshForm12BBJobProgress(jobId: Types.ObjectId): Promise<{
+        total: number;
+        processed: number;
+        queued: number;
+        processing: number;
+    }> {
+        await Form12BBJobItem.updateMany(
+            { jobId, status: 'Queued', attempts: { $gte: getForm12BBMaxAttempts() } },
+            {
+                $set: { status: 'Failed', completedAt: new Date(), lastError: 'Maximum report generation attempts exceeded' },
+                $unset: { activeKey: 1, leaseOwner: 1, leaseExpiresAt: 1, nextAttemptAt: 1 },
+            },
+        );
+        const counts = await Form12BBJobItem.aggregate([
+            { $match: { jobId } },
+            { $group: { _id: '$status', count: { $sum: 1 } } },
+        ]);
+        const byStatus = new Map(counts.map((item: any) => [item._id, item.count]));
+        const succeeded = Number(byStatus.get('Completed') || 0);
+        const failed = Number(byStatus.get('Failed') || 0);
+        const queued = Number(byStatus.get('Queued') || 0);
+        const processing = Number(byStatus.get('Processing') || 0);
+        const total = succeeded + failed + queued + processing;
+        const processed = succeeded + failed;
+        const failures = await Form12BBJobItem.find({ jobId, status: 'Failed' })
+            .select('employeeId employeeName lastError')
+            .sort({ completedAt: 1 })
+            .limit(100)
+            .lean();
+        const terminal = total > 0 && processed === total;
+        await Form12BBJob.updateOne(
+            { _id: jobId },
+            {
+                $set: {
+                    total,
+                    processed,
+                    succeeded,
+                    failed,
+                    failures: failures.map((item: any) => ({
+                        employeeId: item.employeeId,
+                        employeeName: item.employeeName,
+                        error: item.lastError || 'Report generation failed',
+                    })),
+                    ...(terminal ? {
+                        status: failed ? 'CompletedWithErrors' : 'Completed',
+                        completedAt: new Date(),
+                    } : { status: 'Processing' }),
+                },
+                ...(terminal ? { $unset: { activeKey: 1 } } : {}),
+            },
+        );
+        return { total, processed, queued, processing };
+    }
+
+    private async getNextForm12BBDispatchDelay(jobId: Types.ObjectId): Promise<number> {
+        const now = new Date();
+        const ready = await Form12BBJobItem.exists({
+            jobId,
+            $or: [
+                {
+                    status: 'Queued',
+                    attempts: { $lt: getForm12BBMaxAttempts() },
+                    $or: [
+                        { nextAttemptAt: { $exists: false } },
+                        { nextAttemptAt: { $lte: now } },
+                    ],
+                },
+                {
+                    status: 'Processing',
+                    $or: [
+                        { leaseExpiresAt: { $exists: false } },
+                        { leaseExpiresAt: { $lte: now } },
+                    ],
+                },
+            ],
+        });
+        if (ready) return 0;
+
+        const [queued, processing]: any[] = await Promise.all([
+            Form12BBJobItem.findOne({ jobId, status: 'Queued' }).select('nextAttemptAt').sort({ nextAttemptAt: 1 }).lean(),
+            Form12BBJobItem.findOne({ jobId, status: 'Processing' }).select('leaseExpiresAt').sort({ leaseExpiresAt: 1 }).lean(),
+        ]);
+        const timestamps = [queued?.nextAttemptAt, processing?.leaseExpiresAt]
+            .filter(Boolean)
+            .map((value: Date) => new Date(value).getTime());
+        if (!timestamps.length) return 5;
+        return Math.max(1, Math.min(300, Math.ceil((Math.min(...timestamps) - Date.now()) / 1000)));
+    }
+
+    async processForm12BBJobChunk(jobId: string): Promise<{
+        completed: boolean;
+        processedInRequest: number;
+    }> {
+        if (!Types.ObjectId.isValid(jobId)) throw new Error('Invalid Form 12BB job ID');
+        const jobObjectId = new Types.ObjectId(jobId);
+        const job = await Form12BBJob.findOne({
+            _id: jobObjectId,
+            status: { $in: ['Queued', 'Processing'] },
+        });
+        if (!job) return { completed: true, processedInRequest: 0 };
+
+        await this.setForm12BBWorkerActor(job.requestedBy);
+        await this.ensureForm12BBJobItems(job);
+        await Form12BBJob.updateOne(
+            { _id: jobObjectId, status: 'Queued' },
+            { $set: { status: 'Processing', startedAt: new Date() } },
+        );
+
+        const workerId = randomUUID();
+        const maxAttempts = getForm12BBMaxAttempts();
+        let processedInRequest = 0;
+        for (let index = 0; index < getForm12BBChunkSize(); index += 1) {
+            const now = new Date();
+            const item: any = await Form12BBJobItem.findOneAndUpdate(
+                {
+                    jobId: jobObjectId,
+                    $or: [
+                        {
+                            status: 'Queued',
+                            attempts: { $lt: maxAttempts },
+                            $or: [
+                                { nextAttemptAt: { $exists: false } },
+                                { nextAttemptAt: { $lte: now } },
+                            ],
+                        },
+                        {
+                            status: 'Processing',
+                            $or: [
+                                { leaseExpiresAt: { $exists: false } },
+                                { leaseExpiresAt: { $lte: now } },
+                            ],
+                        },
+                    ],
+                },
+                {
+                    $set: {
+                        status: 'Processing',
+                        leaseOwner: workerId,
+                        leaseExpiresAt: new Date(now.getTime() + getForm12BBLeaseMilliseconds()),
+                        startedAt: now,
+                    },
+                    $inc: { attempts: 1 },
+                    $unset: { nextAttemptAt: 1 },
+                },
+                { new: true, sort: { createdAt: 1 } },
+            );
+            if (!item) break;
+
+            try {
+                await this.generateForm12BB({
+                    employeeId: item.employeeId.toString(),
+                    financialYear: item.financialYear,
+                    generationRequestId: item._id.toString(),
+                });
+                await Form12BBJobItem.updateOne(
+                    { _id: item._id, leaseOwner: workerId },
+                    {
+                        $set: { status: 'Completed', completedAt: new Date(), lastError: '' },
+                        $unset: { activeKey: 1, leaseOwner: 1, leaseExpiresAt: 1, nextAttemptAt: 1 },
+                    },
+                );
+            } catch (error: any) {
+                const errorMessage = String(error?.message || error).slice(0, 500);
+                const retryable = this.isRetryableForm12BBError(error) && item.attempts < maxAttempts;
+                await Form12BBJobItem.updateOne(
+                    { _id: item._id, leaseOwner: workerId },
+                    retryable
+                        ? {
+                            $set: {
+                                status: 'Queued',
+                                lastError: errorMessage,
+                                nextAttemptAt: new Date(Date.now() + Math.min(60, 5 * (2 ** (item.attempts - 1))) * 1000),
+                            },
+                            $unset: { leaseOwner: 1, leaseExpiresAt: 1 },
+                        }
+                        : {
+                            $set: { status: 'Failed', completedAt: new Date(), lastError: errorMessage },
+                            $unset: { activeKey: 1, leaseOwner: 1, leaseExpiresAt: 1, nextAttemptAt: 1 },
+                        },
+                );
+            }
+            processedInRequest += 1;
+        }
+
+        const progress = await this.refreshForm12BBJobProgress(jobObjectId);
+        const completed = progress.total > 0 && progress.processed === progress.total;
+        if (!completed) {
+            const delaySeconds = await this.getNextForm12BBDispatchDelay(jobObjectId);
+            await this.dispatchForm12BBJob(jobId, delaySeconds);
+        }
+        return { completed, processedInRequest };
+    }
+
+    // Kept as a compatibility wrapper for callers created before durable chunks.
+    async processForm12BBBulkJob(jobId: string): Promise<void> {
+        await this.processForm12BBJobChunk(jobId);
+    }
+
+    async resumeForm12BBBulkJob(jobId: string): Promise<any> {
+        if (!Types.ObjectId.isValid(jobId)) throw new Error('Invalid job ID');
+        if (!this.context.user?._id) throw new Error('Authenticated administrator is required');
+        const job = await Form12BBJob.findOne({
+            _id: new Types.ObjectId(jobId),
+            requestedBy: new Types.ObjectId(this.context.user._id),
+            status: { $in: ['Queued', 'Processing'] },
+        });
+        if (!job) throw new Error('Active Form 12BB generation job not found');
+        assertForm12BBDispatcherConfigured();
+        await this.dispatchForm12BBJob(jobId);
+        return job.toObject();
     }
 
     async getForm12BBBulkJob(jobId: string): Promise<any> {

@@ -8,6 +8,8 @@ import { parseMultipartForm, saveMultipartFile } from "../utilis/parseMultiPartF
 import { Document } from "../models/document.model";
 import { Types } from "mongoose";
 import { Form12BBJob } from "../models/form12bb-job.model";
+import { verifyForm12BBWorkerSecret } from "../services/form12bb-job-dispatcher";
+import { getForm12BBJoiningDateQuery } from "../utilis/form12bb-eligibility";
 
 export interface IForm12BSubmission {
     employeeId: string;
@@ -30,6 +32,7 @@ export interface IForm12BBGenerate {
     employeeId: string;
     financialYear: string;
     taxDeclarationId?: string;
+    generationRequestId?: string;
 
 }
 
@@ -2091,7 +2094,9 @@ export const documentRoutes = async (
             }
             const page = Math.max(1, Number(request.query.page) || 1);
             const limit = Math.min(100, Math.max(1, Number(request.query.limit) || 10));
-            const query: any = {};
+            const query: any = {
+                joiningDate: getForm12BBJoiningDateQuery(financialYear),
+            };
             if (request.query.departmentId) query.departmentId = request.query.departmentId;
             if (request.query.activeStatus !== undefined) {
                 query.active = request.query.activeStatus === true || String(request.query.activeStatus) === 'true';
@@ -2138,7 +2143,7 @@ export const documentRoutes = async (
             const [total, items] = await Promise.all([
                 User.countDocuments(query),
                 User.find(query)
-                    .select('_id name email employeeCode departmentId active')
+                    .select('_id name email employeeCode departmentId active joiningDate')
                     .sort({ name: 1, _id: 1 })
                     .skip((page - 1) * limit)
                     .limit(limit)
@@ -2148,6 +2153,26 @@ export const documentRoutes = async (
                 success: true,
                 data: { items, total, page, limit, totalPages: Math.ceil(total / limit) },
             });
+        },
+    );
+
+    // This endpoint is called by Cloud Tasks. It intentionally uses a dedicated
+    // worker secret instead of a user's browser session.
+    fastify.post<{ Body: { jobId?: string } }>('/form12bb/jobs/process',
+        async (request, reply) => {
+            if (!verifyForm12BBWorkerSecret(request.headers['x-form12bb-worker-secret'])) {
+                return reply.status(403).send({ success: false, error: 'Invalid Form 12BB worker credentials' });
+            }
+            try {
+                const jobId = String(request.body?.jobId || '');
+                const result = await request.container!.documentService.processForm12BBJobChunk(jobId);
+                return reply.send({ success: true, data: result });
+            } catch (error) {
+                // A 5xx response asks Cloud Tasks to retry the delivery. Employee-
+                // level errors are persisted by the worker and still return 200.
+                request.log.error(error, 'Form 12BB worker request failed');
+                return reply.status(500).send({ success: false, error: error instanceof Error ? error.message : String(error) });
+            }
         },
     );
 
@@ -2162,6 +2187,22 @@ export const documentRoutes = async (
                 return reply.send({ success: true, data: job });
             } catch (error) {
                 return reply.status(400).send({ success: false, error: error instanceof Error ? error.message : String(error) });
+            }
+        },
+    );
+
+    fastify.post<{ Params: { jobId: string } }>('/form12bb/jobs/:jobId/resume',
+        { preHandler: [authenticate] },
+        async (request, reply) => {
+            if (String(request.user.role || '').toLowerCase() !== 'admin') {
+                return reply.status(403).send({ success: false, error: 'Only administrators can resume Form 12BB generation jobs.' });
+            }
+            try {
+                const job = await request.container!.documentService.resumeForm12BBBulkJob(request.params.jobId);
+                return reply.status(202).send({ success: true, data: job });
+            } catch (error) {
+                const errorMessage = error instanceof Error ? error.message : String(error);
+                return reply.status(errorMessage.includes('not found') ? 404 : 400).send({ success: false, error: errorMessage });
             }
         },
     );

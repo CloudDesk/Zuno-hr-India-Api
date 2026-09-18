@@ -6,7 +6,7 @@ import { renderPayslipPdf } from './payslip-pdf-runtime';
 
 // Increment when the persisted PDF layout changes. Existing generated files are
 // intentionally left untouched until an admin regenerates them.
-export const FORM12BB_TEMPLATE_VERSION = 9;
+export const FORM12BB_TEMPLATE_VERSION = 11;
 
 export interface Form12BBLineItem {
     label: string;
@@ -74,7 +74,7 @@ handlebars.registerHelper('joinAllEvidence', (...args: unknown[]) => {
 
 handlebars.registerHelper('chapterVIARowspan', (...args: unknown[]) => {
     const itemGroups = args.slice(0, -1) as Form12BBLineItem[][];
-    return 6 + itemGroups.reduce((total, items) => total + (items?.length || 0), 0);
+    return 5 + itemGroups.reduce((total, items) => total + (items?.length || 0), 0);
 });
 
 let compiledTemplate: handlebars.TemplateDelegate<Form12BBPdfData> | null = null;
