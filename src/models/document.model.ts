@@ -2,7 +2,7 @@ import { Document as DocumentM, Schema, Types, model } from 'mongoose';
 
 export interface IDocument extends DocumentM {
     employeeId: Types.ObjectId; // Links to the employee
-    type: 'Payslip' | 'TimesheetFile' | 'Form16' | 'Form12B' | 'Form12BB' | 'OfferLetter' | 'HikeLetter' | 'Certificate' | 'AdminUpload' | 'GovernmentId' | 'Academic' | 'Experience' | 'AttendanceFile' | 'TaxProof' | 'FNF Letter'; // Document types
+    type: 'Payslip' | 'TimesheetFile' | 'Form16' | 'Form12B' | 'Form12BB' | 'POIReport' | 'OfferLetter' | 'HikeLetter' | 'Certificate' | 'AdminUpload' | 'GovernmentId' | 'Academic' | 'Experience' | 'AttendanceFile' | 'TaxProof' | 'FNF Letter'; // Document types
     category: 'Payroll' | 'Timesheet' | 'Tax' | 'EmployeeLifecycle' | 'Certification' | 'Attendance' | 'Settlement'; // Document categories
     tags?: string[]; // e.g., ['2025', 'Confidential', 'Exported', 'Degree', 'Aadhaar']
     fileName: string; // e.g., 'ABCDE1234F_2025-06.xlsx'
@@ -88,6 +88,31 @@ export interface IDocument extends DocumentM {
         filePath: string;
         generatedAt: Date;
     }>;
+        };
+        poiReport?: {
+            employeeId: Types.ObjectId;
+            financialYear: string;
+            regime: string;
+            taxDeclarationId: Types.ObjectId;
+            sourceFingerprint: string;
+            sourceUpdatedAt: Date;
+            generationStatus: 'Completed' | 'Failed' | 'Outdated';
+            generatedAt?: Date;
+            generatedBy?: Types.ObjectId;
+            lastRegeneratedAt?: Date;
+            generationError?: string;
+            outdatedAt?: Date;
+            outdatedReason?: string;
+            declarationCount: number;
+            totalDeclaredAmount: number;
+            totalApprovedAmount: number;
+            previousVersions?: Array<{
+                version: number;
+                fileName: string;
+                filePath: string;
+                generatedAt: Date;
+                sourceFingerprint: string;
+            }>;
         };
         offerLetter?: {
             offerDate?: Date; // Date the offer was issued
@@ -226,7 +251,7 @@ const documentSchema = new Schema<IDocument>(
         employeeId: { type: Schema.Types.ObjectId, required: true, ref: 'User' },
         type: {
             type: String,
-            enum: ['Payslip', 'TimesheetFile', 'Form16', 'OfferLetter', 'HikeLetter', 'Certificate', 'Form12B', 'Form12BB', 'AdminUpload', 'GovernmentId', 'Academic', 'Experience', 'AttendanceFile', 'TaxProof', 'FNF Letter'],
+            enum: ['Payslip', 'TimesheetFile', 'Form16', 'OfferLetter', 'HikeLetter', 'Certificate', 'Form12B', 'Form12BB', 'POIReport', 'AdminUpload', 'GovernmentId', 'Academic', 'Experience', 'AttendanceFile', 'TaxProof', 'FNF Letter'],
             required: true,
         },
         category: {
@@ -315,6 +340,16 @@ const documentSchema = new Schema<IDocument>(
                             typeof value.form12BB.isPreviewEnabled === 'boolean'
                         );
                     }
+                    if (docType === 'POIReport') {
+                        return Boolean(
+                            value.poiReport &&
+                            value.poiReport.employeeId &&
+                            value.poiReport.financialYear &&
+                            value.poiReport.taxDeclarationId &&
+                            value.poiReport.sourceFingerprint &&
+                            value.poiReport.generationStatus
+                        );
+                    }
                     if (docType === 'Certificate') {
                         return (
                             value.certificate &&
@@ -387,6 +422,10 @@ documentSchema.index({ employeeId: 1, type: 1 });
 documentSchema.index(
     { employeeId: 1, type: 1, 'metadata.form12BB.financialYear': 1 },
     { unique: true, partialFilterExpression: { type: 'Form12BB' } },
+);
+documentSchema.index(
+    { employeeId: 1, type: 1, 'metadata.poiReport.financialYear': 1 },
+    { unique: true, partialFilterExpression: { type: 'POIReport' } },
 );
 documentSchema.index({ type: 1, 'metadata.payslip.monthYear': 1 });
 documentSchema.index({ type: 1, 'metadata.timesheet.month': 1, 'metadata.timesheet.year': 1 });

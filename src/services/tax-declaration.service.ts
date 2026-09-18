@@ -13,6 +13,7 @@ import { Document } from "../models/document.model";
 import * as xlsx from 'xlsx';
 import { deductionSections, TAX_DEDUCTION_SECTION_IDS, type IDeductionSection } from "../constants/tax-deduction-sections";
 import { uploadFileToGCP } from "../utilis/gcpStorage";
+import { POIReportService } from './poi-report.service';
 
 export interface ITaxDeclarationCreate {
     employeeId: string;
@@ -648,7 +649,11 @@ export class TaxDeclarationService extends BaseService {
 
         // 15. Update taxDeclaration object with new data
         Object.assign(taxDeclaration, data);
-        return taxDeclaration.save();
+        const savedDeclaration = await taxDeclaration.save();
+        await new POIReportService(this.context)
+            .markOutdatedForDeclaration(savedDeclaration, 'Tax declaration values changed')
+            .catch((error) => console.error('Unable to mark POI report outdated:', error instanceof Error ? error.message : String(error)));
+        return savedDeclaration;
     }
 
     // Updates POI documents for tax declarations
@@ -901,7 +906,11 @@ export class TaxDeclarationService extends BaseService {
         taxDeclaration.isPOISubmitted = coveredDecls.length > 0;
 
         // 7. Save and return updated document
-        return await taxDeclaration.save();
+        const savedDeclaration = await taxDeclaration.save();
+        await new POIReportService(this.context)
+            .markOutdatedForDeclaration(savedDeclaration, 'Investment proof was uploaded or replaced')
+            .catch((error) => console.error('Unable to mark POI report outdated:', error instanceof Error ? error.message : String(error)));
+        return savedDeclaration;
     }
 
     //Admin review of declarations with approval/rejection handling
@@ -1059,7 +1068,18 @@ export class TaxDeclarationService extends BaseService {
         }
         console.log(taxDeclaration, "11 taxDeclaration");
         // return taxDeclaration;
-        return await taxDeclaration.save();
+        const savedDeclaration = await taxDeclaration.save();
+        const poiReportService = new POIReportService(this.context);
+        try {
+            await poiReportService.markOutdatedForDeclaration(savedDeclaration, 'Declaration approval status changed');
+            if (poiReportService.evaluateEligibility(savedDeclaration).eligible) {
+                await poiReportService.generate(savedDeclaration.employeeId.toString(), savedDeclaration.financialYear);
+            }
+        } catch (error) {
+            // Approval remains successful even if report generation/storage fails.
+            console.error('Automatic POI report generation failed:', error instanceof Error ? error.message : String(error));
+        }
+        return savedDeclaration;
     }
 
     //Form12B Integration Re-calculation Tax

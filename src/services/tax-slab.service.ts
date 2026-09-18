@@ -108,6 +108,8 @@ export class TaxSlabService extends BaseService {
     }
 
     async getFinancialYears(): Promise<string[]> {
+        // Report filters use active Tax Slab years only. `distinct` and the
+        // normalized set below ensure regimes sharing an FY produce one option.
         const storedYears = await TaxSlab.distinct('financialYear', { isActive: true });
         const normalizedYears = new Set<string>();
 

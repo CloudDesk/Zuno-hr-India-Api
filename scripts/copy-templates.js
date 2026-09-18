@@ -12,6 +12,11 @@ const templateGroups = [
     destDir: path.join(__dirname, '..', 'dist', 'templates', 'form12bb'),
     extensions: new Set(['.html']),
   },
+  {
+    sourceDir: path.join(__dirname, '..', 'src', 'templates', 'poi'),
+    destDir: path.join(__dirname, '..', 'dist', 'templates', 'poi'),
+    extensions: new Set(['.xlsx']),
+  },
 ];
 
 function copyTemplateGroup({ sourceDir, destDir, extensions }) {

@@ -33,6 +33,11 @@ export interface IForm12BBGenerate {
 
 }
 
+export interface IPOIReportGenerate {
+    employeeId: string;
+    financialYear: string;
+}
+
 interface IForm12BBBulkGenerate {
     financialYear: string;
     selectionMode: 'explicit' | 'allMatching';
@@ -60,7 +65,7 @@ interface IForm12BBReportsQuery extends IDocumentQuery {
 export interface IDocumentQuery {
     access?: 'own' | 'team' | 'global';
     employeeId?: string;
-    type?: 'Payslip' | 'TimesheetFile' | 'Form16' | 'Form12B' | 'Form12BB' | 'OfferLetter' | 'HikeLetter' | 'Certificate' | 'AdminUpload' | 'AttendanceFile' | 'TaxProof'
+    type?: 'Payslip' | 'TimesheetFile' | 'Form16' | 'Form12B' | 'Form12BB' | 'POIReport' | 'OfferLetter' | 'HikeLetter' | 'Certificate' | 'AdminUpload' | 'AttendanceFile' | 'TaxProof'
     category?: 'Payroll' | 'Timesheet' | 'Tax' | 'EmployeeLifecycle' | 'Certification' | 'Attendance';
     year?: number;
     month?: number;
@@ -2244,6 +2249,169 @@ export const documentRoutes = async (
             }
         },
     );
+
+    fastify.get('/poi-reports', { preHandler: [authenticate] }, async (request, reply) => {
+        if (String(request.user.role || '').toLowerCase() !== 'admin') {
+            return reply.status(403).send({ success: false, error: 'Only administrators can list POI reports.' });
+        }
+        const query = request.query as IDocumentQuery & { departmentId?: string };
+        const { departmentId, ...documentQuery } = query;
+        (request as any).query = {
+            ...documentQuery,
+            department: departmentId || documentQuery.department,
+            access: 'global',
+            category: 'Tax',
+            type: 'POIReport',
+        };
+        const result = await request.container!.documentService.getDocuments(request as any, reply);
+        if (reply.sent) return;
+        return reply.send({ success: true, data: result.data, meta: result.meta });
+    });
+
+    fastify.get('/poi-reports/candidates', { preHandler: [authenticate] }, async (request, reply) => {
+        if (String(request.user.role || '').toLowerCase() !== 'admin') {
+            return reply.status(403).send({ success: false, error: 'Only administrators can select POI report candidates.' });
+        }
+        const queryParams = request.query as {
+            financialYear?: string;
+            page?: number;
+            limit?: number;
+            departmentId?: string;
+            activeStatus?: boolean | string;
+            search?: string;
+            eligibilityStatus?: string;
+        };
+        const financialYear = String(queryParams.financialYear || '');
+        if (!isValidYearRange(financialYear)) {
+            return reply.status(400).send({ success: false, error: 'Financial year must be a consecutive range in YYYY-YYYY format' });
+        }
+        const page = Math.max(1, Number(queryParams.page) || 1);
+        const limit = Math.min(50, Math.max(1, Number(queryParams.limit) || 10));
+        const employeeQuery: any = {};
+        if (queryParams.departmentId) employeeQuery.departmentId = queryParams.departmentId;
+        if (queryParams.activeStatus !== undefined && queryParams.activeStatus !== '') {
+            employeeQuery.active = queryParams.activeStatus === true || String(queryParams.activeStatus) === 'true';
+        }
+        if (queryParams.search?.trim()) {
+            const escaped = queryParams.search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const expression = new RegExp(escaped, 'i');
+            employeeQuery.$or = [{ name: expression }, { email: expression }, { employeeCode: expression }];
+        }
+        const totalEmployees = await User.countDocuments(employeeQuery);
+        const employees = await User.find(employeeQuery)
+            .select('_id name email employeeCode departmentId active')
+            .sort({ name: 1, _id: 1 })
+            .skip(queryParams.eligibilityStatus ? 0 : (page - 1) * limit)
+            .limit(queryParams.eligibilityStatus ? Math.min(totalEmployees, 5000) : limit)
+            .lean();
+        const employeeIds = employees.map((employee: any) => employee._id.toString());
+        const statuses = await request.container!.documentService.getPOICandidateStatuses(employeeIds, financialYear);
+        const candidates = employees.map((employee: any) => {
+            const status = statuses[employee._id.toString()];
+            return {
+                ...employee,
+                eligibility: status.eligibility,
+                reportId: status.report?._id,
+                reportStatus: status.report?.metadata?.poiReport?.generationStatus || 'NotGenerated',
+            };
+        });
+        const filtered = queryParams.eligibilityStatus
+            ? candidates.filter((candidate) => candidate.eligibility.status === queryParams.eligibilityStatus)
+            : candidates;
+        const total = queryParams.eligibilityStatus ? filtered.length : totalEmployees;
+        const items = queryParams.eligibilityStatus ? filtered.slice((page - 1) * limit, page * limit) : filtered;
+        return reply.send({ success: true, data: { items, total, page, limit, totalPages: Math.ceil(total / limit) } });
+    });
+
+    fastify.post('/poi-reports/generate', { preHandler: [authenticate] }, async (request, reply) => {
+        if (String(request.user.role || '').toLowerCase() !== 'admin') {
+            return reply.status(403).send({ success: false, error: 'Only administrators can generate POI reports.' });
+        }
+        try {
+            const { employeeId, financialYear } = request.body as IPOIReportGenerate;
+            const document = await request.container!.documentService.generatePOIReport(employeeId, financialYear);
+            return reply.send({ success: true, data: document });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return reply.status(message.includes('not found') ? 404 : 400).send({ success: false, error: message });
+        }
+    });
+
+    fastify.post('/poi-reports/bulk-generate', { preHandler: [authenticate] }, async (request, reply) => {
+        if (String(request.user.role || '').toLowerCase() !== 'admin') {
+            return reply.status(403).send({ success: false, error: 'Only administrators can generate POI reports.' });
+        }
+        const { employeeIds, financialYear } = request.body as { employeeIds?: string[]; financialYear?: string };
+        if (!Array.isArray(employeeIds) || employeeIds.length === 0 || employeeIds.length > 100) {
+            return reply.status(400).send({ success: false, error: 'Select between 1 and 100 employees.' });
+        }
+        if (!financialYear || !isValidYearRange(financialYear)) {
+            return reply.status(400).send({ success: false, error: 'Financial year must be a consecutive range in YYYY-YYYY format' });
+        }
+        const results: any[] = [];
+        for (const employeeId of Array.from(new Set(employeeIds))) {
+            try {
+                const document = await request.container!.documentService.generatePOIReport(employeeId, financialYear);
+                results.push({ employeeId, success: true, documentId: document._id });
+            } catch (error) {
+                results.push({ employeeId, success: false, error: error instanceof Error ? error.message : String(error) });
+            }
+        }
+        return reply.send({
+            success: true,
+            data: {
+                results,
+                succeeded: results.filter((item) => item.success).length,
+                failed: results.filter((item) => !item.success).length,
+            },
+        });
+    });
+
+    fastify.post<{ Params: { id: string } }>('/poi-reports/:id/regenerate', { preHandler: [authenticate] }, async (request, reply) => {
+        if (String(request.user.role || '').toLowerCase() !== 'admin') {
+            return reply.status(403).send({ success: false, error: 'Only administrators can regenerate POI reports.' });
+        }
+        try {
+            const document = await request.container!.documentService.regeneratePOIReport(request.params.id);
+            return reply.send({ success: true, data: document });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return reply.status(message.includes('not found') ? 404 : 400).send({ success: false, error: message });
+        }
+    });
+
+    fastify.get<{ Params: { id: string } }>('/poi-reports/:id/details', { preHandler: [authenticate] }, async (request, reply) => {
+        if (String(request.user.role || '').toLowerCase() !== 'admin') {
+            return reply.status(403).send({ success: false, error: 'Only administrators can view POI reports.' });
+        }
+        try {
+            return reply.send({ success: true, data: await request.container!.documentService.getPOIReportDetails(request.params.id) });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return reply.status(message.includes('not found') ? 404 : 400).send({ success: false, error: message });
+        }
+    });
+
+    fastify.get<{ Params: { id: string } }>('/poi-reports/:id/download', { preHandler: [authenticate] }, async (request, reply) => {
+        if (String(request.user.role || '').toLowerCase() !== 'admin') {
+            return reply.status(403).send({ success: false, error: 'Only administrators can download POI reports.' });
+        }
+        try {
+            const result = await request.container!.documentService.getPOIReportDownload(request.params.id);
+            const fileResponse = await fetch(result.url);
+            if (!fileResponse.ok) throw new Error(`Unable to retrieve POI report (${fileResponse.status})`);
+            const buffer = Buffer.from(await fileResponse.arrayBuffer());
+            const safeFileName = result.fileName.replace(/["\r\n]/g, '') || 'POI-Report.xlsx';
+            return reply
+                .header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+                .header('Content-Length', buffer.length)
+                .header('Content-Disposition', `attachment; filename="${safeFileName}"; filename*=UTF-8''${encodeURIComponent(safeFileName)}`)
+                .send(buffer);
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return reply.status(message.includes('not found') ? 404 : 400).send({ success: false, error: message });
+        }
+    });
 
     //preview Status UpdateForm12BB
     fastify.put<IPreviewStatusRequest>(

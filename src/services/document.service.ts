@@ -24,6 +24,7 @@ import { uploadFileToGCP, deleteFileFromGCP, getSignedFileUrl } from "../utilis/
 import { formatCurrency } from "../utilis/currency";
 import { FORM12BB_TEMPLATE_VERSION, Form12BBLineItem, Form12BBPdfData, generateForm12BBPDF } from "./form12bb-puppeteer.helper";
 import { deductionSections } from "../constants/tax-deduction-sections";
+import { POIReportService } from './poi-report.service';
 // import AdmZip from 'adm-zip';
 // import { mkdirSync } from 'fs';
 
@@ -35,6 +36,28 @@ const monthNames = [
 const isValidForm12BBFinancialYear = (value: string): boolean => {
     const match = /^(\d{4})-(\d{4})$/.exec(value);
     return Boolean(match && Number(match[2]) === Number(match[1]) + 1);
+};
+
+const safeReportFilePart = (value: unknown, fallback: string): string => {
+    const sanitized = String(value || '')
+        .replace(/[<>:"/\\|?*\u0000-\u001F]/g, '')
+        .trim()
+        .replace(/\s+/g, '_')
+        .replace(/_+/g, '_')
+        .replace(/^\.+|\.+$/g, '')
+        .slice(0, 80);
+    return sanitized || fallback;
+};
+
+const form12BBReportFileName = (
+    user: { name?: string; employeeCode?: string } | null | undefined,
+    employeeId: string,
+    financialYear: string,
+    version: number,
+): string => {
+    const employeeName = safeReportFilePart(user?.name, 'Employee');
+    const employeeCode = safeReportFilePart(user?.employeeCode || employeeId, employeeId);
+    return `Form12BB_${employeeName}_${employeeCode}_FY${safeReportFilePart(financialYear, 'Unknown')}_v${version}.pdf`;
 };
 interface ISendPayslipsRequest {
     month: number;
@@ -802,10 +825,18 @@ export class DocumentService extends BaseService {
             else if (category === 'Tax' && type === 'Form12BB' && financialYear) {
                 query['metadata.form12BB.financialYear'] = financialYear;
             }
+            else if (category === 'Tax' && type === 'POIReport' && financialYear) {
+                query['metadata.poiReport.financialYear'] = financialYear;
+            }
             if (category === 'Tax' && type === 'Form12BB' && reportStatus) {
                 query['metadata.form12BB.generationStatus'] = reportStatus === 'failed'
                     ? 'Failed'
                     : { $in: ['Completed', null] };
+            }
+            else if (category === 'Tax' && type === 'POIReport' && reportStatus) {
+                query['metadata.poiReport.generationStatus'] = reportStatus === 'failed'
+                    ? 'Failed'
+                    : { $in: ['Completed', 'Outdated'] };
             }
             else if (category === 'Attendance' && type === 'AttendanceFile' && yearNum !== undefined && !isNaN(yearNum)) {
                 query['metadata.attendanceFile.year'] = yearNum;
@@ -2754,12 +2785,11 @@ export class DocumentService extends BaseService {
         const nextVersion = existingDoc ? Number(existingDoc.version || 1) + 1 : 1;
         const form12BBDir = path.join(process.cwd(), 'uploads');
         await fsPromises.mkdir(form12BBDir, { recursive: true });
-        const form12BBBaseName = `form12bb_${employeeId}_${effectiveFY.replace(/-/g, '_')}_v${nextVersion}`;
-        const outputPdfPath = path.join(form12BBDir, `${form12BBBaseName}.pdf`);
+        const fileName = form12BBReportFileName(user, employeeId, effectiveFY, nextVersion);
+        const outputPdfPath = path.join(form12BBDir, fileName);
         let uploadedFileUrl = '';
 
         try {
-            const fileName = `${form12BBBaseName}.pdf`;
             await this.renderForm12BBPdf(mappedData, outputPdfPath);
             uploadedFileUrl = await this.uploadForm12BBPdf({
                 outputPath: outputPdfPath,
@@ -3058,8 +3088,18 @@ export class DocumentService extends BaseService {
             throw new Error('You are not authorized to access this Form 12BB');
         }
 
+        let accessFileName = document.fileName;
+        if (download) {
+            const employee = await User.findById(document.employeeId).select('name employeeCode').lean();
+            accessFileName = form12BBReportFileName(
+                employee,
+                document.employeeId.toString(),
+                document.metadata?.form12BB?.financialYear || 'Unknown',
+                Number(document.version || 1),
+            );
+        }
         const url = await getSignedFileUrl(document.filePath, {
-            downloadFileName: download ? document.fileName : undefined,
+            downloadFileName: download ? accessFileName : undefined,
         });
         await Document.updateOne(
             { _id: document._id },
@@ -3074,7 +3114,7 @@ export class DocumentService extends BaseService {
                 },
             },
         );
-        return { url, fileName: document.fileName };
+        return { url, fileName: accessFileName };
     }
 
     //Form12BB preview update
@@ -4333,5 +4373,29 @@ export class DocumentService extends BaseService {
         });
 
         return document;
+    }
+
+    async generatePOIReport(employeeId: string, financialYear: string): Promise<IDocument> {
+        return new POIReportService(this.context).generate(employeeId, financialYear);
+    }
+
+    async regeneratePOIReport(documentId: string): Promise<IDocument> {
+        return new POIReportService(this.context).regenerate(documentId);
+    }
+
+    async getPOIReportDetails(documentId: string): Promise<any> {
+        return new POIReportService(this.context).getDetails(documentId);
+    }
+
+    async getPOIReportDownload(documentId: string): Promise<{ url: string; fileName: string }> {
+        return new POIReportService(this.context).getDownload(documentId);
+    }
+
+    async getPOICandidateStatus(employeeId: string, financialYear: string): Promise<any> {
+        return new POIReportService(this.context).getCandidateStatus(employeeId, financialYear);
+    }
+
+    async getPOICandidateStatuses(employeeIds: string[], financialYear: string): Promise<any> {
+        return new POIReportService(this.context).getCandidateStatuses(employeeIds, financialYear);
     }
 }

@@ -234,6 +234,8 @@ function getFolderName(category: string, type: string): string {
           return 'Form12B';
         case 'Form12BB':
           return 'Form12BB';
+        case 'POIReport':
+          return 'POIReport';
         case 'TaxProof':
           return 'TaxProof';
         default:
