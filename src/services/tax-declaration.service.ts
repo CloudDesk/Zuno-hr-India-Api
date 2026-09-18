@@ -15,6 +15,42 @@ import { deductionSections, TAX_DEDUCTION_SECTION_IDS, type IDeductionSection } 
 import { uploadFileToGCP } from "../utilis/gcpStorage";
 import { POIReportService } from './poi-report.service';
 
+export const recomputePOISubmissionState = (taxDeclaration: any): void => {
+    const applicableDeclarations = (taxDeclaration.declarations || [])
+        .filter((declaration: any) => Math.abs(Number(declaration.declaredAmount || 0)) > 0);
+    const normalizedStatus = (declaration: any): string => String(declaration.status || '').trim().toLowerCase();
+    const hasCurrentProof = (declaration: any): boolean =>
+        (declaration.documents || []).some((document: any) => document.isLatestVersion === true);
+
+    taxDeclaration.isPOISubmitted = applicableDeclarations.some(hasCurrentProof);
+
+    if (!applicableDeclarations.length) {
+        taxDeclaration.poiSubmissionStatus = 'not_submitted';
+        return;
+    }
+    if (applicableDeclarations.some((declaration: any) => normalizedStatus(declaration) === 'rejected')) {
+        taxDeclaration.poiSubmissionStatus = 'rejected';
+        return;
+    }
+    if (applicableDeclarations.some((declaration: any) => normalizedStatus(declaration) === 'resubmission_requested')) {
+        taxDeclaration.poiSubmissionStatus = 'resubmission';
+        return;
+    }
+    if (applicableDeclarations.every((declaration: any) => normalizedStatus(declaration) === 'verified')) {
+        taxDeclaration.poiSubmissionStatus = 'verified';
+        return;
+    }
+
+    const awaitingApproval = applicableDeclarations
+        .filter((declaration: any) => normalizedStatus(declaration) !== 'verified');
+    const submittedCount = awaitingApproval.filter(hasCurrentProof).length;
+    taxDeclaration.poiSubmissionStatus = submittedCount === awaitingApproval.length
+        ? 'submitted'
+        : submittedCount > 0
+            ? 'partial_submitted'
+            : 'not_submitted';
+};
+
 export interface ITaxDeclarationCreate {
     employeeId: string;
     financialYear: string;
@@ -882,28 +918,9 @@ export class TaxDeclarationService extends BaseService {
 
         console.log(taxDeclaration, "6 taxDeclaration after processing all files");
 
-        // 6. Smart POI submission status
-        //    Only count declarations that still need action (exclude verified and finally rejected)
-        const needingDecls = taxDeclaration.declarations.filter(
-            d => d.declaredAmount > 0 && d.status !== 'verified' && d.status !== 'rejected'
-        );
-        const coveredDecls = needingDecls.filter(
-            d => d.documents.some(doc => doc.isLatestVersion === true)
-        );
-
-        if (needingDecls.length > 0) {
-            if (coveredDecls.length === needingDecls.length) {
-                // Every active declaration has at least one document
-                taxDeclaration.poiSubmissionStatus = 'submitted';
-            } else if (coveredDecls.length > 0) {
-                // Some declarations have docs, but not all
-                taxDeclaration.poiSubmissionStatus = 'partial_submitted';
-            }
-            // coveredDecls.length === 0: keep existing status (edge case guard)
-        }
-
-        // isPOISubmitted = true as long as at least one document was ever submitted
-        taxDeclaration.isPOISubmitted = coveredDecls.length > 0;
+        // Recompute from the complete declaration state so a rejected proof can
+        // move through resubmission and become eligible after final approval.
+        recomputePOISubmissionState(taxDeclaration);
 
         // 7. Save and return updated document
         const savedDeclaration = await taxDeclaration.save();
@@ -999,6 +1016,7 @@ export class TaxDeclarationService extends BaseService {
 
         // 5. Update total declined amount
         taxDeclaration.totalDeclinedAmount = totalDeclinedAmount;
+        recomputePOISubmissionState(taxDeclaration);
 
         // 4. Recalculate tax based on updated verifications
         let recalculatedTax = await this.recalculateTax(taxDeclaration.toObject() as ITaxDeclarationUpdate);

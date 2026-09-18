@@ -1,4 +1,4 @@
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import * as fsPromises from 'fs/promises';
 import path from 'path';
 import { Types } from 'mongoose';
@@ -9,6 +9,7 @@ import { User } from '../models';
 import { deleteFileFromGCP, getSignedFileUrl, uploadFileToGCP } from '../utilis/gcpStorage';
 import { generatePOIWorkbook, POIReportRow, POIReportWorkbookData } from './poi-report-excel.helper';
 import { deductionSections } from '../constants/tax-deduction-sections';
+import { POIGenerationLock } from '../models/poi-generation-lock.model';
 
 export type POIEligibilityStatus = 'NoDeclaration' | 'NoApplicableInvestments' | 'MissingProofs' | 'PendingApproval' | 'Rejected' | 'Eligible';
 
@@ -61,6 +62,38 @@ const reportRemark = (review: any): string => {
 };
 
 export class POIReportService extends BaseService {
+    private async withGenerationLock<T>(employeeId: string, financialYear: string, operation: () => Promise<T>): Promise<T> {
+        const key = `${employeeId}:${financialYear}`;
+        const ownerToken = randomUUID();
+        const now = new Date();
+        const expiresAt = new Date(now.getTime() + 15 * 60 * 1000);
+
+        await POIGenerationLock.init();
+        try {
+            await POIGenerationLock.findOneAndUpdate({
+                key,
+                $or: [
+                    { expiresAt: { $lte: now } },
+                    { ownerToken },
+                ],
+            }, {
+                $set: { ownerToken, expiresAt },
+                $setOnInsert: { key },
+            }, { upsert: true, new: true });
+        } catch (error: any) {
+            if (error?.code === 11000) {
+                throw new Error('A POI report generation request is already in progress for this employee and financial year');
+            }
+            throw error;
+        }
+
+        try {
+            return await operation();
+        } finally {
+            await POIGenerationLock.deleteOne({ key, ownerToken }).catch(() => undefined);
+        }
+    }
+
     evaluateEligibility(taxDeclaration: any | null): POIEligibility {
         if (!taxDeclaration) return { eligible: false, status: 'NoDeclaration', reasons: ['Tax declaration not found'] };
 
@@ -231,11 +264,13 @@ export class POIReportService extends BaseService {
         });
     }
 
-    async generate(employeeId: string, financialYear: string, forceRegenerate = false): Promise<IDocument> {
+    async generate(employeeId: string, financialYear: string): Promise<IDocument> {
         if (!Types.ObjectId.isValid(employeeId)) throw new Error('A valid employee ID is required');
         if (!validFinancialYear(financialYear)) throw new Error('Financial year must be a consecutive range in YYYY-YYYY format');
         if (!this.context.user?._id) throw new Error('Authenticated administrator is required');
+        const actingUserId = this.context.user._id;
 
+        return this.withGenerationLock(employeeId, financialYear, async () => {
         const [user, taxDeclaration] = await Promise.all([
             User.findById(employeeId).select('name employeeCode departmentId active').lean(),
             TaxDeclaration.findOne({ employeeId, financialYear }).lean(),
@@ -247,7 +282,7 @@ export class POIReportService extends BaseService {
 
         const fingerprint = this.buildFingerprint(taxDeclaration);
         const existingDocument = await Document.findOne({ employeeId, type: 'POIReport', 'metadata.poiReport.financialYear': financialYear });
-        if (!forceRegenerate && existingDocument?.metadata?.poiReport?.sourceFingerprint === fingerprint && existingDocument.metadata.poiReport.generationStatus === 'Completed') {
+        if (existingDocument?.metadata?.poiReport?.sourceFingerprint === fingerprint && existingDocument.metadata.poiReport.generationStatus === 'Completed') {
             return existingDocument;
         }
 
@@ -279,8 +314,15 @@ export class POIReportService extends BaseService {
             if (!upload.success || !upload.fileUrl) throw new Error(upload.error || 'POI report upload failed');
             uploadedFileUrl = upload.fileUrl;
 
+            const latestDeclaration = await TaxDeclaration.findById(taxDeclaration._id).lean();
+            if (!latestDeclaration
+                || !this.evaluateEligibility(latestDeclaration).eligible
+                || this.buildFingerprint(latestDeclaration) !== fingerprint) {
+                throw new Error('The tax declaration changed during POI report generation; retry with the latest approved data');
+            }
+
             const generatedAt = new Date();
-            const performedBy = new Types.ObjectId(this.context.user._id);
+            const performedBy = new Types.ObjectId(actingUserId);
             const metadata = {
                 poiReport: {
                     employeeId: new Types.ObjectId(employeeId),
@@ -345,6 +387,7 @@ export class POIReportService extends BaseService {
         } finally {
             await fsPromises.unlink(outputPath).catch(() => undefined);
         }
+        });
     }
 
     async regenerate(documentId: string): Promise<IDocument> {
@@ -353,7 +396,7 @@ export class POIReportService extends BaseService {
         if (!document) throw new Error('POI report not found');
         const financialYear = document.metadata.poiReport?.financialYear;
         if (!financialYear) throw new Error('POI report financial year is missing');
-        return this.generate(document.employeeId.toString(), financialYear, true);
+        return this.generate(document.employeeId.toString(), financialYear);
     }
 
     async getDetails(documentId: string): Promise<any> {
