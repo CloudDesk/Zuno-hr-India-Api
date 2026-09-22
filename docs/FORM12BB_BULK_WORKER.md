@@ -9,7 +9,7 @@ The worker processes three employees per request by default. Each item has an at
 Run these commands in project `zuno-hr-2025` before deploying the changed Cloud Build files:
 
 ```sh
-gcloud services enable cloudtasks.googleapis.com secretmanager.googleapis.com
+gcloud services enable cloudtasks.googleapis.com
 
 gcloud tasks queues create form12bb-generation \
   --location=asia-south1 \
@@ -20,16 +20,14 @@ gcloud tasks queues create form12bb-generation \
   --max-backoff=300s \
   --max-doublings=5
 
-openssl rand -base64 48 | gcloud secrets create form12bb-worker-secret --data-file=-
-
 gcloud projects add-iam-policy-binding zuno-hr-2025 \
   --member=serviceAccount:zunoprod@zuno-hr-2025.iam.gserviceaccount.com \
   --role=roles/cloudtasks.enqueuer
-
-gcloud secrets add-iam-policy-binding form12bb-worker-secret \
-  --member=serviceAccount:zunoprod@zuno-hr-2025.iam.gserviceaccount.com \
-  --role=roles/secretmanager.secretAccessor
 ```
+
+Configure a strong `FORM12BB_WORKER_SECRET` value in the SIT and production
+deployment environments. The Cloud Build files pass it to Cloud Run in the same
+way as the other deployment environment variables; do not commit the value.
 
 If the queue already exists, use `gcloud tasks queues update form12bb-generation` with the same rate and retry flags.
 
@@ -55,7 +53,7 @@ FORM12BB_JOB_MAX_ATTEMPTS=3
 FORM12BB_JOB_LEASE_MINUTES=20
 ```
 
-They mount `FORM12BB_WORKER_SECRET` from Secret Manager and configure a 15-minute Cloud Run request timeout. SIT memory is raised to 1 GiB for Chromium.
+They pass `FORM12BB_WORKER_SECRET` from the deployment environment and configure a 15-minute Cloud Run request timeout. SIT memory is raised to 1 GiB for Chromium.
 
 For local development, the default queue mode is `inline`; it still uses persisted job items, leases, retries, and idempotency. Do not use inline mode in production. Production defaults to Cloud Tasks and rejects new bulk jobs if required configuration is missing.
 
