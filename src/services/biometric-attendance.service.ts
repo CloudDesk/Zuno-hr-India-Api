@@ -9,6 +9,7 @@ import { OptionalHolidayRequest } from '../models/optional-holiday-request.model
 import { WFH } from '../models/wfh.model';
 import { Leave } from '../models/leave.model';
 import * as ExcelJS from 'exceljs';
+import { getExpectedWorkMinutes } from '../utilis/attendance-duration';
 
 
 interface ISwipeData {
@@ -623,11 +624,16 @@ export class BiometricAttendanceService extends BaseService {
     record.isEarlyExit = timestamp < earlyExitThreshold;
 
     // Calculate metrics
+    const halfDayLeave = await this.getApprovedHalfDayLeave(record.userId, record.shiftDay);
+    const expectedMinutes = halfDayLeave
+      ? getExpectedWorkMinutes(shiftWindow.shiftStart, shiftWindow.shiftEnd, true)
+      : undefined;
     const metrics = await this.calculateAttendanceMetrics(
       record.firstIn!,
       timestamp,
       shiftWindow.shiftStart,
-      shiftWindow.shiftEnd
+      shiftWindow.shiftEnd,
+      expectedMinutes
     );
     console.log(metrics, "2nd swipe metrics")
     // Update all time-related fields
@@ -649,28 +655,15 @@ export class BiometricAttendanceService extends BaseService {
 
     // Check if this is a half-day leave day - preserve 'On-Leave' status if present
     // This handles the case where swipes are added AFTER half-day leave approval
-    if (record.halfType && !record.attendanceStatus.includes('On-Leave')) {
-      // Check if there's an approved half-day leave for this date
-      const { Leave } = await import('../models/leave.model');
-      const approvedHalfDayLeave = await Leave.findOne({
-        userId: record.userId,
-        shiftDay: record.shiftDay,
-        status: 'Approved',
-        leaveDuration: 'half-day',
-      });
-
-      if (approvedHalfDayLeave) {
-        // Preserve 'On-Leave' status for half-day leave
-        record.attendanceStatus.push('On-Leave');
-      }
+    if (halfDayLeave && !record.attendanceStatus.includes('On-Leave')) {
+      record.attendanceStatus.push('On-Leave');
+      record.halfType = halfDayLeave.halfDayType === 'first-half' ? 'First Half' : 'Second Half';
     }
 
     // Update regularization flag
-    record.needsRegularization =
-      record.isLateEntry ||
-      record.isEarlyExit ||
-      metrics.hasShortfall ||
-      !record.isWithinWindow;
+    record.needsRegularization = halfDayLeave
+      ? metrics.hasShortfall || !record.isWithinWindow
+      : record.isLateEntry || record.isEarlyExit || metrics.hasShortfall || !record.isWithinWindow;
     console.log(record, "2nd swipe record")
     await record.save();
   }
@@ -732,10 +725,15 @@ export class BiometricAttendanceService extends BaseService {
     }
 
     // Calculate metrics using multiple swipe logic
+    const halfDayLeave = await this.getApprovedHalfDayLeave(record.userId, record.shiftDay);
+    const expectedMinutes = halfDayLeave
+      ? getExpectedWorkMinutes(shiftWindow.shiftStart, shiftWindow.shiftEnd, true)
+      : undefined;
     const metrics = await this.calculateMultipleSwipeMetrics(
       record.swipes,
       shiftWindow.shiftStart,
-      shiftWindow.shiftEnd
+      shiftWindow.shiftEnd,
+      expectedMinutes
     );
 
     // Update all time-related fields
@@ -762,28 +760,15 @@ export class BiometricAttendanceService extends BaseService {
 
     // Check if this is a half-day leave day - preserve 'On-Leave' status if present
     // This handles the case where swipes are added AFTER half-day leave approval
-    if (record.halfType && !record.attendanceStatus.includes('On-Leave')) {
-      // Check if there's an approved half-day leave for this date
-      const { Leave } = await import('../models/leave.model');
-      const approvedHalfDayLeave = await Leave.findOne({
-        userId: record.userId,
-        shiftDay: record.shiftDay,
-        status: 'Approved',
-        leaveDuration: 'half-day',
-      });
-
-      if (approvedHalfDayLeave) {
-        // Preserve 'On-Leave' status for half-day leave
-        record.attendanceStatus.push('On-Leave');
-      }
+    if (halfDayLeave && !record.attendanceStatus.includes('On-Leave')) {
+      record.attendanceStatus.push('On-Leave');
+      record.halfType = halfDayLeave.halfDayType === 'first-half' ? 'First Half' : 'Second Half';
     }
 
     // Update regularization flag
-    record.needsRegularization =
-      record.isLateEntry ||
-      record.isEarlyExit ||
-      metrics.hasShortfall ||
-      !record.isWithinWindow;
+    record.needsRegularization = halfDayLeave
+      ? metrics.hasShortfall || !record.isWithinWindow
+      : record.isLateEntry || record.isEarlyExit || metrics.hasShortfall || !record.isWithinWindow;
 
     console.log(record, "multiple swipes record")
     await record.save();
@@ -794,13 +779,15 @@ export class BiometricAttendanceService extends BaseService {
     firstIn: Date,
     lastOut: Date,
     shiftStart: Date,
-    shiftEnd: Date
+    shiftEnd: Date,
+    expectedMinutesOverride?: number
   ): Promise<IAttendanceMetrics> {
     console.log("c firstIn", firstIn, "c lastOut", lastOut);
     console.log("c shiftStart", shiftStart, "c shiftEnd", shiftEnd)
     // Calculate total duration in minutes
     const totalMinutes = (lastOut.getTime() - firstIn.getTime()) / (1000 * 60);
-    const shiftMinutes = (shiftEnd.getTime() - shiftStart.getTime()) / (1000 * 60);
+    const fullShiftMinutes = getExpectedWorkMinutes(shiftStart, shiftEnd);
+    const shiftMinutes = expectedMinutesOverride ?? fullShiftMinutes;
 
     // Default break calculation (can be customized based on your rules)
     const breakMinutes = totalMinutes > 360 ? 30 : 0; // 30 min break for > 6 hours
@@ -823,6 +810,25 @@ export class BiometricAttendanceService extends BaseService {
       hasShortfall: difference < 0,
       hasExcessHours: difference > 0
     };
+  }
+
+  /**
+   * Half-day leave changes only the expected duration. The half label is not
+   * treated as a fixed clock window because attendance hours are flexible.
+   */
+  private async getApprovedHalfDayLeave(userId: Types.ObjectId, shiftDay: Date): Promise<any | null> {
+    const dayStart = new Date(shiftDay);
+    dayStart.setUTCHours(0, 0, 0, 0);
+    const dayEnd = new Date(shiftDay);
+    dayEnd.setUTCHours(23, 59, 59, 999);
+
+    return Leave.findOne({
+      userId,
+      status: 'Approved',
+      leaveDuration: 'half-day',
+      startDate: { $lte: dayEnd },
+      endDate: { $gte: dayStart },
+    }).select('halfDayType').lean();
   }
 
 
@@ -1013,7 +1019,8 @@ export class BiometricAttendanceService extends BaseService {
   private async calculateMultipleSwipeMetrics(
     swipes: Array<{ timestamp: Date; direction?: 'IN' | 'OUT' }>,
     shiftStart: Date,
-    shiftEnd: Date
+    shiftEnd: Date,
+    expectedMinutesOverride?: number
   ): Promise<IAttendanceMetrics> {
     // 1. Calculate work sessions
     const workSessions = this.calculateWorkSessions(swipes, shiftStart, shiftEnd);
@@ -1032,7 +1039,8 @@ export class BiometricAttendanceService extends BaseService {
     const actualWorkMinutes = totalWorkMinutes - breakMinutes;
 
     // 5. Calculate shift duration
-    const shiftMinutes = (shiftEnd.getTime() - shiftStart.getTime()) / (1000 * 60);
+    const fullShiftMinutes = getExpectedWorkMinutes(shiftStart, shiftEnd);
+    const shiftMinutes = expectedMinutesOverride ?? fullShiftMinutes;
 
     // 6. Calculate shortfall/excess based on TOTAL work time (not actual work time)
     // This ensures break time doesn't affect shortfall/excess calculation
@@ -1349,12 +1357,13 @@ export class BiometricAttendanceService extends BaseService {
       endDate: { $gte: utcStartDate }
     }).lean();
 
-    // Create map: userId -> Set of WFH dates
-    const wfhByUserAndDate = new Map<string, Set<string>>();
+    // Derive WFH context from the approved request. Historical requests that
+    // predate duration fields are full-day by default.
+    const wfhByUserAndDate = new Map<string, Map<string, { duration: 'full-day' | 'half-day'; halfDayType?: string }>>();
     wfhRecords.forEach(wfh => {
       const userId = wfh.userId.toString();
       if (!wfhByUserAndDate.has(userId)) {
-        wfhByUserAndDate.set(userId, new Set());
+        wfhByUserAndDate.set(userId, new Map());
       }
 
       // Add all dates in the WFH range
@@ -1366,7 +1375,10 @@ export class BiometricAttendanceService extends BaseService {
       const currentDate = new Date(wfhStart);
       while (currentDate <= wfhEnd) {
         const dateStr = currentDate.toISOString().split('T')[0];
-        wfhByUserAndDate.get(userId)!.add(dateStr);
+        wfhByUserAndDate.get(userId)!.set(dateStr, {
+          duration: wfh.wfhDuration === 'half-day' ? 'half-day' : 'full-day',
+          halfDayType: wfh.halfDayType,
+        });
         currentDate.setUTCDate(currentDate.getUTCDate() + 1);
       }
     });
@@ -1406,8 +1418,8 @@ export class BiometricAttendanceService extends BaseService {
 
       // Check if this date is a WFH day for this user
       const shiftDayStr = new Date(record.shiftDay).toISOString().split('T')[0];
-      const userWfhDates = wfhByUserAndDate.get(userId);
-      const isWFH = userWfhDates && userWfhDates.has(shiftDayStr);
+      const wfhDetails = wfhByUserAndDate.get(userId)?.get(shiftDayStr);
+      const isWFH = Boolean(wfhDetails) || record.isWFH === true;
 
       // Process the record
       const processedRecord = {
@@ -1427,7 +1439,9 @@ export class BiometricAttendanceService extends BaseService {
         isWithinWindow: record.isWithinWindow,
         isLateEntry: record.isLateEntry,
         isEarlyExit: record.isEarlyExit,
-        isWFH: record.isWFH !== undefined ? record.isWFH : (isWFH || false),
+        isWFH,
+        wfhDuration: wfhDetails?.duration || (record.isWFH ? 'full-day' : null),
+        wfhHalfType: wfhDetails?.halfDayType || null,
         halfType: record.halfType || null,
         needsRegularization: record.needsRegularization,
         excessHours: record.excessHours || '00:00:00',
@@ -1549,6 +1563,44 @@ export class BiometricAttendanceService extends BaseService {
           }
           : null,
       }));
+
+      const requestedDateKeys = new Set(dates);
+      const requestedYears = new Set(dates.map(date => Number(date.slice(0, 4))));
+      const calendarIds = new Set<string>();
+
+      if ((user as any).holidayCalendarId) {
+        calendarIds.add((user as any).holidayCalendarId.toString());
+      }
+      if (Array.isArray((user as any).holidayCalendarHistory)) {
+        (user as any).holidayCalendarHistory.forEach((entry: any) => {
+          if (entry?.isActive === true && requestedYears.has(entry.year) && entry.calendarId) {
+            calendarIds.add(entry.calendarId.toString());
+          }
+        });
+      }
+
+      const calendarObjectIds = Array.from(calendarIds)
+        .filter(id => Types.ObjectId.isValid(id))
+        .map(id => new Types.ObjectId(id));
+      const holidayCalendars = await HolidayCalendar.find({
+        $or: [
+          { _id: { $in: calendarObjectIds } },
+          { assignedTo: new Types.ObjectId(userId) },
+        ],
+      }).select('_id holidays assignedTo year').lean();
+
+      const holidays = holidayCalendars
+        .filter(calendar => {
+          const assignedDirectly = (calendar.assignedTo || [])
+            .some(id => id.toString() === userId);
+          return assignedDirectly || calendarIds.has(calendar._id.toString());
+        })
+        .flatMap(calendar => calendar.holidays || [])
+        .filter(holiday => {
+          const holidayDate = new Date(holiday.date);
+          const dateKey = `${holidayDate.getUTCFullYear()}-${String(holidayDate.getUTCMonth() + 1).padStart(2, '0')}-${String(holidayDate.getUTCDate()).padStart(2, '0')}`;
+          return requestedDateKeys.has(dateKey);
+        });
       console.log(transformedShiftAssignments, "5 getAttendanceAndShiftRecords transformedShiftAssignments")
       // Combine attendance and shift assignment data
       return {
@@ -1556,6 +1608,7 @@ export class BiometricAttendanceService extends BaseService {
         data: {
           attendanceRecords,
           shiftAssignments: transformedShiftAssignments,
+          holidays,
         },
       };
     } catch (error: any) {
@@ -1986,13 +2039,13 @@ export class BiometricAttendanceService extends BaseService {
         return false;
       };
 
-      // Helper function to format date
+      // Format report-facing dates as DD-MM-YYYY.
       const formatDate = (date: Date): string => {
         const d = new Date(date);
         const day = String(d.getUTCDate()).padStart(2, '0');
+        const month = String(d.getUTCMonth() + 1).padStart(2, '0');
         const year = d.getUTCFullYear();
-        const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-        return `${day} ${monthNames[d.getUTCMonth()]} ${year}`;
+        return `${day}-${month}-${year}`;
       };
 
       // Group attendance records by user and week
@@ -2384,12 +2437,11 @@ export class BiometricAttendanceService extends BaseService {
         endDate: { $gte: start }
       }).lean();
 
-      // Create map: userId -> Set of WFH dates
-      const wfhByUser = new Map<string, Set<string>>();
+      const wfhByUser = new Map<string, Map<string, { duration: 'full-day' | 'half-day'; halfDayType?: string }>>();
       wfhRecords.forEach(wfh => {
         const userId = wfh.userId.toString();
         if (!wfhByUser.has(userId)) {
-          wfhByUser.set(userId, new Set());
+          wfhByUser.set(userId, new Map());
         }
 
         // Add all dates in the WFH range
@@ -2401,7 +2453,10 @@ export class BiometricAttendanceService extends BaseService {
         const currentDate = new Date(wfhStart);
         while (currentDate <= wfhEnd) {
           const dateStr = currentDate.toISOString().split('T')[0];
-          wfhByUser.get(userId)!.add(dateStr);
+          wfhByUser.get(userId)!.set(dateStr, {
+            duration: wfh.wfhDuration === 'half-day' ? 'half-day' : 'full-day',
+            halfDayType: wfh.halfDayType,
+          });
           currentDate.setUTCDate(currentDate.getUTCDate() + 1);
         }
       });
@@ -2601,9 +2656,32 @@ export class BiometricAttendanceService extends BaseService {
           }
 
           // Add WFH flag if applicable (checks both approved WFH requests AND record flag)
-          const userWfhDates = wfhByUser.get(userId);
-          if ((userWfhDates && userWfhDates.has(dateStr)) || (record && record.isWFH)) {
+          const wfhDetails = wfhByUser.get(userId)?.get(dateStr);
+          if (wfhDetails || (record && record.isWFH)) {
             attendanceEntry.isWFH = true;
+            attendanceEntry.wfhDuration = wfhDetails?.duration || 'full-day';
+            attendanceEntry.wfhHalfType = wfhDetails?.halfDayType || null;
+
+            // Approved WFH is the effective attendance mode. Preserve stored
+            // leave/attendance data for audit and balance calculations, but
+            // prevent an older leave marker from remaining the display label.
+            if (!isMandatoryHolidayDate) {
+              if (attendanceEntry.wfhDuration === 'half-day') {
+                const isFirstHalfWFH = attendanceEntry.wfhHalfType === 'first-half';
+                if (leaveDetails?.duration === 'half-day') {
+                  const leaveAbbr = this.getLeaveAbbr(leaveDetails.type);
+                  attendanceEntry.displayLabel = isFirstHalfWFH
+                    ? `WFH/${leaveAbbr}`
+                    : `${leaveAbbr}/WFH`;
+                } else {
+                  attendanceEntry.displayLabel = isFirstHalfWFH
+                    ? 'WFH/Office'
+                    : 'Office/WFH';
+                }
+              } else {
+                attendanceEntry.displayLabel = 'WFH';
+              }
+            }
           }
 
           attendance.push(attendanceEntry);
@@ -2653,6 +2731,10 @@ export class BiometricAttendanceService extends BaseService {
 
       const { data, meta } = result;
       const dateRange = meta.dateRange as string[];
+      const formatReportDate = (date: string): string => {
+        const [year, month, day] = date.split('-');
+        return `${day}-${month}-${year}`;
+      };
 
       // Fetch WFH data for all users in the date range
       const start = new Date(startDate);
@@ -2669,12 +2751,16 @@ export class BiometricAttendanceService extends BaseService {
         endDate: { $gte: start }
       }).lean();
 
-      // Create a map: userId -> Set of WFH dates
-      const wfhByUserAndDate = new Map<string, Set<string>>();
+      // Keep duration/half metadata with every approved WFH date. Missing
+      // duration on historical records is intentionally treated as full-day.
+      const wfhByUserAndDate = new Map<string, Map<string, {
+        duration: 'full-day' | 'half-day';
+        halfDayType?: string;
+      }>>();
       wfhRecords.forEach(wfh => {
         const userId = wfh.userId.toString();
         if (!wfhByUserAndDate.has(userId)) {
-          wfhByUserAndDate.set(userId, new Set());
+          wfhByUserAndDate.set(userId, new Map());
         }
 
         // Add all dates in the WFH range
@@ -2686,7 +2772,10 @@ export class BiometricAttendanceService extends BaseService {
         const currentDate = new Date(wfhStart);
         while (currentDate <= wfhEnd) {
           const dateStr = currentDate.toISOString().split('T')[0];
-          wfhByUserAndDate.get(userId)!.add(dateStr);
+          wfhByUserAndDate.get(userId)!.set(dateStr, {
+            duration: wfh.wfhDuration === 'half-day' ? 'half-day' : 'full-day',
+            halfDayType: wfh.halfDayType,
+          });
           currentDate.setUTCDate(currentDate.getUTCDate() + 1);
         }
       });
@@ -2735,7 +2824,7 @@ export class BiometricAttendanceService extends BaseService {
       // Add title row
       worksheet.mergeCells('A1:' + this.getColumnLetter(3 + dateRange.length) + '1');
       const titleCell = worksheet.getCell('A1');
-      titleCell.value = `Attendance Report: ${startDate} to ${endDate}`;
+      titleCell.value = `Attendance Report: ${formatReportDate(startDate)} to ${formatReportDate(endDate)}`;
       titleCell.font = { bold: true, size: 14 };
       titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
 
@@ -2748,7 +2837,7 @@ export class BiometricAttendanceService extends BaseService {
       // Add date columns
       dateRange.forEach((date, index) => {
         const colIndex = 4 + index;
-        headerRow.getCell(colIndex).value = date;
+        headerRow.getCell(colIndex).value = formatReportDate(date);
       });
 
       // Style header row
@@ -2777,7 +2866,13 @@ export class BiometricAttendanceService extends BaseService {
 
           // Check if this user has WFH on this date (check both approved requests and record flag)
           const userWfhDates = wfhByUserAndDate.get(user.userId);
-          const isWFH = (userWfhDates && userWfhDates.has(dateStr)) || (att.isWFH === true);
+          const wfhDetails = userWfhDates?.get(dateStr);
+          const isWFH = Boolean(wfhDetails) || (att.isWFH === true);
+          const wfhDuration = wfhDetails?.duration || att.wfhDuration || (att.isWFH ? 'full-day' : undefined);
+          const wfhHalfType = wfhDetails?.halfDayType || att.wfhHalfType;
+          const wfhLabel = wfhDuration === 'half-day'
+            ? (wfhHalfType === 'first-half' ? 'WFH/Office' : 'Office/WFH')
+            : 'WFH';
 
           // Check if this user has Leave on this date
           const userLeaveDates = leaveByUserAndDate.get(user.userId);
@@ -2824,6 +2919,22 @@ export class BiometricAttendanceService extends BaseService {
           } else if (isApprovedRestrictedHoliday) {
             cellValue = 'RH';
             fontColor = 'FF800080'; // Purple for restricted/optional holiday
+          } else if (isWFH) {
+            // Export the approved WFH mode instead of a stale leave status.
+            // Opposite-half leave/WFH combinations retain both halves.
+            if (wfhDuration === 'half-day') {
+              if (leaveDetails?.duration === 'half-day') {
+                const leaveAbbr = this.getLeaveAbbr(leaveDetails.type);
+                cellValue = wfhHalfType === 'first-half'
+                  ? `WFH/${leaveAbbr}`
+                  : `${leaveAbbr}/WFH`;
+              } else {
+                cellValue = wfhLabel;
+              }
+            } else {
+              cellValue = 'WFH';
+            }
+            fontColor = 'FF008B8B';
           } else if (isLeave) {
             const typeStr = (leaveDetails as any).type;
             const duration = (leaveDetails as any).duration;
@@ -2873,7 +2984,7 @@ export class BiometricAttendanceService extends BaseService {
             fontColor = leaveColor;
           }
 
-          if (!isMandatoryHoliday && !isApprovedRestrictedHoliday && !isLeave) {
+          if (!isMandatoryHoliday && !isApprovedRestrictedHoliday && !isWFH && !isLeave) {
             // Continue with normal logic if not leave or holiday
             if (cellDate.getTime() === today.getTime()) {
               // PRIORITY 3: Check if date is today
@@ -2908,7 +3019,7 @@ export class BiometricAttendanceService extends BaseService {
               fontColor = 'FF008000'; // Green
               // Add WFH indicator for complete attendance
               if (isWFH) {
-                cellValue = 'WFH';
+                cellValue = wfhLabel;
               }
             } else if (att.status === 'incomplete' || att.status === 'missing_checkout') {
               // Past date with incomplete attendance
@@ -2930,7 +3041,7 @@ export class BiometricAttendanceService extends BaseService {
                 fontColor = 'FFFF8C00'; // Orange
                 // Add WFH indicator
                 if (isWFH) {
-                  cellValue = `${cellValue} (WFH)`;
+                  cellValue = `${wfhLabel} (${cellValue})`;
                 }
               }
             } else {
@@ -2939,7 +3050,7 @@ export class BiometricAttendanceService extends BaseService {
               cellValue = otherLabel;
               // Add WFH indicator for other statuses with attendance
               if (isWFH) {
-                cellValue = `${cellValue} (WFH)`;
+                cellValue = `${wfhLabel} (${cellValue})`;
               }
             }
           }

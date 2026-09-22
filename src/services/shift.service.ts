@@ -447,6 +447,7 @@ export class ShiftService extends BaseService {
     const resultdata: any = await Promise.all(operations);
 
     const operationsTwo: any = [];
+    const emailFailures: Array<{ userId: string; message: string }> = [];
 
     const userUpdatePromises = addUserIds.map(async (userId) => {
       const user: any = await User.findById(userId);
@@ -480,32 +481,6 @@ export class ShiftService extends BaseService {
       let newshiftStatus: 'current' | 'past' | 'upcoming' = 'upcoming';
       if (isCurrent) newshiftStatus = 'current';
       if (isPast) newshiftStatus = 'past';
-
-      //MAIL 
-      if (user && user.email) {
-        const html = generateEmailTemplate('shiftAssignmentEmail', {
-          userName: user.name,
-          companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS',
-          shiftCode,
-          startDate: new Date(startDate).toDateString(),
-          endDate: endDate ? new Date(endDate).toDateString() : '',
-          status: newshiftStatus,
-          weekendDays: validatedWeekendDays.map(d =>
-            ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d]
-          ).join(', ')
-        });
-
-        const emailRequest = {
-          body: {
-            to: user.email,
-            subject: 'New Shift Assignment',
-            text: `Dear ${user.name},\n\nYou have been assigned a new shift (${shiftCode}) starting from ${new Date(startDate).toDateString()}${endDate ? ` to ${new Date(endDate).toDateString()}` : ''}`,
-            html
-          }
-        };
-
-        await emailService.sendEmail(emailRequest);
-      }
 
       // Find the corresponding shift assignment for this user
       let shiftAssignmentId: any;
@@ -642,6 +617,39 @@ export class ShiftService extends BaseService {
         $set: updateObj
       });
 
+      // Email delivery is best-effort. A notification failure must never roll
+      // back or interrupt a successfully persisted shift assignment.
+      if (user.email) {
+        try {
+          const html = generateEmailTemplate('shiftAssignmentEmail', {
+            userName: user.name,
+            companyName: process.env.COMPANY_NAME || 'CloudDesk HRMS',
+            shiftCode,
+            startDate: new Date(startDate).toDateString(),
+            endDate: endDate ? new Date(endDate).toDateString() : '',
+            status: newshiftStatus,
+            weekendDays: validatedWeekendDays.map(d =>
+              ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d]
+            ).join(', ')
+          });
+
+          await emailService.sendEmail({
+            body: {
+              to: user.email,
+              subject: 'New Shift Assignment',
+              text: `Dear ${user.name},\n\nYou have been assigned a new shift (${shiftCode}) starting from ${new Date(startDate).toDateString()}${endDate ? ` to ${new Date(endDate).toDateString()}` : ''}`,
+              html
+            }
+          });
+        } catch (error: any) {
+          emailFailures.push({
+            userId: userId.toString(),
+            message: error?.message || 'Unknown email delivery error'
+          });
+          console.error(`Shift assigned to user ${userId}, but the notification email failed:`, error);
+        }
+      }
+
       return data;
     });
 
@@ -660,9 +668,15 @@ export class ShiftService extends BaseService {
     );
 
     return {
-      message: 'Shift assignments updated successfully',
+      message: emailFailures.length > 0
+        ? 'Shift assignments updated successfully, but some notification emails could not be sent'
+        : 'Shift assignments updated successfully',
       addedCount: addUserIds.length,
-      removedCount: removeUserIds.length
+      removedCount: removeUserIds.length,
+      emailFailedCount: emailFailures.length,
+      notificationWarning: emailFailures.length > 0
+        ? 'Assignments were saved. Email delivery can be retried after the mail configuration is corrected.'
+        : undefined
     };
   }
 

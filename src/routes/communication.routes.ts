@@ -15,7 +15,17 @@ export const communicationRoutes = async (fastify: FastifyInstance) => {
                         success: Type.Boolean(),
                         socialEventId: Type.String(),
                         total: Type.Number(),
-                        results: Type.Array(Type.Any())
+                        results: Type.Array(Type.Any()),
+                        assignedRecipients: Type.Array(Type.Object({
+                            _id: Type.String(),
+                            name: Type.String(),
+                            email: Type.Optional(Type.String()),
+                            employeeCode: Type.Optional(Type.String())
+                        })),
+                        assignmentHistory: Type.Array(Type.Any()),
+                        attachments: Type.Array(Type.String()),
+                        active: Type.Boolean(),
+                        type: Type.String()
                     })
                 })
             }
@@ -42,9 +52,53 @@ export const communicationRoutes = async (fastify: FastifyInstance) => {
                 eventDate: body.eventDate,
                 files,
                 adminId: (request.user as any)._id,
-                socialEventId: body.socialEventId
+                socialEventId: body.socialEventId,
+                active: body.active === undefined
+                    ? undefined
+                    : body.active === true || body.active === 'true',
+                retainedAttachments: (() => {
+                    if (body.retainedAttachments === undefined) return undefined;
+                    if (Array.isArray(body.retainedAttachments)) return body.retainedAttachments;
+                    try {
+                        const parsed = JSON.parse(body.retainedAttachments);
+                        if (!Array.isArray(parsed)) {
+                            throw new Error('Retained attachments must be an array');
+                        }
+                        return parsed;
+                    } catch {
+                        throw new Error('Retained attachments must be a valid JSON array');
+                    }
+                })()
             });
             return { success: true, data: result };
+        }
+    });
+
+    // Activate/deactivate a manual communication without removing its history.
+    fastify.patch('/:id/status', {
+        preHandler: [authenticate],
+        schema: {
+            params: Type.Object({ id: Type.String() }),
+            body: Type.Object({ active: Type.Boolean() }),
+            response: {
+                200: Type.Object({
+                    success: Type.Boolean(),
+                    data: Type.Any()
+                })
+            }
+        },
+        handler: async (request, reply) => {
+            if ((request.user as any).role !== 'admin') {
+                return reply.status(403).send({
+                    success: false,
+                    error: { message: 'Access denied. Admin role required.' }
+                });
+            }
+            const { communicationService } = request.container!;
+            const { id } = request.params as { id: string };
+            const { active } = request.body as { active: boolean };
+            const event = await communicationService.updateCommunicationStatus(id, active);
+            return { success: true, data: event };
         }
     });
 
@@ -96,6 +150,39 @@ export const communicationRoutes = async (fastify: FastifyInstance) => {
         handler: async (request, _reply) => {
             const { communicationService } = request.container!;
             const events = await communicationService.getCommunicationLogs(request.query as any);
+            return { success: true, data: events };
+        }
+    });
+
+    fastify.get('/my-history', {
+        preHandler: [authenticate],
+        schema: {
+            querystring: Type.Object({
+                limit: Type.Optional(Type.Number({ default: 10 })),
+                page: Type.Optional(Type.Number({ default: 1 })),
+                search: Type.Optional(Type.String()),
+                type: Type.Optional(Type.String()),
+                month: Type.Optional(Type.Number()),
+                year: Type.Optional(Type.Number())
+            }),
+            response: {
+                200: Type.Object({
+                    success: Type.Boolean(),
+                    data: Type.Object({
+                        data: Type.Array(Type.Any()),
+                        meta: Type.Object({
+                            total: Type.Number(),
+                            page: Type.Number(),
+                            limit: Type.Number(),
+                            totalPages: Type.Number()
+                        })
+                    })
+                })
+            }
+        },
+        handler: async (request, _reply) => {
+            const { communicationService } = request.container!;
+            const events = await communicationService.getMyCommunicationHistory(request.query as any);
             return { success: true, data: events };
         }
     });

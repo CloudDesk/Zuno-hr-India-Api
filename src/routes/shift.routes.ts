@@ -367,7 +367,9 @@ export const shiftRoutes: RouteHandler = async (
                 properties: {
                   message: { type: 'string' },
                   addedCount: { type: 'number' },
-                  removedCount: { type: 'number' }
+                  removedCount: { type: 'number' },
+                  emailFailedCount: { type: 'number' },
+                  notificationWarning: { type: 'string' }
                 }
               }
             }

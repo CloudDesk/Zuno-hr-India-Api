@@ -3,7 +3,7 @@ import { RequestContext } from '../types/context';
 import { User } from '../models/user.model';
 import { Leave } from '../models/leave.model';
 import { LOV } from '../models/lov.model';
-import { FilterQuery, Types } from 'mongoose';
+import mongoose, { FilterQuery, Types } from 'mongoose';
 import { ILeave } from '../models/leave.model';
 import { LeaveSummaryService } from './leave-summary.service';
 import { AttendanceRecord } from '../models/attendance-record.model';
@@ -12,7 +12,9 @@ import { emailService } from './email.service';
 import { validateLeaveTypeForCountry } from '../utilis/leave-type-constants';
 import { ShiftAssignment, IShiftAssignment } from '../models/shift.model';
 import { HolidayCalendar } from '../models/holiday-calendar.model';
+import { WFH } from '../models/wfh.model';
 import { calculateBusinessDays } from '../utilis/dates';
+import { getExpectedWorkMinutes } from '../utilis/attendance-duration';
 
 export interface ILeaveCreate {
   userId: string | Types.ObjectId;
@@ -92,6 +94,21 @@ export class LeaveService extends BaseService {
   constructor(context: RequestContext) {
     super(context);
     this.leaveSummaryService = new LeaveSummaryService(context);
+  }
+
+  private durationToMinutes(duration?: string): number {
+    if (!duration) return 0;
+    const parts = duration.split(':').map(Number);
+    if (parts.some(Number.isNaN)) return 0;
+    return (parts[0] || 0) * 60 + (parts[1] || 0) + (parts[2] || 0) / 60;
+  }
+
+  private minutesToDuration(minutes: number): string {
+    const safeMinutes = Math.max(0, minutes);
+    const hours = Math.floor(safeMinutes / 60);
+    const mins = Math.floor(safeMinutes % 60);
+    const seconds = Math.floor((safeMinutes % 1) * 60);
+    return `${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
   }
 
   /**
@@ -1090,6 +1107,35 @@ export class LeaveService extends BaseService {
       }
     }
 
+
+    // Keep leave and WFH mutually consistent. A half-day leave may coexist
+    // only with an approved/pending WFH request for the opposite half.
+    const leaveStart = new Date(leaveData.startDate);
+    const leaveEnd = new Date(leaveData.endDate);
+    const overlappingWFH = await WFH.findOne({
+      userId: leaveData.userId,
+      status: { $nin: ['Rejected', 'Cancelled'] },
+      startDate: { $lte: leaveEnd },
+      endDate: { $gte: leaveStart },
+      ...(leaveData.leaveDuration === 'half-day'
+        ? {
+            $or: [
+              { wfhDuration: { $ne: 'half-day' } },
+              { wfhDuration: { $exists: false } },
+              { wfhDuration: 'half-day', halfDayType: leaveData.halfDayType },
+            ],
+          }
+        : {}),
+    }).select('_id').lean();
+
+    if (overlappingWFH) {
+      throw new Error(
+        leaveData.leaveDuration === 'half-day'
+          ? 'Leave overlaps with WFH for the same half of this date'
+          : 'Leave dates overlap with an existing WFH request'
+      );
+    }
+
     // Calculate noOfDays excluding weekends and mandatory holidays for full-day leaves.
     // Scenario: optional/restricted holiday → ALLOW leave (e.g. annual leave on Dec 25). Weekend/mandatory → NOT allow (existing).
     // getMandatoryHolidays returns only type === 'mandatory'; optional holidays are not excluded.
@@ -1171,8 +1217,8 @@ export class LeaveService extends BaseService {
     // This check happens AFTER noOfDays is calculated so we can validate against the actual days requested
     // Skip balance check for leave types that don't require balance: lossOfPay, otherUnpaid
     // Skip balance check for restricted_holiday (has its own annual limit check)
-    const leaveTypesRequiringBalance = ['annual', 'sick', 'compOff', 'otherPaid', 'maternity', 'work_from_home'];
-    if (leaveTypesRequiringBalance.includes(leaveData.leaveType)) {
+    const leaveTypesWithoutBalance = ['lossOfPay', 'loss_of_pay', 'otherUnpaid', 'other_unpaid', 'restricted_holiday'];
+    if (!leaveTypesWithoutBalance.includes(leaveData.leaveType)) {
       const userIdObj = typeof leaveData.userId === 'string'
         ? new Types.ObjectId(leaveData.userId)
         : leaveData.userId;
@@ -1182,11 +1228,23 @@ export class LeaveService extends BaseService {
       const leaveSummary = await this.leaveSummaryService.getLeaveSummary(userIdObj, year);
 
       // Map leave type to category key (handle work_from_home -> workFromHome)
-      const categoryTypeKey = leaveData.leaveType === 'work_from_home'
-        ? 'workFromHome'
-        : leaveData.leaveType;
-
-      const category = leaveSummary[categoryTypeKey as keyof typeof leaveSummary] as any;
+      const categoryAliases: Record<string, string> = {
+        compoff: 'compOff',
+        comp_off: 'compOff',
+        lossofpay: 'lossOfPay',
+        loss_of_pay: 'lossOfPay',
+        otherpaid: 'otherPaid',
+        other_paid: 'otherPaid',
+        otherunpaid: 'otherUnpaid',
+        other_unpaid: 'otherUnpaid',
+        workfromhome: 'workFromHome',
+        work_from_home: 'workFromHome',
+        wfh: 'workFromHome',
+      };
+      const normalizedLeaveType = leaveData.leaveType.toLowerCase().trim();
+      const categoryTypeKey = categoryAliases[normalizedLeaveType] || leaveData.leaveType;
+      const builtInCategory = (leaveSummary as any)[categoryTypeKey];
+      const category = builtInCategory || leaveSummary.customLeaveTypes?.[leaveData.leaveType];
 
       if (!category) {
         throw new Error(`Leave category '${leaveData.leaveType}' not found in leave summary`);
@@ -1565,23 +1623,42 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
     const currentUser = this.context?.user;
     const isAdmin = currentUser && (currentUser.role === 'admin' || (currentUser as any).isSuperAdmin);
     const isManager = currentUser && leave.appliedTo?._id === currentUser._id.toString();
+    const actorId = updateData.approvedById || currentUser?._id;
+    const rawActor = updateData.approvedBy || (currentUser
+      ? {
+        _id: currentUser._id.toString(),
+        name: currentUser.name,
+        email: currentUser.email,
+      }
+      : undefined);
+    const actor = rawActor
+      ? {
+        _id: rawActor._id.toString(),
+        name: rawActor.name,
+        email: rawActor.email,
+      }
+      : undefined;
+    const isApplicant = Boolean(currentUser && leave.userId.toString() === currentUser._id.toString());
 
     // Handle dual approval for applied on behalf
-    if (leave.appliedOnBehalf) {
+    if (updateData.status === 'Cancelled') {
+      leave.status = 'Cancelled';
+      if (isApplicant) {
+        leave.withdrawnById = actorId;
+        leave.withdrawnBy = actor;
+        leave.withdrawnAt = new Date();
+      } else {
+        leave.cancelledById = actorId;
+        leave.cancelledBy = actor;
+        leave.cancelledAt = new Date();
+      }
+    } else if (leave.appliedOnBehalf) {
       // If rejected, reject immediately
       if (updateData.status === 'Rejected') {
         leave.status = 'Rejected';
-        leave.approvedById = updateData.approvedById;
-        leave.approvedBy = updateData.approvedBy
-          ? {
-            _id: typeof updateData.approvedBy._id === 'string'
-              ? updateData.approvedBy._id
-              : updateData.approvedBy._id.toString(),
-            name: updateData.approvedBy.name,
-            email: updateData.approvedBy.email,
-          }
-          : undefined;
-        leave.approvedAt = new Date();
+        leave.rejectedById = actorId;
+        leave.rejectedBy = actor;
+        leave.rejectedAt = new Date();
         if (updateData.remarks) leave.remarks = updateData.remarks;
 
         // Set who rejected (manager or admin)
@@ -1637,23 +1714,40 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
     } else {
       // Normal approval flow (not applied on behalf)
       leave.status = updateData.status;
-      leave.approvedById = updateData.approvedById;
-      leave.approvedBy = updateData.approvedBy
-        ? {
-          _id: typeof updateData.approvedBy._id === 'string'
-            ? updateData.approvedBy._id
-            : updateData.approvedBy._id.toString(),
-          name: updateData.approvedBy.name,
-          email: updateData.approvedBy.email,
-        }
-        : undefined;
-
-      leave.approvedAt = new Date();
+      if (updateData.status === 'Approved') {
+        leave.approvedById = actorId;
+        leave.approvedBy = actor;
+        leave.approvedAt = new Date();
+      } else if (updateData.status === 'Rejected') {
+        leave.rejectedById = actorId;
+        leave.rejectedBy = actor;
+        leave.rejectedAt = new Date();
+      }
     }
 
-    // leave.noOfDays = updateData.noOfDays;
+    // Commit the status and its reserved-balance restoration together. The
+    // reservation membership check also makes restoration idempotent on retry.
     if (updateData.remarks) leave.remarks = updateData.remarks;
-    await leave.save();
+    if (updateData.status === 'Rejected' || updateData.status === 'Cancelled') {
+      const session = await mongoose.startSession();
+      try {
+        await session.withTransaction(async () => {
+          await this.leaveSummaryService.decreaseLeaveBalance(
+            leave.userId as Types.ObjectId,
+            new Date(leave.startDate).getFullYear(),
+            leave.leaveType || '',
+            leave.noOfDays as number,
+            leave._id as Types.ObjectId,
+            { session }
+          );
+          await leave.save({ session });
+        });
+      } finally {
+        await session.endSession();
+      }
+    } else {
+      await leave.save();
+    }
 
     if (options.sendEmails !== false) {
       await this.sendLeaveStatusEmails(leave);
@@ -1751,6 +1845,24 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
           if (leave.leaveDuration === 'half-day' && leave.halfDayType) {
             // ✅ halfType is SET ONLY for half-day leaves
             updateFields.halfType = leave.halfDayType === 'first-half' ? 'First Half' : 'Second Half';
+
+            // Recalculate an already-recorded workday against 50% of the
+            // employee's assigned shift duration. No fixed clock half is used.
+            if (existingRecord?.shiftStart && existingRecord?.shiftEnd) {
+              const expectedMinutes = getExpectedWorkMinutes(
+                existingRecord.shiftStart,
+                existingRecord.shiftEnd,
+                true
+              );
+              const workedMinutes = this.durationToMinutes(existingRecord.totalWorkHours);
+              const difference = workedMinutes - expectedMinutes;
+              updateFields.shiftHours = this.minutesToDuration(expectedMinutes);
+              updateFields.shortfallHours =
+                difference < 0 ? this.minutesToDuration(Math.abs(difference)) : '00:00:00';
+              updateFields.excessHours =
+                difference > 0 ? this.minutesToDuration(difference) : '00:00:00';
+              updateFields.needsRegularization = difference < 0 || !existingRecord.isWithinWindow;
+            }
 
             // For half-day leave: Check if employee has swipes (worked the other half)
             // If swipes exist, add both 'On-Leave' and 'Present' to attendanceStatus
@@ -1870,24 +1982,7 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
         currentDate.setDate(currentDate.getDate() + 1);
       }
 
-      // Decrease leave balance and remove leaveRequestId from leave summary
-      // This reverses the effect of creating the leave request
-      // The balance was increased when the leave was created (even if Pending),
-      // so we need to decrease it when rejected/cancelled
-      // NOTE: This is ONLY called for Rejected/Cancelled, NOT for Approved
-      try {
-        await this.leaveSummaryService.decreaseLeaveBalance(
-          leave.userId as Types.ObjectId,
-          startDate.getFullYear(),
-          leave.leaveType || '',
-          leave.noOfDays as number,
-          leave._id as Types.ObjectId
-        );
-        console.log(`✅ [Leave ${updateData.status}] Decreased leave balance by ${leave.noOfDays} days for leave ${leave._id}`);
-      } catch (error: any) {
-        console.error(`❌ [Leave ${updateData.status}] Failed to update leave summary: ${error.message}`);
-        // Continue even if summary update fails
-      }
+      console.log(`Leave reservation restored for leave ${leave._id}`);
 
       // Optionally log the rejection/cancellation event
       console.log(`Leave request ${leave._id} ${updateData.status.toLowerCase()} by user ${updateData.rejectedById || updateData.approvedById}`);
@@ -1915,24 +2010,30 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
       throw new Error('Cannot cancel processed leave request');
     }
 
-    // Decrease leave balance and remove leaveRequestId from leave summary
-    // This reverses the effect of creating the leave request
+    const actor = await User.findById(userId).select('name email').lean();
+    leave.status = 'Cancelled';
+    leave.withdrawnById = userId;
+    leave.withdrawnBy = actor
+      ? { _id: actor._id, name: actor.name, email: actor.email }
+      : undefined;
+    leave.withdrawnAt = new Date();
+    const session = await mongoose.startSession();
     try {
-      await this.leaveSummaryService.decreaseLeaveBalance(
-        leave.userId as Types.ObjectId,
-        new Date(leave.startDate).getFullYear(),
-        leave.leaveType || '',
-        leave.noOfDays as number,
-        leave._id as Types.ObjectId
-      );
-      console.log(`✅ [Leave Cancel] Decreased leave balance by ${leave.noOfDays} days for leave ${leave._id}`);
-    } catch (error: any) {
-      console.error(`❌ [Leave Cancel] Failed to update leave summary: ${error.message}`);
-      // Continue with deletion even if summary update fails
+      await session.withTransaction(async () => {
+        await this.leaveSummaryService.decreaseLeaveBalance(
+          leave.userId as Types.ObjectId,
+          new Date(leave.startDate).getFullYear(),
+          leave.leaveType || '',
+          leave.noOfDays as number,
+          leave._id as Types.ObjectId,
+          { session }
+        );
+        await leave.save({ session });
+      });
+    } finally {
+      await session.endSession();
     }
-
-    await leave.deleteOne();
-    return { message: 'Leave request cancelled successfully' };
+    return { message: 'Leave request withdrawn successfully' };
   }
 
   async getLeaveBalance(userId: Types.ObjectId, leaveTypeId: Types.ObjectId | string): Promise<{
@@ -1940,21 +2041,45 @@ ${process.env.COMPANY_NAME || 'CloudDesk HRMS'}`;
     used: number;
     remaining: number;
   }> {
-    // This is a placeholder for leave balance calculation
-    // In a real application, this would involve more complex logic
-    const approvedLeaves = await Leave.countDocuments({
-      userId,
-      leaveTypeId,
-      status: 'Approved',
-      startDate: {
-        $gte: new Date(new Date().getFullYear(), 0, 1),
-      },
-    });
+    // Resolve the configured type directly. Balance lookup must work before an
+    // employee has submitted any leave and must use the current yearly ledger.
+    if (!Types.ObjectId.isValid(leaveTypeId.toString())) {
+      throw new Error('Invalid leave type ID');
+    }
+    const lov = await LOV.findById(leaveTypeId).lean();
+    const configuredType = lov?.values.find(value => value.isActive !== false)?.value
+      || lov?.values[0]?.value;
+    if (!configuredType) {
+      throw new Error('Unable to resolve the configured leave type');
+    }
+
+    const year = new Date().getFullYear();
+    const summary = await this.leaveSummaryService.getLeaveSummary(userId, year);
+    const normalizedType = configuredType.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const builtInMap: Record<string, string> = {
+      annual: 'annual',
+      sick: 'sick',
+      compoff: 'compOff',
+      lossofpay: 'lossOfPay',
+      otherpaid: 'otherPaid',
+      otherunpaid: 'otherUnpaid',
+      maternity: 'maternity',
+      workfromhome: 'workFromHome',
+      wfh: 'workFromHome',
+      restrictedholiday: 'restricted_holiday',
+      optionalholiday: 'restricted_holiday',
+    };
+    const category = (summary as any)[builtInMap[normalizedType]]
+      || summary.customLeaveTypes?.[configuredType];
+
+    if (!category) {
+      throw new Error(`Leave balance is not configured for ${configuredType}`);
+    }
 
     return {
-      total: 20, // This should come from configuration
-      used: approvedLeaves,
-      remaining: 20 - approvedLeaves,
+      total: Number(category.alloted || 0),
+      used: Number(category.availed || 0),
+      remaining: Number(category.remaining || 0),
     };
   }
 

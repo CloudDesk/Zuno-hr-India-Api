@@ -9,6 +9,8 @@ export interface IWFH extends Document {
   startDate: Date;
   endDate: Date;
   noOfDays: number;
+  wfhDuration?: 'full-day' | 'half-day';
+  halfDayType?: 'first-half' | 'second-half';
   status: 'Pending' | 'Approved' | 'Rejected' | 'Cancelled';
   remarks?: string;
   reason: string;
@@ -67,6 +69,16 @@ const wfhSchema = new Schema<IWFH>(
     startDate: { type: Date, required: true },
     endDate: { type: Date, required: true },
     noOfDays: { type: Number, required: true, min: 0.5 },
+    wfhDuration: {
+      type: String,
+      enum: ['full-day', 'half-day'],
+      default: 'full-day',
+    },
+    halfDayType: {
+      type: String,
+      enum: ['first-half', 'second-half'],
+      default: undefined,
+    },
     status: {
       type: String,
       enum: ['Pending', 'Approved', 'Rejected', 'Cancelled'],
@@ -156,6 +168,22 @@ wfhSchema.index({ approvedById: 1 });
 wfhSchema.pre('save', function (next) {
   if (this.endDate < this.startDate) {
     return next(new Error('End date must be after start date'));
+  }
+
+  const duration = this.wfhDuration || 'full-day';
+  this.wfhDuration = duration;
+
+  if (duration === 'half-day') {
+    const startDate = this.startDate.toISOString().split('T')[0];
+    const endDate = this.endDate.toISOString().split('T')[0];
+    if (startDate !== endDate) {
+      return next(new Error('Half-day WFH must be requested for a single date'));
+    }
+    if (!this.halfDayType) {
+      return next(new Error('halfDayType is required for half-day WFH'));
+    }
+  } else {
+    this.halfDayType = undefined;
   }
   next();
 });

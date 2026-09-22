@@ -6,13 +6,21 @@ interface Config {
   cookieSecret?: string;
   corsOrigins: boolean | string[];
   apiUrl: string;
-
+  EMAIL_PROVIDER: 'gmail' | 'outlook';
   GMAIL_SERVICE: string;
   GMAIL_HOST: string
   GMAIL_PORT: number;
   GMAIL_AUTH_USER: string;
   GMAIL_AUTH_PASSWORD: string;
+  OUTLOOK_SERVICE?: string;
+  OUTLOOK_HOST?: string;
+  OUTLOOK_PORT?: number;
+  OUTLOOK_AUTH_USER?: string;
+  OUTLOOK_AUTH_PASSWORD?: string;
+  OUTLOOK_FROM_EMAIL?: string;
+  OUTLOOK_FROM_NAME?: string;
   NODE_ENV: string;
+
 
   // GCP Configuration
   PROJECT_ID: string;
@@ -29,11 +37,21 @@ export const config: Config = {
   apiUrl: process.env.API_URL || 'http://localhost:5800',
 
   // Email configuration
+  EMAIL_PROVIDER: process.env.EMAIL_PROVIDER?.trim().toLowerCase() === 'outlook'
+    ? 'outlook'
+    : 'gmail',
   GMAIL_SERVICE: process.env.GMAIL_SERVICE || 'default-gmail-service',
   GMAIL_HOST: process.env.GMAIL_HOST || 'default-gmail-host',
   GMAIL_PORT: process.env.GMAIL_PORT ? parseInt(process.env.GMAIL_PORT, 10) : 123,
   GMAIL_AUTH_USER: process.env.GMAIL_AUTH_USER || 'default-gmail-host',
   GMAIL_AUTH_PASSWORD: process.env.GMAIL_AUTH_PASSWORD || 'default-gmail-host',
+  OUTLOOK_SERVICE: process.env.OUTLOOK_SERVICE,
+  OUTLOOK_HOST: process.env.OUTLOOK_HOST,
+  OUTLOOK_PORT: process.env.OUTLOOK_PORT ? parseInt(process.env.OUTLOOK_PORT, 10) : undefined,
+  OUTLOOK_AUTH_USER: process.env.OUTLOOK_AUTH_USER,
+  OUTLOOK_AUTH_PASSWORD: process.env.OUTLOOK_AUTH_PASSWORD,
+  OUTLOOK_FROM_EMAIL: process.env.OUTLOOK_FROM_EMAIL,
+  OUTLOOK_FROM_NAME: process.env.OUTLOOK_FROM_NAME,
 
   // App configuration
   NODE_ENV: process.env.NODE_ENV || 'default-gmail-host',

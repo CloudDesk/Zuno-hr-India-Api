@@ -58,9 +58,19 @@ async function migrateEmailIndexIfNeeded(): Promise<void> {
   try {
     const coll = mongoose.connection.collection('users');
     const indexes = await coll.indexes();
-    const emailIndex = (indexes as { name: string }[]).find((i) => i.name === 'email_1');
+    const emailIndex = (indexes as Array<{
+      name: string;
+      unique?: boolean;
+      partialFilterExpression?: Record<string, unknown>;
+    }>).find((i) => i.name === 'email_1');
     if (!emailIndex) return;
-    // Drop only the old global unique index; partial index is created by User model
+
+    // The desired index deliberately uses the same MongoDB-generated name.
+    // Do not drop it merely because it is named email_1.
+    const partialPortalAccess = emailIndex.partialFilterExpression?.portalAccess;
+    if (emailIndex.unique === true && partialPortalAccess === true) return;
+
+    // Drop only the old global index; the User model creates the partial one.
     await coll.dropIndex('email_1');
     console.log('[DB] Dropped old email_1 index; app will use partial unique index (portalAccess: true). No data removed.');
   } catch (err: any) {

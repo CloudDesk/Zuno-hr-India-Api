@@ -2732,7 +2732,7 @@ export const documentRoutes = async (
                 return reply.code(400).send({ success: false, error: "No file uploaded" });
             }
 
-            const { uploadFileToGCP } = await import("../utilis/gcpStorage");
+            const { uploadFileToGCP } = await import("../utilis/gcpStorage.js");
             const { promises: fsPromises } = await import("fs");
             const path = await import("path");
 
@@ -2788,7 +2788,7 @@ export const documentRoutes = async (
      */
     fastify.post("/hike-letter/preview", { preHandler: [authenticate] }, async (request, reply) => {
         try {
-            const { parseMultipartForm, saveMultipartFile } = await import("../utilis/parseMultiPartForm");
+            const { parseMultipartForm, saveMultipartFile } = await import("../utilis/parseMultiPartForm.js");
             const { body, files } = await parseMultipartForm(request);
             const { documentService } = request.container!;
 
@@ -2854,7 +2854,7 @@ export const documentRoutes = async (
      */
     fastify.post("/hike-letter/generate-send", { preHandler: [authenticate] }, async (request, reply) => {
         try {
-            const { parseMultipartForm, saveMultipartFile } = await import("../utilis/parseMultiPartForm");
+            const { parseMultipartForm, saveMultipartFile } = await import("../utilis/parseMultiPartForm.js");
             const { body, files } = await parseMultipartForm(request);
             const { documentService } = request.container!;
 

@@ -35,6 +35,9 @@ export const wfhRoutes: RouteHandler = async (
                   userId: { type: 'string' },
                   startDate: { type: 'string', format: 'date' },
                   endDate: { type: 'string', format: 'date' },
+                  noOfDays: { type: 'number' },
+                  wfhDuration: { type: 'string', enum: ['full-day', 'half-day'] },
+                  halfDayType: { type: 'string', enum: ['first-half', 'second-half'], nullable: true },
                   appliedOnBehalf: { type: 'boolean' },
                   appliedBy: { type: 'object' },
                   documents: { type: 'array' },
@@ -78,6 +81,8 @@ export const wfhRoutes: RouteHandler = async (
         const startDate = body?.startDate?.trim ? body.startDate.trim() : body?.startDate || '';
         const endDate = body?.endDate?.trim ? body.endDate.trim() : body?.endDate || '';
         const reason = body?.reason?.trim ? body.reason.trim() : body?.reason || ''; // Optional field
+        const wfhDuration = body?.wfhDuration || 'full-day';
+        const halfDayType = body?.halfDayType || undefined;
 
         // Check which required fields are missing (reason is optional)
         const missingFields: string[] = [];
@@ -216,6 +221,8 @@ export const wfhRoutes: RouteHandler = async (
           userId,
           startDate: new Date(startDate),
           endDate: new Date(endDate),
+          wfhDuration,
+          halfDayType,
           reason: reason || undefined, // Optional field
           remarks: remarks || undefined,
           appliedTo,
@@ -265,6 +272,16 @@ export const wfhRoutes: RouteHandler = async (
               format: 'date',
               description: 'WFH end date (YYYY-MM-DD)'
             },
+            wfhDuration: {
+              type: 'string',
+              enum: ['full-day', 'half-day'],
+              description: 'Full-day or half-day WFH; omitted values are treated as full-day'
+            },
+            halfDayType: {
+              type: 'string',
+              enum: ['first-half', 'second-half'],
+              description: 'Required only when wfhDuration is half-day'
+            },
             remarks: {
               type: 'string',
               description: 'Additional remarks'
@@ -292,6 +309,8 @@ export const wfhRoutes: RouteHandler = async (
                   startDate: { type: 'string', format: 'date' },
                   endDate: { type: 'string', format: 'date' },
                   noOfDays: { type: 'number' },
+                  wfhDuration: { type: 'string', enum: ['full-day', 'half-day'] },
+                  halfDayType: { type: 'string', enum: ['first-half', 'second-half'], nullable: true },
                   status: { type: 'string', enum: ['Pending', 'Approved', 'Rejected'] },
                   reason: { type: 'string' },
                 }
@@ -326,6 +345,8 @@ export const wfhRoutes: RouteHandler = async (
           userId: userId.toString(),
           startDate: new Date(body.startDate),
           endDate: new Date(body.endDate),
+          wfhDuration: body.wfhDuration,
+          halfDayType: body.halfDayType,
           reason: body.reason,
           remarks: body.remarks,
           appliedTo,
@@ -468,6 +489,8 @@ export const wfhRoutes: RouteHandler = async (
                     startDate: { type: 'string', format: 'date' },
                     endDate: { type: 'string', format: 'date' },
                     noOfDays: { type: 'number' },
+                    wfhDuration: { type: 'string', enum: ['full-day', 'half-day'] },
+                    halfDayType: { type: 'string', enum: ['first-half', 'second-half'], nullable: true },
                     status: { type: 'string', enum: ['Pending', 'Approved', 'Rejected', 'Cancelled'] },
                     reason: { type: 'string' },
                     remarks: { type: 'string' },

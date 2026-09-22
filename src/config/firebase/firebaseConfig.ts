@@ -1,5 +1,6 @@
 
 import admin from "firebase-admin"
+import type { Messaging } from "firebase-admin/messaging";
 import serviceData from './service.json';
 
 
@@ -7,7 +8,7 @@ admin.initializeApp({
     credential: admin.credential.cert(serviceData as admin.ServiceAccount)
 });
 
-export const messaging = admin.messaging();
+export const messaging: Messaging = admin.messaging();
 
 
 export const sendPushNotification = async (token: any, messageData: any) => {

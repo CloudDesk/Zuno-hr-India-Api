@@ -1372,10 +1372,7 @@ export class TaxDeclarationService extends BaseService {
             const currentFY = getCurrentFinancialYear();
             console.log(`Fetching tax declaration for User: ${userId}, FY: ${currentFY}`);
 
-            const taxDeclaration = await TaxDeclaration.findOne({
-                employeeId: userId,
-                financialYear: currentFY,
-            });
+            const taxDeclaration = await this.getUserByFinancialYear(userId, currentFY);
 
             if (!taxDeclaration) {
                 console.warn(`No tax declaration found for User: ${userId} in FY: ${currentFY}`);
@@ -1386,6 +1383,10 @@ export class TaxDeclarationService extends BaseService {
             console.error(`Error fetching tax declaration: ${error.message}`);
             throw new Error('Failed to fetch tax declaration');
         }
+    }
+
+    async getUserByFinancialYear(userId: Types.ObjectId, financialYear: string): Promise<ITaxDeclaration | null> {
+        return TaxDeclaration.findOne({ employeeId: userId, financialYear });
     }
 
 

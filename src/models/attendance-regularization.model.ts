@@ -1,6 +1,7 @@
 import { Schema, model, Document, Types } from 'mongoose';
 
 export interface IAttendanceRegularization extends Document {
+    applicationGroupId?: Types.ObjectId;
     attendanceId: Types.ObjectId;
     from: Date;
     to: Date;
@@ -22,6 +23,9 @@ export interface IAttendanceRegularization extends Document {
 
 const attendanceRegularizationSchema = new Schema<IAttendanceRegularization>(
     {
+        applicationGroupId: {
+            type: Schema.Types.ObjectId,
+        },
         attendanceId: {
             type: Schema.Types.ObjectId,
             ref: 'AttendanceRecord',
@@ -42,6 +46,7 @@ const attendanceRegularizationSchema = new Schema<IAttendanceRegularization>(
         reason: {
             type: String,
             required: true,
+            trim: true,
         },
         status: {
             type: String,

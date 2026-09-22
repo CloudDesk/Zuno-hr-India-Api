@@ -6,16 +6,18 @@ import { User } from '../models';
 import { Types } from 'mongoose';
 import { emailService } from './email.service';
 import { generateEmailTemplate } from '../emails/templates';
+import mongoose from 'mongoose';
 
 export interface ILeaveReleaseCreate {
   employeeIds: string[]; // Array of employee IDs
-  releaseType: 'monthly' | 'quarterly' | 'annual';
+  releaseType: 'daily' | 'monthly' | 'quarterly' | 'annual';
   period: {
+    day?: number;
     month?: number;    // 1-12 (required for monthly, except restricted_holiday)
     quarter?: number;  // 1-4 (required for quarterly: Q1=Jan-Mar, Q2=Apr-Jun, Q3=Jul-Sep, Q4=Oct-Dec)
     year: number;      // Required for all types
   };
-  leaveType: 'annual' | 'sick' | 'compOff' | 'lossOfPay' | 'otherPaid' | 'otherUnpaid' | 'restricted_holiday';
+  leaveType: string;
   daysReleased: number; // Can be decimal (e.g., 4.5)
   notes?: string;
   requestId?: string;
@@ -23,6 +25,9 @@ export interface ILeaveReleaseCreate {
   skipExisting?: boolean;
   forceRelease?: boolean;
   overrideReason?: string;
+  source?: 'manual' | 'automatic';
+  automationConfigurationId?: string;
+  scheduledFor?: Date;
 }
 
 export interface ILeaveReleaseEmployeePreview {
@@ -68,7 +73,7 @@ export class LeaveReleaseService extends BaseService {
     confirmationType?: 'normal' | 'duplicate' | 'mixed';
     duplicates?: ILeaveReleaseDuplicate[];
   }> {
-    const { employeeIds, releaseType, period, leaveType, daysReleased, notes, requestId, previewOnly, skipExisting, forceRelease, overrideReason } = releaseData;
+    const { employeeIds, releaseType, period, leaveType, daysReleased, notes, requestId, previewOnly, skipExisting, forceRelease, overrideReason, source, automationConfigurationId, scheduledFor } = releaseData;
     const uniqueEmployeeIds = [...new Set(employeeIds)];
     const normalizedRequestId = requestId?.trim() || undefined;
     const releasedBy = this.context.user?._id;
@@ -77,7 +82,14 @@ export class LeaveReleaseService extends BaseService {
       throw new Error('User not authenticated');
     }
 
+    if (!previewOnly && !normalizedRequestId) {
+      throw new Error('A requestId is required to safely process a leave release');
+    }
+
     // Validate period
+    if (releaseType === 'daily' && (!period.day || !period.month)) {
+      throw new Error('Day and month are required for daily release');
+    }
     if (releaseType === 'monthly' && leaveType !== 'restricted_holiday' && !period.month) {
       throw new Error('Month is required for monthly release');
     }
@@ -211,52 +223,61 @@ export class LeaveReleaseService extends BaseService {
     // Process each validated employee
     for (const releaseTarget of employeesToRelease) {
       const { employeeId, employeeObjectId, employee, duplicateOfReleaseId } = releaseTarget;
+      const session = await mongoose.startSession();
       try {
+        let release: ILeaveRelease | null = null;
+        let updatedSummary: any;
         let isIdempotentReplay = false;
 
-        // Create the release record before mutating balance so a retried request
-        // with the same requestId is stopped before a second credit can happen.
-        const release = await LeaveRelease.create({
-          employeeId: employeeObjectId,
-          releaseType,
-          period,
-          leaveType,
-          daysReleased,
-          releasedBy,
-          notes,
-          requestId: normalizedRequestId,
-          isOverride: Boolean(duplicateOfReleaseId),
-          overrideReason: duplicateOfReleaseId ? overrideReason?.trim() : undefined,
-          duplicateOfReleaseId
-        }).catch(async (error: any) => {
-          if (normalizedRequestId && error?.code === 11000) {
-            const existingRequestRelease = await this.findReleaseByRequestId(normalizedRequestId, employeeObjectId);
+        await session.withTransaction(async () => {
+          if (normalizedRequestId) {
+            const existingRequestRelease = await LeaveRelease.findOne({
+              requestId: normalizedRequestId,
+              employeeId: employeeObjectId
+            }).session(session);
             if (existingRequestRelease) {
               isIdempotentReplay = true;
-              return existingRequestRelease;
+              release = existingRequestRelease;
+              return;
             }
           }
 
-          throw error;
-        });
+          // History and balance are committed together. A retry with the same
+          // requestId either sees the committed release or safely retries the transaction.
+          [release] = await LeaveRelease.create([{
+            employeeId: employeeObjectId,
+            releaseType,
+            period,
+            leaveType,
+            daysReleased,
+            releasedBy,
+            notes,
+            requestId: normalizedRequestId,
+            isOverride: Boolean(duplicateOfReleaseId),
+            overrideReason: duplicateOfReleaseId ? overrideReason?.trim() : undefined,
+            duplicateOfReleaseId,
+            source: source || 'manual',
+            automationConfigurationId: automationConfigurationId
+              ? new Types.ObjectId(automationConfigurationId)
+              : undefined,
+            scheduledFor
+          }], { session });
 
-        if (isIdempotentReplay) {
-          releases.push(release as ILeaveRelease);
-          success.push(employeeId);
-          continue;
-        }
-
-        let updatedSummary: any;
-
-        try {
           // Get current leave summary for the year
           const currentSummary = await this.leaveSummaryService.getLeaveSummary(
             employeeObjectId,
-            period.year
+            period.year,
+            { session }
           );
 
-          // Get current allotted balance
-          const currentAlloted = currentSummary[leaveType as keyof typeof currentSummary]?.alloted || 0;
+          const builtInLeaveTypes = new Set([
+            'annual', 'sick', 'compOff', 'lossOfPay', 'otherPaid', 'otherUnpaid',
+            'maternity', 'workFromHome', 'restricted_holiday'
+          ]);
+          const isBuiltInLeaveType = builtInLeaveTypes.has(leaveType);
+          const currentAlloted = isBuiltInLeaveType
+            ? (currentSummary as any)[leaveType]?.alloted || 0
+            : currentSummary.customLeaveTypes?.[leaveType]?.alloted || 0;
 
           // Add daysReleased to existing balance
           const newAlloted = currentAlloted + daysReleased;
@@ -265,16 +286,24 @@ export class LeaveReleaseService extends BaseService {
           updatedSummary = await this.leaveSummaryService.updateLeaveAllotments(
             employeeObjectId,
             period.year,
+            isBuiltInLeaveType
+              ? { [leaveType]: newAlloted }
+              : { customLeaveTypes: { [leaveType]: newAlloted } },
             {
-              [leaveType]: newAlloted
-            },
-            { skipEmail: true }  // Skip allotment email, send release-specific email instead
+              skipEmail: true,
+              session,
+              reason: notes || `${source === 'automatic' ? 'Automatic' : 'Manual'} leave release`,
+              operationType: 'release'
+            }
           );
-        } catch (balanceError) {
-          await LeaveRelease.findByIdAndDelete(release._id).catch((rollbackError) => {
-            console.error(`Failed to roll back leave release ${release._id}:`, rollbackError);
-          });
-          throw balanceError;
+        });
+
+        if (!release) throw new Error('Leave release transaction did not return a release');
+
+        if (isIdempotentReplay) {
+          releases.push(release);
+          success.push(employeeId);
+          continue;
         }
 
         releases.push(release);
@@ -282,7 +311,9 @@ export class LeaveReleaseService extends BaseService {
 
         // Send email notification to employee
         try {
-          const periodDescription = releaseType === 'monthly'
+          const periodDescription = releaseType === 'daily'
+            ? `${period.day}/${period.month}/${period.year}`
+            : releaseType === 'monthly'
             ? `${this.getMonthName(period.month!)} ${period.year}`
             : releaseType === 'quarterly'
               ? `Q${period.quarter} ${period.year}`
@@ -348,8 +379,25 @@ export class LeaveReleaseService extends BaseService {
         }
 
       } catch (error: any) {
+        // Two identical requests can both pass the initial lookup before one wins
+        // the unique-key race. Treat the loser as a successful idempotent replay.
+        const duplicateKeyError = error?.code === 11000 || error?.cause?.code === 11000;
+        if (duplicateKeyError && normalizedRequestId) {
+          const existingRelease = await this.findReleaseByRequestId(
+            normalizedRequestId,
+            employeeObjectId
+          );
+          if (existingRelease) {
+            releases.push(existingRelease as ILeaveRelease);
+            success.push(employeeId);
+            continue;
+          }
+        }
+
         console.error(`Failed to release leave for employee ${employeeId}:`, error);
         failed.push({ employeeId, error: error.message || 'Unknown error' });
+      } finally {
+        await session.endSession();
       }
     }
 
@@ -387,6 +435,7 @@ export class LeaveReleaseService extends BaseService {
 
     return await LeaveRelease.find(query)
       .populate('releasedBy', 'name email')
+      .populate('adjustments.adjustedBy', 'name email')
       .sort({ releasedAt: -1 })
       .lean();
   }
@@ -400,7 +449,8 @@ export class LeaveReleaseService extends BaseService {
     year?: number;
     yearLessThan?: number;
     leaveType?: string;
-    releaseType?: 'monthly' | 'quarterly' | 'annual' | 'carryforward';
+    releaseType?: 'daily' | 'monthly' | 'quarterly' | 'annual' | 'carryforward';
+    source?: 'manual' | 'automatic';
     page?: number;
     limit?: number;
   }): Promise<{
@@ -497,6 +547,15 @@ export class LeaveReleaseService extends BaseService {
       }
     }
 
+    if (filters?.source) {
+      const sourceFilter = filters.source === 'manual'
+        // Legacy release records predate the source field and are manual.
+        ? { $or: [{ source: 'manual' }, { source: { $exists: false } }] }
+        : { source: filters.source };
+      if (query.$and) query.$and.push(sourceFilter);
+      else Object.assign(query, sourceFilter);
+    }
+
     const page = filters?.page || 1;
     const limit = filters?.limit || 50;
     const skip = (page - 1) * limit;
@@ -505,6 +564,7 @@ export class LeaveReleaseService extends BaseService {
       LeaveRelease.find(query)
         .populate('employeeId', 'name email employeeCode country')
         .populate('releasedBy', 'name email')
+        .populate('adjustments.adjustedBy', 'name email')
         .sort({ releasedAt: -1 })
         .skip(skip)
         .limit(limit)
@@ -519,6 +579,122 @@ export class LeaveReleaseService extends BaseService {
       limit,
       totalPages: Math.ceil(total / limit)
     };
+  }
+
+  /**
+   * Reduce part of an automatic employee release while preserving the original
+   * release as an immutable audit record.
+   */
+  async reduceAutomaticRelease(
+    releaseId: string,
+    daysReduced: number,
+    reason: string
+  ): Promise<ILeaveRelease & { leaveSummary?: any }> {
+    const actorId = this.context.user?._id;
+    if (!actorId) throw new Error('User not authenticated');
+    if (!Types.ObjectId.isValid(releaseId)) throw new Error('Invalid leave release ID');
+    if (!Number.isFinite(daysReduced) || daysReduced < 0.5 || daysReduced * 2 % 1 !== 0) {
+      throw new Error('Reduction days must be in increments of 0.5');
+    }
+
+    const normalizedReason = reason?.trim();
+    if (!normalizedReason) throw new Error('Reduction reason is required');
+
+    const session = await mongoose.startSession();
+    let releaseEmployeeId: Types.ObjectId | null = null;
+    let releaseYear: number | null = null;
+    try {
+      await session.withTransaction(async () => {
+        const release = await LeaveRelease.findById(releaseId).session(session);
+        if (!release) throw new Error('Leave release not found');
+        if (release.source !== 'automatic') {
+          throw new Error('Only automated leave releases can be reduced here');
+        }
+
+        const alreadyReduced = (release.adjustments || []).reduce(
+          (total, adjustment) => total + Number(adjustment.daysReduced || 0),
+          0
+        );
+        const availableToReduce = Math.max(0, Number(release.daysReleased) - alreadyReduced);
+        if (daysReduced > availableToReduce) {
+          throw new Error(`Reduction cannot exceed the remaining released amount of ${availableToReduce} days`);
+        }
+
+        const employeeId = new Types.ObjectId(release.employeeId.toString());
+        const summary = await this.leaveSummaryService.getLeaveSummary(
+          employeeId,
+          release.period.year,
+          { session }
+        );
+        const builtInLeaveTypes = new Set([
+          'annual', 'sick', 'compOff', 'lossOfPay', 'otherPaid', 'otherUnpaid',
+          'maternity', 'workFromHome', 'restricted_holiday'
+        ]);
+        const isBuiltIn = builtInLeaveTypes.has(release.leaveType);
+        const currentSummary: any = summary;
+        const category = isBuiltIn
+          ? currentSummary[release.leaveType]
+          : currentSummary.customLeaveTypes?.[release.leaveType];
+        const current = Number(category?.alloted || 0);
+        const availed = Number(category?.availed || 0);
+        if (daysReduced > current) {
+          throw new Error(`Reduction cannot exceed the employee's current allotment of ${current} days`);
+        }
+
+        const reducedAllotment = Math.round((current - daysReduced) * 100) / 100;
+        if (reducedAllotment < availed) {
+          throw new Error(
+            `Reduction would lower the allotment to ${reducedAllotment} days, below the ${availed} days already reserved or availed`
+          );
+        }
+        const allotmentUpdate = isBuiltIn
+          ? { [release.leaveType]: reducedAllotment }
+          : { customLeaveTypes: { [release.leaveType]: reducedAllotment } };
+
+        await this.leaveSummaryService.updateLeaveAllotments(
+          employeeId,
+          release.period.year,
+          allotmentUpdate,
+          {
+            skipEmail: true,
+            session,
+            reason: normalizedReason,
+            operationType: 'reduction'
+          }
+        );
+
+        if (!release.adjustments) release.adjustments = [];
+        release.adjustments.push({
+          daysReduced,
+          reason: normalizedReason,
+          adjustedBy: new Types.ObjectId(actorId.toString()),
+          adjustedAt: new Date()
+        });
+        await release.save({ session });
+        releaseEmployeeId = employeeId;
+        releaseYear = release.period.year;
+      });
+    } finally {
+      await session.endSession();
+    }
+
+    if (!releaseEmployeeId || releaseYear === null) {
+      throw new Error('Leave reduction transaction did not complete');
+    }
+
+    const updated = await LeaveRelease.findById(releaseId)
+      .populate('employeeId', 'name email employeeCode country')
+      .populate('releasedBy', 'name email')
+      .populate('adjustments.adjustedBy', 'name email');
+    if (!updated) throw new Error('Failed to retrieve adjusted leave release');
+    const leaveSummary = await this.leaveSummaryService.getFormattedLeaveSummary(
+      releaseEmployeeId,
+      releaseYear
+    );
+    return {
+      ...(updated.toObject() as any),
+      leaveSummary
+    } as ILeaveRelease & { leaveSummary: any };
   }
 
   /**
@@ -547,6 +723,11 @@ export class LeaveReleaseService extends BaseService {
 
     if (releaseType === 'monthly' && period.month) {
       query['period.month'] = period.month;
+    }
+
+    if (releaseType === 'daily' && period.month && period.day) {
+      query['period.month'] = period.month;
+      query['period.day'] = period.day;
     }
 
     if (releaseType === 'quarterly' && period.quarter) {
@@ -603,6 +784,9 @@ export class LeaveReleaseService extends BaseService {
     releaseType: ILeaveReleaseCreate['releaseType'],
     period: ILeaveReleaseCreate['period']
   ): string {
+    if (releaseType === 'daily' && period.day && period.month) {
+      return `${String(period.day).padStart(2, '0')}/${String(period.month).padStart(2, '0')}/${period.year}`;
+    }
     if (releaseType === 'monthly' && period.month) {
       return `${this.getMonthName(period.month)} ${period.year}`;
     }

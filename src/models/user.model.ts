@@ -819,21 +819,6 @@ userSchema.pre('save', async function (next) {
   }
 });
 
-// Pre-save hook to automatically set employment status to "confirmed" after 180 days from joining date
-userSchema.pre('save', function (next) {
-  if (this.joiningDate && this.employmentStatus) {
-    const joiningDate = new Date(this.joiningDate);
-    const today = new Date();
-    const daysSinceJoining = Math.floor((today.getTime() - joiningDate.getTime()) / (1000 * 60 * 60 * 24));
-
-    // If 180 days or more have passed since joining date, automatically set status to "confirmed"
-    if (daysSinceJoining >= 180 && this.employmentStatus.toLowerCase() !== 'confirmed') {
-      this.employmentStatus = 'Confirmed';
-    }
-  }
-  next();
-});
-
 // Pre-save hook to handle UAE-specific visa validation
 userSchema.pre('save', function (next) {
   if (this.country === 'AE' && this.visaDetails) {
@@ -861,14 +846,22 @@ userSchema.virtual('currentCompanyExperience').get(function () {
   if (isNaN(start.getTime())) return null;
 
   const now = new Date();
-  const diffMs = now.getTime() - start.getTime();
-  if (diffMs <= 0) {
+  if (now.getTime() <= start.getTime()) {
     return { years: 0, months: 0, totalMonths: 0 };
   }
 
-  const totalMonths = Math.floor(diffMs / (1000 * 60 * 60 * 24 * 30));
-  const years = parseFloat((totalMonths / 12).toFixed(1));
-  const months = parseFloat(((totalMonths % 12) / 12).toFixed(2));
+  // Count completed calendar months instead of approximating every month as 30 days.
+  let totalMonths =
+    (now.getFullYear() - start.getFullYear()) * 12 +
+    (now.getMonth() - start.getMonth());
+
+  if (now.getDate() < start.getDate()) {
+    totalMonths -= 1;
+  }
+
+  totalMonths = Math.max(0, totalMonths);
+  const years = Math.floor(totalMonths / 12);
+  const months = totalMonths % 12;
 
   return { years, months, totalMonths };
 });

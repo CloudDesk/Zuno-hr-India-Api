@@ -10,6 +10,7 @@ import { IDashboardMetrics, IEmployeeAverage, IUserDashboardMetrics } from '../m
 import { startOfDay, endOfDay, startOfMonth, addMonths, getYear } from 'date-fns';
 import { LeaveSummary } from '../models/leave-summary.model';
 import { WFH } from '../models/wfh.model';
+import { Permission } from '../models/permission.model';
 import { CommunicationService } from './communication.service';
 
 export class DashboardService extends BaseService {
@@ -134,7 +135,7 @@ export class DashboardService extends BaseService {
         });
 
         // Get pending approvals for ACTIVE users only
-        const [pendingLeaves, pendingRegularizations, pendingOvertime, pendingWFH] = await Promise.all([
+        const [pendingLeaves, pendingRegularizations, pendingOvertime, pendingWFH, pendingPermissions] = await Promise.all([
             Leave.aggregate([
                 { $match: { status: 'Pending' } },
                 { $lookup: { from: 'users', localField: 'userId', foreignField: '_id', as: 'user' } },
@@ -160,6 +161,14 @@ export class DashboardService extends BaseService {
             ]).exec().then(res => res[0]?.count || 0),
 
             WFH.aggregate([
+                { $match: { status: 'Pending' } },
+                { $lookup: { from: 'users', localField: 'userId', foreignField: '_id', as: 'user' } },
+                { $unwind: '$user' },
+                { $match: { 'user.active': true } },
+                { $count: 'count' }
+            ]).exec().then(res => res[0]?.count || 0),
+
+            Permission.aggregate([
                 { $match: { status: 'Pending' } },
                 { $lookup: { from: 'users', localField: 'userId', foreignField: '_id', as: 'user' } },
                 { $unwind: '$user' },
@@ -209,7 +218,8 @@ export class DashboardService extends BaseService {
             regularizations: pendingRegularizations,
             overtime: pendingOvertime,
             wfh: pendingWFH,
-            total: pendingLeaves + pendingRegularizations + pendingOvertime + pendingWFH,
+            permissions: pendingPermissions,
+            total: pendingLeaves + pendingRegularizations + pendingWFH + pendingPermissions,
             byDepartment: pendingByDepartment,
             byType: pendingByType
         });
@@ -350,7 +360,7 @@ export class DashboardService extends BaseService {
         });
 
         // Get today's attendance and leave status for active employees only
-        const [todayAttendance, todayLeaves] = await Promise.all([
+        const [todayAttendance, todayLeaves, todayWFH] = await Promise.all([
             AttendanceRecord.aggregate([
                 {
                     $match: {
@@ -411,6 +421,34 @@ export class DashboardService extends BaseService {
                 {
                     $count: 'count'
                 }
+            ]).exec(),
+
+            WFH.aggregate([
+                {
+                    $match: {
+                        status: 'Approved',
+                        startDate: { $lte: endOfToday },
+                        endDate: { $gte: startOfToday }
+                    }
+                },
+                {
+                    $lookup: {
+                        from: 'users',
+                        localField: 'userId',
+                        foreignField: '_id',
+                        as: 'user'
+                    }
+                },
+                { $unwind: '$user' },
+                { $match: { 'user.active': true } },
+                {
+                    $group: {
+                        _id: '$userId'
+                    }
+                },
+                {
+                    $count: 'count'
+                }
             ]).exec()
         ]);
 
@@ -419,12 +457,14 @@ export class DashboardService extends BaseService {
 
         const presentCount = todayAttendance[0]?.count || 0;
         const leaveCount = todayLeaves[0]?.count || 0;
+        const wfhCount = todayWFH[0]?.count || 0;
         const absentCount = Math.max(0, totalActiveEmployees - presentCount - leaveCount);
 
         console.log('5. Today Attendance:', {
             present: presentCount,
             leave: leaveCount,
             absent: absentCount,
+            wfh: wfhCount,
             totalActive: totalActiveEmployees,
             date: today.toISOString(),
             startOfToday: startOfToday.toISOString(),
@@ -538,8 +578,9 @@ export class DashboardService extends BaseService {
             leaves: pendingLeaves,
             regularizations: pendingRegularizations,
             overtime: pendingOvertime,
+            permissions: pendingPermissions,
             wfh: pendingWFH,
-            total: pendingLeaves + pendingRegularizations + pendingOvertime + pendingWFH,
+            total: pendingLeaves + pendingRegularizations + pendingWFH + pendingPermissions,
             byDepartment: pendingByDepartment.map(dept => ({
                 departmentId: dept._id,
                 count: dept.count
@@ -571,6 +612,7 @@ export class DashboardService extends BaseService {
             present: presentCount,
             leave: leaveCount,
             absent: absentCount,
+            wfh: wfhCount,
             totalActive: totalActiveEmployees
         };
 
@@ -670,11 +712,7 @@ export class DashboardService extends BaseService {
 
         // Fetch Social Wall Events
         const communicationService = new CommunicationService(this.context);
-        dashboardMetrics.socialEvents = await communicationService.getSocialWall({
-            limit: 10,
-            viewerId: this.context.user?._id.toString(),
-            viewerRole: this.context.user?.role
-        }) as any;
+        dashboardMetrics.socialEvents = await communicationService.getMonthlyMilestones() as any;
 
         console.log('🔍 COMPLETE ADMIN DATA:', JSON.stringify(dashboardMetrics, null, 2));
 
@@ -691,7 +729,18 @@ export class DashboardService extends BaseService {
             throw new Error('User not found');
         }
 
-        const stats = await this.getIndividualAverages([user], startOfMonthDate, endOfMonthDate);
+        const communicationService = new CommunicationService(this.context);
+        const [stats, weekdayAverageHours, monthlyMilestones, postedEvents] = await Promise.all([
+            this.getIndividualAverages([user], startOfMonthDate, endOfMonthDate),
+            this.getWeekdayAverages(user._id.toString(), startOfMonthDate, endOfMonthDate),
+            communicationService.getMonthlyMilestones(today),
+            communicationService.getSocialWall({
+                limit: 10,
+                viewerId: this.context.user?._id.toString(),
+                viewerRole: this.context.user?.role,
+                viewerOnly: true
+            })
+        ]);
         const userStats = stats[0];
 
         const totalWorkingDays = this.getWorkingDaysCount(startOfMonthDate, endOfMonthDate);
@@ -701,13 +750,19 @@ export class DashboardService extends BaseService {
                 averageWorkHours: userStats?.averageWorkHours || '00:00',
                 attendancePercentage: userStats?.attendancePercentage || 0,
                 presentDays: userStats?.presentDays || 0,
-                totalWorkingDays: totalWorkingDays
+                totalWorkingDays: totalWorkingDays,
+                weekdayAverageHours
             },
-            socialEvents: await (new CommunicationService(this.context)).getSocialWall({
-                limit: 10,
-                viewerId: this.context.user?._id.toString(),
-                viewerRole: this.context.user?.role
-            }) as any
+            socialEvents: [
+                ...monthlyMilestones.filter((event: any) =>
+                    event.type === 'Birthday' || event.type === 'Anniversary'
+                ),
+                ...postedEvents.filter((event: any) =>
+                    event.type !== 'Birthday' && event.type !== 'Anniversary'
+                )
+            ].sort((a: any, b: any) =>
+                new Date(a.eventDate).getTime() - new Date(b.eventDate).getTime()
+            ) as any
         };
     }
 
@@ -1063,6 +1118,44 @@ export class DashboardService extends BaseService {
         const minutes = parseInt(parts[1], 10);
         const seconds = parts[2] ? parseInt(parts[2], 10) : 0;
         return hours + (minutes / 60) + (seconds / 3600);
+    }
+
+    private async getWeekdayAverages(userId: string, startDate: Date, endDate: Date): Promise<Array<{
+        day: string;
+        averageWorkHours: string;
+        minutes: number;
+    }>> {
+        const records = await AttendanceRecord.find({
+            userId,
+            shiftDay: { $gte: startDate, $lte: endDate }
+        }).select('shiftDay totalWorkHours').lean();
+
+        const weekdayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+        const weekdayOrder = [1, 2, 3, 4, 5, 6, 0];
+        const totals = new Map<number, { totalHours: number; days: number }>(
+            weekdayOrder.map(day => [day, { totalHours: 0, days: 0 }])
+        );
+
+        for (const record of records as any[]) {
+            const hours = this.timeStringToHours(record.totalWorkHours || '00:00');
+            if (hours <= 0 || !record.shiftDay) continue;
+
+            const weekday = new Date(record.shiftDay).getDay();
+            const bucket = totals.get(weekday);
+            if (!bucket) continue;
+            bucket.totalHours += hours;
+            bucket.days += 1;
+        }
+
+        return weekdayOrder.map(weekday => {
+            const bucket = totals.get(weekday)!;
+            const averageHours = bucket.days > 0 ? bucket.totalHours / bucket.days : 0;
+            return {
+                day: weekdayLabels[weekday],
+                averageWorkHours: this.hoursToTimeString(averageHours),
+                minutes: Math.round(averageHours * 60)
+            };
+        });
     }
 
     private hoursToTimeString(hours: number): string {

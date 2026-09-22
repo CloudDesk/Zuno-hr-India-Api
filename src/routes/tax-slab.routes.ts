@@ -376,6 +376,31 @@ export async function taxSlabRoutes(fastify: FastifyInstance): Promise<void> {
         }
     );
 
+    fastify.get('/financial-year/:financialYear',
+        { preHandler: [authenticate] },
+        async (request, reply) => {
+            try {
+                const { financialYear } = request.params as { financialYear: string };
+                const [startYear, endYear] = financialYear.split('-').map(Number);
+
+                if (!/^\d{4}-\d{4}$/.test(financialYear) || endYear !== startYear + 1) {
+                    return reply.status(400).send({
+                        success: false,
+                        error: { message: 'Invalid financial year format. Expected YYYY-YYYY.' },
+                    });
+                }
+
+                const slabs = await request.container!.taxSlabService.getByFinancialYear(financialYear);
+                return reply.send({ success: true, data: slabs });
+            } catch (error: any) {
+                return reply.status(400).send({
+                    success: false,
+                    error: { message: error.message },
+                });
+            }
+        }
+    );
+
     fastify.get('/current-fy',
         {
             preHandler: [authenticate],

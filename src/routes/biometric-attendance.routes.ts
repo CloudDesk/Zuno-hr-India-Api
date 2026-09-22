@@ -2,6 +2,11 @@ import { FastifyInstance } from 'fastify';
 import { RouteHandler } from '../types/routes';
 import { authenticate } from '../middleware/auth';
 
+const formatReportDate = (date: string): string => {
+  const [year, month, day] = date.split('-');
+  return `${day}-${month}-${year}`;
+};
+
 export const biometricAttendanceRoutes: RouteHandler = async (
   fastify: FastifyInstance,
 ): Promise<void> => {
@@ -355,6 +360,8 @@ export const biometricAttendanceRoutes: RouteHandler = async (
                           isLateEntry: { type: 'boolean' },
                           isEarlyExit: { type: 'boolean' },
                           isWFH: { type: 'boolean' },
+                          wfhDuration: { type: 'string', enum: ['full-day', 'half-day'], nullable: true },
+                          wfhHalfType: { type: 'string', enum: ['first-half', 'second-half'], nullable: true },
                           halfType: { type: 'string', nullable: true },
                           needsRegularization: { type: 'boolean' },
                           exceessHours: { type: 'string' },
@@ -661,6 +668,18 @@ export const biometricAttendanceRoutes: RouteHandler = async (
                       },
                     },
                   },
+                  holidays: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      properties: {
+                        date: { type: 'string', format: 'date-time' },
+                        name: { type: 'string' },
+                        type: { type: 'string', enum: ['mandatory', 'optional', 'client-specific'] },
+                        description: { type: 'string' },
+                      },
+                    },
+                  },
                 },
               },
             },
@@ -862,10 +881,10 @@ export const biometricAttendanceRoutes: RouteHandler = async (
         const excelBuffer = await request.container!.biometricAttendanceService.generateWeeklyReportByMonth(month);
 
         // Set response headers for file download
-        const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
-          'July', 'August', 'September', 'October', 'November', 'December'];
-        const monthName = monthNames[monthNum - 1];
-        const filename = `Weekly_Report_${monthName}_${year}.xlsx`;
+        const firstDate = `01-${String(monthNum).padStart(2, '0')}-${year}`;
+        const lastDay = new Date(Date.UTC(year, monthNum, 0)).getUTCDate();
+        const lastDate = `${String(lastDay).padStart(2, '0')}-${String(monthNum).padStart(2, '0')}-${year}`;
+        const filename = `Weekly_Report_${firstDate}_to_${lastDate}.xlsx`;
         reply.header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
         reply.header('Content-Disposition', `attachment; filename="${filename}"`);
         reply.header('Content-Length', excelBuffer.length.toString());
@@ -933,6 +952,8 @@ export const biometricAttendanceRoutes: RouteHandler = async (
                           isWeekend: { type: 'boolean' },  // Only included if true
                           isHoliday: { type: 'boolean' },   // Only included if true
                           isWFH: { type: 'boolean' },   // Only included if true (approved WFH)
+                          wfhDuration: { type: 'string', enum: ['full-day', 'half-day'], nullable: true },
+                          wfhHalfType: { type: 'string', enum: ['first-half', 'second-half'], nullable: true },
                           halfType: { type: 'string', nullable: true }
                         }
                       }
@@ -1103,7 +1124,7 @@ export const biometricAttendanceRoutes: RouteHandler = async (
         );
 
         // Set response headers for file download
-        const filename = `Attendance_Report_${startDate}_to_${endDate}.xlsx`;
+        const filename = `Attendance_Report_${formatReportDate(startDate)}_to_${formatReportDate(endDate)}.xlsx`;
         reply.header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
         reply.header('Content-Disposition', `attachment; filename="${filename}"`);
         reply.header('Content-Length', excelBuffer.length.toString());
@@ -1118,4 +1139,4 @@ export const biometricAttendanceRoutes: RouteHandler = async (
       }
     }
   );
-}; 
+};

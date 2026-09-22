@@ -4,6 +4,11 @@ import { authenticate } from '../middleware/auth';
 import * as ExcelJS from 'exceljs';
 import { messaging } from '../config/firebase/firebaseConfig';
 import { filesUpload } from '../config/multer';
+import {
+  EmployeeListPreference,
+  EMPLOYEE_LIST_COLUMN_KEYS,
+  type EmployeeListColumnKey,
+} from '../models/employee-list-preference.model';
 // import { IAcademicDetails, IExperienceDetails } from '../models';
 
 const shiftAssignmentDataSchema = {
@@ -253,6 +258,62 @@ const userResponseSchema = {
 export const userRoutes: RouteHandler = async (
   fastify: FastifyInstance,
 ): Promise<void> => {
+
+  const defaultEmployeeListColumns: EmployeeListColumnKey[] = [
+    'name', 'role', 'licenseType', 'country', 'departmentId', 'isActive', 'portalAccess', '_id',
+  ];
+
+  fastify.get(
+    '/preferences/employee-list',
+    { onRequest: [authenticate] },
+    async (_request, reply) => {
+      const preference = await EmployeeListPreference.findOne({ scope: 'organization' }).lean();
+      return reply.send({
+        success: true,
+        data: { columns: preference?.columns?.length ? preference.columns : defaultEmployeeListColumns },
+      });
+    },
+  );
+
+  fastify.put(
+    '/preferences/employee-list',
+    {
+      onRequest: [authenticate],
+      schema: {
+        body: {
+          type: 'object',
+          required: ['columns'],
+          properties: {
+            columns: {
+              type: 'array',
+              minItems: 2,
+              uniqueItems: true,
+              items: { type: 'string', enum: EMPLOYEE_LIST_COLUMN_KEYS },
+            },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const currentUser = request.user as any;
+      if (String(currentUser?.role || '').toLowerCase() !== 'admin') {
+        return reply.status(403).send({ success: false, error: { message: 'Only administrators can update employee columns' } });
+      }
+
+      const requestedColumns = (request.body as { columns: EmployeeListColumnKey[] }).columns;
+      if (!requestedColumns.includes('name') || !requestedColumns.includes('_id')) {
+        return reply.status(400).send({ success: false, error: { message: 'Name and Actions columns are required' } });
+      }
+
+      const preference = await EmployeeListPreference.findOneAndUpdate(
+        { scope: 'organization' },
+        { columns: requestedColumns, updatedBy: currentUser._id },
+        { upsert: true, new: true, setDefaultsOnInsert: true },
+      ).lean();
+
+      return reply.send({ success: true, data: { columns: preference.columns } });
+    },
+  );
 
   // Unified GET users endpoint
   fastify.get(
@@ -1693,7 +1754,7 @@ export const userRoutes: RouteHandler = async (
       schema: {
         tags: ['User Management'],
         summary: 'Export user data as Excel file',
-        description: 'Download all active users data as an Excel file with visa details in separate columns',
+        description: 'Download all active users data as an Excel file',
         response: {
           200: {
             type: 'string',
@@ -1738,7 +1799,7 @@ export const userRoutes: RouteHandler = async (
           });
         }
 
-        // Get all active users with visa details
+        // Get all active users for the employee export
         const users = await request.container!.userService.getUsers({
           status: 'active',
           limit: 10000 // Get all users
@@ -1763,11 +1824,7 @@ export const userRoutes: RouteHandler = async (
           'Location',
           'Phone',
           'License Type',
-          'Portal Access',
-          'Visa Type',
-          'Visa Expiry Date',
-          'Visa Is Active',
-          'Client'
+          'Portal Access'
         ];
 
         // Add headers to worksheet
@@ -1798,11 +1855,7 @@ export const userRoutes: RouteHandler = async (
             user.location || '',
             user.phone || '',
             user.licenseType || '',
-            user.portalAccess ? 'Yes' : 'No',
-            user.visaDetails?.visaType || '',
-            user.visaDetails?.visaExpiryDate ? new Date(user.visaDetails.visaExpiryDate).toLocaleDateString() : '',
-            user.visaDetails?.isActive ? 'Yes' : 'No',
-            user.client || ''
+            user.portalAccess ? 'Yes' : 'No'
           ];
           worksheet.addRow(row);
         });
@@ -1818,20 +1871,18 @@ export const userRoutes: RouteHandler = async (
         // Add some styling
         worksheet.getColumn('A').width = 25; // Name
         worksheet.getColumn('B').width = 30; // Email
-        worksheet.getColumn('C').width = 15; // Role
-        worksheet.getColumn('D').width = 20; // Department ID
-        worksheet.getColumn('E').width = 25; // Manager Name
-        worksheet.getColumn('F').width = 15; // Biometric ID
-        worksheet.getColumn('G').width = 10; // Active
-        worksheet.getColumn('H').width = 15; // Joining Date
-        worksheet.getColumn('I').width = 10; // Country
-        worksheet.getColumn('J').width = 20; // Location
-        worksheet.getColumn('K').width = 15; // Phone
-        worksheet.getColumn('L').width = 15; // License Type
-        worksheet.getColumn('M').width = 15; // Portal Access
-        worksheet.getColumn('N').width = 25; // Visa Type
-        worksheet.getColumn('O').width = 15; // Visa Expiry Date
-        worksheet.getColumn('P').width = 15; // Visa Is Active
+        worksheet.getColumn('C').width = 15; // Employee Code
+        worksheet.getColumn('D').width = 15; // Role
+        worksheet.getColumn('E').width = 20; // Department ID
+        worksheet.getColumn('F').width = 25; // Manager Name
+        worksheet.getColumn('G').width = 15; // Biometric ID
+        worksheet.getColumn('H').width = 10; // Active
+        worksheet.getColumn('I').width = 15; // Joining Date
+        worksheet.getColumn('J').width = 10; // Country
+        worksheet.getColumn('K').width = 20; // Location
+        worksheet.getColumn('L').width = 15; // Phone
+        worksheet.getColumn('M').width = 15; // License Type
+        worksheet.getColumn('N').width = 15; // Portal Access
 
         // Generate Excel buffer
         const buffer = await workbook.xlsx.writeBuffer();

@@ -25,6 +25,27 @@ export interface ILeave extends Document {
     email: string;
   };
   approvedAt?: Date;
+  rejectedById?: Types.ObjectId;
+  rejectedBy?: {
+    _id: string | Types.ObjectId;
+    name: string;
+    email: string;
+  };
+  rejectedAt?: Date;
+  cancelledById?: Types.ObjectId;
+  cancelledBy?: {
+    _id: string | Types.ObjectId;
+    name: string;
+    email: string;
+  };
+  cancelledAt?: Date;
+  withdrawnById?: Types.ObjectId;
+  withdrawnBy?: {
+    _id: string | Types.ObjectId;
+    name: string;
+    email: string;
+  };
+  withdrawnAt?: Date;
   // India-specific: Half-day leave support
   leaveDuration?: 'full-day' | 'half-day'; // Default: 'full-day'
   halfDayType?: 'first-half' | 'second-half'; // Required when leaveDuration = 'half-day'
@@ -92,6 +113,27 @@ const leaveSchema = new Schema<ILeave>(
 
     },
     approvedAt: Date,
+    rejectedById: { type: Schema.Types.ObjectId, ref: 'User' },
+    rejectedBy: {
+      _id: { type: Schema.Types.ObjectId, ref: 'User' },
+      name: String,
+      email: String,
+    },
+    rejectedAt: Date,
+    cancelledById: { type: Schema.Types.ObjectId, ref: 'User' },
+    cancelledBy: {
+      _id: { type: Schema.Types.ObjectId, ref: 'User' },
+      name: String,
+      email: String,
+    },
+    cancelledAt: Date,
+    withdrawnById: { type: Schema.Types.ObjectId, ref: 'User' },
+    withdrawnBy: {
+      _id: { type: Schema.Types.ObjectId, ref: 'User' },
+      name: String,
+      email: String,
+    },
+    withdrawnAt: Date,
     // Apply on behalf feature
     appliedOnBehalf: {
       type: Boolean,
@@ -208,4 +250,4 @@ leaveSchema.pre('save', async function (next) {
   next();
 });
 
-export const Leave = model<ILeave>('Leave', leaveSchema); 
+export const Leave = model<ILeave>('Leave', leaveSchema);
