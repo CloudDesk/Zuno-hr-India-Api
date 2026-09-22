@@ -25,9 +25,9 @@ gcloud projects add-iam-policy-binding zuno-hr-2025 \
   --role=roles/cloudtasks.enqueuer
 ```
 
-Configure a strong `FORM12BB_WORKER_SECRET` value in the SIT and production
-deployment environments. The Cloud Build files pass it to Cloud Run in the same
-way as the other deployment environment variables; do not commit the value.
+Worker callback authentication currently uses a temporary shared key compiled
+into the server. Replace it with IAM-based callback authentication before this
+endpoint is exposed beyond the current Cloud Run deployment.
 
 If the queue already exists, use `gcloud tasks queues update form12bb-generation` with the same rate and retry flags.
 
@@ -53,7 +53,7 @@ FORM12BB_JOB_MAX_ATTEMPTS=3
 FORM12BB_JOB_LEASE_MINUTES=20
 ```
 
-They pass `FORM12BB_WORKER_SECRET` from the deployment environment and configure a 15-minute Cloud Run request timeout. SIT memory is raised to 1 GiB for Chromium.
+They configure a 15-minute Cloud Run request timeout. SIT memory is raised to 1 GiB for Chromium.
 
 For local development, the default queue mode is `inline`; it still uses persisted job items, leases, retries, and idempotency. Do not use inline mode in production. Production defaults to Cloud Tasks and rejects new bulk jobs if required configuration is missing.
 

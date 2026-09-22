@@ -3,6 +3,11 @@ import { timingSafeEqual } from 'node:crypto';
 
 export type Form12BBQueueMode = 'cloud-tasks' | 'inline';
 
+// Temporary shared key used to authenticate Cloud Tasks worker callbacks.
+// Keep the sender and receiver on the same value until IAM-based callback
+// authentication is available.
+const FORM12BB_WORKER_SECRET = '53e4ce17d1e77bf7cfa5fe29ee35a482dd3339a7b8c009ff1e6b11b84aef8ad8';
+
 const getQueueMode = (): Form12BBQueueMode => {
     const configured = String(process.env.FORM12BB_QUEUE_MODE || '').trim().toLowerCase();
     if (configured === 'cloud-tasks' || configured === 'inline') return configured;
@@ -21,7 +26,7 @@ const getCloudTasksConfig = () => ({
     location: process.env.FORM12BB_TASKS_LOCATION || 'asia-south1',
     queue: process.env.FORM12BB_TASKS_QUEUE || 'form12bb-generation',
     workerUrl: process.env.FORM12BB_WORKER_URL || getDefaultWorkerUrl(),
-    workerSecret: process.env.FORM12BB_WORKER_SECRET || '',
+    workerSecret: FORM12BB_WORKER_SECRET,
     serviceAccountEmail: process.env.FORM12BB_TASKS_SERVICE_ACCOUNT || '',
     audience: process.env.FORM12BB_WORKER_AUDIENCE || '',
 });
@@ -32,7 +37,6 @@ export const assertForm12BBDispatcherConfigured = (): void => {
     const missing = Object.entries({
         FORM12BB_TASKS_PROJECT: config.project,
         FORM12BB_WORKER_URL: config.workerUrl,
-        FORM12BB_WORKER_SECRET: config.workerSecret,
     }).filter(([, value]) => !value).map(([key]) => key);
     if (missing.length) {
         throw new Error(`Form 12BB bulk worker is not configured. Missing: ${missing.join(', ')}`);
@@ -93,7 +97,7 @@ export const enqueueForm12BBJob = async (jobId: string, delaySeconds = 0): Promi
 };
 
 export const verifyForm12BBWorkerSecret = (received: unknown): boolean => {
-    const expected = process.env.FORM12BB_WORKER_SECRET || '';
+    const expected = FORM12BB_WORKER_SECRET;
     const actual = typeof received === 'string' ? received : '';
     if (!expected || !actual) return false;
     const expectedBuffer = Buffer.from(expected);
