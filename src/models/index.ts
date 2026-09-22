@@ -1,4 +1,6 @@
 export * from './user.model';
+export * from './form12bb-job.model';
+export * from './form12bb-job-item.model';
 export * from './attendance.model';
 export * from './leave.model';
 export * from './overtime.model';

@@ -107,6 +107,31 @@ export class TaxSlabService extends BaseService {
         return taxSlab;
     }
 
+    async getFinancialYears(): Promise<string[]> {
+        // Report filters use active Tax Slab years only. `distinct` and the
+        // normalized set below ensure regimes sharing an FY produce one option.
+        const storedYears = await TaxSlab.distinct('financialYear', { isActive: true });
+        const normalizedYears = new Set<string>();
+
+        for (const storedYear of storedYears) {
+            const match = String(storedYear || '').trim().match(/^(\d{4})-(\d{2}|\d{4})$/);
+            if (!match) continue;
+
+            const startYear = Number(match[1]);
+            const suppliedEndYear = Number(match[2]);
+            const endYear = match[2].length === 2
+                ? Math.floor(startYear / 100) * 100 + suppliedEndYear
+                : suppliedEndYear;
+            if (endYear !== startYear + 1) continue;
+
+            normalizedYears.add(`${startYear}-${endYear}`);
+        }
+
+        return [...normalizedYears].sort(
+            (first, second) => Number(second.slice(0, 4)) - Number(first.slice(0, 4)),
+        );
+    }
+
     async getCurrentFY(): Promise<ITaxSlab[]> {
 
         const now = new Date();

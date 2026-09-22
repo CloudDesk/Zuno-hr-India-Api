@@ -13,6 +13,43 @@ import { Document } from "../models/document.model";
 import * as xlsx from 'xlsx';
 import { deductionSections, TAX_DEDUCTION_SECTION_IDS, type IDeductionSection } from "../constants/tax-deduction-sections";
 import { uploadFileToGCP } from "../utilis/gcpStorage";
+import { POIReportService } from './poi-report.service';
+
+export const recomputePOISubmissionState = (taxDeclaration: any): void => {
+    const applicableDeclarations = (taxDeclaration.declarations || [])
+        .filter((declaration: any) => Math.abs(Number(declaration.declaredAmount || 0)) > 0);
+    const normalizedStatus = (declaration: any): string => String(declaration.status || '').trim().toLowerCase();
+    const hasCurrentProof = (declaration: any): boolean =>
+        (declaration.documents || []).some((document: any) => document.isLatestVersion === true);
+
+    taxDeclaration.isPOISubmitted = applicableDeclarations.some(hasCurrentProof);
+
+    if (!applicableDeclarations.length) {
+        taxDeclaration.poiSubmissionStatus = 'not_submitted';
+        return;
+    }
+    if (applicableDeclarations.some((declaration: any) => normalizedStatus(declaration) === 'rejected')) {
+        taxDeclaration.poiSubmissionStatus = 'rejected';
+        return;
+    }
+    if (applicableDeclarations.some((declaration: any) => normalizedStatus(declaration) === 'resubmission_requested')) {
+        taxDeclaration.poiSubmissionStatus = 'resubmission';
+        return;
+    }
+    if (applicableDeclarations.every((declaration: any) => normalizedStatus(declaration) === 'verified')) {
+        taxDeclaration.poiSubmissionStatus = 'verified';
+        return;
+    }
+
+    const awaitingApproval = applicableDeclarations
+        .filter((declaration: any) => normalizedStatus(declaration) !== 'verified');
+    const submittedCount = awaitingApproval.filter(hasCurrentProof).length;
+    taxDeclaration.poiSubmissionStatus = submittedCount === awaitingApproval.length
+        ? 'submitted'
+        : submittedCount > 0
+            ? 'partial_submitted'
+            : 'not_submitted';
+};
 
 export interface ITaxDeclarationCreate {
     employeeId: string;
@@ -25,6 +62,13 @@ export interface IDocument {
     uploadDate: Date;
     isLatestVersion: boolean;
     documentType?: string;
+}
+
+export interface ICoveredMember {
+    name: string;
+    relationship: "Self" | "Parent" | "Spouse" | "Child";
+    age: number;
+    capturedAt: Date;
 }
 
 export interface IDeclaration {
@@ -42,9 +86,59 @@ export interface IDeclaration {
         landlordName?: string;
         landlordPan?: string;
     }[];
+    coveredMembers?: ICoveredMember[];
     type?: "income" | "loss";
     _id?: Types.ObjectId;
 }
+
+const SELF_80D_SUBSECTIONS = new Set(['self_family', 'medical_checkup_self']);
+const PARENT_80D_SUBSECTIONS = new Set(['parents', 'medical_checkup_parents']);
+const DEPENDENT_RELATIONSHIPS = new Set(['Parent', 'Spouse', 'Child']);
+
+const calculateAgeOnDate = (dateOfBirthValue: unknown, asOf: Date): number => {
+    const dateOfBirth = new Date(String(dateOfBirthValue || ''));
+    if (Number.isNaN(dateOfBirth.getTime()) || dateOfBirth > asOf) {
+        throw new Error('Enter a valid employee date of birth for the Section 80D proof.');
+    }
+
+    let age = asOf.getUTCFullYear() - dateOfBirth.getUTCFullYear();
+    const birthdayHasOccurred = asOf.getUTCMonth() > dateOfBirth.getUTCMonth()
+        || (asOf.getUTCMonth() === dateOfBirth.getUTCMonth() && asOf.getUTCDate() >= dateOfBirth.getUTCDate());
+    if (!birthdayHasOccurred) age -= 1;
+    if (!Number.isInteger(age) || age < 0 || age > 120) {
+        throw new Error('Enter a valid employee date of birth for the Section 80D proof.');
+    }
+    return age;
+};
+
+const parseDependentMembers = (rawValue: unknown, fieldKey: string): Array<Omit<ICoveredMember, 'capturedAt'>> => {
+    if (rawValue === undefined || rawValue === null || rawValue === '') return [];
+    let value: unknown = rawValue;
+    if (typeof rawValue === 'string') {
+        try {
+            value = JSON.parse(rawValue);
+        } catch {
+            throw new Error(`Covered member details are invalid for ${fieldKey}.`);
+        }
+    }
+    if (!Array.isArray(value)) throw new Error(`Covered member details are invalid for ${fieldKey}.`);
+
+    return value.map((member: any, index: number) => {
+        const name = String(member?.name || '').trim();
+        const relationship = String(member?.relationship || '').trim();
+        const age = Number(member?.age);
+        if (!name || name.length > 100) {
+            throw new Error(`Enter a valid dependent name for ${fieldKey}, member ${index + 1}.`);
+        }
+        if (!DEPENDENT_RELATIONSHIPS.has(relationship)) {
+            throw new Error(`Select Parent, Spouse, or Child for ${fieldKey}, member ${index + 1}.`);
+        }
+        if (!Number.isInteger(age) || age < 0 || age > 120) {
+            throw new Error(`Enter a valid age from 0 to 120 for ${fieldKey}, member ${index + 1}.`);
+        }
+        return { name, relationship: relationship as 'Parent' | 'Spouse' | 'Child', age };
+    });
+};
 
 export interface ISlabwiseTax {
     slab: string;
@@ -512,6 +606,7 @@ export class TaxDeclarationService extends BaseService {
                 if (normalized.section !== '10_13A') {
                     delete normalized.rentDetails;
                 }
+
                 return normalized;
             });
         }
@@ -648,7 +743,11 @@ export class TaxDeclarationService extends BaseService {
 
         // 15. Update taxDeclaration object with new data
         Object.assign(taxDeclaration, data);
-        return taxDeclaration.save();
+        const savedDeclaration = await taxDeclaration.save();
+        await new POIReportService(this.context)
+            .markOutdatedForDeclaration(savedDeclaration, 'Tax declaration values changed')
+            .catch((error) => console.error('Unable to mark POI report outdated:', error instanceof Error ? error.message : String(error)));
+        return savedDeclaration;
     }
 
     // Updates POI documents for tax declarations
@@ -672,8 +771,51 @@ export class TaxDeclarationService extends BaseService {
 
         const userCleanName = user.name.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
 
-        const files = request.files;
+        const files = request.files || [];
         const body = request.body || {};
+
+        // Validate and prepare Section 80D member snapshots before uploading any
+        // files, so malformed member data cannot leave a partial external upload.
+        const submissionDate = new Date();
+        const coveredMembersByField = new Map<string, ICoveredMember[]>();
+        const uploaded80DFields = [...new Set<string>(
+            files
+                .map((file: any) => String(file.fieldname || ''))
+                .filter((fieldname: string) => fieldname.startsWith('80D_'))
+                .filter((fieldname: string) => taxDeclaration.declarations.some(
+                    (declaration: any) => declaration.section === '80D' && fieldname === `80D_${declaration.subSection}`,
+                )),
+        )];
+
+        for (const fieldname of uploaded80DFields) {
+            const declaration = taxDeclaration.declarations.find(
+                (item: any) => item.section === '80D' && fieldname === `80D_${item.subSection}`,
+            );
+            if (!declaration) continue;
+
+            const dependents = parseDependentMembers(body[`${fieldname}_coveredMembers`], fieldname);
+            const members: ICoveredMember[] = dependents.map((member) => ({ ...member, capturedAt: submissionDate }));
+
+            if (SELF_80D_SUBSECTIONS.has(declaration.subSection)) {
+                const dateOfBirth = user.dateOfBirth || body[`${fieldname}_selfDateOfBirth`];
+                if (!dateOfBirth) {
+                    throw new Error('Employee date of birth is unavailable. Enter the date of birth to submit this Section 80D proof.');
+                }
+                members.unshift({
+                    name: user.name,
+                    relationship: 'Self',
+                    age: calculateAgeOnDate(dateOfBirth, submissionDate),
+                    capturedAt: submissionDate,
+                });
+            }
+
+            if (PARENT_80D_SUBSECTIONS.has(declaration.subSection)
+                && !members.some((member) => member.relationship === 'Parent')) {
+                throw new Error(`Add at least one Parent for ${fieldname.replace(/^80D_/, '').replace(/_/g, ' ')}.`);
+            }
+
+            coveredMembersByField.set(fieldname, members);
+        }
 
         // 4. HRA validation for > 1,00,000
         const hraDecl = taxDeclaration.declarations.find(d => d.section === "10_13A" && d.subSection === "rent_paid");
@@ -790,6 +932,10 @@ export class TaxDeclarationService extends BaseService {
             declaration.lastUpdated = new Date();
             declaration.status = 'document_submitted';
 
+            if (section === '80D' && documentType === 'standard' && coveredMembersByField.has(fieldname)) {
+                declaration.coveredMembers = coveredMembersByField.get(fieldname)!;
+            }
+
             // 5j.1 Update landlordName / landlordPan on rentDetails if provided
             const specificLandlordName = body[`${section}_${subSection.split('_')[0]}_landlordName`] || body[`${section}_landlordName`];
             const specificLandlordPan = body[`${section}_${subSection.split('_')[0]}_landlordPan`] || body[`${section}_landlordPan`];
@@ -877,31 +1023,16 @@ export class TaxDeclarationService extends BaseService {
 
         console.log(taxDeclaration, "6 taxDeclaration after processing all files");
 
-        // 6. Smart POI submission status
-        //    Only count declarations that still need action (exclude verified and finally rejected)
-        const needingDecls = taxDeclaration.declarations.filter(
-            d => d.declaredAmount > 0 && d.status !== 'verified' && d.status !== 'rejected'
-        );
-        const coveredDecls = needingDecls.filter(
-            d => d.documents.some(doc => doc.isLatestVersion === true)
-        );
-
-        if (needingDecls.length > 0) {
-            if (coveredDecls.length === needingDecls.length) {
-                // Every active declaration has at least one document
-                taxDeclaration.poiSubmissionStatus = 'submitted';
-            } else if (coveredDecls.length > 0) {
-                // Some declarations have docs, but not all
-                taxDeclaration.poiSubmissionStatus = 'partial_submitted';
-            }
-            // coveredDecls.length === 0: keep existing status (edge case guard)
-        }
-
-        // isPOISubmitted = true as long as at least one document was ever submitted
-        taxDeclaration.isPOISubmitted = coveredDecls.length > 0;
+        // Recompute from the complete declaration state so a rejected proof can
+        // move through resubmission and become eligible after final approval.
+        recomputePOISubmissionState(taxDeclaration);
 
         // 7. Save and return updated document
-        return await taxDeclaration.save();
+        const savedDeclaration = await taxDeclaration.save();
+        await new POIReportService(this.context)
+            .markOutdatedForDeclaration(savedDeclaration, 'Investment proof was uploaded or replaced')
+            .catch((error) => console.error('Unable to mark POI report outdated:', error instanceof Error ? error.message : String(error)));
+        return savedDeclaration;
     }
 
     //Admin review of declarations with approval/rejection handling
@@ -990,6 +1121,7 @@ export class TaxDeclarationService extends BaseService {
 
         // 5. Update total declined amount
         taxDeclaration.totalDeclinedAmount = totalDeclinedAmount;
+        recomputePOISubmissionState(taxDeclaration);
 
         // 4. Recalculate tax based on updated verifications
         let recalculatedTax = await this.recalculateTax(taxDeclaration.toObject() as ITaxDeclarationUpdate);
@@ -1059,7 +1191,18 @@ export class TaxDeclarationService extends BaseService {
         }
         console.log(taxDeclaration, "11 taxDeclaration");
         // return taxDeclaration;
-        return await taxDeclaration.save();
+        const savedDeclaration = await taxDeclaration.save();
+        const poiReportService = new POIReportService(this.context);
+        try {
+            await poiReportService.markOutdatedForDeclaration(savedDeclaration, 'Declaration approval status changed');
+            if (poiReportService.evaluateEligibility(savedDeclaration).eligible) {
+                await poiReportService.generate(savedDeclaration.employeeId.toString(), savedDeclaration.financialYear);
+            }
+        } catch (error) {
+            // Approval remains successful even if report generation/storage fails.
+            console.error('Automatic POI report generation failed:', error instanceof Error ? error.message : String(error));
+        }
+        return savedDeclaration;
     }
 
     //Form12B Integration Re-calculation Tax

@@ -228,6 +228,9 @@ export async function taxDeclarationRoutes(fastify: FastifyInstance): Promise<vo
             preHandler: [authenticate],
         },
         async (request, reply) => {
+            if (String(request.user.role || '').toLowerCase() !== 'admin') {
+                return reply.status(403).send({ success: false, error: { message: 'Only administrators can review tax declarations.' } });
+            }
             try {
                 const { id } = request.params;
                 const updateData = {
