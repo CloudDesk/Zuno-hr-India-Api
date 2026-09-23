@@ -39,6 +39,13 @@ import {
     assertForm12BBJoiningDateEligible,
     getForm12BBJoiningDateQuery,
 } from '../utilis/form12bb-eligibility';
+import {
+    assertForm12BDraftUploadAllowed,
+    assertForm12BReviewAllowed,
+    getForm12BDraftAttempt,
+    getForm12BReviewOutcome,
+} from '../utilis/form12b-workflow';
+import { assertForm12BJoiningDateEligible } from '../utilis/form12b-eligibility';
 // import AdmZip from 'adm-zip';
 // import { mkdirSync } from 'fs';
 
@@ -489,6 +496,14 @@ export class DocumentService extends BaseService {
             if (!isSkillType && userRole.toLowerCase() !== 'admin') {
                 throw new Error('Forbidden: Only admins can delete non-Skill certification documents.');
             }
+        } else if (isTaxForm12B) {
+            if (userRole.toLowerCase() !== 'admin') {
+                throw new Error('Forbidden: Only admins can delete an unlocked Form 12B draft or release.');
+            }
+            const form12B = document.metadata?.form12B;
+            if (form12B?.isLocked || ['Submitted', 'Approved', 'FinalRejected'].includes(form12B?.workflowStatus || '')) {
+                throw new Error('Forbidden: Submitted Form 12B documents cannot be deleted.');
+            }
         } else if (isPayrollPayslip || isAdminUpload) {
             // Only admins can delete payslips or admin uploads
             if (userRole.toLowerCase() !== 'admin') {
@@ -554,6 +569,7 @@ export class DocumentService extends BaseService {
             month,
             financialYear,
             reportStatus,
+            workflowStatus,
             page = 1,
             limit = 10,
             // Employee filters
@@ -841,6 +857,9 @@ export class DocumentService extends BaseService {
             }
             else if (category === 'Tax' && type === 'POIReport' && financialYear) {
                 query['metadata.poiReport.financialYear'] = financialYear;
+            }
+            if (category === 'Tax' && type === 'Form12B' && workflowStatus) {
+                query['metadata.form12B.workflowStatus'] = workflowStatus;
             }
             if (category === 'Tax' && type === 'Form12BB' && reportStatus) {
                 query['metadata.form12BB.generationStatus'] = reportStatus === 'failed'
@@ -2252,7 +2271,130 @@ export class DocumentService extends BaseService {
 
     //upload Form12B
 
-    async uploadForm12B(files: any, formData: IForm12BSubmission, userId: string): Promise<IDocument> {
+    async releaseForm12B(
+        data: { employeeId: string; financialYear: string; taxDeclarationId: string },
+        userId: string,
+    ): Promise<IDocument> {
+        if (!Types.ObjectId.isValid(data.employeeId) || !Types.ObjectId.isValid(data.taxDeclarationId)) {
+            throw new Error('Invalid employee or tax declaration ID');
+        }
+        const employeeId = new Types.ObjectId(data.employeeId);
+        const employee = await User.findById(employeeId).select('name joiningDate').lean();
+        if (!employee) throw new Error('Employee not found');
+        assertForm12BJoiningDateEligible(employee.joiningDate, data.financialYear, employee.name);
+        const taxDeclaration = await TaxDeclaration.findOne({
+            _id: new Types.ObjectId(data.taxDeclarationId),
+            employeeId,
+            financialYear: data.financialYear,
+        });
+        if (!taxDeclaration) throw new Error('Tax Declaration not found');
+        // Joining date is the source of truth for Form 12B eligibility. Keep the
+        // derived declaration flag aligned in case an older record is stale.
+        taxDeclaration.isForm12BApplicable = true;
+
+        const existingDocument = await Document.findOne({
+            employeeId,
+            type: 'Form12B',
+            'metadata.form12B.financialYear': data.financialYear,
+        });
+        if (existingDocument) {
+            return existingDocument;
+        }
+        const templateUrl = process.env.FORM12B_TEMPLATE_URL || 'https://storage.googleapis.com/tendly/Tendly_logo_Full.png';
+        const templateFileName = 'Form12B_Template.png';
+            const document = await Document.create({
+                employeeId,
+                type: 'Form12B',
+                category: 'Tax',
+                fileName: templateFileName,
+                filePath: templateUrl,
+                uploadedBy: new Types.ObjectId(userId),
+                uploadDate: new Date(),
+                accessLevel: 'Private',
+                status: 'Assigned',
+                metadata: {
+                    form12B: {
+                        financialYear: data.financialYear,
+                        status: 'Pending',
+                        isLocked: false,
+                        workflowStatus: 'Released',
+                        submissionAttempt: 1,
+                        reuploadCount: 0,
+                        releasedAt: new Date(),
+                        releasedBy: new Types.ObjectId(userId),
+                        template: {
+                            fileName: templateFileName,
+                            filePath: templateUrl,
+                            version: 1,
+                        },
+                        previousVersions: [],
+                    },
+                },
+                auditLog: [{
+                    action: 'Send',
+                    performedBy: new Types.ObjectId(userId),
+                    timestamp: new Date(),
+                    details: `Form 12B template released for FY ${data.financialYear}`,
+                }],
+            });
+            taxDeclaration.form12B = document._id;
+            await taxDeclaration.save();
+            return document;
+    }
+
+    async releaseForm12BBulk(
+        data: { employeeIds: string[]; financialYear: string },
+        userId: string,
+    ): Promise<{ released: number; skipped: number; failed: number; failures: Array<{ employeeId: string; error: string }> }> {
+        if (!/^\d{4}-\d{4}$/.test(data.financialYear || '')) {
+            throw new Error('A valid financial year is required');
+        }
+        const employeeIds = Array.from(new Set(data.employeeIds || []));
+        if (!employeeIds.length || employeeIds.length > 500 || employeeIds.some((id) => !Types.ObjectId.isValid(id))) {
+            throw new Error('Select between 1 and 500 valid employees');
+        }
+
+        const objectIds = employeeIds.map((id) => new Types.ObjectId(id));
+        const declarations = await TaxDeclaration.find({
+            employeeId: { $in: objectIds },
+            financialYear: data.financialYear,
+        }).select('_id employeeId').lean();
+        const declarationByEmployee = new Map(
+            declarations.map((declaration: any) => [declaration.employeeId.toString(), declaration._id.toString()]),
+        );
+        const existingEmployeeIds = await Document.find({
+            employeeId: { $in: objectIds },
+            type: 'Form12B',
+            'metadata.form12B.financialYear': data.financialYear,
+        }).distinct('employeeId');
+        const existing = new Set(existingEmployeeIds.map((id: any) => id.toString()));
+        let released = 0;
+        let skipped = 0;
+        const failures: Array<{ employeeId: string; error: string }> = [];
+        for (const employeeId of employeeIds) {
+                if (existing.has(employeeId)) {
+                    skipped += 1;
+                    continue;
+                }
+                const taxDeclarationId = declarationByEmployee.get(employeeId);
+                if (!taxDeclarationId) {
+                    failures.push({ employeeId, error: 'Employee is not eligible for Form 12B in this financial year' });
+                    continue;
+                }
+                try {
+                    await this.releaseForm12B(
+                        { employeeId, financialYear: data.financialYear, taxDeclarationId },
+                        userId,
+                    );
+                    released += 1;
+                } catch (error) {
+                    failures.push({ employeeId, error: error instanceof Error ? error.message : String(error) });
+                }
+            }
+        return { released, skipped, failed: failures.length, failures };
+    }
+
+    async uploadForm12B(files: any, formData: IForm12BSubmission, userId: string, userRole: string = 'staff'): Promise<IDocument> {
         //FastifyRequest<{ Body: IForm12BSubmission; Files: any[] }>
         try {
             console.log(formData, "uploadForm12B files formData userId");
@@ -2264,13 +2406,22 @@ export class DocumentService extends BaseService {
             const employeeId = new Types.ObjectId(formData.employeeId);
             const { financialYear, previousEmployer, employmentPeriod, salaryEarned, tdsDeducted, taxDeclarationId } = formData;
 
-            // Validate employment period
-            const startDate = new Date(employmentPeriod.startDate);
-            const endDate = new Date(employmentPeriod.endDate);
-            const fyStart = new Date(parseInt(financialYear), 3, 1); // April 1st
-            const fyEnd = new Date(parseInt(financialYear) + 1, 2, 31); // March 31st next year
-            if (startDate >= endDate || startDate < fyStart || endDate > fyEnd) {
-                throw new Error('Invalid employment period');
+            if (userRole.toLowerCase() !== 'admin' && employeeId.toString() !== userId) {
+                throw new Error('Forbidden: Employees can upload only their own Form 12B');
+            }
+
+            // Legacy requests may still send the structured fields. New workflow
+            // requests upload only the employee-signed PDF; Admin enters details later.
+            let startDate: Date | undefined;
+            let endDate: Date | undefined;
+            if (employmentPeriod) {
+                startDate = new Date(employmentPeriod.startDate);
+                endDate = new Date(employmentPeriod.endDate);
+                const fyStart = new Date(parseInt(financialYear), 3, 1); // April 1st
+                const fyEnd = new Date(parseInt(financialYear) + 1, 2, 31); // March 31st next year
+                if (startDate >= endDate || startDate < fyStart || endDate > fyEnd) {
+                    throw new Error('Invalid employment period');
+                }
             }
 
             // Check if Form 12B already exists
@@ -2283,15 +2434,13 @@ export class DocumentService extends BaseService {
             const isReupload = !!existingDocument;
             console.log(isReupload, "isReupload uploadForm12B");
 
-            /*  const allowedStatusesForReupload = ['ResubmissionRequested'];
-              //'Rejected'
-              if (
-                  isReupload &&
-                  !allowedStatusesForReupload.includes(existingDocument.metadata.form12B?.status ?? '')
-              ) {
-                  throw new Error('Form 12B already submitted for this financial year and cannot be re-uploaded');
-              }
-                  */
+            const existingForm12B = existingDocument?.metadata?.form12B;
+            const workflowStatus = existingForm12B?.workflowStatus;
+            const acceptsLegacyStructuredFields = !workflowStatus;
+            if (!existingDocument && !previousEmployer) {
+                throw new Error('Form 12B template has not been released for this employee');
+            }
+            assertForm12BDraftUploadAllowed(workflowStatus, existingForm12B?.reuploadCount || 0);
             // Check isForm12BApplicable in TaxDeclaration
             const taxDeclaration = await TaxDeclaration.findOne({ employeeId, financialYear });
             console.log(taxDeclaration, "taxDeclaration uploadForm12B");
@@ -2310,13 +2459,21 @@ export class DocumentService extends BaseService {
                 throw new Error('No file uploaded');
             }
             const file = files[0];
+            const fileExtension = path.extname(file.originalname || '').toLowerCase();
+            if (fileExtension !== '.pdf' || (file.mimetype && file.mimetype !== 'application/pdf')) {
+                throw new Error('Only PDF files are allowed for Form 12B');
+            }
+            if (Number(file.size || 0) > 5 * 1024 * 1024) {
+                throw new Error('Form 12B PDF must not exceed 5 MB');
+            }
 
             // Store file temporarily and upload to GCP
             const uploadsDir = path.resolve(__dirname, '..', '..', 'Uploads');
             await fsPromises.mkdir(uploadsDir, { recursive: true });
             const originalExtension = path.extname(file.originalname);
             const cleanFinancialYear = financialYear.replace(/[^a-zA-Z0-9]/g, '_');
-            const newFileName = `Doc_Form12B_${cleanFinancialYear}_${previousEmployer.name.replace(/[^a-zA-Z0-9]/g, '_')}_${Date.now()}_${originalExtension}`;
+            const employerName = previousEmployer?.name || existingForm12B?.previousEmployer?.name || 'Employee_Submission';
+            const newFileName = `Doc_Form12B_${cleanFinancialYear}_${employerName.replace(/[^a-zA-Z0-9]/g, '_')}_${Date.now()}${originalExtension}`;
             const tempFilePath = path.join(uploadsDir, newFileName);
             await fsPromises.rename(file.path, tempFilePath);
 
@@ -2345,12 +2502,36 @@ export class DocumentService extends BaseService {
             // Handle existing document (delete old file if re-upload)
             let document: IDocument;
             if (isReupload) {
-                if (existingDocument.filePath) {
+                const isRejectedAttempt = false;
+                const isReplacingDraft = false;
+                // Metadata is a Mixed Mongoose field. Convert it to a plain object
+                // before composing the upload update so employee-entered details
+                // cannot be dropped when only the signed file is being attached.
+                const preservedForm12B = existingForm12B
+                    ? JSON.parse(JSON.stringify(existingForm12B))
+                    : {};
+                const draftAttempt = getForm12BDraftAttempt(
+                    workflowStatus,
+                    existingForm12B?.submissionAttempt || 1,
+                    existingForm12B?.reuploadCount || 0,
+                );
+                if (existingDocument.filePath && isReplacingDraft && existingDocument.filePath !== existingForm12B?.template?.filePath) {
                     try {
                         await deleteFileFromGCP(existingDocument.filePath);
                     } catch (err: any) {
                         console.warn({ filePath: existingDocument.filePath, error: err.message }, 'Failed to delete old file from GCP');
                     }
+                }
+                const previousVersions = [...(existingForm12B?.previousVersions || [])];
+                if (isRejectedAttempt && existingDocument.filePath) {
+                    previousVersions.push({
+                        attempt: existingForm12B?.submissionAttempt || 1,
+                        fileName: existingDocument.fileName,
+                        filePath: existingDocument.filePath,
+                        submittedAt: existingForm12B?.submittedAt,
+                        rejectedAt: existingForm12B?.reviewedAt || new Date(),
+                        comments: existingForm12B?.comments,
+                    });
                 }
                 const updatedDoc = await Document.findByIdAndUpdate(
                     existingDocument._id,
@@ -2360,13 +2541,23 @@ export class DocumentService extends BaseService {
                         uploadDate: new Date(),
                         metadata: {
                             form12B: {
+                                ...preservedForm12B,
                                 financialYear,
-                                previousEmployer,
-                                employmentPeriod: { startDate: new Date(startDate), endDate: new Date(endDate) },
-                                salaryEarned: Number(salaryEarned),
-                                tdsDeducted: Number(tdsDeducted),
+                                ...(acceptsLegacyStructuredFields && previousEmployer ? { previousEmployer } : {}),
+                                ...(acceptsLegacyStructuredFields && startDate && endDate ? { employmentPeriod: { startDate, endDate } } : {}),
+                                ...(acceptsLegacyStructuredFields && salaryEarned !== undefined ? { salaryEarned: Number(salaryEarned) } : {}),
+                                ...(acceptsLegacyStructuredFields && tdsDeducted !== undefined ? { tdsDeducted: Number(tdsDeducted) } : {}),
                                 status: 'Pending',
                                 isLocked: false,
+                                workflowStatus: workflowStatus ? 'Draft' : undefined,
+                                submissionAttempt: draftAttempt.submissionAttempt,
+                                reuploadCount: draftAttempt.reuploadCount,
+                                submittedAt: undefined,
+                                submittedBy: undefined,
+                                reviewedAt: undefined,
+                                reviewedBy: undefined,
+                                comments: undefined,
+                                previousVersions,
                             },
                         },
                         auditLog: [
@@ -2393,19 +2584,19 @@ export class DocumentService extends BaseService {
                     type: 'Form12B',
                     category: 'Tax',
                     fileName: newFileName,
-                    tag: ['Form12B', `${financialYear}`, `Employer-${previousEmployer.name}`],
+                    tags: ['Form12B', `${financialYear}`, `Employer-${employerName}`],
                     filePath: fileUrl,
                     uploadedBy: new Types.ObjectId(userId),
                     uploadDate: new Date(),
                     accessLevel: 'Private',
                     status: 'Uploaded',
-                    metadata: {
-                        form12B: {
-                            financialYear,
-                            previousEmployer,
-                            employmentPeriod: { startDate: new Date(startDate), endDate: new Date(endDate) },
-                            salaryEarned: Number(salaryEarned),
-                            tdsDeducted: Number(tdsDeducted),
+                        metadata: {
+                            form12B: {
+                                financialYear,
+                                previousEmployer: previousEmployer!,
+                                employmentPeriod: { startDate: startDate!, endDate: endDate! },
+                                salaryEarned: Number(salaryEarned),
+                                tdsDeducted: Number(tdsDeducted),
                             status: 'Pending',
                             isLocked: false,
                         },
@@ -2432,6 +2623,160 @@ export class DocumentService extends BaseService {
         }
     }
 
+    async submitForm12B(id: string, userId: string): Promise<IDocument> {
+        if (!Types.ObjectId.isValid(id)) throw new Error('Invalid Form 12B ID');
+        const submittedAt = new Date();
+        const document = await Document.findOneAndUpdate(
+            {
+                _id: new Types.ObjectId(id),
+                employeeId: new Types.ObjectId(userId),
+                type: 'Form12B',
+                'metadata.form12B.workflowStatus': 'Draft',
+                'metadata.form12B.isLocked': false,
+            },
+            {
+                $set: {
+                    'metadata.form12B.workflowStatus': 'Submitted',
+                    'metadata.form12B.status': 'Pending',
+                    'metadata.form12B.isLocked': true,
+                    'metadata.form12B.submittedAt': submittedAt,
+                    'metadata.form12B.submittedBy': new Types.ObjectId(userId),
+                    status: 'Uploaded',
+                },
+                $push: {
+                    auditLog: {
+                        action: 'Acknowledge',
+                        performedBy: new Types.ObjectId(userId),
+                        timestamp: submittedAt,
+                        details: 'Form 12B submitted and locked by employee.',
+                    },
+                },
+            },
+            { new: true, runValidators: true },
+        );
+        if (!document) {
+            throw new Error('Form 12B must be an unlocked draft owned by the employee before it can be submitted');
+        }
+        return document;
+    }
+
+    async updateForm12BDetails(
+        id: string,
+        details: Required<Pick<IForm12BSubmission, 'previousEmployer' | 'employmentPeriod' | 'salaryEarned' | 'tdsDeducted'>>,
+        userId: string,
+        userRole: string,
+    ): Promise<IDocument> {
+        if (!Types.ObjectId.isValid(id)) throw new Error('Invalid Form 12B ID');
+        const document = await Document.findById(id);
+        if (!document || document.type !== 'Form12B' || !document.metadata.form12B) {
+            throw new Error('Form 12B not found');
+        }
+        const form12B = document.metadata.form12B;
+        const isAdmin = userRole.toLowerCase() === 'admin';
+        const isOwner = document.employeeId.toString() === userId;
+        if (!isAdmin && !isOwner) throw new Error('Forbidden: You cannot update this Form 12B');
+        const hasStructuredDetails = Boolean(
+            form12B.previousEmployer?.name &&
+            form12B.previousEmployer?.pan &&
+            form12B.previousEmployer?.tan &&
+            form12B.employmentPeriod?.startDate &&
+            form12B.employmentPeriod?.endDate &&
+            typeof form12B.salaryEarned === 'number' &&
+            typeof form12B.tdsDeducted === 'number'
+        );
+        if (isAdmin && !hasStructuredDetails) {
+            throw new Error('Only the employee can add Form 12B details');
+        }
+        const editableStatuses = isAdmin ? ['Released', 'Draft', 'Submitted'] : ['Released', 'Draft', 'Submitted'];
+        if (!editableStatuses.includes(form12B.workflowStatus || '')) {
+            throw new Error('Form 12B details are locked and cannot be edited');
+        }
+        if (!isAdmin && form12B.detailsUpdatedAt && hasStructuredDetails) {
+            throw new Error('Form 12B details have already been submitted and cannot be edited');
+        }
+        const startDate = new Date(details.employmentPeriod.startDate);
+        const endDate = new Date(details.employmentPeriod.endDate);
+        const fyStart = new Date(parseInt(form12B.financialYear), 3, 1);
+        const fyEnd = new Date(parseInt(form12B.financialYear) + 1, 2, 31);
+        if (startDate >= endDate || startDate < fyStart || endDate > fyEnd) {
+            throw new Error('Invalid employment period');
+        }
+        if (!/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(details.previousEmployer.pan)) {
+            throw new Error('Invalid previous employer PAN');
+        }
+        if (!/^[A-Z]{4}[0-9]{5}[A-Z]$/.test(details.previousEmployer.tan)) {
+            throw new Error('Invalid previous employer TAN');
+        }
+        if (!Number.isFinite(Number(details.salaryEarned)) || Number(details.salaryEarned) < 0) {
+            throw new Error('Salary earned must be a non-negative number');
+        }
+        if (!Number.isFinite(Number(details.tdsDeducted)) || Number(details.tdsDeducted) < 0) {
+            throw new Error('TDS deducted must be a non-negative number');
+        }
+        form12B.previousEmployer = details.previousEmployer;
+        form12B.employmentPeriod = { startDate, endDate };
+        form12B.salaryEarned = Number(details.salaryEarned);
+        form12B.tdsDeducted = Number(details.tdsDeducted);
+        form12B.detailsUpdatedAt = new Date();
+        form12B.detailsUpdatedBy = new Types.ObjectId(userId);
+        document.updatedBy = new Types.ObjectId(userId);
+        document.auditLog = document.auditLog || [];
+        document.auditLog.push({
+            action: 'Update',
+            performedBy: new Types.ObjectId(userId),
+            timestamp: new Date(),
+            details: `${isAdmin ? 'Admin' : 'Employee'} updated Form 12B structured details.`,
+        });
+        document.markModified('metadata.form12B');
+        return document.save();
+    }
+
+    async getForm12BAccess(
+        id: string,
+        userId: string,
+        userRole: string,
+        target: 'template' | 'submission',
+        download: boolean,
+    ): Promise<{ url: string; fileName: string }> {
+        if (!Types.ObjectId.isValid(id)) throw new Error('Invalid Form 12B ID');
+        const document = await Document.findById(id);
+        if (!document || document.type !== 'Form12B' || !document.metadata.form12B) {
+            throw new Error('Form 12B not found');
+        }
+        const isAdmin = userRole.toLowerCase() === 'admin';
+        const isOwner = document.employeeId.toString() === userId;
+        if (!isAdmin && !isOwner) throw new Error('Forbidden: You cannot access this Form 12B');
+
+        const form12B = document.metadata.form12B;
+        if (
+            target === 'submission' &&
+            isAdmin &&
+            !['Submitted', 'ResubmissionAllowed', 'Approved', 'FinalRejected'].includes(form12B.workflowStatus || '')
+        ) {
+            throw new Error('Forbidden: Admin can access the signed Form 12B only after employee submission');
+        }
+        const hasSignedSubmission = Boolean(
+            document.filePath && document.filePath !== form12B.template?.filePath
+        );
+        if (target === 'submission' && !hasSignedSubmission) {
+            throw new Error('Employee submission is not available');
+        }
+        const filePath = target === 'template'
+            ? process.env.FORM12B_TEMPLATE_URL || 'https://storage.googleapis.com/tendly/Tendly_logo_Full.png'
+            : document.filePath;
+        const fileName = target === 'template' ? 'Form12B_Template.png' : document.fileName;
+        if (!filePath || !fileName) {
+            throw new Error(`${target === 'template' ? 'Template' : 'Employee submission'} is not available`);
+        }
+        const url = target === 'template' && /^https?:\/\//i.test(filePath)
+            ? filePath
+            : await getSignedFileUrl(filePath, {
+            ...(download ? { downloadFileName: fileName } : {}),
+            expiresInMinutes: 10,
+        });
+        return { url, fileName };
+    }
+
     //Form12B Approvals
     async updateForm12BStatus(id: string, status: 'Verified' | 'Rejected' | 'ResubmissionRequested', userId: string, comments?: string): Promise<IDocument> {
 
@@ -2440,25 +2785,62 @@ export class DocumentService extends BaseService {
             if (!existingDocument || existingDocument.type !== 'Form12B') {
                 throw new Error('Document not found or not a Form 12B');
             }
-            if (existingDocument?.metadata.form12B?.status === 'Verified' || existingDocument?.metadata.form12B?.status === 'Rejected') {
-                throw new Error('Form 12B has already been processed');
-            }
-            if (existingDocument?.metadata.form12B?.isLocked) {
-                throw new Error('Form 12B is locked and cannot be updated');
-            }
             // Update document status and audit log
             if (!existingDocument.metadata.form12B) {
                 throw new Error('Form 12B metadata is missing');
             }
-            existingDocument.metadata.form12B.status = status;
-            existingDocument.metadata.form12B.isLocked = true; // Lock the document after processing
+            const form12B = existingDocument.metadata.form12B;
+            const isManagedWorkflow = Boolean(form12B.workflowStatus);
+            if (['Approved', 'FinalRejected'].includes(form12B.workflowStatus || '') || form12B.status === 'Verified' || (!isManagedWorkflow && form12B.status === 'Rejected')) {
+                throw new Error('Form 12B has already been processed');
+            }
+            const hasStructuredDetails = Boolean(
+                form12B.detailsUpdatedAt &&
+                form12B.previousEmployer?.name &&
+                form12B.previousEmployer?.pan &&
+                form12B.previousEmployer?.tan &&
+                form12B.employmentPeriod?.startDate &&
+                form12B.employmentPeriod?.endDate &&
+                typeof form12B.salaryEarned === 'number' &&
+                typeof form12B.tdsDeducted === 'number'
+            );
+            if (isManagedWorkflow) {
+                assertForm12BReviewAllowed(form12B.workflowStatus, hasStructuredDetails);
+            }
+
+            const isApproval = status === 'Verified';
+            if (isApproval && !hasStructuredDetails) {
+                throw new Error('Complete the Form 12B structured details before approval');
+            }
+            if (isManagedWorkflow && !isApproval && !comments?.trim()) {
+                throw new Error('Rejection comments are required');
+            }
+
+            if (isManagedWorkflow) {
+                const reviewOutcome = getForm12BReviewOutcome(
+                    isApproval,
+                    form12B.submissionAttempt || 1,
+                    form12B.reuploadCount || 0,
+                );
+                form12B.status = reviewOutcome.status;
+                form12B.workflowStatus = reviewOutcome.workflowStatus;
+                form12B.isLocked = reviewOutcome.isLocked;
+            } else {
+                // Preserve the original review semantics for records created before
+                // the release/draft/submit workflow was introduced.
+                form12B.status = status;
+                form12B.isLocked = true;
+            }
+            form12B.reviewedAt = new Date();
+            form12B.reviewedBy = new Types.ObjectId(userId);
+            form12B.comments = comments?.trim();
             existingDocument.markModified('metadata.form12B');// Ensure Mongoose tracks changes
-            existingDocument.status = status === 'Verified' ? 'Acknowledged' : existingDocument.status;
+            existingDocument.status = isApproval ? 'Acknowledged' : existingDocument.status;
             if (!existingDocument.auditLog) {
                 existingDocument.auditLog = [];
             }
             existingDocument.auditLog.push({
-                action: status === 'Verified' ? 'Verify' : 'Update',
+                action: isApproval ? 'Verify' : 'Update',
                 performedBy: new Types.ObjectId(userId),
                 timestamp: new Date(),
                 details: comments ? `Form 12B ${status} with comments: ${comments}`
@@ -2467,10 +2849,10 @@ export class DocumentService extends BaseService {
 
 
             // If status is Verified, update the Tax Declaration reference
-            if (status === 'Verified') {
+            if (isApproval) {
                 console.log("inside verified updateForm12BStatus");
                 const form12bId = existingDocument._id.toString();
-                const tdsAmount = Number(existingDocument.metadata.form12B.tdsDeducted) || 0;
+                const tdsAmount = Number(form12B.tdsDeducted) || 0;
                 const financialYear = existingDocument.metadata.form12B.financialYear;
 
                 // Call TaxDeclarationService.processForm12BTDS

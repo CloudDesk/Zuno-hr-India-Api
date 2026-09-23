@@ -50,20 +50,45 @@ export interface IDocument extends DocumentM {
             tdsAmount: number; // Total TDS deducted
         };
         form12B?: {
-            previousEmployer: {
+            previousEmployer?: {
                 name: string;
                 pan: string;
                 tan: string;
             };
-            employmentPeriod: {
+            employmentPeriod?: {
                 startDate: Date;
                 endDate: Date;
             };
-            salaryEarned: number;
-            tdsDeducted: number;
+            salaryEarned?: number;
+            tdsDeducted?: number;
             financialYear: string;
             status: 'Pending' | 'Verified' | 'Rejected' | 'ResubmissionRequested';
             isLocked: boolean;
+            workflowStatus?: 'Released' | 'Draft' | 'Submitted' | 'ResubmissionAllowed' | 'Approved' | 'FinalRejected';
+            submissionAttempt?: 1 | 2;
+            reuploadCount?: number;
+            releasedAt?: Date;
+            releasedBy?: Types.ObjectId;
+            submittedAt?: Date;
+            submittedBy?: Types.ObjectId;
+            reviewedAt?: Date;
+            reviewedBy?: Types.ObjectId;
+            detailsUpdatedAt?: Date;
+            detailsUpdatedBy?: Types.ObjectId;
+            comments?: string;
+            template?: {
+                fileName: string;
+                filePath: string;
+                version: number;
+            };
+            previousVersions?: Array<{
+                attempt: number;
+                fileName: string;
+                filePath: string;
+                submittedAt?: Date;
+                rejectedAt?: Date;
+                comments?: string;
+            }>;
         };
         form12BB?: {
             employeeId: Types.ObjectId;
@@ -310,21 +335,30 @@ const documentSchema = new Schema<IDocument>(
                         return value.hikeLetter && value.hikeLetter.effectiveDate && value.hikeLetter.newCtc;
                     }
                     if (docType === 'Form12B') {
+                        const form12B = value.form12B;
+                        const isReleasedRecord = Boolean(form12B?.workflowStatus);
+                        const hasAdminDetails = Boolean(
+                            form12B?.previousEmployer?.name &&
+                            form12B?.previousEmployer?.pan &&
+                            form12B?.previousEmployer?.tan &&
+                            form12B?.employmentPeriod?.startDate &&
+                            form12B?.employmentPeriod?.endDate &&
+                            typeof form12B?.salaryEarned === 'number' &&
+                            typeof form12B?.tdsDeducted === 'number'
+                        );
                         return (
-                            value.form12B &&
-                            value.form12B.financialYear &&
-                            value.form12B.previousEmployer &&
-                            value.form12B.previousEmployer.name &&
-                            value.form12B.previousEmployer.pan &&
-                            value.form12B.previousEmployer.tan &&
-                            value.form12B.employmentPeriod &&
-                            value.form12B.employmentPeriod.startDate &&
-                            value.form12B.employmentPeriod.endDate &&
-                            typeof value.form12B.salaryEarned === 'number' &&
-                            typeof value.form12B.tdsDeducted === 'number' &&
-                            value.form12B.status &&
-                            ['Pending', 'Verified', 'Rejected', 'ResubmissionRequested'].includes(value.form12B.status) &&
-                            typeof value.form12B.isLocked === 'boolean'
+                            form12B &&
+                            form12B.financialYear &&
+                            form12B.status &&
+                            ['Pending', 'Verified', 'Rejected', 'ResubmissionRequested'].includes(form12B.status) &&
+                            typeof form12B.isLocked === 'boolean' &&
+                            (
+                                !isReleasedRecord ||
+                                Boolean(form12B.template?.fileName && form12B.template?.filePath)
+                            ) &&
+                            (
+                                form12B.workflowStatus !== 'Approved' || hasAdminDetails
+                            )
                         );
                     }
                     if (docType === 'Form12BB') {

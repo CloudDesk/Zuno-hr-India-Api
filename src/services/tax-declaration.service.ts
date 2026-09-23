@@ -14,6 +14,7 @@ import * as xlsx from 'xlsx';
 import { deductionSections, TAX_DEDUCTION_SECTION_IDS, type IDeductionSection } from "../constants/tax-deduction-sections";
 import { uploadFileToGCP } from "../utilis/gcpStorage";
 import { POIReportService } from './poi-report.service';
+import { applyForm12BTDS } from '../utilis/form12b-tax';
 
 export const recomputePOISubmissionState = (taxDeclaration: any): void => {
     const applicableDeclarations = (taxDeclaration.declarations || [])
@@ -659,7 +660,7 @@ export class TaxDeclarationService extends BaseService {
             if (docForm12B && docForm12B.type === 'Form12B' && docForm12B.metadata?.form12B?.status === 'Verified') {
                 updatedTax.form12bTDSAmount = docForm12B.metadata.form12B.tdsDeducted || 0;
                 updatedTax.taxWithCess = updatedTax.finalTaxWithCess;
-                updatedTax.finalTaxWithCess = Math.max(0, updatedTax.taxWithCess - updatedTax.form12bTDSAmount);
+                updatedTax.finalTaxWithCess = applyForm12BTDS(updatedTax.taxWithCess, updatedTax.form12bTDSAmount);
             }
         }
         data.calculatedTaxAmount = updatedTax.taxAmount; //SBT
@@ -1223,15 +1224,15 @@ export class TaxDeclarationService extends BaseService {
         }
 
         // 2. Verify regime is old
-        if (taxDeclaration.regime !== 'old') {
-            throw new Error('Form12B TDS processing is only applicable for old regime');
-        }
+        // if (taxDeclaration.regime !== 'old') {
+        //     throw new Error('Form12B TDS processing is only applicable for old regime');
+        // }
 
         // 3. Update initialTaxBreakdown with form12bTDSAmount
         const initialTaxBreakdown = taxDeclaration.initialTaxBreakdown;
         initialTaxBreakdown.form12bTDSAmount = tdsAmount;
         initialTaxBreakdown.taxWithCess = initialTaxBreakdown.finalTaxWithCess;
-        initialTaxBreakdown.finalTaxWithCess = Math.max(0, initialTaxBreakdown.taxWithCess - tdsAmount);
+        initialTaxBreakdown.finalTaxWithCess = applyForm12BTDS(initialTaxBreakdown.taxWithCess, tdsAmount);
         taxDeclaration.revisedTaxAmount = initialTaxBreakdown.finalTaxWithCess;
         taxDeclaration.remainingTaxToPay = initialTaxBreakdown.finalTaxWithCess - (taxDeclaration.taxPaid || 0);
         taxDeclaration.previousTaxAmount = initialTaxBreakdown.taxWithCess;

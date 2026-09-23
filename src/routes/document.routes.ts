@@ -6,25 +6,27 @@ import { User, IUser } from "../models/user.model";
 import path from "path";
 import { parseMultipartForm, saveMultipartFile } from "../utilis/parseMultiPartForm";
 import { Document } from "../models/document.model";
+import { TaxDeclaration } from "../models/tax-declaration";
 import { Types } from "mongoose";
 import { Form12BBJob } from "../models/form12bb-job.model";
 import { verifyForm12BBWorkerSecret } from "../services/form12bb-job-dispatcher";
 import { getForm12BBJoiningDateQuery } from "../utilis/form12bb-eligibility";
+import { getForm12BJoiningDateQuery } from "../utilis/form12b-eligibility";
 
 export interface IForm12BSubmission {
     employeeId: string;
     financialYear: string;
-    previousEmployer: {
+    previousEmployer?: {
         name: string;
         pan: string;
         tan: string;
     };
-    employmentPeriod: {
+    employmentPeriod?: {
         startDate: string | Date;
         endDate: string | Date;
     };
-    salaryEarned: number;
-    tdsDeducted: number;
+    salaryEarned?: number;
+    tdsDeducted?: number;
     taxDeclarationId: string;
 }
 
@@ -60,6 +62,15 @@ interface IForm12BBCandidatesQuery {
     reportStatus?: 'generated' | 'notGenerated' | 'failed';
 }
 
+interface IForm12BCandidatesQuery {
+    financialYear: string;
+    page?: number;
+    limit?: number;
+    search?: string;
+    departmentId?: string;
+    activeStatus?: boolean | string;
+}
+
 interface IForm12BBReportsQuery extends IDocumentQuery {
     departmentId?: string;
 }
@@ -74,6 +85,7 @@ export interface IDocumentQuery {
     month?: number;
     financialYear?: string;
     reportStatus?: 'generated' | 'failed';
+    workflowStatus?: 'Released' | 'Draft' | 'Submitted' | 'ResubmissionAllowed' | 'Approved' | 'FinalRejected';
     page?: number;
     limit?: number;
     // Employee filters for managers/admins
@@ -1149,6 +1161,7 @@ export const documentRoutes = async (
                         year: { type: 'integer' },
                         month: { type: 'integer' },
                         financialYear: { type: 'string' },
+                        workflowStatus: { type: 'string', enum: ['Released', 'Draft', 'Submitted', 'ResubmissionAllowed', 'Approved', 'FinalRejected'] },
                         page: { type: 'integer', minimum: 1, default: 1 },
                         limit: { type: 'integer', minimum: 1, maximum: 100, default: 10 },
                         department: { type: 'string' },
@@ -1176,7 +1189,9 @@ export const documentRoutes = async (
                                                 _id: { type: 'string' },
                                                 name: { type: 'string' },
                                                 email: { type: 'string' },
-                                                employeeCode: { type: 'string' }
+                                                employeeCode: { type: 'string' },
+                                                departmentId: { type: 'string' },
+                                                active: { type: 'boolean' }
                                             }
                                         },
                                         type: {
@@ -1384,8 +1399,23 @@ export const documentRoutes = async (
                                                         salaryEarned: { type: 'number' },
                                                         tdsDeducted: { type: 'number' },
                                                         financialYear: { type: 'string' },
-                                                        status: { type: 'string', enum: ['Pending', 'Approved', 'Rejected', 'ResubmissionRequested'] },
-                                                        isLocked: { type: 'boolean' }
+                                                        status: { type: 'string', enum: ['Pending', 'Verified', 'Rejected', 'ResubmissionRequested'] },
+                                                        isLocked: { type: 'boolean' },
+                                                        workflowStatus: { type: 'string', enum: ['Released', 'Draft', 'Submitted', 'ResubmissionAllowed', 'Approved', 'FinalRejected'] },
+                                                        submissionAttempt: { type: 'number' },
+                                                        reuploadCount: { type: 'number' },
+                                                        releasedAt: { type: 'string', format: 'date-time' },
+                                                        submittedAt: { type: 'string', format: 'date-time' },
+                                                        reviewedAt: { type: 'string', format: 'date-time' },
+                                                        comments: { type: 'string' },
+                                                        template: {
+                                                            type: 'object',
+                                                            properties: {
+                                                                fileName: { type: 'string' },
+                                                                filePath: { type: 'string' },
+                                                                version: { type: 'number' },
+                                                            },
+                                                        },
                                                     }
                                                 },
                                                 form12BB: {
@@ -1865,9 +1895,109 @@ export const documentRoutes = async (
         }
     });
 
-    //upload Form12B
+    // Employees who are eligible and do not yet have a released Form 12B.
+    fastify.get<{ Querystring: IForm12BCandidatesQuery }>('/form12b/candidates',
+        { preHandler: [authenticate] },
+        async (request, reply) => {
+            if (String(request.user.role || '').toLowerCase() !== 'admin') {
+                return reply.status(403).send({ success: false, error: 'Only administrators can select Form 12B candidates.' });
+            }
+            const financialYear = String(request.query.financialYear || '');
+            if (!/^\d{4}-\d{4}$/.test(financialYear) || !isValidYearRange(financialYear)) {
+                return reply.status(400).send({ success: false, error: 'Financial year must be a consecutive range in YYYY-YYYY format' });
+            }
+            const page = Math.max(1, Number(request.query.page) || 1);
+            const limit = Math.min(100, Math.max(1, Number(request.query.limit) || 10));
+            const declarations = await TaxDeclaration.find({ financialYear })
+                .select('_id employeeId')
+                .lean();
+            const declarationByEmployee = new Map(
+                declarations.map((declaration: any) => [declaration.employeeId.toString(), declaration._id.toString()]),
+            );
+            const existingEmployeeIds = await Document.find({
+                employeeId: { $in: declarations.map((declaration: any) => declaration.employeeId) },
+                type: 'Form12B',
+                'metadata.form12B.financialYear': financialYear,
+            }).distinct('employeeId');
+            const existing = new Set(existingEmployeeIds.map((id: any) => id.toString()));
+            const candidateIds = Array.from(declarationByEmployee.keys())
+                .filter((id) => !existing.has(id))
+                .map((id) => new Types.ObjectId(id));
+            const query: any = {
+                _id: { $in: candidateIds },
+                joiningDate: getForm12BJoiningDateQuery(financialYear),
+            };
+            if (request.query.departmentId) query.departmentId = request.query.departmentId;
+            if (request.query.activeStatus !== undefined && request.query.activeStatus !== '') {
+                query.active = request.query.activeStatus === true || String(request.query.activeStatus) === 'true';
+            }
+            if (request.query.search?.trim()) {
+                const escaped = request.query.search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const expression = new RegExp(escaped, 'i');
+                query.$or = [{ name: expression }, { email: expression }, { employeeCode: expression }];
+            }
+            const [total, users] = await Promise.all([
+                User.countDocuments(query),
+                User.find(query)
+                    .select('_id name email employeeCode departmentId active joiningDate')
+                    .sort({ name: 1, _id: 1 })
+                    .skip((page - 1) * limit)
+                    .limit(limit)
+                    .lean(),
+            ]);
+            const items = users.map((user: any) => ({
+                ...user,
+                taxDeclarationId: declarationByEmployee.get(user._id.toString()),
+            }));
+            return reply.send({ success: true, data: { items, total, page, limit, totalPages: Math.ceil(total / limit) } });
+        },
+    );
+
+    // Release the blank Form 12B template to multiple selected employees.
+    fastify.post('/form12b/release-bulk', {
+        preHandler: [authenticate]
+    }, async (request, reply) => {
+        try {
+            const user = request.user;
+            if (user.role?.toLowerCase() !== 'admin') {
+                return reply.status(403).send({ success: false, error: 'Only administrators can release Form 12B templates.' });
+            }
+            const parsedData = request.body as { employeeIds: string[]; financialYear: string };
+            const result = await request.container!.documentService.releaseForm12BBulk(
+                parsedData,
+                user._id.toString(),
+            );
+            return reply.status(200).send({ success: true, data: result });
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            return reply.status(400).send({ success: false, error: errorMessage });
+        }
+    });
+
+    // Release the blank Form 12B template to one employee for one FY.
+    fastify.post('/form12b/release', {
+        preHandler: [authenticate]
+    }, async (request, reply) => {
+        try {
+            const user = request.user;
+            if (user.role?.toLowerCase() !== 'admin') {
+                return reply.status(403).send({ success: false, error: 'Only administrators can release Form 12B templates.' });
+            }
+            const parsedData = request.body as { employeeId: string; financialYear: string; taxDeclarationId: string };
+            const document = await request.container!.documentService.releaseForm12B(
+                parsedData,
+                user._id.toString(),
+            );
+            return reply.status(200).send({ success: true, data: document });
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            return reply.status(errorMessage.includes('not found') ? 404 : 400).send({ success: false, error: errorMessage });
+        }
+    });
+
+    // Upload or replace an employee Form 12B draft.
     fastify.post('/form12b', {
-        preHandler: [filesUpload]
+        preHandler: [authenticate, filesUpload]
     }, async (request, reply) => {
         try {
             console.log(request.file, "file");
@@ -1885,10 +2015,10 @@ export const documentRoutes = async (
             console.log(typeof documentData, "typeof documentData in route")
             let parsedData: IForm12BSubmission = JSON.parse(documentData);
             console.log(parsedData, "parsedData")
-            let userId = request.user?._id?.toString() || '68355851969275367d77b3bc';
+            const userId = request.user._id.toString();
             console.log(userId, "userId")
 
-            const form12BDoc = await request.container!.documentService.uploadForm12B(file, parsedData, userId);
+            const form12BDoc = await request.container!.documentService.uploadForm12B(file, parsedData, userId, request.user.role);
 
             return reply.status(200).send({
                 success: true,
@@ -1897,17 +2027,93 @@ export const documentRoutes = async (
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error);
             console.error('Error during document deletion:', errorMessage);
-            return reply.status(errorMessage.includes('Forbidden') ? 403 : 500).send({
+            return reply.status(errorMessage.includes('Forbidden') ? 403 : 400).send({
                 success: false,
-                error: errorMessage.includes('Forbidden') ? errorMessage : 'Internal server error',
+                error: errorMessage,
             });
         }
     })
 
+    fastify.post('/form12b/:id/submit', { preHandler: [authenticate] }, async (request, reply) => {
+        try {
+            const { id } = request.params as { id: string };
+            const document = await request.container!.documentService.submitForm12B(id, request.user._id.toString());
+            return reply.send({ success: true, data: document });
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            return reply.status(400).send({ success: false, error: errorMessage });
+        }
+    });
+
+    fastify.put('/form12b/:id/details', { preHandler: [authenticate] }, async (request, reply) => {
+        try {
+            const { id } = request.params as { id: string };
+            const document = await request.container!.documentService.updateForm12BDetails(
+                id,
+                request.body as any,
+                request.user._id.toString(),
+                request.user.role,
+            );
+            return reply.send({ success: true, data: document });
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            return reply.status(400).send({ success: false, error: errorMessage });
+        }
+    });
+
+    fastify.get('/form12b/:id/access', { preHandler: [authenticate] }, async (request, reply) => {
+        try {
+            const { id } = request.params as { id: string };
+            const query = request.query as { target?: 'template' | 'submission'; download?: string };
+            const access = await request.container!.documentService.getForm12BAccess(
+                id,
+                request.user._id.toString(),
+                request.user.role,
+                query.target === 'template' ? 'template' : 'submission',
+                query.download === 'true',
+            );
+            return reply.send({ success: true, data: access });
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            return reply.status(errorMessage.includes('Forbidden') ? 403 : 404).send({ success: false, error: errorMessage });
+        }
+    });
+
+    fastify.get('/form12b/:id/download', { preHandler: [authenticate] }, async (request, reply) => {
+        try {
+            const { id } = request.params as { id: string };
+            const query = request.query as { target?: 'template' | 'submission' };
+            const target = query.target === 'template' ? 'template' : 'submission';
+            const access = await request.container!.documentService.getForm12BAccess(
+                id,
+                request.user._id.toString(),
+                request.user.role,
+                target,
+                true,
+            );
+            const fileResponse = await fetch(access.url);
+            if (!fileResponse.ok) {
+                throw new Error(`Unable to retrieve Form 12B file (${fileResponse.status})`);
+            }
+            const fileBuffer = Buffer.from(await fileResponse.arrayBuffer());
+            const safeFileName = access.fileName.replace(/["\r\n]/g, '') || (target === 'template' ? 'Form12B_Template' : 'Signed_Form12B.pdf');
+            const contentType = fileResponse.headers.get('content-type') || (target === 'template' ? 'application/octet-stream' : 'application/pdf');
+            return reply
+                .header('Content-Type', contentType)
+                .header('Content-Length', fileBuffer.length)
+                .header('Cache-Control', 'no-store, max-age=0')
+                .header('Content-Disposition', `attachment; filename="${safeFileName}"; filename*=UTF-8''${encodeURIComponent(safeFileName)}`)
+                .send(fileBuffer);
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            return reply.status(errorMessage.includes('Forbidden') ? 403 : 400).send({ success: false, error: errorMessage });
+        }
+    });
+
     //update Form12B status
     fastify.put('/form12b/:id/status',
         {
-            // preHandler: [authenticate],
+            preHandler: [authenticate],
         },
         async (request, reply) => {
             console.log(request.params, "request params in route")
@@ -1915,10 +2121,10 @@ export const documentRoutes = async (
             const { id } = request.params as { id: string };
             const { status, comments } = request.body as { status: 'Verified' | 'Rejected' | 'ResubmissionRequested', comments?: string };
             const user = request?.user;
-            // if (user.role !== 'admin') {
-            //     return reply.status(403).send({ success: false, error: 'Forbidden: Only admins can update Form12B status.' });
-            // }
-            const userId = user?._id?.toString() || '68355851969275367d77b3bc'; // Default userId for testing, replace with actual user ID from request
+            if (user.role?.toLowerCase() !== 'admin') {
+                return reply.status(403).send({ success: false, error: 'Forbidden: Only admins can update Form12B status.' });
+            }
+            const userId = user._id.toString();
 
             if (!status || !['Verified', 'Rejected', 'ResubmissionRequested'].includes(status)) {
                 return reply.status(400).send({ success: false, error: 'Invalid status. Must be "Verified", "Rejected" or "ResubmissionRequested".' });
@@ -1933,9 +2139,9 @@ export const documentRoutes = async (
             } catch (error) {
                 const errorMessage = error instanceof Error ? error.message : String(error);
                 console.error('Error during Form12B status update:', errorMessage);
-                return reply.status(500).send({
+                return reply.status(400).send({
                     success: false,
-                    error: `Internal server error: ${errorMessage}`,
+                    error: errorMessage,
                 });
             }
         })
