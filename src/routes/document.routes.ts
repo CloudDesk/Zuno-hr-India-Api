@@ -12,6 +12,7 @@ import { Form12BBJob } from "../models/form12bb-job.model";
 import { verifyForm12BBWorkerSecret } from "../services/form12bb-job-dispatcher";
 import { getForm12BBJoiningDateQuery } from "../utilis/form12bb-eligibility";
 import { getForm12BJoiningDateQuery } from "../utilis/form12b-eligibility";
+import { Form16BulkGenerateInput, Form16CandidatesQuery } from "../services/form16-report.service";
 
 export interface IForm12BSubmission {
     employeeId: string;
@@ -936,7 +937,7 @@ export const documentRoutes = async (
     fastify.post(
         '/form16/upload',
         {
-            preHandler: [zipFileUpload],
+            preHandler: [authenticate, zipFileUpload],
             schema: {
                 consumes: ['multipart/form-data'],
                 response: {
@@ -999,6 +1000,9 @@ export const documentRoutes = async (
             },
         },
         async (request, reply) => {
+            if (String(request.user.role || '').toLowerCase() !== 'admin') {
+                return reply.status(403).send({ success: false, error: 'Only administrators can upload Form 16 reports.' });
+            }
             console.log("*******")
             console.log(request.file)
             console.log("*******")
@@ -1145,6 +1149,114 @@ export const documentRoutes = async (
         }
     );
 
+    fastify.post('/form16/generate', { preHandler: [authenticate] }, async (request, reply) => {
+        try {
+            const document = await request.container!.form16ReportService.generate(
+                request.body as { employeeId: string; financialYear: string; generationRequestId?: string },
+            );
+            return reply.send({ success: true, data: document });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return reply.status(message.includes('administrators') ? 403 : message.includes('not found') ? 404 : 400)
+                .send({ success: false, error: message });
+        }
+    });
+
+    fastify.post('/form16/bulk-generate', { preHandler: [authenticate] }, async (request, reply) => {
+        try {
+            const result = await request.container!.form16ReportService.bulkGenerate(
+                request.body as Form16BulkGenerateInput,
+            );
+            return reply.send({ success: true, data: result });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return reply.status(message.includes('administrators') ? 403 : 400).send({ success: false, error: message });
+        }
+    });
+
+    fastify.get<{ Querystring: Form16CandidatesQuery }>('/form16/candidates', { preHandler: [authenticate] }, async (request, reply) => {
+        try {
+            const result = await request.container!.form16ReportService.listCandidates(request.query);
+            return reply.send({ success: true, data: result });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return reply.status(message.includes('administrators') ? 403 : 400).send({ success: false, error: message });
+        }
+    });
+
+    fastify.get<{ Querystring: IDocumentQuery }>('/form16/reports', { preHandler: [authenticate] }, async (request, reply) => {
+        try {
+            request.query = {
+                ...request.query,
+                access: String(request.user.role || '').toLowerCase() === 'admin' ? 'global' : 'own',
+                category: 'Tax',
+                type: 'Form16',
+            };
+            const result = await request.container!.documentService.getDocuments(request, reply);
+            if (reply.sent) return;
+            return reply.send({ success: true, data: result.data, meta: result.meta });
+        } catch (error) {
+            return reply.status(400).send({ success: false, error: error instanceof Error ? error.message : String(error) });
+        }
+    });
+
+    fastify.post<{ Params: { id: string } }>('/form16/:id/regenerate', { preHandler: [authenticate] }, async (request, reply) => {
+        try {
+            const document = await request.container!.form16ReportService.regenerate(request.params.id);
+            return reply.send({ success: true, data: document });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return reply.status(message.includes('administrators') ? 403 : message.includes('not found') ? 404 : 400)
+                .send({ success: false, error: message });
+        }
+    });
+
+    fastify.get<{ Params: { id: string }; Querystring: { download?: boolean | string } }>(
+        '/form16/:id/access',
+        { preHandler: [authenticate] },
+        async (request, reply) => {
+            try {
+                const download = request.query.download === true || String(request.query.download) === 'true';
+                const result = await request.container!.form16ReportService.getAccessUrl(
+                    request.params.id,
+                    request.user,
+                    download,
+                );
+                return reply.send({ success: true, data: result });
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                return reply.status(message.includes('authorized') ? 403 : message.includes('not found') ? 404 : 400)
+                    .send({ success: false, error: message });
+            }
+        },
+    );
+
+    fastify.get<{ Params: { id: string } }>('/form16/:id/download', { preHandler: [authenticate] }, async (request, reply) => {
+        try {
+            const access = await request.container!.form16ReportService.getAccessUrl(
+                request.params.id,
+                request.user,
+                true,
+            );
+            const fileResponse = await fetch(access.url);
+            if (!fileResponse.ok) throw new Error(`Unable to retrieve Form 16 (${fileResponse.status})`);
+
+            const buffer = Buffer.from(await fileResponse.arrayBuffer());
+            const safeFileName = access.fileName.replace(/["\r\n]/g, '') || 'Form16.pdf';
+            return reply
+                .header('Content-Type', 'application/pdf')
+                .header('Content-Length', buffer.length)
+                .header('Cache-Control', 'no-store, max-age=0')
+                .header('Pragma', 'no-cache')
+                .header('Content-Disposition', `attachment; filename="${safeFileName}"; filename*=UTF-8''${encodeURIComponent(safeFileName)}`)
+                .send(buffer);
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return reply.status(message.includes('authorized') ? 403 : message.includes('not found') ? 404 : 400)
+                .send({ success: false, error: message });
+        }
+    });
+
     //Get Docs 
     fastify.get<{ Querystring: IDocumentQuery }>(
         '/',
@@ -1156,7 +1268,7 @@ export const documentRoutes = async (
                     properties: {
                         access: { type: 'string', enum: ['own', 'team', 'global'], default: 'own' },
                         employeeId: { type: 'string' },
-                        type: { type: 'string', enum: ['Payslip', 'TimesheetFile', 'Form16', 'Form12B', 'Form12BB', 'OfferLetter', 'HikeLetter', 'Certificate', 'AdminUpload', 'AttendanceFile', 'TaxProof'] },
+                        type: { type: 'string', enum: ['Payslip', 'TimesheetFile', 'Form16', 'Form12B', 'Form12BB', 'POIReport', 'OfferLetter', 'HikeLetter', 'Certificate', 'AdminUpload', 'AttendanceFile', 'TaxProof'] },
                         category: { type: 'string', enum: ['Payroll', 'Timesheet', 'Tax', 'EmployeeLifecycle', 'Certification', 'Attendance'] },
                         year: { type: 'integer' },
                         month: { type: 'integer' },
@@ -1196,7 +1308,7 @@ export const documentRoutes = async (
                                         },
                                         type: {
                                             type: 'string',
-                                            enum: ['Payslip', 'TimesheetFile', 'Form16', 'OfferLetter', 'HikeLetter', 'Certificate', 'Form12B', 'Form12BB', 'AdminUpload', 'AttendanceFile', 'TaxProof']
+                                            enum: ['Payslip', 'TimesheetFile', 'Form16', 'OfferLetter', 'HikeLetter', 'Certificate', 'Form12B', 'Form12BB', 'POIReport', 'AdminUpload', 'AttendanceFile', 'TaxProof']
                                         },
                                         category: {
                                             type: 'string',
@@ -1431,6 +1543,22 @@ export const documentRoutes = async (
                                                         isPreviewEnabled: { type: 'boolean' },
                                                         tdsPaid: { type: 'string' },
                                                     }
+                                                },
+                                                poiReport: {
+                                                    type: 'object',
+                                                    properties: {
+                                                        employeeId: { type: 'string' },
+                                                        financialYear: { type: 'string' },
+                                                        regime: { type: 'string' },
+                                                        taxDeclarationId: { type: 'string' },
+                                                        generationStatus: { type: 'string', enum: ['Completed', 'Failed', 'Outdated'] },
+                                                        generatedAt: { type: 'string', format: 'date-time' },
+                                                        generatedBy: { type: 'string' },
+                                                        lastRegeneratedAt: { type: 'string', format: 'date-time' },
+                                                        declarationCount: { type: 'number' },
+                                                        totalDeclaredAmount: { type: 'number' },
+                                                        totalApprovedAmount: { type: 'number' },
+                                                    }
                                                 }
                                             }
                                         },
@@ -1534,7 +1662,7 @@ export const documentRoutes = async (
                                         },
                                         required: ['_id', 'name', 'email']
                                     },
-                                    type: { type: 'string', enum: ['Payslip', 'TimesheetFile', 'Form16', 'OfferLetter', 'HikeLetter', 'Certificate', 'Form12B', 'Form12BB', 'AdminUpload', 'AttendanceFile', 'TaxProof'] },
+                                    type: { type: 'string', enum: ['Payslip', 'TimesheetFile', 'Form16', 'OfferLetter', 'HikeLetter', 'Certificate', 'Form12B', 'Form12BB', 'POIReport', 'AdminUpload', 'AttendanceFile', 'TaxProof'] },
                                     category: { type: 'string', enum: ['Payroll', 'Timesheet', 'Tax', 'EmployeeLifecycle', 'Certification', 'Attendance'] },
                                     tags: { type: 'array', items: { type: 'string' } },
                                     fileName: { type: 'string' },
@@ -1962,7 +2090,13 @@ export const documentRoutes = async (
             if (user.role?.toLowerCase() !== 'admin') {
                 return reply.status(403).send({ success: false, error: 'Only administrators can release Form 12B templates.' });
             }
-            const parsedData = request.body as { employeeIds: string[]; financialYear: string };
+            const parsedData = request.body as {
+                employeeIds?: string[];
+                financialYear: string;
+                selectionMode?: 'explicit' | 'allMatching';
+                excludedEmployeeIds?: string[];
+                filters?: { search?: string; departmentId?: string; activeStatus?: boolean | string };
+            };
             const result = await request.container!.documentService.releaseForm12BBulk(
                 parsedData,
                 user._id.toString(),
@@ -2628,11 +2762,14 @@ export const documentRoutes = async (
     });
 
     fastify.get<{ Params: { id: string } }>('/poi-reports/:id/details', { preHandler: [authenticate] }, async (request, reply) => {
-        if (String(request.user.role || '').toLowerCase() !== 'admin') {
-            return reply.status(403).send({ success: false, error: 'Only administrators can view POI reports.' });
-        }
         try {
-            return reply.send({ success: true, data: await request.container!.documentService.getPOIReportDetails(request.params.id) });
+            const details = await request.container!.documentService.getPOIReportDetails(request.params.id);
+            const ownerId = details?.document?.employeeId?._id || details?.document?.employeeId;
+            const isAdmin = String(request.user.role || '').toLowerCase() === 'admin';
+            if (!isAdmin && String(ownerId) !== String(request.user._id)) {
+                return reply.status(403).send({ success: false, error: 'You can only view your own POI report.' });
+            }
+            return reply.send({ success: true, data: details });
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             return reply.status(message.includes('not found') ? 404 : 400).send({ success: false, error: message });
@@ -2640,10 +2777,13 @@ export const documentRoutes = async (
     });
 
     fastify.get<{ Params: { id: string } }>('/poi-reports/:id/download', { preHandler: [authenticate] }, async (request, reply) => {
-        if (String(request.user.role || '').toLowerCase() !== 'admin') {
-            return reply.status(403).send({ success: false, error: 'Only administrators can download POI reports.' });
-        }
         try {
+            const details = await request.container!.documentService.getPOIReportDetails(request.params.id);
+            const ownerId = details?.document?.employeeId?._id || details?.document?.employeeId;
+            const isAdmin = String(request.user.role || '').toLowerCase() === 'admin';
+            if (!isAdmin && String(ownerId) !== String(request.user._id)) {
+                return reply.status(403).send({ success: false, error: 'You can only download your own POI report.' });
+            }
             const result = await request.container!.documentService.getPOIReportDownload(request.params.id);
             const fileResponse = await fetch(result.url);
             if (!fileResponse.ok) throw new Error(`Unable to retrieve POI report (${fileResponse.status})`);

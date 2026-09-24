@@ -45,7 +45,7 @@ import {
     getForm12BDraftAttempt,
     getForm12BReviewOutcome,
 } from '../utilis/form12b-workflow';
-import { assertForm12BJoiningDateEligible } from '../utilis/form12b-eligibility';
+import { assertForm12BJoiningDateEligible, getForm12BJoiningDateQuery } from '../utilis/form12b-eligibility';
 // import AdmZip from 'adm-zip';
 // import { mkdirSync } from 'fs';
 
@@ -808,18 +808,22 @@ export class DocumentService extends BaseService {
                     query['metadata.payslip.isExport'] = true;
                 }
 
-                // Dynamic query enhancement for category 'Tax'
-                // Dynamic query enhancement for category 'Tax'
+                // Employees can see all of their tax-document families, but a
+                // Form 12BB is visible only after an administrator releases it.
                 if (category === 'Tax' && (user.role.toLowerCase() !== 'admin' || access === 'own')) {
-                    // Apply restrictions for non-admins or access='own' (including admin with own access)
-                    query.$or = [
-                        { type: 'Form16' },
-                        { type: 'Form12B' },
-                        {
-                            type: 'Form12BB',
-                            'metadata.form12BB.isPreviewEnabled': true, // Only Form12BB with isPreviewEnabled = true
-                        },
-                    ];
+                    if (type === 'Form12BB') {
+                        query['metadata.form12BB.isPreviewEnabled'] = true;
+                    } else if (!type) {
+                        query.$or = [
+                            { type: 'Form16' },
+                            { type: 'Form12B' },
+                            {
+                                type: 'Form12BB',
+                                'metadata.form12BB.isPreviewEnabled': true,
+                            },
+                            { type: 'POIReport' },
+                        ];
+                    }
                 }
             }
             // Apply date filters based on document type
@@ -857,6 +861,18 @@ export class DocumentService extends BaseService {
             }
             else if (category === 'Tax' && type === 'POIReport' && financialYear) {
                 query['metadata.poiReport.financialYear'] = financialYear;
+            }
+            else if (category === 'Tax' && !type && financialYear) {
+                query.$and = [
+                    {
+                        $or: [
+                            { 'metadata.form16.financialYear': financialYear },
+                            { 'metadata.form12B.financialYear': financialYear },
+                            { 'metadata.form12BB.financialYear': financialYear },
+                            { 'metadata.poiReport.financialYear': financialYear },
+                        ],
+                    },
+                ];
             }
             if (category === 'Tax' && type === 'Form12B' && workflowStatus) {
                 query['metadata.form12B.workflowStatus'] = workflowStatus;
@@ -2343,7 +2359,13 @@ export class DocumentService extends BaseService {
     }
 
     async releaseForm12BBulk(
-        data: { employeeIds: string[]; financialYear: string },
+        data: {
+            employeeIds?: string[];
+            financialYear: string;
+            selectionMode?: 'explicit' | 'allMatching';
+            excludedEmployeeIds?: string[];
+            filters?: { search?: string; departmentId?: string; activeStatus?: boolean | string };
+        },
         userId: string,
     ): Promise<{
         released: number;
@@ -2355,7 +2377,38 @@ export class DocumentService extends BaseService {
         if (!/^\d{4}-\d{4}$/.test(data.financialYear || '')) {
             throw new Error('A valid financial year is required');
         }
-        const employeeIds = Array.from(new Set(data.employeeIds || []));
+        let employeeIds = Array.from(new Set(data.employeeIds || []));
+        if (data.selectionMode === 'allMatching') {
+            const declarationsForYear = await TaxDeclaration.find({ financialYear: data.financialYear })
+                .select('employeeId')
+                .lean();
+            const declaredIds = declarationsForYear.map((declaration: any) => declaration.employeeId);
+            const existingEmployeeIds = await Document.find({
+                employeeId: { $in: declaredIds },
+                type: 'Form12B',
+                'metadata.form12B.financialYear': data.financialYear,
+            }).distinct('employeeId');
+            const existing = new Set(existingEmployeeIds.map((id: any) => id.toString()));
+            const query: any = {
+                _id: { $in: declaredIds.filter((id: any) => !existing.has(id.toString())) },
+                joiningDate: getForm12BJoiningDateQuery(data.financialYear),
+            };
+            const filters = data.filters || {};
+            if (filters.departmentId) query.departmentId = filters.departmentId;
+            if (filters.activeStatus !== undefined && filters.activeStatus !== '') {
+                query.active = filters.activeStatus === true || String(filters.activeStatus) === 'true';
+            }
+            if (filters.search?.trim()) {
+                const escaped = filters.search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const expression = new RegExp(escaped, 'i');
+                query.$or = [{ name: expression }, { email: expression }, { employeeCode: expression }];
+            }
+            const excluded = new Set((data.excludedEmployeeIds || []).map(String));
+            const matchingUsers = await User.find(query).select('_id').lean();
+            employeeIds = matchingUsers
+                .map((candidate: any) => candidate._id.toString())
+                .filter((id) => !excluded.has(id));
+        }
         if (!employeeIds.length || employeeIds.length > 500 || employeeIds.some((id) => !Types.ObjectId.isValid(id))) {
             throw new Error('Select between 1 and 500 valid employees');
         }

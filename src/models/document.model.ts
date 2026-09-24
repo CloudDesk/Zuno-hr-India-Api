@@ -46,8 +46,23 @@ export interface IDocument extends DocumentM {
         };
         form16?: {
             financialYear: string; // e.g., '2024-25'
+            assessmentYear?: string;
             pan: string; // e.g., 'ABCDE1234F'
             tdsAmount: number; // Total TDS deducted
+            regime?: 'old' | 'new';
+            taxDeclarationId?: Types.ObjectId;
+            templateVersion?: number;
+            generationStatus?: 'Completed' | 'Failed';
+            generationRequestId?: string;
+            generatedAt?: Date;
+            generatedBy?: Types.ObjectId;
+            calculationSnapshot?: Record<string, unknown>;
+            previousVersions?: Array<{
+                version: number;
+                fileName: string;
+                filePath: string;
+                generatedAt: Date;
+            }>;
         };
         form12B?: {
             previousEmployer?: {
