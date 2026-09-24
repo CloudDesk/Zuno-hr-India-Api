@@ -6,7 +6,7 @@ import { renderPayslipPdf } from './payslip-pdf-runtime';
 
 // Increment when the persisted PDF layout changes. Existing generated files are
 // intentionally left untouched until an admin regenerates them.
-export const FORM12BB_TEMPLATE_VERSION = 12;
+export const FORM12BB_TEMPLATE_VERSION = 13;
 
 export interface Form12BBCoveredMember {
     name: string;
@@ -42,6 +42,7 @@ export interface Form12BBPdfData {
     lenderPan: string;
     lenderType: string;
     housePropertyAmount: number;
+    housePropertyType: 'income' | 'loss';
     housePropertyEvidence: string;
     housePropertyLenderName: string;
     housePropertyLenderPan: string;
@@ -63,6 +64,18 @@ handlebars.registerHelper('currency', (value: unknown) => {
         minimumFractionDigits: 0,
         maximumFractionDigits: 0,
     }).format(Number.isFinite(amount) ? amount : 0);
+});
+
+handlebars.registerHelper('signedHousePropertyCurrency', (value: unknown, type: unknown) => {
+    const amount = Number(value || 0);
+    const safeAmount = Number.isFinite(amount) ? Math.abs(amount) : 0;
+    const formattedAmount = new Intl.NumberFormat('en-IN', {
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 0,
+    }).format(safeAmount);
+
+    if (safeAmount === 0) return formattedAmount;
+    return `${type === 'loss' ? '−' : '+'} ${formattedAmount}`;
 });
 
 handlebars.registerHelper('sumAmounts', (...args: unknown[]) => {

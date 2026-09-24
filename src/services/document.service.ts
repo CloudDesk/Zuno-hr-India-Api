@@ -2582,6 +2582,7 @@ export class DocumentService extends BaseService {
         const housePropertyVerifiedAmount = Number(houseProperty?.verifiedAmount || 0);
         const isHousePropertyIncome = houseProperty?.type === 'income' ||
             (!houseProperty?.type && housePropertyVerifiedAmount < 0);
+        const housePropertyType: 'income' | 'loss' = isHousePropertyIncome ? 'income' : 'loss';
         const housePropertyEvidence = this.mapForm12BBEvidence(houseProperty);
 
         return {
@@ -2600,14 +2601,15 @@ export class DocumentService extends BaseService {
             hraEvidence: this.mapForm12BBEvidence(hra),
             ltcAmount: 0,
             ltcEvidence: '',
-            housingLoanInterest: houseProperty && !isHousePropertyIncome ? Math.abs(housePropertyVerifiedAmount) : 0,
-            housingLoanEvidence: houseProperty && !isHousePropertyIncome ? housePropertyEvidence : '',
+            housingLoanInterest: 0,
+            housingLoanEvidence: '',
             lenderName: '',
             lenderAddress: '',
             lenderPan: '',
             lenderType: '',
-            housePropertyAmount: houseProperty && isHousePropertyIncome ? Math.abs(housePropertyVerifiedAmount) : 0,
-            housePropertyEvidence: houseProperty && isHousePropertyIncome ? housePropertyEvidence : '',
+            housePropertyAmount: houseProperty ? Math.abs(housePropertyVerifiedAmount) : 0,
+            housePropertyType,
+            housePropertyEvidence: houseProperty ? housePropertyEvidence : '',
             housePropertyLenderName: '',
             housePropertyLenderPan: '',
             section80C: section80CDeclarations
