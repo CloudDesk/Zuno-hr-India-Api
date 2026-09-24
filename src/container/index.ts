@@ -37,6 +37,7 @@ import { SalaryStatementService } from '../services/salary-statement.service';
 import { TaxSalaryContextService } from '../services/tax-salary-context.service';
 import { CommunicationService } from '../services/communication.service';
 import { Form16ReportService } from '../services/form16-report.service';
+import { OrganizationProfileService } from '../services/organization-profile.service';
 
 export class Container {
   private static instance: Container;
@@ -96,6 +97,7 @@ export class Container {
       taxSalaryContextService: new TaxSalaryContextService(context),
       communicationService: new CommunicationService(context),
       form16ReportService: new Form16ReportService(context),
+      organizationProfileService: new OrganizationProfileService(context),
     };
   }
 

@@ -57,11 +57,33 @@ export interface IDocument extends DocumentM {
             generatedAt?: Date;
             generatedBy?: Types.ObjectId;
             calculationSnapshot?: Record<string, unknown>;
+            employerSnapshot?: {
+                organizationProfileId: string;
+                organizationProfileVersion: number;
+                name: string;
+                address: string;
+                email: string;
+                pan: string;
+                tan: string;
+                citName: string;
+                citAddress: string;
+            };
             previousVersions?: Array<{
                 version: number;
                 fileName: string;
                 filePath: string;
                 generatedAt: Date;
+                employerSnapshot?: {
+                    organizationProfileId: string;
+                    organizationProfileVersion: number;
+                    name: string;
+                    address: string;
+                    email: string;
+                    pan: string;
+                    tan: string;
+                    citName: string;
+                    citAddress: string;
+                };
             }>;
         };
         form12B?: {

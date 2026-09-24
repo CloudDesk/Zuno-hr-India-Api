@@ -157,8 +157,20 @@ const OrganizationProfileSchema = new Schema<IOrganizationProfile>({
     legalName: { type: String, required: true, trim: true, maxlength: 250 },
     displayName: { type: String, trim: true, maxlength: 150 },
     country: { type: String, required: true, trim: true, maxlength: 100, default: 'India' },
-    corporateEmail: { type: String, trim: true, lowercase: true, maxlength: 250 },
-    payrollEmail: { type: String, trim: true, lowercase: true, maxlength: 250 },
+    corporateEmail: {
+        type: String,
+        trim: true,
+        lowercase: true,
+        maxlength: 250,
+        match: [/^[^\s@]+@[^\s@]+\.[^\s@]+$/, 'Invalid corporate email address'],
+    },
+    payrollEmail: {
+        type: String,
+        trim: true,
+        lowercase: true,
+        maxlength: 250,
+        match: [/^[^\s@]+@[^\s@]+\.[^\s@]+$/, 'Invalid payroll email address'],
+    },
     phone: { type: String, trim: true, maxlength: 30 },
     website: { type: String, trim: true, maxlength: 500 },
     addresses: { type: [OrganizationAddressSchema], default: [] },
@@ -216,6 +228,13 @@ OrganizationProfileSchema.pre('validate', function (next) {
 
 OrganizationProfileSchema.index({ 'statutoryRegistrations.registrationNumber': 1 });
 OrganizationProfileSchema.index({ status: 1, country: 1 });
+// The application currently represents one legal employer. Keep the invariant in
+// MongoDB as well as in the activation service so concurrent requests cannot
+// leave more than one profile active.
+OrganizationProfileSchema.index(
+    { status: 1 },
+    { unique: true, partialFilterExpression: { status: 'Active' } },
+);
 
 export const OrganizationProfile = model<IOrganizationProfile>(
     'OrganizationProfile',

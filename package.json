@@ -14,6 +14,7 @@
     "test:half-day-wfh": "ts-node scripts/verify-half-day-wfh.ts",
     "test:poi-lifecycle": "ts-node scripts/verify-poi-report-lifecycle.ts",
     "seed:poi-lifecycle": "ts-node scripts/create-poi-lifecycle-test-records.ts",
+    "seed:organization-profile": "ts-node scripts/seed-organization-profile.ts",
     "testdata:form12bb:seed": "ts-node scripts/form12bb-load-test-data.ts seed",
     "testdata:form12bb:delete": "ts-node scripts/form12bb-load-test-data.ts delete",
     "lint": "eslint . --ext .ts",

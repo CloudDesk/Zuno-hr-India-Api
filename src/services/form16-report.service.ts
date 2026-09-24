@@ -16,7 +16,10 @@ import {
     getForm16AssessmentYear,
 } from './form16-calculation.service';
 import { Form16PdfData, generateForm16PDF } from './form16-puppeteer.helper';
-import form16EmployerConfig from '../config/form16-employer.json';
+import {
+    Form16EmployerProfile,
+    OrganizationProfileService,
+} from './organization-profile.service';
 
 export interface Form16GenerateInput {
     employeeId: string;
@@ -67,16 +70,6 @@ const formatDate = (value: Date): string => new Intl.DateTimeFormat('en-GB', {
     timeZone: 'Asia/Kolkata',
 }).format(value).replace(/ /g, '-');
 
-const getEmployerConfig = () => ({
-    name: String(form16EmployerConfig.name || process.env.FORM16_EMPLOYER_NAME || process.env.COMPANY_NAME || '').trim(),
-    address: String(form16EmployerConfig.address || process.env.FORM16_EMPLOYER_ADDRESS || '').trim(),
-    email: String(form16EmployerConfig.email || process.env.FORM16_EMPLOYER_EMAIL || process.env.GMAIL_AUTH_USER || '').trim(),
-    pan: String(form16EmployerConfig.pan || process.env.FORM16_EMPLOYER_PAN || '').trim().toUpperCase(),
-    tan: String(form16EmployerConfig.tan || process.env.FORM16_EMPLOYER_TAN || '').trim().toUpperCase(),
-    citName: String(form16EmployerConfig.citName || process.env.FORM16_CIT_NAME || '').trim(),
-    citAddress: String(form16EmployerConfig.citAddress || process.env.FORM16_CIT_ADDRESS || '').trim(),
-});
-
 export class Form16ReportService extends BaseService {
     protected context: RequestContext;
 
@@ -90,22 +83,6 @@ export class Form16ReportService extends BaseService {
             throw new Error('Only administrators can generate Form 16 reports');
         }
         return new Types.ObjectId(this.context.user._id);
-    }
-
-    private validateEmployerConfig(): ReturnType<typeof getEmployerConfig> {
-        const employer = getEmployerConfig();
-        const missing = [
-            ['name', employer.name],
-            ['address', employer.address],
-            ['pan', employer.pan],
-            ['tan', employer.tan],
-            ['citName', employer.citName],
-            ['citAddress', employer.citAddress],
-        ].filter(([, value]) => !value).map(([key]) => key);
-        if (missing.length) {
-            throw new Error(`Form 16 employer configuration is incomplete. Update src/config/form16-employer.json. Missing: ${missing.join(', ')}`);
-        }
-        return employer;
     }
 
     private getEmploymentPeriod(user: any, financialYear: string): { from: Date; to: Date } {
@@ -180,8 +157,13 @@ export class Form16ReportService extends BaseService {
         return { user, taxDeclaration };
     }
 
-    private mapPdfData(user: any, taxDeclaration: any, taxSlab: any, financialYear: string): Form16PdfData {
-        const employer = this.validateEmployerConfig();
+    private mapPdfData(
+        user: any,
+        taxDeclaration: any,
+        taxSlab: any,
+        financialYear: string,
+        employer: Form16EmployerProfile,
+    ): Form16PdfData {
         const calculation = calculateForm16({
             annualGross: Number(taxDeclaration.annualGross || 0),
             regime: taxDeclaration.regime === 'new' ? 'new' : 'old',
@@ -226,11 +208,12 @@ export class Form16ReportService extends BaseService {
         };
     }
 
-    async generate(input: Form16GenerateInput): Promise<IDocument> {
+    async generate(input: Form16GenerateInput, resolvedEmployer?: Form16EmployerProfile): Promise<IDocument> {
         const performedBy = this.assertAdmin();
         const employeeId = String(input.employeeId || '');
         if (!Types.ObjectId.isValid(employeeId)) throw new Error('A valid employee ID is required');
         assertForm16FinancialYear(input.financialYear);
+        const employer = resolvedEmployer || await OrganizationProfileService.resolveForm16Employer(input.financialYear);
 
         const { user, taxDeclaration } = await this.getSourceData(employeeId, input.financialYear);
         const taxSlab = await TaxSlab.findOne({
@@ -254,7 +237,7 @@ export class Form16ReportService extends BaseService {
         const fileName = form16FileName(user, employeeId, input.financialYear, version);
         const outputDirectory = path.join(process.cwd(), 'uploads');
         const outputPath = path.join(outputDirectory, fileName);
-        const pdfData = this.mapPdfData(user, taxDeclaration, taxSlab, input.financialYear);
+        const pdfData = this.mapPdfData(user, taxDeclaration, taxSlab, input.financialYear, employer);
         let uploadedUrl = '';
 
         await fsPromises.mkdir(outputDirectory, { recursive: true });
@@ -285,6 +268,7 @@ export class Form16ReportService extends BaseService {
                 generatedAt,
                 generatedBy: performedBy,
                 calculationSnapshot: pdfData.calculation,
+                employerSnapshot: employer,
             };
             if (existing) {
                 const previousVersions = existing.metadata?.form16?.previousVersions || [];
@@ -293,6 +277,7 @@ export class Form16ReportService extends BaseService {
                     fileName: existing.fileName,
                     filePath: existing.filePath,
                     generatedAt: existing.metadata?.form16?.generatedAt || existing.uploadDate,
+                    employerSnapshot: existing.metadata?.form16?.employerSnapshot,
                 });
                 form16Metadata.previousVersions = previousVersions.slice(-20);
                 Object.assign(existing, {
@@ -374,6 +359,7 @@ export class Form16ReportService extends BaseService {
     async bulkGenerate(input: Form16BulkGenerateInput): Promise<any> {
         this.assertAdmin();
         assertForm16FinancialYear(input.financialYear);
+        const employer = await OrganizationProfileService.resolveForm16Employer(input.financialYear);
         const employeeIds = input.selectionMode === 'allMatching'
             ? await this.resolveAllMatchingEmployeeIds(input)
             : Array.from(new Set(input.employeeIds || []));
@@ -384,7 +370,7 @@ export class Form16ReportService extends BaseService {
         const results: any[] = [];
         for (const employeeId of employeeIds) {
             try {
-                const document = await this.generate({ employeeId, financialYear: input.financialYear });
+                const document = await this.generate({ employeeId, financialYear: input.financialYear }, employer);
                 results.push({ employeeId, status: 'Generated', documentId: document._id });
             } catch (error: any) {
                 results.push({ employeeId, status: 'Failed', error: String(error?.message || error) });

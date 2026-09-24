@@ -36,6 +36,7 @@ import { SalaryStatementService } from '../services/salary-statement.service';
 import { TaxSalaryContextService } from '../services/tax-salary-context.service';
 import { CommunicationService } from '../services/communication.service';
 import { Form16ReportService } from '../services/form16-report.service';
+import { OrganizationProfileService } from '../services/organization-profile.service';
 
 export interface ServiceContainer {
   requestContext: RequestContext;
@@ -76,4 +77,5 @@ export interface ServiceContainer {
   taxSalaryContextService: TaxSalaryContextService;
   communicationService: CommunicationService;
   form16ReportService: Form16ReportService;
+  organizationProfileService: OrganizationProfileService;
 } 
