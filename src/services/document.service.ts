@@ -2300,8 +2300,8 @@ export class DocumentService extends BaseService {
         if (existingDocument) {
             return existingDocument;
         }
-        const templateUrl = process.env.FORM12B_TEMPLATE_URL || 'https://storage.googleapis.com/tendly/Tendly_logo_Full.png';
-        const templateFileName = 'Form12B_Template.png';
+        const templateUrl = process.env.FORM12B_TEMPLATE_URL || 'https://storage.googleapis.com/tendlylogo/form12b.pdf';
+        const templateFileName = 'Form12B_Template.pdf';
             const document = await Document.create({
                 employeeId,
                 type: 'Form12B',
@@ -2345,7 +2345,13 @@ export class DocumentService extends BaseService {
     async releaseForm12BBulk(
         data: { employeeIds: string[]; financialYear: string },
         userId: string,
-    ): Promise<{ released: number; skipped: number; failed: number; failures: Array<{ employeeId: string; error: string }> }> {
+    ): Promise<{
+        released: number;
+        skipped: number;
+        failed: number;
+        failures: Array<{ employeeId: string; error: string }>;
+        details: Array<{ employeeId: string; status: 'success' | 'skipped' | 'failed'; message: string }>;
+    }> {
         if (!/^\d{4}-\d{4}$/.test(data.financialYear || '')) {
             throw new Error('A valid financial year is required');
         }
@@ -2371,14 +2377,18 @@ export class DocumentService extends BaseService {
         let released = 0;
         let skipped = 0;
         const failures: Array<{ employeeId: string; error: string }> = [];
+        const details: Array<{ employeeId: string; status: 'success' | 'skipped' | 'failed'; message: string }> = [];
         for (const employeeId of employeeIds) {
                 if (existing.has(employeeId)) {
                     skipped += 1;
+                    details.push({ employeeId, status: 'skipped', message: 'Form 12B is already enabled' });
                     continue;
                 }
                 const taxDeclarationId = declarationByEmployee.get(employeeId);
                 if (!taxDeclarationId) {
-                    failures.push({ employeeId, error: 'Employee is not eligible for Form 12B in this financial year' });
+                    const error = 'Employee is not eligible for Form 12B in this financial year';
+                    failures.push({ employeeId, error });
+                    details.push({ employeeId, status: 'failed', message: error });
                     continue;
                 }
                 try {
@@ -2387,11 +2397,14 @@ export class DocumentService extends BaseService {
                         userId,
                     );
                     released += 1;
+                    details.push({ employeeId, status: 'success', message: 'Form 12B enabled and template released' });
                 } catch (error) {
-                    failures.push({ employeeId, error: error instanceof Error ? error.message : String(error) });
+                    const message = error instanceof Error ? error.message : String(error);
+                    failures.push({ employeeId, error: message });
+                    details.push({ employeeId, status: 'failed', message });
                 }
             }
-        return { released, skipped, failed: failures.length, failures };
+        return { released, skipped, failed: failures.length, failures, details };
     }
 
     async uploadForm12B(files: any, formData: IForm12BSubmission, userId: string, userRole: string = 'staff'): Promise<IDocument> {
@@ -2762,9 +2775,9 @@ export class DocumentService extends BaseService {
             throw new Error('Employee submission is not available');
         }
         const filePath = target === 'template'
-            ? process.env.FORM12B_TEMPLATE_URL || 'https://storage.googleapis.com/tendly/Tendly_logo_Full.png'
+            ? process.env.FORM12B_TEMPLATE_URL || 'https://storage.googleapis.com/tendlylogo/form12b.pdf'
             : document.filePath;
-        const fileName = target === 'template' ? 'Form12B_Template.png' : document.fileName;
+        const fileName = target === 'template' ? 'Form12B_Template.pdf' : document.fileName;
         if (!filePath || !fileName) {
             throw new Error(`${target === 'template' ? 'Template' : 'Employee submission'} is not available`);
         }
