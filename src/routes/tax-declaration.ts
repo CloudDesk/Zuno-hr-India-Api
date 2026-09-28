@@ -254,13 +254,21 @@ export async function taxDeclarationRoutes(fastify: FastifyInstance): Promise<vo
         }
     )
 
-    // Bulk enable Form12B for migration (Admin only - one-time operation)
+    // Compatibility endpoint: use the canonical Form 12B release workflow so
+    // enabling from Tax Declarations and Tax Reports has identical effects.
     fastify.post('/bulk-enable-form12b',
         {
             preHandler: [authenticate]
         },
         async (request, reply) => {
             try {
+                if (String(request.user.role || '').toLowerCase() !== 'admin') {
+                    return reply.status(403).send({
+                        success: false,
+                        error: { message: 'Only administrators can enable Form 12B' }
+                    });
+                }
+
                 const { employeeIds, financialYear } = request.body as {
                     employeeIds: string[];
                     financialYear: string;
@@ -281,18 +289,19 @@ export async function taxDeclarationRoutes(fastify: FastifyInstance): Promise<vo
                     });
                 }
 
-                const result = await request.container!.taxDeclarationService.bulkEnableForm12B({
-                    employeeIds,
-                    financialYear
-                });
+                const result = await request.container!.documentService.releaseForm12BBulk(
+                    { employeeIds, financialYear },
+                    request.user._id.toString(),
+                );
 
                 return reply.send({
-                    success: result.success,
-                    message: `Form12B enabled for ${result.updated} employee(s)`,
+                    success: true,
+                    message: `Form12B enabled for ${result.released} employee(s)`,
                     data: {
-                        updated: result.updated,
-                        failed: result.failed.length,
-                        failedEmployees: result.failed,
+                        updated: result.released,
+                        skipped: result.skipped,
+                        failed: result.failed,
+                        failedEmployees: result.failures.map((failure) => failure.employeeId),
                         details: result.details
                     }
                 });

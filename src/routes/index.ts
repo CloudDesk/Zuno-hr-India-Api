@@ -11,6 +11,7 @@ import { shiftRoutes } from "./shift.routes";
 import { trainingRoutes } from "./training.routes";
 import { trainingAttendanceRoutes } from "./training-attendance.routes";
 import { organizationRoutes } from "./organization.routes";
+import { organizationProfileRoutes } from "./organization-profile.routes";
 import { salaryStructureRoutes } from "./salary-structure";
 import { salaryAssignmentRoutes } from "./salary-assignment";
 import { taxSlabRoutes } from "./tax-slab.routes";
@@ -75,6 +76,7 @@ export async function routes(fastify: FastifyInstance) {
     prefix: "/training-attendance",
   });
   fastify.register(organizationRoutes, { prefix: "/organizations" });
+  fastify.register(organizationProfileRoutes, { prefix: "/organization-profiles" });
   fastify.register(salaryStructureRoutes, { prefix: "/salary-structure" });
   fastify.register(salaryAssignmentRoutes, { prefix: "/salary-assignment" });
   fastify.register(taxSlabRoutes, { prefix: "/tax-slab" });

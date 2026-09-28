@@ -13,6 +13,11 @@ const templateGroups = [
     extensions: new Set(['.html']),
   },
   {
+    sourceDir: path.join(__dirname, '..', 'src', 'templates', 'form16'),
+    destDir: path.join(__dirname, '..', 'dist', 'templates', 'form16'),
+    extensions: new Set(['.html']),
+  },
+  {
     sourceDir: path.join(__dirname, '..', 'src', 'templates', 'poi'),
     destDir: path.join(__dirname, '..', 'dist', 'templates', 'poi'),
     extensions: new Set(['.xlsx']),
