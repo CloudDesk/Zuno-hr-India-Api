@@ -86,7 +86,12 @@ export async function salaryStructureRoutes(fastify: FastifyInstance): Promise<v
                                                     properties: {
                                                         employeeContribution: { type: 'number' },
                                                         employerContribution: { type: 'number' },
-                                                        maxLimit: { type: 'number' }
+                                                        maxLimit: { type: 'number' },
+                                                        ceilingPeriods: { type: 'array', items: { type: 'object', properties: {
+                                                            ceiling: { type: 'number' },
+                                                            effectiveFrom: { type: 'string' },
+                                                            effectiveTo: { anyOf: [{ type: 'string' }, { type: 'null' }] }
+                                                        } } }
                                                     }
                                                 },
                                                 esi: {

@@ -1,3 +1,4 @@
+import { calculatePfWageBase, PfCeilingPeriod } from '../utils/pf-wage-base';
 import { FastifyRequest, FastifyReply } from 'fastify';
 import { FinalSettlement, IFinalSettlement } from '../models/final-settlement.model';
 import { Payroll } from '../models/payrolls.model';
@@ -729,7 +730,7 @@ async function calculateUnpaidGaps(
         return 0;
     };
 
-    const calculatePF = (basic: number, da: number) => {
+    const calculatePF = (basic: number, da: number, month: number, year: number, periods?: PfCeilingPeriod[]) => {
         const structure = salaryAssignment?.salaryStructureId;
         const epfConfig = structure?.statutoryDeductions?.epf;
         const employerSplit = structure?.statutoryDeductions?.employerSplit;
@@ -744,14 +745,10 @@ async function calculateUnpaidGaps(
         const wage = basic + (da || 0);
         const maxLimit = epfConfig.maxLimit ?? 15000;
 
-        // Separate caps for employee and employer
-        const maxEpfEmployee = (empRate / 100) * maxLimit;
-        const maxEpfEmployer = (employerRate / 100) * maxLimit;
-
-        const isCapped = basic >= maxLimit;
-
-        const finalEpfEmployee = Math.round(isCapped ? maxEpfEmployee : wage * (empRate / 100));
-        const finalEpfEmployer = Math.round(isCapped ? maxEpfEmployer : wage * (employerRate / 100));
+        const historicalBase = basic >= maxLimit ? maxLimit : wage;
+        const pfBase = calculatePfWageBase(wage, month, year, historicalBase, periods ?? epfConfig.ceilingPeriods);
+        const finalEpfEmployee = Math.round(pfBase * (empRate / 100));
+        const finalEpfEmployer = Math.round(pfBase * (employerRate / 100));
 
         // EPS (Pension) Calculation
         const currentWageForEps = Math.min(wage, epsWageCap);
@@ -1081,7 +1078,10 @@ async function calculateUnpaidGaps(
 
         const { epfEmployee, epfEmployer, epfEmployerEps, epfEmployerEpf } = calculatePF(
             presentation.proratedBasic,
-            presentation.proratedDa
+            presentation.proratedDa,
+            currentMonth,
+            currentYear,
+            currentMonthStructure?.statutoryDeductions?.epf?.ceilingPeriods ?? []
         );
         const pfAmount = epfEmployee;
         const itAmount = await calculateIncomeTax(currentMonth, currentYear);
@@ -1765,7 +1765,7 @@ export async function saveFinalSettlement(
                 return 0;
             };
 
-            const calculatePF = (basic: number, da: number) => {
+            const calculatePF = (basic: number, da: number, month: number, year: number, periods?: PfCeilingPeriod[]) => {
                 const epf = structure?.statutoryDeductions?.epf;
                 const employerSplit = structure?.statutoryDeductions?.employerSplit;
                 
@@ -1779,9 +1779,9 @@ export async function saveFinalSettlement(
                 
                 const limit = epf.maxLimit ?? 15000;
 
-                const isCapped = wage >= limit;
-                const finalEpfEmployee = Math.round(isCapped ? (limit * empRate) : (wage * empRate));
-                const finalEpfEmployer = Math.round(isCapped ? (limit * employerRate) : (wage * employerRate));
+                const pfBase = calculatePfWageBase(wage, month, year, Math.min(wage, limit), periods ?? epf.ceilingPeriods);
+                const finalEpfEmployee = Math.round(pfBase * empRate);
+                const finalEpfEmployer = Math.round(pfBase * employerRate);
 
                 const currentWageForEps = Math.min(wage, epsWageCap);
                 const finalEpfEmployerEps = Math.round(epsPercentage * currentWageForEps);
@@ -1893,7 +1893,10 @@ export async function saveFinalSettlement(
                     m.professionalTax = ptAmount;
                     const pfResult = calculatePF(
                         presentation.proratedBasic,
-                        presentation.proratedDa
+                        presentation.proratedDa,
+                        m.month,
+                        m.year,
+                        mStructure?.statutoryDeductions?.epf?.ceilingPeriods ?? []
                     );
                     m.providentFund = pfResult.epfEmployee;
                     m.epfEmployer = pfResult.epfEmployer;        // ✅ Added
@@ -3417,7 +3420,7 @@ export async function calculateFinalSettlement(
         };
 
         // Helper: PF Calculation (Cloned for recalculation logic)
-        const calculatePF = (basic: number, da: number) => {
+        const calculatePF = (basic: number, da: number, month: number, year: number, periods?: PfCeilingPeriod[]) => {
             const epf = structure?.statutoryDeductions?.epf;
             const employerSplit = structure?.statutoryDeductions?.employerSplit;
             
@@ -3431,9 +3434,9 @@ export async function calculateFinalSettlement(
             
             const limit = epf.maxLimit ?? 15000;
             
-            const isCapped = wage >= limit;
-            const finalEpfEmployee = Math.round(isCapped ? (limit * rate) : (wage * rate));
-            const finalEpfEmployer = Math.round(isCapped ? (limit * employerRate) : (wage * employerRate));
+            const pfBase = calculatePfWageBase(wage, month, year, Math.min(wage, limit), periods ?? epf.ceilingPeriods);
+            const finalEpfEmployee = Math.round(pfBase * rate);
+            const finalEpfEmployer = Math.round(pfBase * employerRate);
 
             // EPS (Pension) Calculation
             const currentWageForEps = Math.min(wage, epsWageCap);
@@ -3540,7 +3543,10 @@ export async function calculateFinalSettlement(
                     const pg = presentation.earnedSalary;
                     const pfResult = calculatePF(
                         presentation.proratedBasic,
-                        presentation.proratedDa
+                        presentation.proratedDa,
+                        month.month,
+                        month.year,
+                        curMonthStructure?.statutoryDeductions?.epf?.ceilingPeriods ?? []
                     );
                     const pfAmount = pfResult.epfEmployee;
                     const esiAmount = calculateESI();

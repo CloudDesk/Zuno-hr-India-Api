@@ -1,3 +1,4 @@
+import { PfCeilingPeriod, validatePfCeilingPeriods } from '../utils/pf-wage-base';
 import { Schema, model, Document } from 'mongoose';
 
 // Interface for TypeScript
@@ -19,6 +20,7 @@ export interface ISalaryStructure extends Document {
             employeeContribution: number;
             employerContribution: number;
             maxLimit: number;
+            ceilingPeriods?: PfCeilingPeriod[];
         };
         esi: {
             employeeContribution: number;
@@ -31,7 +33,7 @@ export interface ISalaryStructure extends Document {
             slabs: {
                 fromAmount: number;
                 toAmount: number;
-                amount: number;
+                taxAmount: number;
             }[];
         };
         employerSplit?: {
@@ -83,7 +85,16 @@ const SalaryStructureSchema = new Schema<ISalaryStructure>(
             epf: {
                 employeeContribution: { type: Number, required: true }, // 12% of (Basic + DA)
                 employerContribution: { type: Number, required: true }, // 12% of (Basic + DA)
-                maxLimit: { type: Number, required: true }              // Max ₹1800
+                maxLimit: { type: Number, required: true },
+                ceilingPeriods: {
+                    type: [new Schema({
+                        ceiling: { type: Number, required: true, min: 0 },
+                        effectiveFrom: { type: String, required: true },
+                        effectiveTo: { type: String, default: null },
+                    }, { _id: false })],
+                    default: undefined,
+                    validate: { validator: (periods: PfCeilingPeriod[]) => { validatePfCeilingPeriods(periods); return true; } },
+                }
             },
             esi: {
                 employeeContribution: { type: Number, required: true }, // 0.75% of Gross

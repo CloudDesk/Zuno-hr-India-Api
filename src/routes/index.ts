@@ -54,8 +54,10 @@ import finalSettlementRoutes from "./final-settlement.routes";
 import { communicationRoutes } from "./communication.routes";
 import { leaveReleaseConfigurationRoutes } from "./leave-release-configuration.routes";
 import mongoose from "mongoose";
+import { consolidatedTaxReportRoutes } from "./consolidated-tax-report.routes";
 
 export async function routes(fastify: FastifyInstance) {
+  fastify.register(consolidatedTaxReportRoutes, { prefix: "/consolidated-tax-report" });
   fastify.register(authRoutes, { prefix: "/auth" });
   fastify.register(userRoutes, { prefix: "/users" });
   fastify.register(userProfileRoutes, { prefix: "/user-profile" });
