@@ -1,3 +1,4 @@
+import { PfCeilingPeriod, validatePfCeilingPeriods } from '../utils/pf-wage-base';
 import { Types } from "mongoose";
 import { ISalaryStructure, SalaryStructure } from "../models/salary-structure.model";
 import { RequestContext } from "../types/context";
@@ -24,6 +25,7 @@ export interface ISalaryStructureCreate {
             employeeContribution: number;
             employerContribution: number;
             maxLimit: number;
+            ceilingPeriods?: PfCeilingPeriod[];
         };
         esi: {
             employeeContribution: number;
@@ -62,6 +64,7 @@ export interface ISalaryStructureUpdate {
             employeeContribution?: number;
             employerContribution?: number;
             maxLimit?: number;
+            ceilingPeriods?: PfCeilingPeriod[];
         };
         esi?: {
             employeeContribution?: number;
@@ -174,6 +177,7 @@ export class SalaryStructureService extends BaseService {
             payload.fixedEarnings.comment = payload.fixedEarnings.comment.trim();
         }
 
+        validatePfCeilingPeriods(payload.statutoryDeductions?.epf?.ceilingPeriods);
         this.validateUAEFields(payload);
         this.normalizeStatutoryForUAE(payload);
 
@@ -216,9 +220,18 @@ export class SalaryStructureService extends BaseService {
             }
         }
 
+        validatePfCeilingPeriods(payload.statutoryDeductions?.epf?.ceilingPeriods);
         this.validateUAEFields(payload);
         this.normalizeStatutoryForUAE(payload);
 
+        if (payload.statutoryDeductions) {
+            const previous = salaryStructure.toObject().statutoryDeductions;
+            payload.statutoryDeductions = {
+                ...previous,
+                ...payload.statutoryDeductions,
+                epf: { ...previous.epf, ...payload.statutoryDeductions.epf },
+            };
+        }
         Object.assign(salaryStructure, payload);
         return salaryStructure.save();
     }
