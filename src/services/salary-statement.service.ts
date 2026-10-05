@@ -1,3 +1,4 @@
+import { calculatePfWageBase } from '../utils/pf-wage-base';
 import { Leave, Payroll, SalaryAssignment, User } from '../models';
 import { PayrollStatus } from './payroll-status.service';
 import { TaxDeclaration } from '../models/tax-declaration';
@@ -770,17 +771,14 @@ export class SalaryStatementService extends BaseService {
             const basicForEpf = basic + da;
             const maxLimit = epfConfig.maxLimit || 15000;
 
-            const epfRawEmployee = (epfConfig.employeeContribution / 100) * basicForEpf;
-            const epfCapEmployee = (epfConfig.employeeContribution / 100) * maxLimit;
-            epfEmployee = Number((basicForEpf >= maxLimit ? epfCapEmployee : epfRawEmployee).toFixed(2));
+            const pfBase = calculatePfWageBase(basicForEpf, month, year, Math.min(basicForEpf, maxLimit), epfConfig.ceilingPeriods);
+            epfEmployee = Number(((epfConfig.employeeContribution / 100) * pfBase).toFixed(2));
             if (voluntaryPfEnabled) {
                 voluntaryPfEmployeeContribution = Math.max(0, Math.round(Number(voluntaryPf.employeeContributionValue || 0)));
                 epfEmployee = Number((epfEmployee + voluntaryPfEmployeeContribution).toFixed(2));
             }
 
-            const epfRawEmployer = (epfConfig.employerContribution / 100) * basicForEpf;
-            const epfCapEmployer = (epfConfig.employerContribution / 100) * maxLimit;
-            epfEmployer = Number((basicForEpf >= maxLimit ? epfCapEmployer : epfRawEmployer).toFixed(2));
+            epfEmployer = Number(((epfConfig.employerContribution / 100) * pfBase).toFixed(2));
 
             // ESI: 0.75% of actual Gross if actual Gross <= 21000
             const esiConfig = struct.statutoryDeductions.esi || { applicabilityLimit: 21000, employeeContribution: 0.75 };

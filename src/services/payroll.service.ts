@@ -1,3 +1,4 @@
+import { calculatePfWageBase } from '../utils/pf-wage-base';
 import { Types } from 'mongoose';
 import {
     AttendanceRecord,
@@ -2170,32 +2171,12 @@ export class PayrollService extends BaseService {
             const epsPercentage = salaryStructure.statutoryDeductions.employerSplit?.epsPercentage ?? 8.33;
             const epsWageCap = salaryStructure.statutoryDeductions.employerSplit?.epsWageCap ?? 15000;
 
-            // When Basic >= ₹15,000, cap EPF at 12% of ₹15,000 = ₹1,800
-            const epfEmployee =
-                (salaryStructure.statutoryDeductions.epf.employeeContribution / 100) * (basic + da);
-            const epfEmployerTotal =
-                (salaryStructure.statutoryDeductions.epf.employerContribution / 100) * (basic + da);
+            const epf = salaryStructure.statutoryDeductions.epf;
+            const historicalBase = basic >= epf.maxLimit ? epf.maxLimit : basic + da;
+            const pfBase = calculatePfWageBase(basic + da, monthNumber, year, historicalBase, epf.ceilingPeriods);
 
-            // Separate EPF contribution caps for Employee and Employer
-            const maxEpfEmployee =
-                (salaryStructure.statutoryDeductions.epf.employeeContribution / 100) *
-                salaryStructure.statutoryDeductions.epf.maxLimit;
-
-            const maxEpfEmployerTotal =
-                (salaryStructure.statutoryDeductions.epf.employerContribution / 100) *
-                salaryStructure.statutoryDeductions.epf.maxLimit;
-
-            // Apply ceiling if basic >= maxLimit
-            finalEpfEmployee =
-                Number((basic >= salaryStructure.statutoryDeductions.epf.maxLimit
-                    ? maxEpfEmployee
-                    : epfEmployee).toFixed(2));
-
-            // Total Employer contribution (e.g. 13%)
-            finalEpfEmployer =
-                Number((basic >= salaryStructure.statutoryDeductions.epf.maxLimit
-                    ? maxEpfEmployerTotal
-                    : epfEmployerTotal).toFixed(2));
+            finalEpfEmployee = Number(((epf.employeeContribution / 100) * pfBase).toFixed(2));
+            finalEpfEmployer = Number(((epf.employerContribution / 100) * pfBase).toFixed(2));
 
             // EPS (Pension) Calculation: 8.33% capped at ₹15,000 wage
             // Standard rule: EPS uses a fixed cap of 15000 regardless of structural maxLimit for total PF
