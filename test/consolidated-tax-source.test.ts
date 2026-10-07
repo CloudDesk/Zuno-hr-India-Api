@@ -56,10 +56,11 @@ describe('Read-only consolidated report source selection', () => {
         expect(report.rows[0].values.totalTax).toBeNull();
         expect(report.rows[0].warnings.join(' ')).toContain('Multiple FY tax declarations');
     });
-    it('does not claim a final tax where required Form 12B is missing', async () => {
+    it('keeps current tax independent of missing Form 12B', async () => {
         (TaxDeclaration.find as jest.Mock).mockReturnValue(query([{ ...declaration, isForm12BApplicable: true }]));
         const report = await loadConsolidatedTaxReport({ financialYear: '2025-2026' });
-        expect(report.rows[0].values.totalTax).toBeNull();
+        expect(report.rows[0].values.totalTax).toBe(0);
+        expect(report.rows[0].values.previousIT).toBeNull();
         expect(report.rows[0].warnings.join(' ')).toContain('no record exists');
     });
     it('includes the full year beyond 1,000 employees', async () => {
@@ -75,7 +76,7 @@ describe('Read-only consolidated report source selection', () => {
         const form = { employeeId: 'employee-1', type: 'Form12B', metadata: { form12B: { status: 'Verified', salaryEarned: 300000, tdsDeducted: 5000 } } };
         (Document.find as jest.Mock).mockReturnValue(query([form, form]));
         const report = await loadConsolidatedTaxReport({ financialYear: '2025-2026' });
-        expect(report.rows[0].values).toMatchObject({ previousIncome: null, afterExemption: null, taxable: null, totalTax: null });
+        expect(report.rows[0].values).toMatchObject({ previousIncome: null, previousIT: null, afterExemption: 600000, taxable: 525000, totalTax: 0 });
         expect(report.rows[0].approvalWarnings?.join(' ')).toContain('Multiple Form 12B');
     });
 });

@@ -69,10 +69,10 @@ export async function loadConsolidatedTaxReport(query: ConsolidatedTaxQuery): Pr
     const employeeIds = employees.map(employee => employee._id);
     const [declarations, salaries, slabs, documents, profiles] = await Promise.all([
         TaxDeclaration.find({ employeeId: { $in: employeeIds }, financialYear: query.financialYear })
-            .select('employeeId regime annualGross ptDeduction declarations initialTaxBreakdown isMigrationAdjusted isForm12BApplicable poiSubmissionStatus').lean(),
+            .select('employeeId regime annualGross ptDeduction declarations initialTaxBreakdown isMigrationAdjusted isForm12BApplicable poiSubmissionStatus monthlyDeductions').lean(),
         SalaryAssignment.find({ employeeId: { $in: employeeIds }, effectiveFrom: { $lte: end }, effectiveTo: { $gte: start } })
             .select('employeeId effectiveFrom effectiveTo monthlyGross salaryStructureId')
-            .populate('salaryStructureId', 'fixedEarnings').lean(),
+            .populate('salaryStructureId', 'fixedEarnings statutoryDeductions.professionalTax').lean(),
         TaxSlab.find({ financialYear: query.financialYear, isActive: true }).lean(),
         Document.find({ employeeId: { $in: employeeIds }, $or: [
             { type: 'Form12B', 'metadata.form12B.financialYear': query.financialYear },
@@ -101,13 +101,13 @@ export async function loadConsolidatedTaxReport(query: ConsolidatedTaxQuery): Pr
         });
         if (sources.length > 1) row.warnings.push('Multiple FY tax declarations found; calculation requires source reconciliation.');
         if (forms.length > 1) {
-            row.warnings.push('Multiple Form 12B records found; previous-employment figures and final tax require reconciliation.');
+            row.warnings.push('Multiple Form 12B records found; previous-employment figures require reconciliation.');
             row.approvalWarnings?.push('Multiple Form 12B records found; approval cannot be confirmed.');
-            for (const key of ['previousIncome', 'previousTax', 'previousCess', 'afterExemption', 'salaryIncome', 'gti', 'taxable', 'roundedTaxable', 'incomeTax', 'cess', 'totalTax', 'rebate']) row.values[key] = null;
+            for (const key of ['previousIT', 'previousIncome', 'previousPF', 'previousPT', 'previousTax', 'previousSurcharge', 'previousCess']) row.values[key] = null;
         }
         if (declaration?.isForm12BApplicable && !forms.length) {
-            row.warnings.push('Form 12B is applicable but no record exists for this FY; final tax requires previous-employment information.');
-            for (const key of ['incomeTax', 'cess', 'totalTax', 'rebate']) row.values[key] = null;
+            row.warnings.push('Form 12B is applicable but no record exists for this FY; previous-employment fields require source information.');
+
         }
         return row;
     });
@@ -125,13 +125,15 @@ export async function loadConsolidatedTaxReport(query: ConsolidatedTaxQuery): Pr
 }
 
 export async function exportConsolidatedTaxWorkbook(report: ConsolidatedTaxReport): Promise<Buffer> {
+    // Enforce the specification even if a caller supplies additional legacy columns.
+    const columns = visibleReportColumns(report.rows);
     const workbook = new ExcelJS.Workbook();
     workbook.creator = 'HRMS';
     workbook.created = new Date(report.generatedAt);
     const sheet = workbook.addWorksheet('Sheet1', { views: [{ state: 'frozen', xSplit: 3, ySplit: 5 }] });
-    sheet.columns = report.columns.map(column => ({ key: column.key, width: column.key === 'name' ? 28 : column.type === 'date' ? 15 : column.type === 'money' ? 21 : 18 }));
+    sheet.columns = columns.map(column => ({ key: column.key, width: column.key === 'name' ? 28 : column.type === 'date' ? 15 : column.type === 'money' ? 21 : 18 }));
     for (const [index, title] of [report.employer.name, report.employer.address, `Income Tax Statement (Consolidated) For The Financial Year ${report.financialYear}`].entries()) {
-        sheet.mergeCells(index + 1, 1, index + 1, report.columns.length);
+        sheet.mergeCells(index + 1, 1, index + 1, columns.length);
         const cell = sheet.getCell(index + 1, 1);
         cell.value = title;
         cell.font = { name: 'Arial', size: index === 0 ? 16 : index === 1 ? 10 : 13, bold: true };
@@ -140,7 +142,7 @@ export async function exportConsolidatedTaxWorkbook(report: ConsolidatedTaxRepor
     }
     const header = sheet.getRow(5);
     header.height = 65;
-    report.columns.forEach((column, index) => {
+    columns.forEach((column, index) => {
         const cell = header.getCell(index + 1);
         cell.value = column.label;
         cell.font = { name: 'Arial', bold: true, size: 10, color: { argb: 'FFFFFFFF' } };
@@ -150,19 +152,27 @@ export async function exportConsolidatedTaxWorkbook(report: ConsolidatedTaxRepor
     report.rows.forEach((row, index) => {
         const target = sheet.getRow(index + 6);
         target.height = 22;
-        report.columns.forEach((column, col) => {
+        columns.forEach((column, col) => {
             const cell = target.getCell(col + 1);
-            const value = row.values[column.key];
+            const value = column.key === 'excessRent' && row.values.regime !== 'Old Regime' ? 0 : row.values[column.key];
             // Unavailable values are rendered as a visible dash; confirmed zero values remain numeric zero.
             // ExcelJS string values are literal strings, not executable formulas.
-            cell.value = value == null ? '-' : column.type === 'date' && typeof value === 'string' ? new Date(`${value}T00:00:00.000Z`) : value;
+            const oldOnly = [ 'hraExemption', 'exemptions', 'previousPT', 'pt', 'otherIncome'];
+            const previousOnly = ['previousIT', 'previousIncome', 'previousPF', 'previousPT', 'previousTax', 'previousSurcharge', 'previousCess'];
+            const inapplicable = (oldOnly.includes(column.key) && row.values.regime !== 'Old Regime') ||
+                (previousOnly.includes(column.key) && row.form12BApplicable === false);
+            const previousZeroDefault = ['previousIT', 'previousPF', 'previousPT', 'previousIncome', 'rebate', 'surcharge', 'lta'].includes(column.key);
+            cell.value = previousZeroDefault
+                ? (inapplicable || value == null ? 0 : value)
+                : inapplicable ? null
+                : value == null ? '-' : column.type === 'date' && typeof value === 'string' ? new Date(`${value}T00:00:00.000Z`) : value;
             cell.numFmt = column.type === 'date' ? 'dd/mm/yyyy' : column.type === 'money' ? '#,##0.00' : '@';
             cell.font = { name: 'Arial', size: 10 };
             cell.alignment = { vertical: 'middle', horizontal: column.type === 'money' ? 'right' : 'left' };
             if (index % 2) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F7FA' } };
         });
     });
-    sheet.autoFilter = { from: { row: 5, column: 1 }, to: { row: Math.max(5, report.rows.length + 5), column: report.columns.length } };
+    sheet.autoFilter = { from: { row: 5, column: 1 }, to: { row: Math.max(5, report.rows.length + 5), column: columns.length } };
     sheet.pageSetup = { orientation: 'landscape', paperSize: 9, fitToPage: true, fitToWidth: 1, fitToHeight: 0, printTitlesRow: '1:5' };
     const notes = workbook.addWorksheet('Report Notes');
     notes.columns = [{ width: 24 }, { width: 110 }];
