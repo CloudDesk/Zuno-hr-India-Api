@@ -56,7 +56,10 @@ import { leaveReleaseConfigurationRoutes } from "./leave-release-configuration.r
 import mongoose from "mongoose";
 import { consolidatedTaxReportRoutes } from "./consolidated-tax-report.routes";
 
+import { consolidatedTaxPdfRoutes } from "./consolidated-tax-pdf.routes";
+
 export async function routes(fastify: FastifyInstance) {
+  fastify.register(consolidatedTaxPdfRoutes, { prefix: "/consolidated-tax-pdf" });
   fastify.register(consolidatedTaxReportRoutes, { prefix: "/consolidated-tax-report" });
   fastify.register(authRoutes, { prefix: "/auth" });
   fastify.register(userRoutes, { prefix: "/users" });

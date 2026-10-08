@@ -11,6 +11,7 @@ interface PayslipRuntimeLogContext {
 }
 
 interface RenderPayslipPdfParams {
+    pdfTimeoutMs?: number;
     logContext: PayslipRuntimeLogContext;
     outputPath: string;
     renderPage: (page: Page) => Promise<Omit<PDFOptions, 'path'>>;
@@ -256,7 +257,7 @@ export async function renderPayslipPdf(params: RenderPayslipPdfParams): Promise<
                 ...pdfOptions,
                 path: outputPath
             }),
-            createTimeoutPromise(runtimeConfig.pdfTimeoutMs)
+            createTimeoutPromise(params.pdfTimeoutMs ?? runtimeConfig.pdfTimeoutMs)
         ]);
         logRuntime('info', 'render_pdf', logContext, {
             durationMs: Date.now() - renderPdfStartedAt
