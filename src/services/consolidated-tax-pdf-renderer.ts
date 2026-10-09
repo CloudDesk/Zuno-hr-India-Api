@@ -6,6 +6,7 @@ const escape = (value: unknown): string => String(value ?? '').replace(/[&<>"']/
 const amount = (value: unknown): string => pdfNumber(value).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const date = (value: string): string => /^\d{4}-\d{2}-\d{2}$/.test(value) ? value.split('-').reverse().join('/') : '-';
 const capitalized = (value: string): string => value ? value.charAt(0).toUpperCase() + value.slice(1).toLowerCase() : value;
+const firstCapital = (value: string): string => value.replace(/^(\s*)(\S)/, (_match, space, letter) => space + letter.toUpperCase());
 const declarationLabel = (value: string): string => value.includes('_') || /^[a-z]+$/.test(value)
     ? value.replace(/_/g, ' ').split(/\s+/).map(word => /^(epf|pf|nps|ppf|elss)$/i.test(word) ? word.toUpperCase() : word.charAt(0).toUpperCase() + word.slice(1)).join(' ')
     : value;
@@ -19,7 +20,7 @@ function monthly(employee: PdfEmployee, rows: Array<[string, string]>): string {
 }
 function header(data: ConsolidatedPdfData, employee: PdfEmployee, continued = false): string {
     return `<header><div class="company">${escape(data.employer.name)}</div><div>${escape(data.employer.address)}</div><h1>Income Tax Computation For The Financial Year ${escape(data.financialYear)}</h1><div>Statement as of March ${escape(data.financialYear.slice(5))}${continued ? ' - Continued' : ''}</div></header>
-    <table class="identity"><tbody><tr><td>Employee No.</td><td>${escape(employee.code)}</td><td>Name</td><td colspan="3">${escape(employee.name)}</td><td>Location</td><td>${escape(employee.location)}</td></tr>
+    <table class="identity"><tbody><tr><td>Employee No.</td><td>${escape(employee.code)}</td><td>Name</td><td colspan="3">${escape(firstCapital(employee.name))}</td><td>Location</td><td>${escape(firstCapital(employee.location))}</td></tr>
     ${continued ? '' : `<tr><td>Date of Join</td><td>${date(employee.joined)}</td><td>Gender</td><td>${escape(capitalized(employee.gender))}</td><td>Date of Leaving</td><td>${date(employee.left)}</td><td>Residential Status</td><td>${escape(employee.residentialStatus)}</td></tr><tr><td>PAN No.</td><td>${escape(employee.pan)}</td><td>Date of Birth</td><td>${date(employee.birth)}</td><td>Age</td><td>${escape(employee.age)}</td><td>Tax Regime</td><td>${escape(employee.regime)}</td></tr>`}</tbody></table>`;
 }
 export function consolidatedPdfHtml(data: ConsolidatedPdfData): string {
@@ -33,7 +34,9 @@ export function consolidatedPdfHtml(data: ConsolidatedPdfData): string {
         </section>`;
         const second = `<section class="sheet"><h2>E) Less Exemption under Section 10</h2>
         ${old ? table(['HRA comparison (annual)', 'Amount'], [
-            ['HRA Received', amount(employee.hraReceived)], ['Basic + DA', amount(employee.basic)], ['40% / 50% of Basic + DA based on location', amount(employee.hraComparison)], ['Rent Paid less 10% of Basic + DA (minimum zero)', amount(employee.rentLessBasic)], ['Approved HRA Exemption used in report', amount(employee.hraExemption)],
+            ['HRA Received', amount(employee.hraReceived)], ['Basic + DA', amount(employee.basic)], ['40% / 50% of Basic + DA based on location', amount(employee.hraComparison)],
+            ['Rent Paid (Annual)', amount(employee.rent)],
+            ['Rent Paid less 10% of Basic + DA (minimum zero)', amount(employee.rentLessBasic)], ['Approved HRA Exemption used in report', amount(employee.hraExemption)],
         ], 'narrow') : ''}
         ${table(['Item', 'Exemption'], [['House Rent Allowance: Section 10(13A)', amount(employee.hraExemption)], ['Leave Travel Assistance: Section 10(5)', '0.00'], ['Education Exemption', '0.00'], ['Total Exemptions', amount(employee.hraExemption)]], 'narrow')}
         <h2>F) Income from Previous Employer - Form 12B</h2>${table(['Pay items', 'Amount'], [['Total Income', amount(employee.previousIncome)], ['Income Tax', amount(employee.previousIT)], ['Professional Tax', amount(employee.previousPT)], ['Provident Fund', amount(employee.previousPF)], ['Previous Cess (4% of Previous Income Tax)', amount(employee.previousCess)]], 'narrow')}
@@ -44,9 +47,9 @@ export function consolidatedPdfHtml(data: ConsolidatedPdfData): string {
         ${line('I) Income Chargeable under the Head Salaries (G - H)', employee.salaryIncome)}
         ${line('J) Other Income / Loss from House Property', employee.otherIncome)}
         ${line('K) Gross Total Income (I + J)', employee.gti)}
-        <h2>L) Deduction under Chapter VI-A</h2>${table(['Investment / Declaration', 'Section', 'Declared', 'Approved Deductible'], [
-            ...employee.deductions.map(d => [escape(declarationLabel(d.name)), escape(d.section), amount(d.gross), amount(d.approved)]),
-            ['Total', '', '', amount(employee.chapterVIA)],
+        <h2>L) Deduction under Chapter VI-A</h2>${table(['Investment', 'Section', 'Gross', 'Qualifying', 'Deductible'], [
+            ...employee.deductions.map(d => [escape(declarationLabel(d.name)), escape(d.section), amount(d.gross), amount(d.approved), amount(d.approved)]),
+            ['Sub Total', '', amount(employee.deductions.reduce((sum, d) => sum + d.gross, 0)), amount(employee.chapterVIA), amount(employee.chapterVIA)],
         ], 'chapter')}
         ${line('M) Taxable Income (K - L)', employee.taxable)}
         ${line('N) Total Tax to be Paid - Final Tax Payable', employee.totalTax)}
@@ -72,8 +75,9 @@ export function consolidatedPdfHtml(data: ConsolidatedPdfData): string {
     .total-line { display: flex; align-items: baseline; width: 65%; gap: 3mm; margin: 4mm 0; break-inside: avoid; }
     .total-label { flex: 0 1 auto; } .total-leader { flex: 1 1 15mm; max-width: 30mm; border-bottom: 1px dotted #888; }
     .total-value { margin-left: auto; min-width: 30mm; text-align: right; }
-    .chapter { width: 80%; } .chapter th:first-child { width: 40%; text-align: left; }
-    .chapter th:nth-child(2) { width: 12%; } .chapter td:nth-child(2) { text-align: center; }
+    .chapter { width: 65%; font-size: 8.5pt; } .chapter th, .chapter td { padding: .65mm 1.2mm; }
+    .chapter th:first-child { width: 45%; text-align: left; }
+    .chapter th:nth-child(2) { width: 9%; } .chapter td:nth-child(2) { text-align: center; }
     .tax { width: 80%; margin-top: 3mm; } .tax td { text-align: right; }
     </style></head><body>${sheets}</body></html>`;
 }

@@ -4,6 +4,35 @@ import { renderPayslipPdf } from '../src/services/payslip-pdf-runtime';
 import { fy, employee, salary, declaration, clone } from './helpers/consolidated-pdf-fixture';
 jest.mock('../src/services/payslip-pdf-runtime',()=>({renderPayslipPdf:jest.fn()}));
 const data=()=>({financialYear:fy,generatedAt:'2026-10-08T10:00:00Z',employer:{name:'Employer Name',address:'Organisation Office Address'},employees:[buildPdfEmployee(employee,clone(declaration),[salary],[],[],'ABCDE1234F',fy)]});
+it.each([['name test','chennai','Name test','Chennai'],['mCdonald Raj','new Delhi','MCdonald Raj','New Delhi'],['','-','','-']])('capitalizes the first letter of name and location without changing stored values', (name,location,expectedName,expectedLocation)=>{
+ const d=data();d.employees[0].name=name;d.employees[0].location=location;const original=JSON.stringify(d);
+ const html=consolidatedPdfHtml(d);
+ expect(html).toContain(`<td>Name</td><td colspan="3">${expectedName}</td><td>Location</td><td>${expectedLocation}</td>`);
+ expect(JSON.stringify(d)).toBe(original);
+});
+it.each([840000,0])('displays annual rent paid %s without altering the HRA exemption',rent=>{
+ const d=data();d.employees[0].rent=rent;const original=JSON.stringify(d);
+ const html=consolidatedPdfHtml(d);
+ expect(html).toContain(`<td>Rent Paid (Annual)</td><td class="number">${rent ? '8,40,000.00' : '0.00'}</td>`);
+ expect(html).toMatch(/<td>40% \/ 50% of Basic \+ DA based on location<\/td><td class="number">[^<]+<\/td><\/tr><tr><td>Rent Paid \(Annual\)<\/td>/);
+ expect(html).toContain(`<td>Approved HRA Exemption used in report</td><td class="number">${d.employees[0].hraExemption.toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})}</td>`);
+ expect(JSON.stringify(d)).toBe(original);
+});
+it('renders Section L with five columns and subtotal without changing calculations',()=>{
+ const d=data();const person=d.employees[0];
+ person.deductions=[{name:'epf',section:'80C',gross:12753,approved:0},{name:'life_insurance',section:'80C',gross:160000,approved:150000}];person.chapterVIA=150000;
+ const original=JSON.stringify(d);const html=consolidatedPdfHtml(d);const chapter=html.match(/<table class="chapter">[\s\S]*?<\/table>/)![0];
+ expect(chapter).toContain('<th>Investment</th><th>Section</th><th>Gross</th><th>Qualifying</th><th>Deductible</th>');
+ expect(chapter).toContain('<td>EPF</td><td class="number">80C</td><td class="number">12,753.00</td><td class="number">0.00</td><td class="number">0.00</td>');
+ expect(chapter).toContain('<td>Life Insurance</td><td class="number">80C</td><td class="number">1,60,000.00</td><td class="number">1,50,000.00</td><td class="number">1,50,000.00</td>');
+ expect(chapter).toContain('<td>Sub Total</td><td class="number"></td><td class="number">1,72,753.00</td><td class="number">1,50,000.00</td><td class="number">1,50,000.00</td>');
+ expect(JSON.stringify(d)).toBe(original);
+});
+it('renders five-column zero subtotals when no Chapter VI-A deductions apply',()=>{
+ const d=data();d.employees=[buildPdfEmployee(employee,{...clone(declaration),regime:'new'},[salary],[],[],'',fy)];
+ const chapter=consolidatedPdfHtml(d).match(/<table class="chapter">[\s\S]*?<\/table>/)![0];
+ expect(chapter).toContain('<td>Sub Total</td><td class="number"></td><td class="number">0.00</td><td class="number">0.00</td><td class="number">0.00</td>');
+});
 it('omits source review notes from the PDF while preserving values and internal notes',()=>{
  const d=data();d.employees[0].warnings=['Internal source review note'];
  const html=consolidatedPdfHtml(d);
