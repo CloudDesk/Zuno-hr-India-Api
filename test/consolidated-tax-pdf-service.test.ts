@@ -9,7 +9,7 @@ import { ConsolidatedTaxPdf } from '../src/models/consolidated-tax-pdf.model';
 import { renderConsolidatedTaxPdf } from '../src/services/consolidated-tax-pdf-renderer';
 import { uploadFileToGCP, deleteFileFromGCP, getSignedFileUrl } from '../src/utilis/gcpStorage';
 import * as fs from 'fs/promises';
-import { fy, employee, salary, declaration, clone } from './helpers/consolidated-pdf-fixture';
+import { fy, employee, salary, declaration, payrolls, clone } from './helpers/consolidated-pdf-fixture';
 jest.mock('../src/models/user.model',()=>({User:{find:jest.fn()}}));
 jest.mock('../src/models/tax-declaration',()=>({TaxDeclaration:{find:jest.fn()}}));
 jest.mock('../src/models/salary-assignments.model',()=>({SalaryAssignment:{find:jest.fn()}}));
@@ -28,7 +28,7 @@ beforeEach(()=>{
  (User.find as jest.Mock).mockReturnValue(query([employee,{...employee,_id:'employee-2',employeeCode:'CD0002'}]));
  (TaxDeclaration.find as jest.Mock).mockReturnValue(query([clone(declaration)]));
  (SalaryAssignment.find as jest.Mock).mockReturnValue(query([clone(salary)]));
- (Payroll.find as jest.Mock).mockReturnValue(query([]));(Document.find as jest.Mock).mockReturnValue(query([]));
+ (Payroll.find as jest.Mock).mockReturnValue(query(clone(payrolls)));(Document.find as jest.Mock).mockReturnValue(query([]));
  (OrganizationProfile.find as jest.Mock).mockReturnValue(query([clone(profile)]));
  (ConsolidatedTaxPdf.findById as jest.Mock).mockReturnValue(query({_id:fy,fileUrl:oldUrl,fileName:'old.pdf',revision:1}));
  (ConsolidatedTaxPdf.findOneAndUpdate as jest.Mock).mockReturnValueOnce(query({_id:fy,fileUrl:oldUrl,revision:1})).mockReturnValue(query({_id:fy,fileUrl:newUrl,revision:2,employeeCount:2}));
@@ -40,6 +40,11 @@ beforeEach(()=>{
  (fs.mkdir as jest.Mock).mockResolvedValue(undefined);(fs.unlink as jest.Mock).mockResolvedValue(undefined);(fs.rmdir as jest.Mock).mockResolvedValue(undefined);
 });
 describe('PDF source selection',()=>{
+ it('selects actual payroll components and shows zero when payroll is absent',async()=>{
+  const chain=query([]);(Payroll.find as jest.Mock).mockReturnValue(chain);
+  const data=await loadConsolidatedPdfData(fy);expect(data.employees[0].gross).toBe(0);expect(data.employees[0].totalTax).toBe(52260);
+  const selected=chain.select.mock.calls[0][0].split(' ');for(const field of ['basic','hra','da','otherAllowance','travelAllowance','reimbursementAllowance','status'])expect(selected).toContain(field);
+ });
  it('loads all FY employees including missing declarations, with batched read-only queries',async()=>{
   const data=await loadConsolidatedPdfData(fy);expect(data.employees).toHaveLength(2);
   expect(data.employees[0].incomeTax).toBe(50250);expect(data.employees[1].totalTax).toBe(0);

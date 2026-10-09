@@ -26,8 +26,13 @@ function header(data: ConsolidatedPdfData, employee: PdfEmployee, continued = fa
 export function consolidatedPdfHtml(data: ConsolidatedPdfData): string {
     const sheets = data.employees.map(employee => {
         const old = employee.regime === 'OLD';
+        const earningRows: Array<[string, string]> = [['BASIC', 'basic'], ['HRA', 'hra'], ['OTHER ALLOWANCE', 'allowance']];
+        for (const [label, key] of [['DA', 'da'], ['TRAVEL ALLOWANCE', 'travelAllowance'], ['AIR TICKET ALLOWANCE', 'airTicketAllowance'], ['MEDICAL ALLOWANCE', 'medicalAllowance'], ['REIMBURSEMENT ALLOWANCE', 'reimbursementAllowance']] as Array<[string, keyof PdfEmployee['months'][number]]>) {
+            if (employee.months.some(month => Number(month[key]) > 0)) earningRows.push([label, key]);
+        }
+        earningRows.push(['Total', 'gross']);
         const first = `<section class="sheet">${header(data, employee)}
-        <h2>A) Taxable Income - Monthly Income</h2>${monthly(employee, [['BASIC', 'basic'], ['HRA', 'hra'], ['OTHER ALLOWANCE', 'allowance'], ['Total', 'gross']])}
+        <h2>A) Taxable Income - Monthly Income</h2>${monthly(employee, earningRows)}
         <h2>B) Payroll Deductions</h2>${monthly(employee, [['Provident Fund (PF)', 'pf'], ['Professional Tax (PT)', 'pt'], ['Income Tax (IT)', 'it'], ['Total', 'deductionsTotal']])}
         <h2>C) Perquisites</h2>${table(['Pay items', 'Total', ...employee.months.map(m => m.label)], [['Total', ...Array(13).fill('0.00')]], 'monthly')}
         ${line('D) Gross Salary (A + C)', employee.gross)}

@@ -1,6 +1,6 @@
 import { financialYearRange, money, projectFinancialYearPT, SalarySource } from './consolidated-tax-calculation';
 
-export interface PdfMonth { label: string; gross: number; basic: number; hra: number; allowance: number; pf: number; pt: number; it: number; deductionsTotal: number; }
+export interface PdfMonth { label: string; gross: number; basic: number; hra: number; allowance: number; da: number; travelAllowance: number; airTicketAllowance: number; medicalAllowance: number; reimbursementAllowance: number; pf: number; pt: number; it: number; deductionsTotal: number; }
 export interface PdfEmployee {
     id: string; name: string; code: string; pan: string; location: string; gender: string; residentialStatus: string; birth: string; age: string;
     joined: string; left: string; regime: string; months: PdfMonth[]; deductions: Array<{ name: string; section: string; gross: number; approved: number }>;
@@ -27,7 +27,7 @@ function approved(item: any): number {
     return Number.isFinite(item.maxLimit) && item.maxLimit > 0 ? Math.min(amount, item.maxLimit) : amount;
 }
 
-/** PDF-only projection. Reads source values without changing declarations, payroll or Excel. */
+/** PDF-only report. Reads source values without changing declarations, payroll or Excel. */
 export function buildPdfEmployee(user: any, declaration: any, salaries: SalarySource[], payrolls: any[], forms: any[], pan: string, financialYear: string): PdfEmployee {
     const { year, start, end } = financialYearRange(financialYear);
     const warnings: string[] = [];
@@ -39,34 +39,36 @@ export function buildPdfEmployee(user: any, declaration: any, salaries: SalarySo
     const validEmployment = Number.isFinite(joined) && Number.isFinite(left) && joined <= left;
     if (!validEmployment) warnings.push('Employment dates are invalid; earnings are displayed as zero.');
     const validSalaries = salaries.filter(s => s && Number.isFinite(day(s.effectiveFrom)) && Number.isFinite(day(s.effectiveTo)) && day(s.effectiveFrom) <= day(s.effectiveTo) && Number.isFinite(s.monthlyGross) && s.monthlyGross >= 0);
-    if (validSalaries.length !== salaries.length) warnings.push('Invalid salary assignments are excluded from the PDF projection.');
-    const history = validSalaries.map(s => ({ start: day(s.effectiveFrom), end: day(s.effectiveTo), gross: s.monthlyGross })).sort((a, b) => a.start - b.start);
-    if (!history.length) warnings.push('Salary history is unavailable; earnings are displayed as zero.');
-    let projectedGap = false;
+    if (validSalaries.length !== salaries.length) warnings.push('Invalid salary assignments are excluded from PDF professional-tax projection.');
     const months: PdfMonth[] = Array.from({ length: 12 }, (_, offset) => {
         const first = new Date(Date.UTC(year, 3 + offset, 1)), last = new Date(Date.UTC(year, 4 + offset, 0));
         const from = Math.max(day(first), joined), to = Math.min(day(last), left);
-        let gross = 0;
-        for (let current = from; validEmployment && current <= to; current++) {
-            const active = history.filter(s => s.start <= current && s.end >= current);
-            if (active.length > 1) { warnings.push(`Overlapping salary history for ${first.toISOString().slice(0, 7)}; monthly earnings displayed as zero.`); gross = 0; break; }
-            const rate = active[0] || [...history].reverse().find(s => s.start <= current) || history[0];
-            if (!active.length && rate) projectedGap = true;
-            if (rate) gross += rate.gross / last.getUTCDate();
-        }
-        gross = money(gross);
         const payroll = payrolls.filter(p => p && !['Cancelled', 'Failed'].includes(p.status) && Number(p.year) === first.getUTCFullYear() && Number(p.month) === first.getUTCMonth() + 1)
             .sort((a, b) => (new Date(b.processedAt || 0).getTime() || 0) - (new Date(a.processedAt || 0).getTime() || 0));
         // Regular payroll duplicates are not summed; final settlement can coexist with a regular payroll.
         const regular = payroll.filter(p => !p.isFinalSettlement && p.type !== 'FinalSettlement');
-        if (regular.length > 1) warnings.push(`Multiple regular payrolls for ${first.toISOString().slice(0, 7)}; latest payroll deductions used.`);
+        if (regular.length > 1) warnings.push(`Multiple regular payrolls for ${first.toISOString().slice(0, 7)}; latest payroll earnings and deductions used.`);
         const selected = [...regular.slice(0, 1), ...payroll.filter(p => p.isFinalSettlement || p.type === 'FinalSettlement')];
         const sum = (key: string): number => money(selected.reduce((total, p) => total + positive(p[key]), 0));
-        const basic = money(gross * .4), hra = money(gross * .2);
+        const componentKeys = ['basic', 'hra', 'otherAllowance', 'da', 'travelAllowance', 'airTicketAllowance', 'medicalAllowance', 'reimbursementAllowance'];
+        const earnings = validEmployment && from <= to ? selected.filter(p => {
+            // Stored earnings already include payroll's payable-day adjustment.
+            const valid = componentKeys.every(key => {
+                const required = ['basic', 'hra', 'otherAllowance'].includes(key);
+                return !required && p[key] == null || typeof p[key] === 'number' && Number.isFinite(p[key]) && p[key] >= 0;
+            });
+            if (!valid) warnings.push(`Invalid payroll earnings for ${first.toISOString().slice(0, 7)}; affected record earnings displayed as zero.`);
+            return valid;
+        }) : [];
+        if (!selected.length && validEmployment && from <= to) warnings.push(`No payroll for ${first.toISOString().slice(0, 7)}; monthly earnings displayed as zero.`);
+        const earned = (key: string): number => money(earnings.reduce((total, p) => total + positive(p[key]), 0));
+        const basic = earned('basic'), hra = earned('hra'), allowance = earned('otherAllowance'), da = earned('da');
+        const travelAllowance = earned('travelAllowance'), airTicketAllowance = earned('airTicketAllowance'), medicalAllowance = earned('medicalAllowance'), reimbursementAllowance = earned('reimbursementAllowance');
+        const gross = money(basic + hra + allowance + da + travelAllowance + airTicketAllowance + medicalAllowance + reimbursementAllowance);
         return { label: first.toLocaleDateString('en-GB', { month: 'short', year: 'numeric', timeZone: 'UTC' }), gross, basic, hra,
-            allowance: money(gross - basic - hra), pf: sum('epfEmployee'), pt: sum('professionalTax'), it: sum('incomeTax'), deductionsTotal: money(sum('epfEmployee') + sum('professionalTax') + sum('incomeTax')) };
+            allowance, da, travelAllowance, airTicketAllowance, medicalAllowance, reimbursementAllowance,
+            pf: sum('epfEmployee'), pt: sum('professionalTax'), it: sum('incomeTax'), deductionsTotal: money(sum('epfEmployee') + sum('professionalTax') + sum('incomeTax')) };
     });
-    if (projectedGap) warnings.push('Uncovered salary dates use the nearest recorded salary rate for the FY projection.');
     const sum = (key: keyof PdfMonth): number => money(months.reduce((total, m) => total + Number(m[key]), 0));
     const items: any[] = Array.isArray(declaration?.declarations) ? declaration.declarations.filter((item: any) => item && typeof item === 'object') : [];
     const hraItems = items.filter(d => hraSection(d.section));
@@ -81,7 +83,7 @@ export function buildPdfEmployee(user: any, declaration: any, salaries: SalarySo
     const deductions = old ? items.filter(d => normalize(d.section).startsWith('80')).map(d => ({
         name: String(d.subSection || d.description || d.section), section: String(d.section), gross: positive(d.declaredAmount), approved: approved(d),
     })) : [];
-    const gross = sum('gross'), basic = sum('basic'), hraReceived = sum('hra');
+    const gross = sum('gross'), basic = money(sum('basic') + sum('da')), hraReceived = sum('hra');
     const standard = validRegime ? old ? 50000 : 75000 : 0;
     let pt = 0;
     if (old) {

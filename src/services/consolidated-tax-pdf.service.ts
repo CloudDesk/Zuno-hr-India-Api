@@ -35,7 +35,7 @@ export async function loadConsolidatedPdfData(financialYear: string): Promise<Co
         Payroll.find({ employeeId: { $in: ids }, status: { $nin: ['Cancelled', 'Failed'] }, $or: [
             { year, month: { $gte: 4, $lte: 12 } },
             { year: year + 1, month: { $gte: 1, $lte: 3 } },
-        ] }).select('employeeId year month epfEmployee professionalTax incomeTax processedAt isFinalSettlement type').sort({ processedAt: -1, _id: -1 }).lean(),
+        ] }).select('employeeId year month status basic hra da otherAllowance travelAllowance airTicketAllowance medicalAllowance reimbursementAllowance epfEmployee professionalTax incomeTax processedAt isFinalSettlement type').sort({ processedAt: -1, _id: -1 }).lean(),
         Document.find({ employeeId: { $in: ids }, $or: [
             { type: 'Form12B', 'metadata.form12B.financialYear': financialYear },
             { category: 'Certification', 'metadata.certificate.certificateType': 'IdentityProof', 'metadata.certificate.idDetails.idType': 'PAN' },

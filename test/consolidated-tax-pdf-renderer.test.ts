@@ -1,9 +1,9 @@
 import { consolidatedPdfHtml, renderConsolidatedTaxPdf } from '../src/services/consolidated-tax-pdf-renderer';
 import { buildPdfEmployee } from '../src/services/consolidated-tax-pdf-calculation';
 import { renderPayslipPdf } from '../src/services/payslip-pdf-runtime';
-import { fy, employee, salary, declaration, clone } from './helpers/consolidated-pdf-fixture';
+import { fy, employee, salary, declaration, payrolls, clone } from './helpers/consolidated-pdf-fixture';
 jest.mock('../src/services/payslip-pdf-runtime',()=>({renderPayslipPdf:jest.fn()}));
-const data=()=>({financialYear:fy,generatedAt:'2026-10-08T10:00:00Z',employer:{name:'Employer Name',address:'Organisation Office Address'},employees:[buildPdfEmployee(employee,clone(declaration),[salary],[],[],'ABCDE1234F',fy)]});
+const data=()=>({financialYear:fy,generatedAt:'2026-10-08T10:00:00Z',employer:{name:'Employer Name',address:'Organisation Office Address'},employees:[buildPdfEmployee(employee,clone(declaration),[salary],clone(payrolls),[],'ABCDE1234F',fy)]});
 it.each([['name test','chennai','Name test','Chennai'],['mCdonald Raj','new Delhi','MCdonald Raj','New Delhi'],['','-','','-']])('capitalizes the first letter of name and location without changing stored values', (name,location,expectedName,expectedLocation)=>{
  const d=data();d.employees[0].name=name;d.employees[0].location=location;const original=JSON.stringify(d);
  const html=consolidatedPdfHtml(d);
@@ -74,4 +74,12 @@ it('uses the existing runtime once with India timestamp, footer page counts and 
  const options=await args.renderPage(page);expect(options).toMatchObject({landscape:true,displayHeaderFooter:true,timeout:180000});
  expect(options.footerTemplate).toContain('pageNumber');expect(options.footerTemplate).toContain('totalPages');expect(options.footerTemplate).toContain('India time');expect(options.footerTemplate).toContain('3:30:00');
  expect(page.setContent).toHaveBeenCalledWith(expect.any(String),{waitUntil:'domcontentloaded'});
+});
+
+it('shows optional actual payroll components separately and hides empty rows',()=>{
+ const d=data();const p={...clone(payrolls[0]),basic:53333,hra:26667,otherAllowance:53333.33,da:1000,travelAllowance:500,airTicketAllowance:300,medicalAllowance:200,reimbursementAllowance:400};
+ d.employees=[buildPdfEmployee(employee,clone(declaration),[salary],[p],[],'',fy)];
+ const html=consolidatedPdfHtml(d);for(const label of ['DA','TRAVEL ALLOWANCE','AIR TICKET ALLOWANCE','MEDICAL ALLOWANCE','REIMBURSEMENT ALLOWANCE'])expect(html).toContain(`<td>${label}</td>`);
+ expect(html).toContain('53,333.00');expect(html).toContain('26,667.00');expect(html).toContain('53,333.33');expect(html).toContain('1,35,733.33');
+ expect(consolidatedPdfHtml(data())).not.toContain('<td>DA</td>');
 });

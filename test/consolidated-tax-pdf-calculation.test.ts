@@ -1,6 +1,6 @@
 import { buildPdfEmployee, pdfNumber } from '../src/services/consolidated-tax-pdf-calculation';
-import { declaration, employee, salary, fy, clone } from './helpers/consolidated-pdf-fixture';
-function calculate(d: any = clone(declaration), user: any = clone(employee), salaries: any[] = [clone(salary)], payrolls: any[] = [], forms: any[] = []) {
+import { declaration, employee, salary, payrolls as storedPayrolls, fy, clone } from './helpers/consolidated-pdf-fixture';
+function calculate(d: any = clone(declaration), user: any = clone(employee), salaries: any[] = [clone(salary)], payrolls: any[] = clone(storedPayrolls), forms: any[] = []) {
  return buildPdfEmployee(user, d, salaries, payrolls, forms, 'ABCDE1234F', fy);
 }
 describe('PDF calculation: positive and negative cases', () => {
@@ -51,7 +51,7 @@ describe('PDF calculation: positive and negative cases', () => {
   expect(calculate(d).otherIncome).toBe(0);expect(calculate(d).warnings.join(' ')).toContain('income/loss type');
  });
  it('adds verified previous employer income and splits previous TDS with 4% cess',()=>{
-  const r=calculate(clone(declaration),clone(employee),[clone(salary)],[],[{status:'Verified',salaryEarned:300000,tdsDeducted:120000,previousPF:18000,professionalTax:1250}]);
+  const r=calculate(clone(declaration),clone(employee),[clone(salary)],clone(storedPayrolls),[{status:'Verified',salaryEarned:300000,tdsDeducted:120000,previousPF:18000,professionalTax:1250}]);
   expect(r).toMatchObject({previousIncome:300000,previousIT:115384.62,previousCess:4615.38,previousPF:18000,previousPT:1250,afterExemption:2420000});
  });
  it.each([[],[undefined],[{status:'Pending',salaryEarned:300000}],[{status:'Verified',salaryEarned:300000},{status:'Verified',salaryEarned:300000}]].map(forms=>({forms})))('zeroes missing, incomplete, unverified or ambiguous Form12B: %p', ({forms})=>{
@@ -59,7 +59,7 @@ describe('PDF calculation: positive and negative cases', () => {
   expect(r).toMatchObject({previousIncome:0,previousIT:0,previousPF:0,previousPT:0,previousCess:0});
  });
  it.each([[], [{status:'Pending',salaryEarned:300000}]].map(forms=>({forms})))('does not gate current values on missing or pending Form12B: %p', ({forms})=>{
-  const payroll=[{year:2026,month:4,status:'Processed',epfEmployee:3000,professionalTax:200,incomeTax:5000}];
+  const payroll=clone(storedPayrolls); Object.assign(payroll[0],{epfEmployee:3000,professionalTax:200,incomeTax:5000});
   const r=calculate(clone(declaration),clone(employee),[clone(salary)],payroll,forms);
   expect(r.months[0]).toMatchObject({gross:200000,basic:80000,hra:40000,allowance:80000,pf:3000,pt:200,it:5000,deductionsTotal:8200});
   expect(r).toMatchObject({gross:2400000,hraExemption:280000,otherIncome:-200000,chapterVIA:180000,incomeTax:50250,cess:2010,totalTax:52260,previousIncome:0,previousIT:0,previousPF:0,previousPT:0,previousCess:0});
@@ -71,7 +71,7 @@ describe('PDF calculation: positive and negative cases', () => {
  it('includes employees with no declaration while retaining independently available salary',()=>{
   const r=calculate(null);expect(r.gross).toBe(2400000);expect(r).toMatchObject({regime:'-',incomeTax:0,cess:0,totalTax:0,chapterVIA:0});
  });
- it('retains employees with no salary assignments',()=>{const r=calculate(clone(declaration),clone(employee),[]);expect(r.gross).toBe(0);expect(r.incomeTax).toBe(50250);});
+ it('retains employees with no salary assignments',()=>{const r=calculate(clone(declaration),clone(employee),[]);expect(r.gross).toBe(2400000);expect(r.incomeTax).toBe(50250);});
  it.each([-1,NaN,Infinity,undefined,'50250'])('does not emit invalid numeric tax values: %p', invalid=>{
   const d=clone(declaration);d.initialTaxBreakdown={totalTaxAmount:invalid,cessAmount:invalid,finalTaxWithCess:invalid};
   expect(calculate(d)).toMatchObject({incomeTax:0,cess:0,totalTax:0});
@@ -87,43 +87,70 @@ describe('PDF calculation: positive and negative cases', () => {
  it('handles malformed declaration lists without dropping the employee',()=>{
   const r=calculate({...clone(declaration),declarations:null});expect(r.chapterVIA).toBe(0);expect(r.incomeTax).toBe(50250);
  });
- it('changes salary rate at an FY revision',()=>{
-  const r=calculate(clone(declaration),clone(employee),[{...clone(salary),effectiveTo:'2026-09-30',monthlyGross:100000},{...clone(salary),effectiveFrom:'2026-10-01'}]);
-  expect(r.gross).toBe(1800000);expect(r.months[5].gross).toBe(100000);expect(r.months[6].gross).toBe(200000);
+ it('uses actual attendance-adjusted components without applying payable days twice',()=>{
+  const p={...clone(storedPayrolls[0]),basic:53333,hra:26667,otherAllowance:53333.33,monthlyGross:200000,payableDays:20,presentDays:18,totalDaysInMonth:30,assigned:{basic:80000,hra:40000,otherAllowance:80000}};
+  const r=calculate(clone(declaration),clone(employee),[clone(salary)],[p]);
+  expect(r.months[0]).toMatchObject({basic:53333,hra:26667,allowance:53333.33,gross:133333.33});expect(r.gross).toBe(133333.33);
+  expect(r.months.slice(1).every(m=>m.gross===0)).toBe(true);
  });
- it('prorates joining and leaving dates',()=>{
-  const r=calculate(clone(declaration),{...clone(employee),joiningDate:'2026-04-16',separationDate:'2026-04-30'});
-  expect(r.gross).toBe(100000);expect(r.months.slice(1).every(m=>m.gross===0)).toBe(true);
+ it('shows zero without payroll even when a salary assignment exists',()=>{
+  const r=calculate(clone(declaration),clone(employee),[clone(salary)],[]);
+  expect(r.gross).toBe(0);expect(r.months.every(m=>m.basic===0&&m.hra===0&&m.allowance===0)).toBe(true);
+  expect(r.warnings.join(' ')).toContain('No payroll');expect(r.totalTax).toBe(52260);
  });
- it.each(['2026-07-15','2026-07-15T00:00:00+05:30'])('handles the July 15 leaving-date example without changing stored tax: %s', separationDate=>{
-  const d=clone(declaration),u={...clone(employee),separationDate},s={...clone(salary),monthlyGross:100000};
-  const original=JSON.stringify({d,u,s});const r=calculate(d,u,[s]);
-  expect(r.months.slice(0,3).map(m=>m.gross)).toEqual([100000,100000,100000]);
-  expect(r.months[3]).toMatchObject({gross:48387.10,basic:19354.84,hra:9677.42,allowance:19354.84});
-  expect(r.months.slice(4).every(m=>m.gross===0&&m.basic===0&&m.hra===0&&m.allowance===0)).toBe(true);
-  expect(r.gross).toBe(348387.10);expect(r.left).toBe('2026-07-15');
-  expect(r).toMatchObject({incomeTax:50250,cess:2010,totalTax:52260});
-  expect(JSON.stringify({d,u,s})).toBe(original);
+ it('uses payroll amounts without imposing salary component percentages',()=>{
+  const r=calculate(null,clone(employee),[],[{...clone(storedPayrolls[0]),basic:50000,hra:10000,otherAllowance:5000,da:2000,travelAllowance:1000,airTicketAllowance:300,medicalAllowance:200,reimbursementAllowance:500}]);
+  expect(r.months[0]).toMatchObject({basic:50000,hra:10000,allowance:5000,gross:69000});expect(r.basic).toBe(52000);
  });
- it.each([{left:'2026-04-01',gross:3333.33},{left:'2027-03-31',gross:1200000}])('includes the separation day at the FY boundary: %p', ({left,gross})=>{
-  const r=calculate(clone(declaration),{...clone(employee),separationDate:left},[{...clone(salary),monthlyGross:100000}]);expect(r.gross).toBe(gross);
+ it.each([-1,NaN,Infinity,undefined,'80000'])('zeroes invalid payroll earnings without changing deductions: %p',invalid=>{
+  const r=calculate(null,clone(employee),[],[{...clone(storedPayrolls[0]),basic:invalid,epfEmployee:3000}]);
+  expect(r.gross).toBe(0);expect(r.months[0].pf).toBe(3000);expect(r.warnings.join(' ')).toContain('Invalid payroll earnings');
  });
- it('uses India calendar dates for timestamps with an India offset',()=>{
-  const r=calculate(clone(declaration),{...clone(employee),joiningDate:'2026-04-01T00:00:00+05:30',separationDate:'2026-04-30T00:00:00+05:30'},[{...clone(salary),effectiveFrom:'2026-04-01T00:00:00+05:30'}]);
-  expect(r.joined).toBe('2026-04-01');expect(r.left).toBe('2026-04-30');expect(r.gross).toBe(200000);
+ it('accepts zero earnings and absent optional components',()=>{
+  const r=calculate(null,clone(employee),[],[{year:2026,month:4,basic:0,hra:0,otherAllowance:0,payableDays:0}]);
+  expect(r.gross).toBe(0);expect(r.warnings.join(' ')).not.toContain('Invalid payroll earnings');
  });
- it.each(['invalid','2027-04-01'])('handles invalid or out-of-FY employment start %s', joiningDate=>{
-  const r=calculate(clone(declaration),{...clone(employee),joiningDate});expect(r.gross).toBe(0);
+ it('rejects invalid optional payroll components',()=>{
+  expect(calculate(null,clone(employee),[],[{...clone(storedPayrolls[0]),da:-1}]).gross).toBe(0);
  });
- it('does not project malformed salary dates',()=>{
-  const r=calculate(clone(declaration),clone(employee),[{...clone(salary),effectiveFrom:'invalid'}]);expect(r.gross).toBe(0);expect(r.warnings.join(' ')).toContain('Invalid salary assignments');
+ it('shows zero before the first available September payroll',()=>{
+  const r=calculate(clone(declaration),clone(employee),[{...clone(salary),effectiveFrom:'2026-09-22'}],clone(storedPayrolls.slice(5)));
+  expect(r.months.slice(0,5).map(m=>m.gross)).toEqual(Array(5).fill(0));expect(r.gross).toBe(1400000);
  });
- it('excludes negative salary rates',()=>{expect(calculate(clone(declaration),clone(employee),[{...clone(salary),monthlyGross:-1}]).gross).toBe(0);});
- it('zeroes overlapping months and flags the overlap',()=>{
-  const r=calculate(clone(declaration),clone(employee),[clone(salary),clone(salary)]);expect(r.gross).toBe(0);expect(r.warnings.join(' ')).toContain('Overlapping salary');
+ it('uses salary revisions as recorded by payroll',()=>{
+  const p=clone(storedPayrolls);p.slice(0,6).forEach(m=>{m.basic=40000;m.hra=20000;m.otherAllowance=40000;});
+  expect(calculate(clone(declaration),clone(employee),[clone(salary)],p).gross).toBe(1800000);
  });
- it('projects gaps from an available salary rate with a review note',()=>{
-  const r=calculate(clone(declaration),clone(employee),[{...clone(salary),effectiveFrom:'2026-09-01'}]);expect(r.gross).toBe(2400000);expect(r.warnings.join(' ')).toContain('nearest recorded');
+ it.each(['2026-07-15','2026-07-15T00:00:00+05:30'])('retains actual leaving-month payroll without another date proration: %s',separationDate=>{
+  const p=clone(storedPayrolls.slice(0,4));p.forEach(m=>{m.basic=40000;m.hra=20000;m.otherAllowance=40000;});
+  Object.assign(p[3],{basic:19355,hra:9677,otherAllowance:19355.10});
+  const r=calculate(clone(declaration),{...clone(employee),separationDate},[clone(salary)],p);
+  expect(r.gross).toBe(348387.10);expect(r.months[3].gross).toBe(48387.10);expect(r.left).toBe('2026-07-15');expect(r.totalTax).toBe(52260);
+  expect(r.months.slice(4).every(m=>m.gross===0)).toBe(true);
+ });
+ it('retains joining-month payroll without another date proration',()=>{
+  const r=calculate(null,{...clone(employee),joiningDate:'2026-09-22'},[],[{...clone(storedPayrolls[5]),basic:24000,hra:12000,otherAllowance:24000}]);
+  expect(r.gross).toBe(60000);
+ });
+ it.each(['invalid','2027-04-01'])('shows zero for invalid or out-of-FY employment start %s',joiningDate=>{
+  expect(calculate(null,{...clone(employee),joiningDate}).gross).toBe(0);
+ });
+ it('uses India calendar employment boundaries',()=>{
+  const r=calculate(null,{...clone(employee),joiningDate:'2026-04-01T00:00:00+05:30',separationDate:'2026-04-01T00:00:00+05:30'},[],[{...clone(storedPayrolls[0]),basic:1333,hra:667,otherAllowance:1333.33}]);
+  expect(r.gross).toBe(3333.33);expect(r.joined).toBe('2026-04-01');expect(r.left).toBe('2026-04-01');
+ });
+ it('does not discard actual earnings because salary assignments are malformed or overlap',()=>{
+  expect(calculate(null,clone(employee),[{...clone(salary),effectiveFrom:'invalid'}]).gross).toBe(2400000);
+  expect(calculate(null,clone(employee),[clone(salary),clone(salary)]).gross).toBe(2400000);
+ });
+ it('excludes cancelled, failed and other-FY payroll earnings',()=>{
+  const p=clone(storedPayrolls[0]);expect(calculate(null,clone(employee),[],[{...p,status:'Cancelled'},{...p,status:'Failed'},{...p,year:2025}]).gross).toBe(0);
+ });
+ it('uses latest regular payroll plus final settlement earnings once',()=>{
+  const p=clone(storedPayrolls[0]);const r=calculate(null,clone(employee),[],[
+   {...p,processedAt:'2026-04-01'}, {...p,processedAt:'2026-04-30',basic:40000,hra:20000,otherAllowance:40000},
+   {...p,type:'FinalSettlement',basic:4000,hra:2000,otherAllowance:4000}
+  ]);expect(r.gross).toBe(110000);expect(r.months[0]).toMatchObject({basic:44000,hra:22000,allowance:44000});
  });
  it('preserves stored annual PT when slabs are empty and payroll exists',()=>{
   const s=clone(salary);s.salaryStructureId.statutoryDeductions.professionalTax.slabs=[];
