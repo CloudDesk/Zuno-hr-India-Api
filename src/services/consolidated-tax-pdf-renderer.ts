@@ -3,7 +3,8 @@ import { renderPayslipPdf } from './payslip-pdf-runtime';
 
 export interface ConsolidatedPdfData { financialYear: string; employer: { name: string; address: string }; generatedAt: string; employees: PdfEmployee[]; }
 const escape = (value: unknown): string => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]!));
-const amount = (value: unknown): string => pdfNumber(value).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const amountFormatter = new Intl.NumberFormat('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const amount = (value: unknown): string => amountFormatter.format(pdfNumber(value));
 const date = (value: string): string => /^\d{4}-\d{2}-\d{2}$/.test(value) ? value.split('-').reverse().join('/') : '-';
 const capitalized = (value: string): string => value ? value.charAt(0).toUpperCase() + value.slice(1).toLowerCase() : value;
 const firstCapital = (value: string): string => value.replace(/^(\s*)(\S)/, (_match, space, letter) => space + letter.toUpperCase());

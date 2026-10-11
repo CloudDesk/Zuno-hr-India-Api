@@ -33,3 +33,8 @@ it('propagates network failures for the UI to display',async()=>{
  const r=setup();r.fetch.mockRejectedValue(new Error('Network error'));
  await expect(r.download('url','2026-2027')).rejects.toThrow('Network error');expect(r.link.click).not.toHaveBeenCalled();
 });
+
+it('saves the distinct PDF part filename',async()=>{
+ const r=setup();await r.download('url','2026-2027','Consolidated_Tax_Report_2026-2027_Part_2.pdf');
+ expect(r.link.download).toBe('Consolidated_Tax_Report_2026-2027_Part_2.pdf');
+});

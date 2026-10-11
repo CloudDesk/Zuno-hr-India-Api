@@ -159,3 +159,99 @@ describe('PDF generation and cached downloads',()=>{
   await expect(getConsolidatedPdfUrl(year)).rejects.toThrow();expect(ConsolidatedTaxPdf.findById).not.toHaveBeenCalled();
  });
 });
+
+describe('100-employee PDF parts',()=>{
+ it.each([1,100,101,200,250])('generates %s employees exactly once across bounded parts',async count=>{
+  const users=Array.from({length:count},(_,i)=>({...employee,_id:`employee-${i+1}`,employeeCode:`CD${i+1}`}));
+  (User.find as jest.Mock).mockReturnValue(query(users));
+  (ConsolidatedTaxPdf.findOneAndUpdate as jest.Mock).mockReset().mockReturnValueOnce(query({fileUrl:oldUrl})).mockImplementation((_filter:any,update:any)=>query({...update.$set,revision:2}));
+  jest.mocked(uploadFileToGCP).mockImplementation(async args=>({success:true,fileUrl:`https://storage.googleapis.com/example/${args.fileName}`}));
+  const result=await generateConsolidatedPdf(fy,'Admin');
+  expect(result.partCount).toBe(Math.ceil(count/100));expect(result.employeeCount).toBe(count);
+  const batches=jest.mocked(renderConsolidatedTaxPdf).mock.calls.map(([data])=>data.employees);
+  expect(batches.every(batch=>batch.length>0&&batch.length<=100)).toBe(true);
+  expect(batches.flat().map(e=>e.id)).toEqual(users.map(u=>u._id));
+  expect(result.parts.map(p=>[p.firstEmployee,p.lastEmployee])).toEqual(batches.map((batch,i)=>[i*100+1,i*100+batch.length]));
+  expect(result.parts.every(p=>!('fileUrl' in p))).toBe(true);
+  expect(uploadFileToGCP).toHaveBeenCalledTimes(result.partCount);
+ });
+ it('keeps the previous set if a later part fails and cleans up new uploads',async()=>{
+  (User.find as jest.Mock).mockReturnValue(query(Array.from({length:101},(_,i)=>({...employee,_id:`employee-${i+1}`}))));
+  jest.mocked(uploadFileToGCP).mockResolvedValueOnce({success:true,fileUrl:newUrl}).mockResolvedValueOnce({success:false,error:'Part 2 failed'});
+  await expect(generateConsolidatedPdf(fy,'Admin')).rejects.toThrow('Part 2 failed');
+  expect(ConsolidatedTaxPdf.findOneAndUpdate).toHaveBeenCalledTimes(1);expect(deleteFileFromGCP).toHaveBeenCalledWith(newUrl);expect(deleteFileFromGCP).not.toHaveBeenCalledWith(oldUrl);
+ });
+ it('signs the selected part only with its distinct download filename',async()=>{
+  (ConsolidatedTaxPdf.findById as jest.Mock).mockReturnValue(query({parts:[{part:1,fileUrl:oldUrl},{part:2,fileUrl:newUrl}]}));
+  await getConsolidatedPdfUrl(fy,true,2);expect(getSignedFileUrl).toHaveBeenCalledWith(newUrl,{downloadFileName:`Consolidated_Tax_Report_${fy}_Part_2.pdf`});
+  await expect(getConsolidatedPdfUrl(fy,false,3)).rejects.toThrow('unavailable');
+  await expect(getConsolidatedPdfUrl(fy,false,0)).rejects.toThrow('Invalid PDF part');
+ });
+ it('retains every committed part after an uncertain commit acknowledgment',async()=>{
+  (User.find as jest.Mock).mockReturnValue(query(Array.from({length:101},(_,i)=>({...employee,_id:`employee-${i+1}`}))));
+  jest.mocked(uploadFileToGCP).mockResolvedValueOnce({success:true,fileUrl:newUrl}).mockResolvedValueOnce({success:true,fileUrl:'part-two-url'});
+  (ConsolidatedTaxPdf.findOneAndUpdate as jest.Mock).mockReset().mockReturnValueOnce(query({fileUrl:oldUrl})).mockReturnValueOnce({lean:jest.fn().mockRejectedValue(new Error('Network'))});
+  (ConsolidatedTaxPdf.findById as jest.Mock).mockReturnValue(query({parts:[{part:1,fileUrl:newUrl},{part:2,fileUrl:'part-two-url'}]}));
+  await expect(generateConsolidatedPdf(fy,'Admin')).rejects.toThrow('Network');expect(deleteFileFromGCP).not.toHaveBeenCalled();
+ });
+});
+
+describe('PDF upload pipeline',()=>{
+ it('renders the next part while the prior upload runs and publishes only after uploads finish',async()=>{
+  (User.find as jest.Mock).mockReturnValue(query(Array.from({length:101},(_,i)=>({...employee,_id:`employee-${i+1}`}))));
+  let finishFirst!: (value:any)=>void;
+  jest.mocked(uploadFileToGCP).mockImplementationOnce(()=>new Promise(resolve=>{finishFirst=resolve;})).mockResolvedValueOnce({success:true,fileUrl:'part-two-url'});
+  jest.mocked(renderConsolidatedTaxPdf).mockResolvedValueOnce(undefined).mockImplementationOnce(async()=>{
+   expect(uploadFileToGCP).toHaveBeenCalledTimes(1);expect(ConsolidatedTaxPdf.findOneAndUpdate).toHaveBeenCalledTimes(1);
+   finishFirst({success:true,fileUrl:newUrl});
+  });
+  await generateConsolidatedPdf(fy,'Admin');
+  const commit=(ConsolidatedTaxPdf.findOneAndUpdate as jest.Mock).mock.calls[1][1].$set;
+  expect(commit.parts.map((p:any)=>p.fileUrl)).toEqual([newUrl,'part-two-url']);
+ });
+ it('settles an in-flight upload before cleanup if the next render fails',async()=>{
+  (User.find as jest.Mock).mockReturnValue(query(Array.from({length:101},(_,i)=>({...employee,_id:`employee-${i+1}`}))));
+  let finishFirst!: (value:any)=>void;
+  jest.mocked(uploadFileToGCP).mockImplementationOnce(()=>new Promise(resolve=>{finishFirst=resolve;}));
+  jest.mocked(renderConsolidatedTaxPdf).mockResolvedValueOnce(undefined).mockImplementationOnce(async()=>{
+   finishFirst({success:true,fileUrl:newUrl});throw new Error('Part 2 render failed');
+  });
+  await expect(generateConsolidatedPdf(fy,'Admin')).rejects.toThrow('Part 2 render failed');
+  expect(deleteFileFromGCP).toHaveBeenCalledWith(newUrl);expect(deleteFileFromGCP).not.toHaveBeenCalledWith(oldUrl);
+  expect(ConsolidatedTaxPdf.findOneAndUpdate).toHaveBeenCalledTimes(1);
+ });
+});
+
+describe('selected PDF part generation',()=>{
+ const users=()=>Array.from({length:128},(_,i)=>({...employee,_id:`employee-${i+1}`,employeeCode:`CD${i+1}`}));
+ it('loads only Part 2 payroll and generates its 28 reports while retaining Part 1',async()=>{
+  const employees=users();(User.find as jest.Mock).mockReturnValue(query(employees));
+  const previous={employeeCount:128,employeeIds:employees.map(u=>u._id),parts:[{part:1,fileUrl:oldUrl,fileName:'part1.pdf',employeeCount:100,firstEmployee:1,lastEmployee:100,reviewCount:0},{part:2,fileUrl:'old-part2-url',fileName:'part2.pdf',employeeCount:28,firstEmployee:101,lastEmployee:128,reviewCount:0}]};
+  (ConsolidatedTaxPdf.findOneAndUpdate as jest.Mock).mockReset().mockReturnValueOnce(query(previous)).mockImplementation((_filter:any,update:any)=>query({...update.$set,revision:3}));
+  const r=await generateConsolidatedPdf(fy,'Admin',2);
+  expect(renderConsolidatedTaxPdf).toHaveBeenCalledTimes(1);
+  const data=jest.mocked(renderConsolidatedTaxPdf).mock.calls[0][0];expect(data.employees.map(e=>e.id)).toEqual(employees.slice(100).map(u=>u._id));
+  expect((Payroll.find as jest.Mock).mock.calls[0][0].employeeId.$in).toEqual(employees.slice(100).map(u=>u._id));
+  expect(r.employeeCount).toBe(128);expect(r.parts.map(p=>p.part)).toEqual([1,2]);
+  expect(deleteFileFromGCP).toHaveBeenCalledWith('old-part2-url');expect(deleteFileFromGCP).not.toHaveBeenCalledWith(oldUrl);
+  const committed=(ConsolidatedTaxPdf.findOneAndUpdate as jest.Mock).mock.calls[1][1].$set.parts;expect(committed[0]).toEqual(previous.parts[0]);
+ });
+ it('allows generating Part 2 first and exposes Part 1 as not yet generated',async()=>{
+  (User.find as jest.Mock).mockReturnValue(query(users()));
+  (ConsolidatedTaxPdf.findOneAndUpdate as jest.Mock).mockReset().mockReturnValueOnce(query({})).mockImplementation((_filter:any,update:any)=>query({...update.$set,revision:1}));
+  const r=await generateConsolidatedPdf(fy,'Admin',2);
+  expect(r.parts.map(p=>p.part)).toEqual([2]);expect(r.availableParts).toEqual([{part:1,firstEmployee:1,lastEmployee:100,employeeCount:100,exists:false},{part:2,firstEmployee:101,lastEmployee:128,employeeCount:28,exists:true}]);
+ });
+ it('provides choices before any PDF is generated',async()=>{
+  (User.find as jest.Mock).mockReturnValue(query(users()));(ConsolidatedTaxPdf.findById as jest.Mock).mockReturnValue(query(null));
+  const r=await getConsolidatedPdfStatus(fy);expect(r.exists).toBe(false);expect(r.availableParts.map(p=>p.employeeCount)).toEqual([100,28]);
+ });
+ it('rejects a changed roster without overwriting any part',async()=>{
+  (User.find as jest.Mock).mockReturnValue(query(users()));
+  (ConsolidatedTaxPdf.findOneAndUpdate as jest.Mock).mockReset().mockReturnValueOnce(query({employeeIds:['different-employee']}));
+  await expect(generateConsolidatedPdf(fy,'Admin',2)).rejects.toThrow('Select All parts');expect(renderConsolidatedTaxPdf).not.toHaveBeenCalled();expect(deleteFileFromGCP).not.toHaveBeenCalled();
+ });
+ it.each([0,-1,1.5,3])('rejects invalid or unavailable selected part %s',async part=>{
+  (User.find as jest.Mock).mockReturnValue(query(users()));await expect(generateConsolidatedPdf(fy,'Admin',part)).rejects.toThrow();expect(renderConsolidatedTaxPdf).not.toHaveBeenCalled();
+ });
+});

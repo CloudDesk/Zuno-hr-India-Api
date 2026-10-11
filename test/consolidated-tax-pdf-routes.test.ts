@@ -19,9 +19,9 @@ beforeEach(()=>{
   if(request.headers.authorization!=='Bearer test')return reply.code(401).send({success:false,message:'Unauthenticated'});
   request.user={role:request.headers['x-test-role']||'admin',name:'Test Admin',_id:'admin-1'};
  });
- jest.mocked(getConsolidatedPdfStatus).mockImplementation(async year=>{financialYearRange(year);return {financialYear:year,exists:true,isGenerating:false,revision:1,employeeCount:2,reviewCount:0,fileName:undefined,generatedAt:undefined,generatedByName:undefined};});
+ jest.mocked(getConsolidatedPdfStatus).mockImplementation(async year=>{financialYearRange(year);return {financialYear:year,exists:true,isGenerating:false,revision:1,employeeCount:2,reviewCount:0,partCount:1,parts:[],availableParts:[],fileName:undefined,generatedAt:undefined,generatedByName:undefined};});
  jest.mocked(getConsolidatedPdfUrl).mockResolvedValue('https://example.test/signed.pdf');
- jest.mocked(generateConsolidatedPdf).mockResolvedValue({financialYear:'2026-2027',exists:true,isGenerating:false,revision:2,employeeCount:2,reviewCount:0,fileName:undefined,generatedAt:undefined,generatedByName:undefined});
+ jest.mocked(generateConsolidatedPdf).mockResolvedValue({financialYear:'2026-2027',exists:true,isGenerating:false,revision:2,employeeCount:2,reviewCount:0,partCount:1,parts:[],availableParts:[],fileName:undefined,generatedAt:undefined,generatedByName:undefined});
 });
 afterEach(()=>{jest.restoreAllMocks();});
 it.each([
@@ -91,4 +91,20 @@ it('reports a missing saved PDF on download',async()=>{
 it('requests attachment disposition for download and inline viewing for preview',async()=>{
  await app.inject({method:'GET',url:'/consolidated-tax-pdf/download?financialYear=2026-2027',headers});expect(getConsolidatedPdfUrl).toHaveBeenLastCalledWith('2026-2027',true);
  await app.inject({method:'GET',url:'/consolidated-tax-pdf/preview?financialYear=2026-2027',headers});expect(getConsolidatedPdfUrl).toHaveBeenLastCalledWith('2026-2027',false);
+});
+
+it('passes the selected PDF part to preview and download',async()=>{
+ for(const action of ['preview','download']){
+  const r=await app.inject({method:'GET',url:`/consolidated-tax-pdf/${action}?financialYear=2026-2027&part=2`,headers});
+  expect(r.statusCode).toBe(200);expect(getConsolidatedPdfUrl).toHaveBeenLastCalledWith('2026-2027',action==='download',2);
+ }
+});
+it.each(['0','-1','1.5','bad'])('rejects invalid PDF part %s',async part=>{
+ const r=await app.inject({method:'GET',url:`/consolidated-tax-pdf/preview?financialYear=2026-2027&part=${part}`,headers});
+ expect(r.statusCode).toBe(400);expect(getConsolidatedPdfUrl).not.toHaveBeenCalled();
+});
+
+it('passes the selected part for generation',async()=>{
+ const r=await app.inject({method:'POST',url:'/consolidated-tax-pdf/generate',headers,payload:{financialYear:'2026-2027',part:2}});
+ expect(r.statusCode).toBe(200);expect(generateConsolidatedPdf).toHaveBeenCalledWith('2026-2027','Test Admin',2);
 });

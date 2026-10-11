@@ -14,10 +14,12 @@ const positive = (value: unknown): number => Math.max(0, pdfNumber(value));
 const normalize = (value: unknown): string => String(value || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 const hraSection = (value: unknown): boolean => ['1013A', '10A13A'].includes(normalize(value));
 const propertySection = (value: unknown): boolean => ['INCOMELOSSHOUSEPROPERTY', '24B'].includes(normalize(value));
+const indiaDateFormatter = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' });
+const monthFormatter = new Intl.DateTimeFormat('en-GB', { month: 'short', year: 'numeric', timeZone: 'UTC' });
 const date = (value: unknown): string => {
     const parsed = new Date(String(value || ''));
     if (!Number.isFinite(parsed.getTime())) return '-';
-    const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(parsed);
+    const parts = indiaDateFormatter.formatToParts(parsed);
     const part = (type: string): string => parts.find(item => item.type === type)!.value;
     return `${part('year')}-${part('month')}-${part('day')}`;
 };
@@ -65,7 +67,7 @@ export function buildPdfEmployee(user: any, declaration: any, salaries: SalarySo
         const basic = earned('basic'), hra = earned('hra'), allowance = earned('otherAllowance'), da = earned('da');
         const travelAllowance = earned('travelAllowance'), airTicketAllowance = earned('airTicketAllowance'), medicalAllowance = earned('medicalAllowance'), reimbursementAllowance = earned('reimbursementAllowance');
         const gross = money(basic + hra + allowance + da + travelAllowance + airTicketAllowance + medicalAllowance + reimbursementAllowance);
-        return { label: first.toLocaleDateString('en-GB', { month: 'short', year: 'numeric', timeZone: 'UTC' }), gross, basic, hra,
+        return { label: monthFormatter.format(first), gross, basic, hra,
             allowance, da, travelAllowance, airTicketAllowance, medicalAllowance, reimbursementAllowance,
             pf: sum('epfEmployee'), pt: sum('professionalTax'), it: sum('incomeTax'), deductionsTotal: money(sum('epfEmployee') + sum('professionalTax') + sum('incomeTax')) };
     });

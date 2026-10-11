@@ -28,3 +28,11 @@ it('encodes financial-year query parameters without adding extra parameters',asy
 it('propagates backend errors so the PDF UI can display them',async()=>{
  fetchApi.mockRejectedValueOnce(new Error('Upload failed'));await expect(api.generate('2026-2027')).rejects.toThrow('Upload failed');
 });
+
+it.each(['preview','download'])('requests selected part for %s',async action=>{
+ await api[action]('2026-2027','2027-04-01',2);expect(fetchApi).toHaveBeenCalledWith(`/consolidated-tax-pdf/${action}?financialYear=2026-2027&testDate=2027-04-01&part=2`);
+});
+
+it('generates only the selected PDF part',async()=>{
+ await api.generate('2026-2027','2027-04-01',2);expect(fetchApi).toHaveBeenCalledWith('/consolidated-tax-pdf/generate',{method:'POST',body:JSON.stringify({financialYear:'2026-2027',testDate:'2027-04-01',part:2})});
+});

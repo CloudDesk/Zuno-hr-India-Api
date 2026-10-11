@@ -3,6 +3,7 @@ import { authenticate } from '../middleware/auth';
 import { generateConsolidatedPdf, getConsolidatedPdfStatus, getConsolidatedPdfUrl } from '../services/consolidated-tax-pdf.service';
 const yearSchema = { type: 'object', required: ['financialYear'], additionalProperties: false,
     properties: { financialYear: { type: 'string', pattern: '^\\d{4}-\\d{4}$' }, testDate: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' } } };
+const partSchema = { ...yearSchema, properties: { ...yearSchema.properties, part: { type: 'integer', minimum: 1 } } };
 type ReportDate = { financialYear: string; testDate?: string };
 export async function consolidatedTaxPdfRoutes(app: FastifyInstance): Promise<void> {
     app.addHook('preHandler', authenticate);
@@ -28,13 +29,13 @@ export async function consolidatedTaxPdfRoutes(app: FastifyInstance): Promise<vo
         try { return { success: true, data: await getConsolidatedPdfStatus(request.query.financialYear) }; }
         catch (error) { return reply.code(400).send({ success: false, message: (error as Error).message }); }
     });
-    app.post<{ Body: ReportDate }>('/generate', { schema: { body: yearSchema } }, async (request, reply) => {
-        try { return { success: true, data: await generateConsolidatedPdf(request.body.financialYear, request.user.name) }; }
+    app.post<{ Body: ReportDate & { part?: number } }>('/generate', { schema: { body: partSchema } }, async (request, reply) => {
+        try { return { success: true, data: await (request.body.part === undefined ? generateConsolidatedPdf(request.body.financialYear, request.user.name) : generateConsolidatedPdf(request.body.financialYear, request.user.name, request.body.part)) }; }
         catch (error) { return reply.code(400).send({ success: false, message: (error as Error).message }); }
     });
     for (const action of ['preview', 'download']) {
-        app.get<{ Querystring: ReportDate }>(`/${action}`, { schema: { querystring: yearSchema } }, async (request, reply) => {
-            try { return { success: true, data: { url: await getConsolidatedPdfUrl(request.query.financialYear, action === 'download') } }; }
+        app.get<{ Querystring: ReportDate & { part?: number } }>(`/${action}`, { schema: { querystring: partSchema } }, async (request, reply) => {
+            try { return { success: true, data: { url: await (request.query.part === undefined ? getConsolidatedPdfUrl(request.query.financialYear, action === 'download') : getConsolidatedPdfUrl(request.query.financialYear, action === 'download', request.query.part)) } }; }
             catch (error) { return reply.code(400).send({ success: false, message: (error as Error).message }); }
         });
     }
