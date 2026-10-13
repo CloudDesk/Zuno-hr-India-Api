@@ -7,8 +7,8 @@ describe('PDF calculation: positive and negative cases', () => {
  it('implements every old-regime A–M formula with signed property loss', () => {
   const r = calculate(); expect(r.months).toHaveLength(12);
   expect(r.months[0]).toMatchObject({ gross: 200000, basic: 80000, hra: 40000, allowance: 80000 });
-  expect(r).toMatchObject({ gross: 2400000, basic: 960000, hraReceived: 480000, hraExemption: 280000, afterExemption: 2120000,
-    standard: 50000, pt: 2500, section16: 52500, salaryIncome: 2067500, otherIncome: -200000, gti: 1867500, chapterVIA: 180000, taxable: 1687500 });
+  expect(r).toMatchObject({ gross: 2400000, basic: 960000, hraReceived: 480000, hraExemption: 480000, afterExemption: 1920000,
+    standard: 50000, pt: 2500, section16: 52500, salaryIncome: 1867500, otherIncome: -200000, gti: 1667500, chapterVIA: 180000, taxable: 1487500 });
   expect(r.afterExemption).toBe(r.gross-r.hraExemption+r.previousIncome); expect(r.salaryIncome).toBe(r.afterExemption-r.section16);
   expect(r.gti).toBe(r.salaryIncome+r.otherIncome); expect(r.taxable).toBe(r.gti-r.chapterVIA);
  });
@@ -52,7 +52,7 @@ describe('PDF calculation: positive and negative cases', () => {
  });
  it('adds verified previous employer income and splits previous TDS with 4% cess',()=>{
   const r=calculate(clone(declaration),clone(employee),[clone(salary)],clone(storedPayrolls),[{status:'Verified',salaryEarned:300000,tdsDeducted:120000,previousPF:18000,professionalTax:1250}]);
-  expect(r).toMatchObject({previousIncome:300000,previousIT:115384.62,previousCess:4615.38,previousPF:18000,previousPT:1250,afterExemption:2420000});
+  expect(r).toMatchObject({previousIncome:300000,previousIT:115384.62,previousCess:4615.38,previousPF:18000,previousPT:1250,afterExemption:2220000});
  });
  it.each([[],[undefined],[{status:'Pending',salaryEarned:300000}],[{status:'Verified',salaryEarned:300000},{status:'Verified',salaryEarned:300000}]].map(forms=>({forms})))('zeroes missing, incomplete, unverified or ambiguous Form12B: %p', ({forms})=>{
   const r=calculate(clone(declaration),clone(employee),[clone(salary)],[],forms);
@@ -62,7 +62,7 @@ describe('PDF calculation: positive and negative cases', () => {
   const payroll=clone(storedPayrolls); Object.assign(payroll[0],{epfEmployee:3000,professionalTax:200,incomeTax:5000});
   const r=calculate(clone(declaration),clone(employee),[clone(salary)],payroll,forms);
   expect(r.months[0]).toMatchObject({gross:200000,basic:80000,hra:40000,allowance:80000,pf:3000,pt:200,it:5000,deductionsTotal:8200});
-  expect(r).toMatchObject({gross:2400000,hraExemption:280000,otherIncome:-200000,chapterVIA:180000,incomeTax:50250,cess:2010,totalTax:52260,previousIncome:0,previousIT:0,previousPF:0,previousPT:0,previousCess:0});
+  expect(r).toMatchObject({gross:2400000,hraExemption:480000,otherIncome:-200000,chapterVIA:180000,incomeTax:50250,cess:2010,totalTax:52260,previousIncome:0,previousIT:0,previousPF:0,previousPT:0,previousCess:0});
  });
  it('does not include previous PT under the new regime',()=>{
   const r=calculate({...clone(declaration),regime:'new'},clone(employee),[clone(salary)],[],[{status:'Verified',salaryEarned:300000,professionalTax:1250}]);
@@ -182,4 +182,16 @@ describe('PDF calculation: positive and negative cases', () => {
   const d=clone(declaration),s=clone(salary),u=clone(employee);const before=JSON.stringify({d,s,u});calculate(d,u,[s]);expect(JSON.stringify({d,s,u})).toBe(before);
  });
  it.each([undefined,null,NaN,Infinity,'12'])('formats invalid numeric values as zero: %p', value=>{expect(pdfNumber(value)).toBe(0);});
+});
+
+it('calculates Pavithra HRA from actual earnings and rent and preserves stored declaration and tax',()=>{
+ const d=clone(declaration);const p=clone(storedPayrolls.slice(5));Object.assign(p[1],{basic:74839,hra:37419,otherAllowance:74838.77});
+ const before=JSON.stringify({d,p});const r=calculate(d,clone(employee),[clone(salary)],p);
+ expect(r).toMatchObject({hraReceived:277419,basic:554839,rent:840000,hraComparison:277419.5,rentLessBasic:784516.1,hraExemption:277419,incomeTax:50250,cess:2010,totalTax:52260});
+ expect(r.afterExemption).toBe(1109677.77);expect(r.hraExemption).toBe(277419);expect(JSON.stringify({d,p})).toBe(before);
+});
+
+it.each([0,100000,280000,500000])('ignores stored approved HRA %s in the actual HRA formula',approved=>{
+ const d=clone(declaration);d.declarations[0].verifiedAmount=approved;d.declarations[0].maxLimit=approved;
+ expect(calculate(d).hraExemption).toBe(480000);
 });

@@ -1,3 +1,6 @@
+import { reportHraExemption } from './consolidated-hra-exemption';
+import { actualFinancialYearEarnings } from './consolidated-payroll-earnings';
+
 /** Read-only projection of the supplied Consolidated Tax Report specification.
  * This module must never update declarations, payroll, or deduction schedules.
  */
@@ -21,7 +24,7 @@ export interface TaxSlabSource {
     slabs: Array<{ fromAmount: number; toAmount?: number | null; taxRate: number }>;
 }
 export interface ReportEmployee {
-    _id: unknown; name?: string; employeeCode?: string; joiningDate?: Date | string;
+    _id: unknown; location?: string; name?: string; employeeCode?: string; joiningDate?: Date | string;
     separationDate?: Date | string; active?: boolean; governmentIds?: { pan?: { number?: string } };
 }
 export interface SalarySource {
@@ -107,11 +110,11 @@ export const REPORT_COLUMNS: ReportColumn[] = CALCULATION_COLUMNS.slice(0, 36).f
 
 export const REPORT_NOTES = [
     'The 34 selected reference Excel fields are exported in template order; P) Income Tax Paid and E) Excess Rent are omitted. Inapplicable cells are blank; confirmed calculated zero values remain numeric.',
-    'Annual gross is derived from salary revisions within the FY and employment dates. Complete months use monthly gross; partial months and revisions within a month use covered calendar days. Uncovered periods use the preceding salary rate, or the earliest available rate before the first assignment. A single monthly rate therefore projects across the FY employment period. Overlapping assignments or absent salary records require review.',
-    'Basic DA is 40% of report gross and HRA Received is 20%, as specified in the PDF.',
-    'Only verified declaration amounts are used. HRA, total exemptions, current professional tax, previous PT and house-property income/loss apply only to the old regime.',
+    'Annual gross is the sum of actual FY payroll earning components, using the same source as the consolidated PDF. Stored earnings already include payable-day adjustments. Months without payroll show zero; salary assignments do not fill uncovered months. Latest regular payroll plus final-settlement earnings are used; Cancelled and Failed records are excluded.',
+    'Basic DA is actual payroll Basic plus DA; HRA Received is actual payroll HRA. No fixed percentage split is applied to report gross.',
+    'Verified rent details establish HRA eligibility. HRA exemption is the lowest of actual HRA received, 40%/50% of actual Basic + DA based on location, and rent less 10% of Basic + DA. The stored approved HRA amount is not a calculation limit. Missing verified rent details give zero exemption. Other deductions continue to use verified amounts. HRA, total exemptions, current professional tax, previous PT and house-property income/loss apply only to the old regime.',
     'Income After Exemption is Gross Salary minus Total Exemptions. Previous-employer income is shown separately and is not added to this formula.',
-    'Old-regime PT is projected using the salary structure payment frequency: monthly, half-yearly or yearly, with one installment per applicable FY period. Uncovered salary periods use the same carried rate as gross. If PT configuration is unavailable, stored annual PT is used without multiplying it.',
+    'Old-regime PT retains the existing salary-structure projection and payment frequency: monthly, half-yearly or yearly, with one installment per applicable FY period. Uncovered salary periods use the existing carried salary rate for PT only. If PT configuration is unavailable, stored annual PT is used without multiplying it.',
     'Deduction Under Section 16 displays the configured FY/regime standard deduction plus old-regime professional tax. Standard Deduction : Sec 16(ia) displays only the configured standard deduction. Chapter VI-A is the sum of approved 80C, 80D, 80DD, 80E, 80GG and 80CCD(2) amounts listed in the PDF; this report projection does not change payroll tax rules.',
     'Relief u/s 87A displays the selected FY tax summary rebateAmount plus marginalReliefAmount, or numeric zero when no value is available.',
     'Total Income Tax to be Paid uses the selected FY tax summary Net Tax after Rebate (totalTaxAmount), including zero. If unavailable, the report calculation is used where possible. Total Cess to be Paid uses the selected FY tax summary Cess Amount (cessAmount), including zero; if unavailable, it is calculated at 4% of net income tax. Total Tax sums net income tax and cess.',
@@ -121,7 +124,7 @@ export const REPORT_NOTES = [
     'Total Surcharge to be Paid displays an available surcharge value, otherwise numeric zero. This display fallback does not calculate missing surcharge; the PDF does not specify rates above Rs.50 lakh and review warnings remain.',
     'Prev IT displays the income-tax component of verified previous TDS. LTA displays an available report value, otherwise numeric zero. No LTA calculation/source is defined in the supplied PDF.',
     'Leaving Date displays the saved employee separation date from confirmed Final Settlement when available, otherwise a dash. Draft settlements do not update employee separation dates.',
-    'Missing Form 12B affects only previous-employment fields. Salary-history errors leave gross-dependent calculations unavailable, while valid rent, approved exemptions, deductions, configured standard deduction and PT are still shown.',
+    'Missing Form 12B affects only previous-employment fields. Payroll validation warnings identify unavailable earnings; months without payroll show zero. Rent, approved exemptions, deductions, configured standard deduction and PT remain independent.',
     'This is a read-only report projection. It does not update salary assignments, declarations, payroll or deduction schedules.',
 ];
 
@@ -257,7 +260,7 @@ export function projectFinancialYearPT(employee: ReportEmployee, salaries: Salar
 
 export function buildConsolidatedRow(input: {
     employee: ReportEmployee; declaration?: TaxDeclarationSource; slab?: TaxSlabSource;
-    salaries: SalarySource[]; previous?: PreviousEmploymentSource; financialYear: string; serial: number; asOf?: Date;
+    salaries: SalarySource[]; payrolls?: any[]; previous?: PreviousEmploymentSource; financialYear: string; serial: number; asOf?: Date;
 }): ReportRow {
     const { employee, declaration: declaration, slab, salaries, previous, financialYear } = input;
     const approvalWarnings = declarationApprovalWarnings(declaration, previous);
@@ -313,14 +316,14 @@ export function buildConsolidatedRow(input: {
     } else if (previous) warnings.push('Unverified Form 12B amounts are excluded.');
     else if (form12BApplicable) warnings.push('Required Form 12B is missing; previous-employment fields are unavailable.');
 
-    try {
-        values.gross = projectFinancialYearGross(employee, salaries, financialYear);
-        values.basic = money(Number(values.gross) * 0.40);
-        values.hraReceived = money(Number(values.gross) * 0.20);
-    } catch (error) { warnings.push((error as Error).message); }
+    const earnings = actualFinancialYearEarnings(employee, input.payrolls || [], financialYearRange(financialYear).year);
+    values.gross = earnings.gross;
+    values.basic = earnings.basic;
+    values.hraReceived = earnings.hraReceived;
+    warnings.push(...earnings.warnings);
     if (!declaration || !['old', 'new'].includes(declaration.regime)) { warnings.push('FY tax declaration/regime is missing.'); return row; }
     if (numeric(values.gross) && (!numeric(declaration.annualGross) || Math.abs(values.gross - declaration.annualGross) > 1)) {
-        warnings.push('FY salary history differs from stored declaration gross; this report uses salary history without changing the declaration.');
+        warnings.push('Actual FY payroll earnings differ from stored declaration gross; this report uses payroll without changing the declaration.');
     }
 
     const processed = (declaration.monthlyDeductions || []).filter(item => item.isProcessed && item.financialYear === financialYear);
@@ -349,7 +352,12 @@ export function buildConsolidatedRow(input: {
         }
     });
     if (old) attempt(() => {
-        const hra = money(verified.filter(d => ['1013A', '10A13A'].includes(section(d.section))).reduce((total, d) => total + eligible(d), 0));
+        const hraItems = verified.filter(d => ['1013A', '10A13A'].includes(section(d.section)));
+        const rentEntries = hraItems.flatMap(item => item.rentDetails || []);
+        const validRent = rentEntries.length > 0 && rentEntries.every(entry => numeric(entry.amount) && entry.amount >= 0);
+        const rent = validRent ? money(rentEntries.reduce((total, entry) => total + entry.amount, 0)) : null;
+        const hra = hraItems.length ? reportHraExemption(Number(values.basic), Number(values.hraReceived), rent, employee.location) : 0;
+        if (hraItems.length && !validRent) warnings.push('Verified annual rent details are unavailable; HRA exemption is displayed as zero.');
         values.hraExemption = hra; values.exemptions = hra; values.excessRent = hra;
     });
     attempt(() => {

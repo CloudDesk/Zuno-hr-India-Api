@@ -1,10 +1,12 @@
 import { employeeOverlapsFinancialYear, loadConsolidatedTaxReport } from '../src/services/consolidated-tax-report.service';
+import { Payroll } from '../src/models/payrolls.model';
 import { User } from '../src/models/user.model';
 import { TaxDeclaration } from '../src/models/tax-declaration';
 import { TaxSlab } from '../src/models/tax-slab.model';
 import { SalaryAssignment } from '../src/models/salary-assignments.model';
 import { Document } from '../src/models/document.model';
 import { OrganizationProfile } from '../src/models/organization-profile.model';
+jest.mock('../src/models/payrolls.model', () => ({ Payroll: { find: jest.fn() } }));
 jest.mock('../src/models/user.model', () => ({ User: { find: jest.fn() } }));
 jest.mock('../src/models/tax-declaration', () => ({ TaxDeclaration: { find: jest.fn() } }));
 jest.mock('../src/models/tax-slab.model', () => ({ TaxSlab: { find: jest.fn() } }));
@@ -21,6 +23,7 @@ const declaration = { employeeId: 'employee-1', regime: 'new', annualGross: 6000
 describe('Read-only consolidated report source selection', () => {
     beforeEach(() => {
         (User.find as jest.Mock).mockReturnValue(query([employee]));
+        (Payroll.find as jest.Mock).mockReturnValue(query(Array.from({length:12},(_,offset)=>({employeeId:'employee-1',year:offset<9?2025:2026,month:(offset+3)%12+1,status:'Completed',basic:20000,hra:10000,otherAllowance:20000}))));
         (TaxDeclaration.find as jest.Mock).mockReturnValue(query([declaration]));
         (SalaryAssignment.find as jest.Mock).mockReturnValue(query([{ employeeId: 'employee-1', effectiveFrom: '2025-04-01', effectiveTo: '2026-03-31', monthlyGross: 50000, salaryStructureId: { fixedEarnings: { basicPercentage: 40, hraPercentage: 20 } } }]));
         (TaxSlab.find as jest.Mock).mockReturnValue(query([{ regime: 'new', standardDeduction: 75000, cessRate: 4, slabs: [{ fromAmount: 0, toAmount: null, taxRate: 10 }] }]));
@@ -79,4 +82,24 @@ describe('Read-only consolidated report source selection', () => {
         expect(report.rows[0].values).toMatchObject({ previousIncome: null, previousIT: null, afterExemption: 600000, taxable: 525000, totalTax: 0 });
         expect(report.rows[0].approvalWarnings?.join(' ')).toContain('Multiple Form 12B');
     });
+});
+
+describe('Actual payroll source regression',()=>{
+ beforeEach(()=>{
+  (User.find as jest.Mock).mockReturnValue(query([employee]));
+  (TaxDeclaration.find as jest.Mock).mockReturnValue(query([declaration]));
+  (SalaryAssignment.find as jest.Mock).mockReturnValue(query([]));
+  (TaxSlab.find as jest.Mock).mockReturnValue(query([{regime:'new',standardDeduction:75000,cessRate:4,slabs:[{fromAmount:0,toAmount:null,taxRate:10}]}]));
+  (Document.find as jest.Mock).mockReturnValue(query([]));
+  (OrganizationProfile.find as jest.Mock).mockReturnValue(query([{legalName:'Example',addresses:[{type:'payroll',isPrimary:true,line1:'Office'}]}]));
+  jest.mocked(Payroll.find).mockClear();
+ });
+it('loads FY payroll earnings with the same status policy as PDF',async()=>{
+ const chain=query([]);(Payroll.find as jest.Mock).mockReturnValue(chain);
+ const report=await loadConsolidatedTaxReport({financialYear:'2025-2026'});
+ expect(report.rows[0].values).toMatchObject({gross:0,basic:0,hraReceived:0});
+ expect(Payroll.find).toHaveBeenCalledWith({employeeId:{$in:['employee-1']},status:{$nin:['Cancelled','Failed']},$or:[{year:2025,month:{$gte:4,$lte:12}},{year:2026,month:{$gte:1,$lte:3}}]});
+ for(const field of ['basic','hra','da','otherAllowance','travelAllowance','reimbursementAllowance'])expect(chain.select.mock.calls[0][0].split(' ')).toContain(field);
+});
+
 });

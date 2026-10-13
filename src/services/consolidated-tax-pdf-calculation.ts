@@ -1,3 +1,5 @@
+import { reportHraExemption } from './consolidated-hra-exemption';
+import { payrollMonthEarnings } from './consolidated-payroll-earnings';
 import { financialYearRange, money, projectFinancialYearPT, SalarySource } from './consolidated-tax-calculation';
 
 export interface PdfMonth { label: string; gross: number; basic: number; hra: number; allowance: number; da: number; travelAllowance: number; airTicketAllowance: number; medicalAllowance: number; reimbursementAllowance: number; pf: number; pt: number; it: number; deductionsTotal: number; }
@@ -45,37 +47,13 @@ export function buildPdfEmployee(user: any, declaration: any, salaries: SalarySo
     const months: PdfMonth[] = Array.from({ length: 12 }, (_, offset) => {
         const first = new Date(Date.UTC(year, 3 + offset, 1)), last = new Date(Date.UTC(year, 4 + offset, 0));
         const from = Math.max(day(first), joined), to = Math.min(day(last), left);
-        const payroll = payrolls.filter(p => p && !['Cancelled', 'Failed'].includes(p.status) && Number(p.year) === first.getUTCFullYear() && Number(p.month) === first.getUTCMonth() + 1)
-            .sort((a, b) => (new Date(b.processedAt || 0).getTime() || 0) - (new Date(a.processedAt || 0).getTime() || 0));
-        // Regular payroll duplicates are not summed; final settlement can coexist with a regular payroll.
-        const regular = payroll.filter(p => !p.isFinalSettlement && p.type !== 'FinalSettlement');
-        if (regular.length > 1) warnings.push(`Multiple regular payrolls for ${first.toISOString().slice(0, 7)}; latest payroll earnings and deductions used.`);
-        const selected = [...regular.slice(0, 1), ...payroll.filter(p => p.isFinalSettlement || p.type === 'FinalSettlement')];
-        const sum = (key: string): number => money(selected.reduce((total, p) => total + positive(p[key]), 0));
-        const componentKeys = ['basic', 'hra', 'otherAllowance', 'da', 'travelAllowance', 'airTicketAllowance', 'medicalAllowance', 'reimbursementAllowance'];
-        const earnings = validEmployment && from <= to ? selected.filter(p => {
-            // Stored earnings already include payroll's payable-day adjustment.
-            const valid = componentKeys.every(key => {
-                const required = ['basic', 'hra', 'otherAllowance'].includes(key);
-                return !required && p[key] == null || typeof p[key] === 'number' && Number.isFinite(p[key]) && p[key] >= 0;
-            });
-            if (!valid) warnings.push(`Invalid payroll earnings for ${first.toISOString().slice(0, 7)}; affected record earnings displayed as zero.`);
-            return valid;
-        }) : [];
-        if (!selected.length && validEmployment && from <= to) warnings.push(`No payroll for ${first.toISOString().slice(0, 7)}; monthly earnings displayed as zero.`);
-        const earned = (key: string): number => money(earnings.reduce((total, p) => total + positive(p[key]), 0));
-        const basic = earned('basic'), hra = earned('hra'), allowance = earned('otherAllowance'), da = earned('da');
-        const travelAllowance = earned('travelAllowance'), airTicketAllowance = earned('airTicketAllowance'), medicalAllowance = earned('medicalAllowance'), reimbursementAllowance = earned('reimbursementAllowance');
-        const gross = money(basic + hra + allowance + da + travelAllowance + airTicketAllowance + medicalAllowance + reimbursementAllowance);
-        return { label: monthFormatter.format(first), gross, basic, hra,
-            allowance, da, travelAllowance, airTicketAllowance, medicalAllowance, reimbursementAllowance,
-            pf: sum('epfEmployee'), pt: sum('professionalTax'), it: sum('incomeTax'), deductionsTotal: money(sum('epfEmployee') + sum('professionalTax') + sum('incomeTax')) };
+        return { label: monthFormatter.format(first), ...payrollMonthEarnings(payrolls, first.getUTCFullYear(), first.getUTCMonth() + 1, validEmployment && from <= to, warnings) };
     });
     const sum = (key: keyof PdfMonth): number => money(months.reduce((total, m) => total + Number(m[key]), 0));
     const items: any[] = Array.isArray(declaration?.declarations) ? declaration.declarations.filter((item: any) => item && typeof item === 'object') : [];
     const hraItems = items.filter(d => hraSection(d.section));
     const rent = money(hraItems.flatMap(d => d.rentDetails || []).reduce((total: number, r: any) => total + positive(r.amount), 0));
-    const hraExemption = old ? money(hraItems.reduce((total, d) => total + approved(d), 0)) : 0;
+    const verifiedHra = hraItems.filter(item => item.status === 'verified');
     const previous = forms.length === 1 && ['verified', 'Verified'].includes(String(forms[0]?.status)) ? forms[0] : undefined;
     if (forms.length && !previous) warnings.push('Previous employer amounts are unverified or ambiguous; displayed as zero.');
     const previousIncome = positive(previous?.salaryEarned);
@@ -86,6 +64,11 @@ export function buildPdfEmployee(user: any, declaration: any, salaries: SalarySo
         name: String(d.subSection || d.description || d.section), section: String(d.section), gross: positive(d.declaredAmount), approved: approved(d),
     })) : [];
     const gross = sum('gross'), basic = money(sum('basic') + sum('da')), hraReceived = sum('hra');
+    const rentEntries = verifiedHra.flatMap(item => item.rentDetails || []);
+    const validRent = rentEntries.length > 0 && rentEntries.every(entry => typeof entry?.amount === 'number' && Number.isFinite(entry.amount) && entry.amount >= 0);
+    const exemptionRent = validRent ? money(rentEntries.reduce((total, entry) => total + entry.amount, 0)) : null;
+    const hraExemption = old && verifiedHra.length ? reportHraExemption(basic, hraReceived, exemptionRent, user.location) : 0;
+    if (old && verifiedHra.length && !validRent) warnings.push('Verified annual rent details are unavailable; HRA exemption is displayed as zero.');
     const standard = validRegime ? old ? 50000 : 75000 : 0;
     let pt = 0;
     if (old) {

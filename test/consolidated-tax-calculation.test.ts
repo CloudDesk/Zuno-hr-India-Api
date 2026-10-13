@@ -13,6 +13,7 @@ const newSlab: TaxSlabSource = { standardDeduction: 75_000, cessRate: 4, slabs: 
 function input(): Parameters<typeof buildConsolidatedRow>[0] {
     return { employee: { _id: 'employee-1', name: 'Arun', employeeCode: 'E001', active: true, joiningDate: '2020-01-01', governmentIds: { pan: { number: 'ABCDE1234F' } } },
         financialYear: '2025-2026', serial: 1, slab: oldSlab,
+        payrolls: Array.from({length:12},(_,offset)=>({year:offset<9?2025:2026,month:(offset+3)%12+1,status:'Completed',basic:40000,hra:20000,otherAllowance:40000})),
         declaration: { regime: 'old', annualGross: 1_200_000, ptDeduction: 2400, declarations: [
             { section: '10_13A', status: 'verified', verifiedAmount: 120_000, rentDetails: [{ amount: 180_000 }] },
             { section: '80C', status: 'verified', verifiedAmount: 150_000 },
@@ -31,32 +32,33 @@ describe('Consolidated tax PDF calculations', () => {
         const row = buildConsolidatedRow(source);
         expect(row.values.rent).toBeNull();
         expect(row.warnings.join(' ')).toContain('rent entry is missing or invalid');
-        // Declared rent is display-only; the independently verified HRA exemption still applies.
-        expect(row.values.totalTax).toBe(91540.8);
+        // Without valid verified rent, the actual HRA formula cannot establish an exemption.
+        expect(row.values.hraExemption).toBe(0);
+        expect(row.values.totalTax).toBe(116500.8);
     });
     it('reconciles salary revisions, approved deductions and old-regime tax without mutating sources', () => {
         const source = input();
         const before = JSON.stringify(source);
         const row = buildConsolidatedRow(source);
         expect(row.approvalWarnings?.join(' ')).toContain('80D');
-        expect(row.values).toMatchObject({ gross: 1_200_000, basic: 480_000, hraReceived: 240_000, hraExemption: 120_000,
-            rent: 180_000, afterExemption: 1_080_000, section16: 52_400, salaryIncome: 1_027_600,
-            chapterVIA: 150_000, taxable: 877_600, roundedTaxable: 877_600, incomeTax: 88_020, cess: 3520.8, totalTax: 91540.8 });
+        expect(row.values).toMatchObject({ gross: 1_200_000, basic: 480_000, hraReceived: 240_000, hraExemption: 132_000,
+            rent: 180_000, afterExemption: 1_068_000, section16: 52_400, salaryIncome: 1_015_600,
+            chapterVIA: 150_000, taxable: 865_600, roundedTaxable: 865_600, incomeTax: 85_620, cess: 3424.8, totalTax: 89044.8 });
         expect(JSON.stringify(source)).toBe(before);
     });
-    it('uses fixed PDF percentages independently of salary structure', () => {
+    it('uses actual payroll components independently of salary structure', () => {
         const source = input(); source.salaries[1].salaryStructureId!.fixedEarnings!.basicPercentage = 50;
         expect(buildConsolidatedRow(source).values.basic).toBe(480_000);
     });
-    it('uses salary history when the stored declaration gross disagrees', () => {
+    it('uses actual payroll when stored declaration gross disagrees', () => {
         const source = input(); source.declaration!.annualGross = 1_300_000;
         const row = buildConsolidatedRow(source);
         expect(row.values).toMatchObject({ gross: 1_200_000, basic: 480_000, hraReceived: 240_000 });
-        expect(row.warnings.join(' ')).toContain('differs');
+        expect(row.warnings.join(' ')).toContain('differ');
     });
     it('does not double count overlapping salary assignments', () => {
         const source = input(); source.salaries.push(source.salaries[0]);
-        expect(buildConsolidatedRow(source).values.basic).toBeNull();
+        expect(buildConsolidatedRow(source).values.basic).toBe(480000);
     });
     it('enforces new-regime applicability while allowing verified employer NPS', () => {
         const source = input(); source.declaration!.regime = 'new'; source.slab = newSlab;
@@ -78,6 +80,7 @@ describe('Consolidated tax PDF calculations', () => {
             source.declaration!.declarations = [];
             source.slab = newSlab;
             source.salaries = [{ effectiveFrom: '2025-04-01', effectiveTo: '2026-03-31', monthlyGross: annualGross / 12 }];
+            source.payrolls = [{year:2025,month:4,status:'Completed',basic:annualGross,hra:0,otherAllowance:0}];
             const row = buildConsolidatedRow(source);
             expect(row.values).toMatchObject({
                 gross: annualGross,
@@ -98,13 +101,13 @@ describe('Consolidated tax PDF calculations', () => {
         const source = input();
         source.declaration!.declarations.push({ section: 'income_loss_house_property', type: 'loss', status: 'verified', verifiedAmount: 12_345.67 });
         const row = buildConsolidatedRow(source);
-        expect(row.values.otherIncome).toBe(-12345.67); expect(row.values.roundedTaxable).toBe(865254.33);
+        expect(row.values.otherIncome).toBe(-12345.67); expect(row.values.roundedTaxable).toBe(853254.33);
     });
     it('never applies a deduction ceiling to positive house-property income', () => {
         const source = input();
         source.declaration!.declarations.push({ section: 'income_loss_house_property', type: 'income', status: 'verified', verifiedAmount: 350_000, maxLimit: 200_000 });
         const row = buildConsolidatedRow(source);
-        expect(row.values).toMatchObject({ otherIncome: 350_000, taxable: 1_227_600, incomeTax: 180_780, cess: 7231.2, totalTax: 188011.2 });
+        expect(row.values).toMatchObject({ otherIncome: 350_000, taxable: 1_215_600, incomeTax: 177_180, cess: 7087.2, totalTax: 184267.2 });
     });
     it('nets signed property income and losses as specified', () => {
         const source = input();
@@ -112,12 +115,12 @@ describe('Consolidated tax PDF calculations', () => {
             { section: 'income_loss_house_property', type: 'loss', status: 'verified', verifiedAmount: -400_000, maxLimit: 200_000 },
             { section: 'income_loss_house_property', type: 'income', status: 'verified', verifiedAmount: 150_000, maxLimit: 200_000 },
         );
-        expect(buildConsolidatedRow(source).values).toMatchObject({ otherIncome: -250_000, taxable: 627_600 });
+        expect(buildConsolidatedRow(source).values).toMatchObject({ otherIncome: -250_000, taxable: 615_600 });
     });
     it('keeps current PDF calculation independent of invalid previous salary', () => {
         const source = input(); source.previous = { status: 'Verified', salaryEarned: -1, tdsDeducted: 5000 };
         const row = buildConsolidatedRow(source);
-        expect(row.values).toMatchObject({ previousIncome: null, previousTax: null, totalTax: 91540.8 });
+        expect(row.values).toMatchObject({ previousIncome: null, previousTax: null, totalTax: 89044.8 });
         expect(row.warnings.join(' ')).toContain('salary is missing or invalid');
     });
     it.each([-1, NaN, Infinity])('rejects invalid taxable input %s', taxable => {
@@ -141,8 +144,8 @@ describe('Consolidated tax PDF calculations', () => {
         expect(splitPreviousTds(5000)).toEqual({ incomeTax: 4807.69, cess: 192.31 });
         const source = input(); source.previous = { status: 'Verified', salaryEarned: 100_000, tdsDeducted: 5000 };
         const row = buildConsolidatedRow(source);
-        expect(row.values).toMatchObject({ gross: 1_200_000, previousIncome: 100_000, afterExemption: 1_080_000,
-            standardDeduction: 50_000, taxable: 877_600, previousTax: 4807.69, previousCess: 192.31, totalTax: 91540.8 });
+        expect(row.values).toMatchObject({ gross: 1_200_000, previousIncome: 100_000, afterExemption: 1_068_000,
+            standardDeduction: 50_000, taxable: 865_600, previousTax: 4807.69, previousCess: 192.31, totalTax: 89044.8 });
     });
     it('does not add previous salary into the current PDF calculation', () => {
         const source = input(); source.declaration!.regime = 'new'; source.slab = newSlab;
@@ -170,11 +173,11 @@ describe('Consolidated tax PDF calculations', () => {
     });
     it('keeps current PDF tax available while missing Form12B fields are unavailable', () => {
         const source = input(); source.declaration!.isForm12BApplicable = true;
-        expect(buildConsolidatedRow(source).values.totalTax).toBe(91540.8);
+        expect(buildConsolidatedRow(source).values.totalTax).toBe(89044.8);
     });
     it('excludes unverified previous-employer declarations', () => {
         const source = input(); source.previous = { status: 'Pending', salaryEarned: 100_000, tdsDeducted: 5000 };
-        expect(buildConsolidatedRow(source).values).toMatchObject({ previousIncome: null, previousTax: null, totalTax: 91540.8 });
+        expect(buildConsolidatedRow(source).values).toMatchObject({ previousIncome: null, previousTax: null, totalTax: 89044.8 });
     });
     it('does not claim zero surcharge where previous income requires review', () => {
         const source = input(); source.previous = { status: 'Verified', salaryEarned: 6_000_000, tdsDeducted: 100_000 };
@@ -195,11 +198,13 @@ describe('Consolidated tax PDF calculations', () => {
         expect(columns).not.toContain('excessRent'); expect(columns).not.toContain('incomeTaxPaid'); expect(columns).not.toContain('directTdsTax'); expect(columns).not.toContain('taxBalance');
         expect(columns).toContain('totalTax'); expect(row.values.totalTax).toBe(0);
     });
-    it('prorates employment through the separation date', () => {
+    it('uses already prorated payroll through the separation date without applying it twice', () => {
         const source = input(); source.employee.active = false; source.employee.separationDate = '2025-10-15';
+        source.payrolls!.slice(0,6).forEach(p=>Object.assign(p,{basic:36000,hra:18000,otherAllowance:36000}));
+        Object.assign(source.payrolls![6],{basic:21290,hra:10645,otherAllowance:21290.81});
         const row = buildConsolidatedRow(source);
         expect(row.values).toMatchObject({ leftOrg: 'Yes', leavingDate: '2025-10-15', gross: 593225.81 });
-        expect(row.warnings.join(' ')).toContain('differs');
+        expect(row.warnings.join(' ')).toContain('differ');
     });
     it('applies rebate and marginal relief at FY-specific boundaries', () => {
         expect(calculateReportTax(500_000, 'old', '2025-2026', oldSlab).totalTax).toBe(0);
@@ -221,10 +226,10 @@ describe('Latest report display requirements', () => {
         const row = buildConsolidatedRow(input());
         expect(row.values).toEqual({
             serial: 1, name: 'Arun', employeeCode: 'E001', pan: 'ABCDE1234F', joiningDate: '2020-01-01', leavingDate: null, leftOrg: 'No', regime: 'Old Regime',
-            gross: 1_200_000, basic: 480_000, excessRent: 120_000, hraExemption: 120_000, hraReceived: 240_000, lta: null, exemptions: 120_000, rent: 180_000,
-            previousIT: null, previousPF: null, previousPT: null, previousIncome: null, afterExemption: 1_080_000,
-            standardDeduction: 50_000, pt: 2_400, section16: 52_400, salaryIncome: 1_027_600, otherIncome: 0, gti: 1_027_600,
-            chapterVIA: 150_000, taxable: 877_600, roundedTaxable: 877_600, incomeTax: 88_020, surcharge: 0, cess: 3_520.8, totalTax: 91_540.8, rebate: 0,
+            gross: 1_200_000, basic: 480_000, excessRent: 132_000, hraExemption: 132_000, hraReceived: 240_000, lta: null, exemptions: 132_000, rent: 180_000,
+            previousIT: null, previousPF: null, previousPT: null, previousIncome: null, afterExemption: 1_068_000,
+            standardDeduction: 50_000, pt: 2_400, section16: 52_400, salaryIncome: 1_015_600, otherIncome: 0, gti: 1_015_600,
+            chapterVIA: 150_000, taxable: 865_600, roundedTaxable: 865_600, incomeTax: 85_620, surcharge: 0, cess: 3_424.8, totalTax: 89_044.8, rebate: 0,
             incomeTaxPaid: 0, surchargePaid: 0, cessPaid: 0, directTdsTax: 0, directTdsSurcharge: 0, directTdsCess: 0,
             previousTax: null, previousSurcharge: null, previousCess: null, taxPaid: 0,
             relief89Tax: 0, relief89Surcharge: 0, relief89Cess: 0, relief89Total: 0,
@@ -264,11 +269,11 @@ describe('FY salary history and reference payment fields', () => {
         ];
         expect(projectFinancialYearGross(source.employee, source.salaries, source.financialYear)).toBe(1065000);
     });
-    it('projects gap days using the preceding salary rate rather than stored gross', () => {
+    it('uses actual payroll despite a gap in salary assignments', () => {
         const source = input(); source.salaries[1].effectiveFrom = '2025-10-02';
         const row = buildConsolidatedRow(source);
-        expect(row.values.gross).toBe(1199354.84);
-        expect(row.values.basic).toBe(479741.94);
+        expect(row.values.gross).toBe(1200000);
+        expect(row.values.basic).toBe(480000);
         expect(row.values.totalTax).not.toBeNull();
     });
     it('calculates previous PT only for old regime while PF and previous IT remain available', () => {
@@ -303,33 +308,35 @@ describe('Independent fields survive missing sources', () => {
         source.salaries = [];
         source.declaration!.monthlyDeductions = [{month: 'Oct', financialYear: '2025-2026', actualDeduction: 5000, isProcessed: true}];
         const row = buildConsolidatedRow(source);
-        expect(row.values).toMatchObject({gross: null, basic: null, hraReceived: null,
-            hraExemption: 120000, exemptions: 120000, rent: 180000, chapterVIA: 150000,
+        expect(row.values).toMatchObject({gross: 1200000, basic: 480000, hraReceived: 240000,
+            hraExemption: 132000, exemptions: 132000, rent: 180000, chapterVIA: 150000,
             standardDeduction: 50000, pt: 2400, section16: 52400, incomeTaxPaid: 4807.69,
-            previousIncome: null, previousIT: null, afterExemption: null, salaryIncome: null,
-            gti: null, taxable: null, incomeTax: null, totalTax: null});
+            previousIncome: null, previousIT: null, afterExemption: 1068000, salaryIncome: 1015600,
+            gti: 1015600, taxable: 865600, incomeTax: 85620, totalTax: 89044.8});
     });
     it('keeps approved deductions and current PT when tax slab configuration is missing', () => {
         const source = input(); source.slab = undefined;
         expect(buildConsolidatedRow(source).values).toMatchObject({gross: 1200000, rent: 180000,
-            exemptions: 120000, afterExemption: 1080000, pt: 2400, chapterVIA: 150000,
+            exemptions: 132000, afterExemption: 1068000, pt: 2400, chapterVIA: 150000,
             standardDeduction: null, section16: null, totalTax: null});
     });
-    it('does not let an invalid HRA amount hide unrelated approved deductions', () => {
+    it('ignores invalid stored HRA amounts and uses actual salary and rent', () => {
         const source = input(); source.declaration!.declarations[0].verifiedAmount = -1;
         expect(buildConsolidatedRow(source).values).toMatchObject({gross: 1200000, rent: 180000,
-            hraExemption: null, exemptions: null, chapterVIA: 150000, pt: 2400, totalTax: null});
+            hraExemption: 132000, exemptions: 132000, chapterVIA: 150000, pt: 2400, totalTax: 89044.8});
     });
 });
 
 
-describe('Annual projection without a complete salary history', () => {
-    it('annualizes Pavithra monthly gross despite the unrecorded April-August period', () => {
+describe('Actual annual earnings without a complete salary history', () => {
+    it('does not fill April-August and uses Pavithra actual September-March earnings', () => {
         const source = input(); source.financialYear = '2026-2027'; source.employee.joiningDate = '2026-04-01';
         source.declaration!.annualGross = 1400000; source.declaration!.isForm12BApplicable = true;
         source.salaries = [{effectiveFrom: '2026-09-01', effectiveTo: '2027-03-31', monthlyGross: 200000}];
+        source.payrolls = Array.from({length:7},(_,offset)=>({year:offset<4?2026:2027,month:(offset+8)%12+1,status:'Completed',basic:80000,hra:40000,otherAllowance:80000}));
+        Object.assign(source.payrolls[1],{basic:74839,hra:37419,otherAllowance:74838.77});
         const row = buildConsolidatedRow(source);
-        expect(row.values).toMatchObject({gross: 2400000, basic: 960000, hraReceived: 480000, previousIncome: null});
+        expect(row.values).toMatchObject({gross: 1387096.77, basic: 554839, hraReceived: 277419, previousIncome: null});
         expect(row.values.totalTax).not.toBeNull();
         expect(row.warnings.join(' ')).not.toContain('Salary history is missing');
     });
@@ -344,28 +351,28 @@ describe('Annual projection without a complete salary history', () => {
 });
 
 
-describe('Old-regime Excess Rent matches the approved HRA exemption', () => {
-    it('uses the verified HRA exemption rather than the entered rent', () => {
+describe('Old-regime Excess Rent matches the calculated HRA exemption', () => {
+    it('uses the actual HRA calculation without a stored approval cap', () => {
         const source = input();
         source.declaration!.declarations[0].rentDetails = [{amount: 100000}, {amount: 80000}];
         const row = buildConsolidatedRow(source);
-        expect(row.values).toMatchObject({excessRent: 120000, rent: 180000, hraExemption: 120000, totalTax: 91540.8});
+        expect(row.values).toMatchObject({excessRent: 132000, rent: 180000, hraExemption: 132000, totalTax: 89044.8});
     });
     it('shows zero for the new regime even if rent is entered', () => {
         const source = input(); source.declaration!.regime = 'new'; source.slab = newSlab;
         expect(buildConsolidatedRow(source).values.excessRent).toBe(0);
     });
-    it('keeps the approved HRA amount even when rent details are absent', () => {
+    it('shows zero HRA when verified rent details are absent', () => {
         const source = input(); source.declaration!.declarations[0].rentDetails = [];
-        expect(buildConsolidatedRow(source).values.excessRent).toBe(120000);
+        expect(buildConsolidatedRow(source).values.excessRent).toBe(0);
     });
     it('does not require salary history or Form 12B to show entered rent', () => {
         const source = input(); source.salaries = []; source.declaration!.isForm12BApplicable = true;
-        expect(buildConsolidatedRow(source).values).toMatchObject({excessRent: 120000, gross: null, previousIncome: null});
+        expect(buildConsolidatedRow(source).values).toMatchObject({excessRent: 132000, gross: 1200000, previousIncome: null});
     });
-    it('keeps Excess Rent matched to valid HRA even when entered rent is invalid', () => {
+    it('shows zero HRA when entered rent is invalid', () => {
         const source = input(); source.declaration!.declarations[0].rentDetails = [{amount: -1}];
-        expect(buildConsolidatedRow(source).values.excessRent).toBe(120000);
+        expect(buildConsolidatedRow(source).values.excessRent).toBe(0);
     });
 });
 
@@ -386,12 +393,12 @@ describe('Selected FY tax summary mapping', () => {
     it('shows stored tax summary amounts even when salary records are unavailable', () => {
         const source = input(); source.salaries = [];
         source.declaration!.initialTaxBreakdown = {totalTaxAmount: 50250, rebateAmount: 0, marginalReliefAmount: 3500};
-        expect(buildConsolidatedRow(source).values).toMatchObject({gross: null, incomeTax: 50250, cess: 2010, totalTax: 52260, rebate: 3500});
+        expect(buildConsolidatedRow(source).values).toMatchObject({gross: 1200000, incomeTax: 50250, cess: 2010, totalTax: 52260, rebate: 3500});
     });
     it('does not export a negative stored net tax amount', () => {
         const source = input(); source.declaration!.initialTaxBreakdown = {totalTaxAmount: -1};
         const row = buildConsolidatedRow(source);
-        expect(row.values.incomeTax).toBe(88020);
+        expect(row.values.incomeTax).toBe(85620);
         expect(row.warnings.join(' ')).toContain('Stored Net Tax after Rebate is invalid');
     });
 });
@@ -412,7 +419,7 @@ describe('Tax summary cess and Total Tax', () => {
     });
     it('combines calculated net tax with recorded summary cess when summary net tax is absent', () => {
         const source = input(); source.declaration!.initialTaxBreakdown = {cessAmount: 2010};
-        expect(buildConsolidatedRow(source).values).toMatchObject({incomeTax: 88020, cess: 2010, totalTax: 90030});
+        expect(buildConsolidatedRow(source).values).toMatchObject({incomeTax: 85620, cess: 2010, totalTax: 87630});
     });
 });
 
@@ -445,4 +452,20 @@ describe('Available annual PT is preserved without slab configuration', () => {
         };
         expect(buildConsolidatedRow(source).values).toMatchObject({pt: amount, section16: 50000 + amount});
     });
+});
+
+describe('actual Excel payroll salary components',()=>{
+ it('does not force 40/20 percent and includes other actual earning components in gross',()=>{
+  const source=input();source.payrolls=[{year:2025,month:4,basic:50000,hra:10000,otherAllowance:5000,da:2000,travelAllowance:1000,airTicketAllowance:300,medicalAllowance:200,reimbursementAllowance:500}];
+  expect(buildConsolidatedRow(source).values).toMatchObject({gross:69000,basic:52000,hraReceived:10000});
+ });
+ it('shows zero with no payroll and preserves the stored tax summary',()=>{
+  const source=input();source.payrolls=[];source.declaration!.initialTaxBreakdown={totalTaxAmount:50250,cessAmount:2010};
+  expect(buildConsolidatedRow(source).values).toMatchObject({gross:0,basic:0,hraReceived:0,incomeTax:50250,cess:2010,totalTax:52260});
+ });
+});
+
+it.each([0,10000,120000,500000])('ignores stored HRA amount %s in Excel calculation',amount=>{
+ const source=input();source.declaration!.declarations[0].verifiedAmount=amount;source.declaration!.declarations[0].maxLimit=amount;
+ expect(buildConsolidatedRow(source).values.hraExemption).toBe(132000);
 });

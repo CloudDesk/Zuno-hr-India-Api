@@ -1,3 +1,5 @@
+import { buildPdfEmployee } from '../src/services/consolidated-tax-pdf-calculation';
+import { employee as payrollEmployee, salary as payrollSalary, declaration as payrollDeclaration, payrolls as actualPayrolls, fy as payrollFy, clone as clonePayroll } from './helpers/consolidated-pdf-fixture';
 import ExcelJS from 'exceljs';
 import { exportConsolidatedTaxWorkbook } from '../src/services/consolidated-tax-report.service';
 import { buildConsolidatedRow, REPORT_COLUMNS, REPORT_NOTES } from '../src/services/consolidated-tax-calculation';
@@ -57,7 +59,7 @@ describe('Consolidated tax Excel output', () => {
         expect(sheet.getCell('Q6').value).toBe(1800); // Declared previous PF
         expect(sheet.getCell('R6').value).toBe(1250); // Previous PT
         expect(sheet.getCell('P6').value).toBe(4807.69); // Previous TDS income-tax component
-        expect(sheet.getCell('I6').value).toBe('-'); // Missing required gross
+        expect(sheet.getCell('I6').value).toBe(0); // No actual payroll earnings
         expect(sheet.getCell('AG6').value).toBe('-'); // Missing required annual tax
     });
     it('shows numeric zero for missing Form 12B amounts while missing leaving date shows a dash', async () => {
@@ -132,4 +134,17 @@ describe('Consolidated tax Excel output', () => {
         }
     });
 
+});
+
+it('exports the same actual salary values as the PDF for Pavithra September-March example',async()=>{
+ const records=clonePayroll(actualPayrolls.slice(5));Object.assign(records[1],{basic:74839,hra:37419,otherAllowance:74838.77});
+ const declaration={...clonePayroll(payrollDeclaration),annualGross:1400000};
+ const row=buildConsolidatedRow({employee:payrollEmployee,declaration,salaries:[payrollSalary],payrolls:records,financialYear:payrollFy,serial:1,
+  slab:{standardDeduction:50000,cessRate:4,slabs:[{fromAmount:0,toAmount:null,taxRate:10}]}});
+ const pdf=buildPdfEmployee(payrollEmployee,declaration,[payrollSalary],records,[],'ABCDE1234F',payrollFy);
+ expect(row.values).toMatchObject({gross:1387096.77,basic:554839,hraReceived:277419,hraExemption:277419,exemptions:277419,incomeTax:50250,cess:2010,totalTax:52260});
+ expect([row.values.gross,row.values.basic,row.values.hraReceived]).toEqual([pdf.gross,pdf.basic,pdf.hraReceived]);
+ const buffer=await exportConsolidatedTaxWorkbook({financialYear:payrollFy,generatedAt:'2026-10-13T00:00:00Z',employer:{name:'Example',address:'Example'},columns:REPORT_COLUMNS,notes:REPORT_NOTES,rows:[row]});
+ const book=new ExcelJS.Workbook();await book.xlsx.load(buffer as unknown as ExcelJS.Buffer);const sheet=book.getWorksheet('Sheet1')!;
+ expect(sheet.getCell('K6').value).toBe(277419);expect(sheet.getCell('I6').value).toBe(1387096.77);expect(sheet.getCell('J6').value).toBe(554839);expect(sheet.getCell('L6').value).toBe(277419);
 });

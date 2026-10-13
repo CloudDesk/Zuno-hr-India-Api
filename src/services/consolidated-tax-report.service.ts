@@ -1,4 +1,5 @@
 import ExcelJS from 'exceljs';
+import { Payroll } from '../models/payrolls.model';
 import { User } from '../models/user.model';
 import { TaxDeclaration } from '../models/tax-declaration';
 import { TaxSlab } from '../models/tax-slab.model';
@@ -43,7 +44,7 @@ export function employeeOverlapsFinancialYear(
 /** Only find/select/lean queries are permitted here. Never call tax recalculation methods. */
 export async function loadConsolidatedTaxReport(query: ConsolidatedTaxQuery): Promise<ConsolidatedTaxReport> {
     const generatedAt = new Date();
-    const { start, end } = financialYearRange(query.financialYear);
+    const { start, end, year } = financialYearRange(query.financialYear);
     const employeeFilter: Record<string, unknown> = {
         country: 'IN', isConsultancy: { $ne: true }, isIntern: { $ne: true },
         $and: [
@@ -63,11 +64,11 @@ export async function loadConsolidatedTaxReport(query: ConsolidatedTaxQuery): Pr
         employeeFilter._id = { $in: matching.map(item => item.employeeId) };
     }
     const employees = (await User.find(employeeFilter)
-        .select('_id name employeeCode joiningDate separationDate active governmentIds')
+        .select('_id name employeeCode location joiningDate separationDate active governmentIds')
         .sort({ employeeCode: 1, _id: 1 }).lean())
         .filter(employee => employeeOverlapsFinancialYear(employee, query.financialYear));
     const employeeIds = employees.map(employee => employee._id);
-    const [declarations, salaries, slabs, documents, profiles] = await Promise.all([
+    const [declarations, salaries, slabs, documents, profiles, payrolls] = await Promise.all([
         TaxDeclaration.find({ employeeId: { $in: employeeIds }, financialYear: query.financialYear })
             .select('employeeId regime annualGross ptDeduction declarations initialTaxBreakdown isMigrationAdjusted isForm12BApplicable poiSubmissionStatus monthlyDeductions').lean(),
         SalaryAssignment.find({ employeeId: { $in: employeeIds }, effectiveFrom: { $lte: end }, effectiveTo: { $gte: start } })
@@ -79,9 +80,13 @@ export async function loadConsolidatedTaxReport(query: ConsolidatedTaxQuery): Pr
             { category: 'Certification', 'metadata.certificate.certificateType': 'IdentityProof', 'metadata.certificate.idDetails.idType': 'PAN' },
         ] }).select('employeeId type metadata.form12B metadata.certificate uploadDate').sort({ uploadDate: -1, _id: -1 }).lean(),
         OrganizationProfile.find({ status: 'Active' }).select('legalName addresses').limit(2).lean(),
+        Payroll.find({ employeeId: { $in: employeeIds }, status: { $nin: ['Cancelled', 'Failed'] }, $or: [
+            { year, month: { $gte: 4, $lte: 12 } }, { year: year + 1, month: { $gte: 1, $lte: 3 } },
+        ] }).select('employeeId year month status basic hra da otherAllowance travelAllowance airTicketAllowance medicalAllowance reimbursementAllowance epfEmployee professionalTax incomeTax processedAt isFinalSettlement type').sort({ processedAt: -1, _id: -1 }).lean(),
     ]);
     const declarationMap = groupByEmployee(declarations);
     const salaryMap = groupByEmployee(salaries);
+    const payrollMap = groupByEmployee(payrolls);
     const documentMap = groupByEmployee(documents);
     const rows = employees.map((employee, index) => {
         const id = String(employee._id);
@@ -96,6 +101,7 @@ export async function loadConsolidatedTaxReport(query: ConsolidatedTaxQuery): Pr
             declaration: declaration as TaxDeclarationSource | undefined,
             slab: matchingSlabs.length === 1 ? matchingSlabs[0] as TaxSlabSource : undefined,
             salaries: (salaryMap.get(id) || []) as unknown as SalarySource[],
+            payrolls: payrollMap.get(id) || [],
             previous: forms.length === 1 ? forms[0]?.metadata?.form12B : undefined,
             financialYear: query.financialYear, serial: index + 1, asOf: generatedAt,
         });
