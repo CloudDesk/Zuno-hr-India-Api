@@ -136,9 +136,11 @@ export async function uploadFileToGCP(params: IGCPUploadParams): Promise<IGCPUpl
     const bucket = storage.bucket(bucketName);
     const file = bucket.file(gcpFilePath);
 
-    const uploadTimeoutMs = parsePositiveInteger(process.env.GCP_UPLOAD_TIMEOUT_MS, 180000);
-    const maxAttempts = parsePositiveInteger(process.env.GCP_UPLOAD_MAX_ATTEMPTS, 3);
-    let lastUploadError: unknown;
+    const configuredTimeoutMs = Number(process.env.GCP_UPLOAD_TIMEOUT_MS);
+    const uploadTimeoutMs = Number.isSafeInteger(configuredTimeoutMs) && configuredTimeoutMs > 0
+      ? configuredTimeoutMs
+      : 180000;
+    const buffer = await fs.promises.readFile(filePath);
 
     // Upload the file (use simple upload for small supporting docs; avoids resumable overhead)
     await file.save(buffer, {
