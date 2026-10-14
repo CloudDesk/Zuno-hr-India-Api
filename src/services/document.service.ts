@@ -6,7 +6,7 @@ import ExcelJS from 'exceljs';
 import { FastifyReply, FastifyRequest } from "fastify";
 import { RequestContext } from "../types/context";
 import { BaseService } from "./base.service";
-import { ITimesheet, IUser, Payroll, Timesheet, User, Payslip } from "../models";
+import { Form12BBJob, ITimesheet, IUser, Payroll, Timesheet, User, Payslip } from "../models";
 import PizZip from "pizzip";
 import Docxtemplater from "docxtemplater";
 import libreoffice from 'libreoffice-convert';
@@ -20,8 +20,32 @@ import { config } from "../config";
 import { TaxDeclaration } from "../models/tax-declaration";
 import { TaxDeclarationService } from "./tax-declaration.service";
 import { getCurrentFinancialYear, formatDateToDDMMYYYY } from "../utilis/dates";
-import { uploadFileToGCP, deleteFileFromGCP } from "../utilis/gcpStorage";
+import { uploadFileToGCP, deleteFileFromGCP, getSignedFileUrl } from "../utilis/gcpStorage";
 import { formatCurrency } from "../utilis/currency";
+import { FORM12BB_TEMPLATE_VERSION, Form12BBLineItem, Form12BBPdfData, generateForm12BBPDF } from "./form12bb-puppeteer.helper";
+import { deductionSections } from "../constants/tax-deduction-sections";
+import { POIReportService } from './poi-report.service';
+import { randomUUID } from 'node:crypto';
+import { Form12BBJobItem } from '../models/form12bb-job-item.model';
+import {
+    assertForm12BBDispatcherConfigured,
+    enqueueForm12BBJob,
+    getForm12BBChunkSize,
+    getForm12BBLeaseMilliseconds,
+    getForm12BBMaxAttempts,
+    isForm12BBCloudTasksMode,
+} from './form12bb-job-dispatcher';
+import {
+    assertForm12BBJoiningDateEligible,
+    getForm12BBJoiningDateQuery,
+} from '../utilis/form12bb-eligibility';
+import {
+    assertForm12BDraftUploadAllowed,
+    assertForm12BReviewAllowed,
+    getForm12BDraftAttempt,
+    getForm12BReviewOutcome,
+} from '../utilis/form12b-workflow';
+import { assertForm12BJoiningDateEligible, getForm12BJoiningDateQuery } from '../utilis/form12b-eligibility';
 // import AdmZip from 'adm-zip';
 // import { mkdirSync } from 'fs';
 
@@ -29,6 +53,33 @@ const monthNames = [
     'January', 'February', 'March', 'April', 'May', 'June',
     'July', 'August', 'September', 'October', 'November', 'December'
 ];
+
+const isValidForm12BBFinancialYear = (value: string): boolean => {
+    const match = /^(\d{4})-(\d{4})$/.exec(value);
+    return Boolean(match && Number(match[2]) === Number(match[1]) + 1);
+};
+
+const safeReportFilePart = (value: unknown, fallback: string): string => {
+    const sanitized = String(value || '')
+        .replace(/[<>:"/\\|?*\u0000-\u001F]/g, '')
+        .trim()
+        .replace(/\s+/g, '_')
+        .replace(/_+/g, '_')
+        .replace(/^\.+|\.+$/g, '')
+        .slice(0, 80);
+    return sanitized || fallback;
+};
+
+const form12BBReportFileName = (
+    user: { name?: string; employeeCode?: string } | null | undefined,
+    employeeId: string,
+    financialYear: string,
+    version: number,
+): string => {
+    const employeeName = safeReportFilePart(user?.name, 'Employee');
+    const employeeCode = safeReportFilePart(user?.employeeCode || employeeId, employeeId);
+    return `Form12BB_${employeeName}_${employeeCode}_FY${safeReportFilePart(financialYear, 'Unknown')}_v${version}.pdf`;
+};
 interface ISendPayslipsRequest {
     month: number;
     year: number;
@@ -445,6 +496,14 @@ export class DocumentService extends BaseService {
             if (!isSkillType && userRole.toLowerCase() !== 'admin') {
                 throw new Error('Forbidden: Only admins can delete non-Skill certification documents.');
             }
+        } else if (isTaxForm12B) {
+            if (userRole.toLowerCase() !== 'admin') {
+                throw new Error('Forbidden: Only admins can delete an unlocked Form 12B draft or release.');
+            }
+            const form12B = document.metadata?.form12B;
+            if (form12B?.isLocked || ['Submitted', 'Approved', 'FinalRejected'].includes(form12B?.workflowStatus || '')) {
+                throw new Error('Forbidden: Submitted Form 12B documents cannot be deleted.');
+            }
         } else if (isPayrollPayslip || isAdminUpload) {
             // Only admins can delete payslips or admin uploads
             if (userRole.toLowerCase() !== 'admin') {
@@ -509,6 +568,8 @@ export class DocumentService extends BaseService {
             year,
             month,
             financialYear,
+            reportStatus,
+            workflowStatus,
             page = 1,
             limit = 10,
             // Employee filters
@@ -747,18 +808,22 @@ export class DocumentService extends BaseService {
                     query['metadata.payslip.isExport'] = true;
                 }
 
-                // Dynamic query enhancement for category 'Tax'
-                // Dynamic query enhancement for category 'Tax'
+                // Employees can see all of their tax-document families, but a
+                // Form 12BB is visible only after an administrator releases it.
                 if (category === 'Tax' && (user.role.toLowerCase() !== 'admin' || access === 'own')) {
-                    // Apply restrictions for non-admins or access='own' (including admin with own access)
-                    query.$or = [
-                        { type: 'Form16' },
-                        { type: 'Form12B' },
-                        {
-                            type: 'Form12BB',
-                            'metadata.form12BB.isPreviewEnabled': true, // Only Form12BB with isPreviewEnabled = true
-                        },
-                    ];
+                    if (type === 'Form12BB') {
+                        query['metadata.form12BB.isPreviewEnabled'] = true;
+                    } else if (!type) {
+                        query.$or = [
+                            { type: 'Form16' },
+                            { type: 'Form12B' },
+                            {
+                                type: 'Form12BB',
+                                'metadata.form12BB.isPreviewEnabled': true,
+                            },
+                            { type: 'POIReport' },
+                        ];
+                    }
                 }
             }
             // Apply date filters based on document type
@@ -794,6 +859,34 @@ export class DocumentService extends BaseService {
             else if (category === 'Tax' && type === 'Form12BB' && financialYear) {
                 query['metadata.form12BB.financialYear'] = financialYear;
             }
+            else if (category === 'Tax' && type === 'POIReport' && financialYear) {
+                query['metadata.poiReport.financialYear'] = financialYear;
+            }
+            else if (category === 'Tax' && !type && financialYear) {
+                query.$and = [
+                    {
+                        $or: [
+                            { 'metadata.form16.financialYear': financialYear },
+                            { 'metadata.form12B.financialYear': financialYear },
+                            { 'metadata.form12BB.financialYear': financialYear },
+                            { 'metadata.poiReport.financialYear': financialYear },
+                        ],
+                    },
+                ];
+            }
+            if (category === 'Tax' && type === 'Form12B' && workflowStatus) {
+                query['metadata.form12B.workflowStatus'] = workflowStatus;
+            }
+            if (category === 'Tax' && type === 'Form12BB' && reportStatus) {
+                query['metadata.form12BB.generationStatus'] = reportStatus === 'failed'
+                    ? 'Failed'
+                    : { $in: ['Completed', null] };
+            }
+            else if (category === 'Tax' && type === 'POIReport' && reportStatus) {
+                query['metadata.poiReport.generationStatus'] = reportStatus === 'failed'
+                    ? 'Failed'
+                    : { $in: ['Completed', 'Outdated'] };
+            }
             else if (category === 'Attendance' && type === 'AttendanceFile' && yearNum !== undefined && !isNaN(yearNum)) {
                 query['metadata.attendanceFile.year'] = yearNum;
             }
@@ -804,7 +897,7 @@ export class DocumentService extends BaseService {
             const [total, documents] = await Promise.all([
                 Document.countDocuments(query),
                 Document.find(query)
-                    .populate('employeeId', 'name email employeeCode')
+                    .populate('employeeId', 'name email employeeCode departmentId active')
                     .populate('uploadedBy', 'name email')
                     .sort({ uploadDate: -1 })
                     .skip(skip)
@@ -2194,7 +2287,180 @@ export class DocumentService extends BaseService {
 
     //upload Form12B
 
-    async uploadForm12B(files: any, formData: IForm12BSubmission, userId: string): Promise<IDocument> {
+    async releaseForm12B(
+        data: { employeeId: string; financialYear: string; taxDeclarationId: string },
+        userId: string,
+    ): Promise<IDocument> {
+        if (!Types.ObjectId.isValid(data.employeeId) || !Types.ObjectId.isValid(data.taxDeclarationId)) {
+            throw new Error('Invalid employee or tax declaration ID');
+        }
+        const employeeId = new Types.ObjectId(data.employeeId);
+        const employee = await User.findById(employeeId).select('name joiningDate').lean();
+        if (!employee) throw new Error('Employee not found');
+        assertForm12BJoiningDateEligible(employee.joiningDate, data.financialYear, employee.name);
+        const taxDeclaration = await TaxDeclaration.findOne({
+            _id: new Types.ObjectId(data.taxDeclarationId),
+            employeeId,
+            financialYear: data.financialYear,
+        });
+        if (!taxDeclaration) throw new Error('Tax Declaration not found');
+        // Joining date is the source of truth for Form 12B eligibility. Keep the
+        // derived declaration flag aligned in case an older record is stale.
+        taxDeclaration.isForm12BApplicable = true;
+
+        const existingDocument = await Document.findOne({
+            employeeId,
+            type: 'Form12B',
+            'metadata.form12B.financialYear': data.financialYear,
+        });
+        if (existingDocument) {
+            return existingDocument;
+        }
+        const templateUrl = process.env.FORM12B_TEMPLATE_URL || 'https://storage.googleapis.com/tendlylogo/form12b.pdf';
+        const templateFileName = 'Form12B_Template.pdf';
+            const document = await Document.create({
+                employeeId,
+                type: 'Form12B',
+                category: 'Tax',
+                fileName: templateFileName,
+                filePath: templateUrl,
+                uploadedBy: new Types.ObjectId(userId),
+                uploadDate: new Date(),
+                accessLevel: 'Private',
+                status: 'Assigned',
+                metadata: {
+                    form12B: {
+                        financialYear: data.financialYear,
+                        status: 'Pending',
+                        isLocked: false,
+                        workflowStatus: 'Released',
+                        submissionAttempt: 1,
+                        reuploadCount: 0,
+                        releasedAt: new Date(),
+                        releasedBy: new Types.ObjectId(userId),
+                        template: {
+                            fileName: templateFileName,
+                            filePath: templateUrl,
+                            version: 1,
+                        },
+                        previousVersions: [],
+                    },
+                },
+                auditLog: [{
+                    action: 'Send',
+                    performedBy: new Types.ObjectId(userId),
+                    timestamp: new Date(),
+                    details: `Form 12B template released for FY ${data.financialYear}`,
+                }],
+            });
+            taxDeclaration.form12B = document._id;
+            await taxDeclaration.save();
+            return document;
+    }
+
+    async releaseForm12BBulk(
+        data: {
+            employeeIds?: string[];
+            financialYear: string;
+            selectionMode?: 'explicit' | 'allMatching';
+            excludedEmployeeIds?: string[];
+            filters?: { search?: string; departmentId?: string; activeStatus?: boolean | string };
+        },
+        userId: string,
+    ): Promise<{
+        released: number;
+        skipped: number;
+        failed: number;
+        failures: Array<{ employeeId: string; error: string }>;
+        details: Array<{ employeeId: string; status: 'success' | 'skipped' | 'failed'; message: string }>;
+    }> {
+        if (!/^\d{4}-\d{4}$/.test(data.financialYear || '')) {
+            throw new Error('A valid financial year is required');
+        }
+        let employeeIds = Array.from(new Set(data.employeeIds || []));
+        if (data.selectionMode === 'allMatching') {
+            const declarationsForYear = await TaxDeclaration.find({ financialYear: data.financialYear })
+                .select('employeeId')
+                .lean();
+            const declaredIds = declarationsForYear.map((declaration: any) => declaration.employeeId);
+            const existingEmployeeIds = await Document.find({
+                employeeId: { $in: declaredIds },
+                type: 'Form12B',
+                'metadata.form12B.financialYear': data.financialYear,
+            }).distinct('employeeId');
+            const existing = new Set(existingEmployeeIds.map((id: any) => id.toString()));
+            const query: any = {
+                _id: { $in: declaredIds.filter((id: any) => !existing.has(id.toString())) },
+                joiningDate: getForm12BJoiningDateQuery(data.financialYear),
+            };
+            const filters = data.filters || {};
+            if (filters.departmentId) query.departmentId = filters.departmentId;
+            if (filters.activeStatus !== undefined && filters.activeStatus !== '') {
+                query.active = filters.activeStatus === true || String(filters.activeStatus) === 'true';
+            }
+            if (filters.search?.trim()) {
+                const escaped = filters.search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const expression = new RegExp(escaped, 'i');
+                query.$or = [{ name: expression }, { email: expression }, { employeeCode: expression }];
+            }
+            const excluded = new Set((data.excludedEmployeeIds || []).map(String));
+            const matchingUsers = await User.find(query).select('_id').lean();
+            employeeIds = matchingUsers
+                .map((candidate: any) => candidate._id.toString())
+                .filter((id) => !excluded.has(id));
+        }
+        if (!employeeIds.length || employeeIds.length > 500 || employeeIds.some((id) => !Types.ObjectId.isValid(id))) {
+            throw new Error('Select between 1 and 500 valid employees');
+        }
+
+        const objectIds = employeeIds.map((id) => new Types.ObjectId(id));
+        const declarations = await TaxDeclaration.find({
+            employeeId: { $in: objectIds },
+            financialYear: data.financialYear,
+        }).select('_id employeeId').lean();
+        const declarationByEmployee = new Map(
+            declarations.map((declaration: any) => [declaration.employeeId.toString(), declaration._id.toString()]),
+        );
+        const existingEmployeeIds = await Document.find({
+            employeeId: { $in: objectIds },
+            type: 'Form12B',
+            'metadata.form12B.financialYear': data.financialYear,
+        }).distinct('employeeId');
+        const existing = new Set(existingEmployeeIds.map((id: any) => id.toString()));
+        let released = 0;
+        let skipped = 0;
+        const failures: Array<{ employeeId: string; error: string }> = [];
+        const details: Array<{ employeeId: string; status: 'success' | 'skipped' | 'failed'; message: string }> = [];
+        for (const employeeId of employeeIds) {
+                if (existing.has(employeeId)) {
+                    skipped += 1;
+                    details.push({ employeeId, status: 'skipped', message: 'Form 12B is already enabled' });
+                    continue;
+                }
+                const taxDeclarationId = declarationByEmployee.get(employeeId);
+                if (!taxDeclarationId) {
+                    const error = 'Employee is not eligible for Form 12B in this financial year';
+                    failures.push({ employeeId, error });
+                    details.push({ employeeId, status: 'failed', message: error });
+                    continue;
+                }
+                try {
+                    await this.releaseForm12B(
+                        { employeeId, financialYear: data.financialYear, taxDeclarationId },
+                        userId,
+                    );
+                    released += 1;
+                    details.push({ employeeId, status: 'success', message: 'Form 12B enabled and template released' });
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    failures.push({ employeeId, error: message });
+                    details.push({ employeeId, status: 'failed', message });
+                }
+            }
+        return { released, skipped, failed: failures.length, failures, details };
+    }
+
+    async uploadForm12B(files: any, formData: IForm12BSubmission, userId: string, userRole: string = 'staff'): Promise<IDocument> {
         //FastifyRequest<{ Body: IForm12BSubmission; Files: any[] }>
         try {
             console.log(formData, "uploadForm12B files formData userId");
@@ -2206,13 +2472,22 @@ export class DocumentService extends BaseService {
             const employeeId = new Types.ObjectId(formData.employeeId);
             const { financialYear, previousEmployer, employmentPeriod, salaryEarned, tdsDeducted, taxDeclarationId } = formData;
 
-            // Validate employment period
-            const startDate = new Date(employmentPeriod.startDate);
-            const endDate = new Date(employmentPeriod.endDate);
-            const fyStart = new Date(parseInt(financialYear), 3, 1); // April 1st
-            const fyEnd = new Date(parseInt(financialYear) + 1, 2, 31); // March 31st next year
-            if (startDate >= endDate || startDate < fyStart || endDate > fyEnd) {
-                throw new Error('Invalid employment period');
+            if (userRole.toLowerCase() !== 'admin' && employeeId.toString() !== userId) {
+                throw new Error('Forbidden: Employees can upload only their own Form 12B');
+            }
+
+            // Legacy requests may still send the structured fields. New workflow
+            // requests upload only the employee-signed PDF; Admin enters details later.
+            let startDate: Date | undefined;
+            let endDate: Date | undefined;
+            if (employmentPeriod) {
+                startDate = new Date(employmentPeriod.startDate);
+                endDate = new Date(employmentPeriod.endDate);
+                const fyStart = new Date(parseInt(financialYear), 3, 1); // April 1st
+                const fyEnd = new Date(parseInt(financialYear) + 1, 2, 31); // March 31st next year
+                if (startDate >= endDate || startDate < fyStart || endDate > fyEnd) {
+                    throw new Error('Invalid employment period');
+                }
             }
 
             // Check if Form 12B already exists
@@ -2225,15 +2500,13 @@ export class DocumentService extends BaseService {
             const isReupload = !!existingDocument;
             console.log(isReupload, "isReupload uploadForm12B");
 
-            /*  const allowedStatusesForReupload = ['ResubmissionRequested'];
-              //'Rejected'
-              if (
-                  isReupload &&
-                  !allowedStatusesForReupload.includes(existingDocument.metadata.form12B?.status ?? '')
-              ) {
-                  throw new Error('Form 12B already submitted for this financial year and cannot be re-uploaded');
-              }
-                  */
+            const existingForm12B = existingDocument?.metadata?.form12B;
+            const workflowStatus = existingForm12B?.workflowStatus;
+            const acceptsLegacyStructuredFields = !workflowStatus;
+            if (!existingDocument && !previousEmployer) {
+                throw new Error('Form 12B template has not been released for this employee');
+            }
+            assertForm12BDraftUploadAllowed(workflowStatus, existingForm12B?.reuploadCount || 0);
             // Check isForm12BApplicable in TaxDeclaration
             const taxDeclaration = await TaxDeclaration.findOne({ employeeId, financialYear });
             console.log(taxDeclaration, "taxDeclaration uploadForm12B");
@@ -2252,13 +2525,21 @@ export class DocumentService extends BaseService {
                 throw new Error('No file uploaded');
             }
             const file = files[0];
+            const fileExtension = path.extname(file.originalname || '').toLowerCase();
+            if (fileExtension !== '.pdf' || (file.mimetype && file.mimetype !== 'application/pdf')) {
+                throw new Error('Only PDF files are allowed for Form 12B');
+            }
+            if (Number(file.size || 0) > 5 * 1024 * 1024) {
+                throw new Error('Form 12B PDF must not exceed 5 MB');
+            }
 
             // Store file temporarily and upload to GCP
             const uploadsDir = path.resolve(__dirname, '..', '..', 'Uploads');
             await fsPromises.mkdir(uploadsDir, { recursive: true });
             const originalExtension = path.extname(file.originalname);
             const cleanFinancialYear = financialYear.replace(/[^a-zA-Z0-9]/g, '_');
-            const newFileName = `Doc_Form12B_${cleanFinancialYear}_${previousEmployer.name.replace(/[^a-zA-Z0-9]/g, '_')}_${Date.now()}_${originalExtension}`;
+            const employerName = previousEmployer?.name || existingForm12B?.previousEmployer?.name || 'Employee_Submission';
+            const newFileName = `Doc_Form12B_${cleanFinancialYear}_${employerName.replace(/[^a-zA-Z0-9]/g, '_')}_${Date.now()}${originalExtension}`;
             const tempFilePath = path.join(uploadsDir, newFileName);
             await fsPromises.rename(file.path, tempFilePath);
 
@@ -2287,12 +2568,36 @@ export class DocumentService extends BaseService {
             // Handle existing document (delete old file if re-upload)
             let document: IDocument;
             if (isReupload) {
-                if (existingDocument.filePath) {
+                const isRejectedAttempt = false;
+                const isReplacingDraft = false;
+                // Metadata is a Mixed Mongoose field. Convert it to a plain object
+                // before composing the upload update so employee-entered details
+                // cannot be dropped when only the signed file is being attached.
+                const preservedForm12B = existingForm12B
+                    ? JSON.parse(JSON.stringify(existingForm12B))
+                    : {};
+                const draftAttempt = getForm12BDraftAttempt(
+                    workflowStatus,
+                    existingForm12B?.submissionAttempt || 1,
+                    existingForm12B?.reuploadCount || 0,
+                );
+                if (existingDocument.filePath && isReplacingDraft && existingDocument.filePath !== existingForm12B?.template?.filePath) {
                     try {
                         await deleteFileFromGCP(existingDocument.filePath);
                     } catch (err: any) {
                         console.warn({ filePath: existingDocument.filePath, error: err.message }, 'Failed to delete old file from GCP');
                     }
+                }
+                const previousVersions = [...(existingForm12B?.previousVersions || [])];
+                if (isRejectedAttempt && existingDocument.filePath) {
+                    previousVersions.push({
+                        attempt: existingForm12B?.submissionAttempt || 1,
+                        fileName: existingDocument.fileName,
+                        filePath: existingDocument.filePath,
+                        submittedAt: existingForm12B?.submittedAt,
+                        rejectedAt: existingForm12B?.reviewedAt || new Date(),
+                        comments: existingForm12B?.comments,
+                    });
                 }
                 const updatedDoc = await Document.findByIdAndUpdate(
                     existingDocument._id,
@@ -2302,13 +2607,23 @@ export class DocumentService extends BaseService {
                         uploadDate: new Date(),
                         metadata: {
                             form12B: {
+                                ...preservedForm12B,
                                 financialYear,
-                                previousEmployer,
-                                employmentPeriod: { startDate: new Date(startDate), endDate: new Date(endDate) },
-                                salaryEarned: Number(salaryEarned),
-                                tdsDeducted: Number(tdsDeducted),
+                                ...(acceptsLegacyStructuredFields && previousEmployer ? { previousEmployer } : {}),
+                                ...(acceptsLegacyStructuredFields && startDate && endDate ? { employmentPeriod: { startDate, endDate } } : {}),
+                                ...(acceptsLegacyStructuredFields && salaryEarned !== undefined ? { salaryEarned: Number(salaryEarned) } : {}),
+                                ...(acceptsLegacyStructuredFields && tdsDeducted !== undefined ? { tdsDeducted: Number(tdsDeducted) } : {}),
                                 status: 'Pending',
                                 isLocked: false,
+                                workflowStatus: workflowStatus ? 'Draft' : undefined,
+                                submissionAttempt: draftAttempt.submissionAttempt,
+                                reuploadCount: draftAttempt.reuploadCount,
+                                submittedAt: undefined,
+                                submittedBy: undefined,
+                                reviewedAt: undefined,
+                                reviewedBy: undefined,
+                                comments: undefined,
+                                previousVersions,
                             },
                         },
                         auditLog: [
@@ -2335,19 +2650,19 @@ export class DocumentService extends BaseService {
                     type: 'Form12B',
                     category: 'Tax',
                     fileName: newFileName,
-                    tag: ['Form12B', `${financialYear}`, `Employer-${previousEmployer.name}`],
+                    tags: ['Form12B', `${financialYear}`, `Employer-${employerName}`],
                     filePath: fileUrl,
                     uploadedBy: new Types.ObjectId(userId),
                     uploadDate: new Date(),
                     accessLevel: 'Private',
                     status: 'Uploaded',
-                    metadata: {
-                        form12B: {
-                            financialYear,
-                            previousEmployer,
-                            employmentPeriod: { startDate: new Date(startDate), endDate: new Date(endDate) },
-                            salaryEarned: Number(salaryEarned),
-                            tdsDeducted: Number(tdsDeducted),
+                        metadata: {
+                            form12B: {
+                                financialYear,
+                                previousEmployer: previousEmployer!,
+                                employmentPeriod: { startDate: startDate!, endDate: endDate! },
+                                salaryEarned: Number(salaryEarned),
+                                tdsDeducted: Number(tdsDeducted),
                             status: 'Pending',
                             isLocked: false,
                         },
@@ -2374,6 +2689,160 @@ export class DocumentService extends BaseService {
         }
     }
 
+    async submitForm12B(id: string, userId: string): Promise<IDocument> {
+        if (!Types.ObjectId.isValid(id)) throw new Error('Invalid Form 12B ID');
+        const submittedAt = new Date();
+        const document = await Document.findOneAndUpdate(
+            {
+                _id: new Types.ObjectId(id),
+                employeeId: new Types.ObjectId(userId),
+                type: 'Form12B',
+                'metadata.form12B.workflowStatus': 'Draft',
+                'metadata.form12B.isLocked': false,
+            },
+            {
+                $set: {
+                    'metadata.form12B.workflowStatus': 'Submitted',
+                    'metadata.form12B.status': 'Pending',
+                    'metadata.form12B.isLocked': true,
+                    'metadata.form12B.submittedAt': submittedAt,
+                    'metadata.form12B.submittedBy': new Types.ObjectId(userId),
+                    status: 'Uploaded',
+                },
+                $push: {
+                    auditLog: {
+                        action: 'Acknowledge',
+                        performedBy: new Types.ObjectId(userId),
+                        timestamp: submittedAt,
+                        details: 'Form 12B submitted and locked by employee.',
+                    },
+                },
+            },
+            { new: true, runValidators: true },
+        );
+        if (!document) {
+            throw new Error('Form 12B must be an unlocked draft owned by the employee before it can be submitted');
+        }
+        return document;
+    }
+
+    async updateForm12BDetails(
+        id: string,
+        details: Required<Pick<IForm12BSubmission, 'previousEmployer' | 'employmentPeriod' | 'salaryEarned' | 'tdsDeducted'>>,
+        userId: string,
+        userRole: string,
+    ): Promise<IDocument> {
+        if (!Types.ObjectId.isValid(id)) throw new Error('Invalid Form 12B ID');
+        const document = await Document.findById(id);
+        if (!document || document.type !== 'Form12B' || !document.metadata.form12B) {
+            throw new Error('Form 12B not found');
+        }
+        const form12B = document.metadata.form12B;
+        const isAdmin = userRole.toLowerCase() === 'admin';
+        const isOwner = document.employeeId.toString() === userId;
+        if (!isAdmin && !isOwner) throw new Error('Forbidden: You cannot update this Form 12B');
+        const hasStructuredDetails = Boolean(
+            form12B.previousEmployer?.name &&
+            form12B.previousEmployer?.pan &&
+            form12B.previousEmployer?.tan &&
+            form12B.employmentPeriod?.startDate &&
+            form12B.employmentPeriod?.endDate &&
+            typeof form12B.salaryEarned === 'number' &&
+            typeof form12B.tdsDeducted === 'number'
+        );
+        if (isAdmin && !hasStructuredDetails) {
+            throw new Error('Only the employee can add Form 12B details');
+        }
+        const editableStatuses = isAdmin ? ['Released', 'Draft', 'Submitted'] : ['Released', 'Draft', 'Submitted'];
+        if (!editableStatuses.includes(form12B.workflowStatus || '')) {
+            throw new Error('Form 12B details are locked and cannot be edited');
+        }
+        if (!isAdmin && form12B.detailsUpdatedAt && hasStructuredDetails) {
+            throw new Error('Form 12B details have already been submitted and cannot be edited');
+        }
+        const startDate = new Date(details.employmentPeriod.startDate);
+        const endDate = new Date(details.employmentPeriod.endDate);
+        const fyStart = new Date(parseInt(form12B.financialYear), 3, 1);
+        const fyEnd = new Date(parseInt(form12B.financialYear) + 1, 2, 31);
+        if (startDate >= endDate || startDate < fyStart || endDate > fyEnd) {
+            throw new Error('Invalid employment period');
+        }
+        if (!/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(details.previousEmployer.pan)) {
+            throw new Error('Invalid previous employer PAN');
+        }
+        if (!/^[A-Z]{4}[0-9]{5}[A-Z]$/.test(details.previousEmployer.tan)) {
+            throw new Error('Invalid previous employer TAN');
+        }
+        if (!Number.isFinite(Number(details.salaryEarned)) || Number(details.salaryEarned) < 0) {
+            throw new Error('Salary earned must be a non-negative number');
+        }
+        if (!Number.isFinite(Number(details.tdsDeducted)) || Number(details.tdsDeducted) < 0) {
+            throw new Error('TDS deducted must be a non-negative number');
+        }
+        form12B.previousEmployer = details.previousEmployer;
+        form12B.employmentPeriod = { startDate, endDate };
+        form12B.salaryEarned = Number(details.salaryEarned);
+        form12B.tdsDeducted = Number(details.tdsDeducted);
+        form12B.detailsUpdatedAt = new Date();
+        form12B.detailsUpdatedBy = new Types.ObjectId(userId);
+        document.updatedBy = new Types.ObjectId(userId);
+        document.auditLog = document.auditLog || [];
+        document.auditLog.push({
+            action: 'Update',
+            performedBy: new Types.ObjectId(userId),
+            timestamp: new Date(),
+            details: `${isAdmin ? 'Admin' : 'Employee'} updated Form 12B structured details.`,
+        });
+        document.markModified('metadata.form12B');
+        return document.save();
+    }
+
+    async getForm12BAccess(
+        id: string,
+        userId: string,
+        userRole: string,
+        target: 'template' | 'submission',
+        download: boolean,
+    ): Promise<{ url: string; fileName: string }> {
+        if (!Types.ObjectId.isValid(id)) throw new Error('Invalid Form 12B ID');
+        const document = await Document.findById(id);
+        if (!document || document.type !== 'Form12B' || !document.metadata.form12B) {
+            throw new Error('Form 12B not found');
+        }
+        const isAdmin = userRole.toLowerCase() === 'admin';
+        const isOwner = document.employeeId.toString() === userId;
+        if (!isAdmin && !isOwner) throw new Error('Forbidden: You cannot access this Form 12B');
+
+        const form12B = document.metadata.form12B;
+        if (
+            target === 'submission' &&
+            isAdmin &&
+            !['Submitted', 'ResubmissionAllowed', 'Approved', 'FinalRejected'].includes(form12B.workflowStatus || '')
+        ) {
+            throw new Error('Forbidden: Admin can access the signed Form 12B only after employee submission');
+        }
+        const hasSignedSubmission = Boolean(
+            document.filePath && document.filePath !== form12B.template?.filePath
+        );
+        if (target === 'submission' && !hasSignedSubmission) {
+            throw new Error('Employee submission is not available');
+        }
+        const filePath = target === 'template'
+            ? process.env.FORM12B_TEMPLATE_URL || 'https://storage.googleapis.com/tendlylogo/form12b.pdf'
+            : document.filePath;
+        const fileName = target === 'template' ? 'Form12B_Template.pdf' : document.fileName;
+        if (!filePath || !fileName) {
+            throw new Error(`${target === 'template' ? 'Template' : 'Employee submission'} is not available`);
+        }
+        const url = target === 'template' && /^https?:\/\//i.test(filePath)
+            ? filePath
+            : await getSignedFileUrl(filePath, {
+            ...(download ? { downloadFileName: fileName } : {}),
+            expiresInMinutes: 10,
+        });
+        return { url, fileName };
+    }
+
     //Form12B Approvals
     async updateForm12BStatus(id: string, status: 'Verified' | 'Rejected' | 'ResubmissionRequested', userId: string, comments?: string): Promise<IDocument> {
 
@@ -2382,25 +2851,62 @@ export class DocumentService extends BaseService {
             if (!existingDocument || existingDocument.type !== 'Form12B') {
                 throw new Error('Document not found or not a Form 12B');
             }
-            if (existingDocument?.metadata.form12B?.status === 'Verified' || existingDocument?.metadata.form12B?.status === 'Rejected') {
-                throw new Error('Form 12B has already been processed');
-            }
-            if (existingDocument?.metadata.form12B?.isLocked) {
-                throw new Error('Form 12B is locked and cannot be updated');
-            }
             // Update document status and audit log
             if (!existingDocument.metadata.form12B) {
                 throw new Error('Form 12B metadata is missing');
             }
-            existingDocument.metadata.form12B.status = status;
-            existingDocument.metadata.form12B.isLocked = true; // Lock the document after processing
+            const form12B = existingDocument.metadata.form12B;
+            const isManagedWorkflow = Boolean(form12B.workflowStatus);
+            if (['Approved', 'FinalRejected'].includes(form12B.workflowStatus || '') || form12B.status === 'Verified' || (!isManagedWorkflow && form12B.status === 'Rejected')) {
+                throw new Error('Form 12B has already been processed');
+            }
+            const hasStructuredDetails = Boolean(
+                form12B.detailsUpdatedAt &&
+                form12B.previousEmployer?.name &&
+                form12B.previousEmployer?.pan &&
+                form12B.previousEmployer?.tan &&
+                form12B.employmentPeriod?.startDate &&
+                form12B.employmentPeriod?.endDate &&
+                typeof form12B.salaryEarned === 'number' &&
+                typeof form12B.tdsDeducted === 'number'
+            );
+            if (isManagedWorkflow) {
+                assertForm12BReviewAllowed(form12B.workflowStatus, hasStructuredDetails);
+            }
+
+            const isApproval = status === 'Verified';
+            if (isApproval && !hasStructuredDetails) {
+                throw new Error('Complete the Form 12B structured details before approval');
+            }
+            if (isManagedWorkflow && !isApproval && !comments?.trim()) {
+                throw new Error('Rejection comments are required');
+            }
+
+            if (isManagedWorkflow) {
+                const reviewOutcome = getForm12BReviewOutcome(
+                    isApproval,
+                    form12B.submissionAttempt || 1,
+                    form12B.reuploadCount || 0,
+                );
+                form12B.status = reviewOutcome.status;
+                form12B.workflowStatus = reviewOutcome.workflowStatus;
+                form12B.isLocked = reviewOutcome.isLocked;
+            } else {
+                // Preserve the original review semantics for records created before
+                // the release/draft/submit workflow was introduced.
+                form12B.status = status;
+                form12B.isLocked = true;
+            }
+            form12B.reviewedAt = new Date();
+            form12B.reviewedBy = new Types.ObjectId(userId);
+            form12B.comments = comments?.trim();
             existingDocument.markModified('metadata.form12B');// Ensure Mongoose tracks changes
-            existingDocument.status = status === 'Verified' ? 'Acknowledged' : existingDocument.status;
+            existingDocument.status = isApproval ? 'Acknowledged' : existingDocument.status;
             if (!existingDocument.auditLog) {
                 existingDocument.auditLog = [];
             }
             existingDocument.auditLog.push({
-                action: status === 'Verified' ? 'Verify' : 'Update',
+                action: isApproval ? 'Verify' : 'Update',
                 performedBy: new Types.ObjectId(userId),
                 timestamp: new Date(),
                 details: comments ? `Form 12B ${status} with comments: ${comments}`
@@ -2409,10 +2915,10 @@ export class DocumentService extends BaseService {
 
 
             // If status is Verified, update the Tax Declaration reference
-            if (status === 'Verified') {
+            if (isApproval) {
                 console.log("inside verified updateForm12BStatus");
                 const form12bId = existingDocument._id.toString();
-                const tdsAmount = Number(existingDocument.metadata.form12B.tdsDeducted) || 0;
+                const tdsAmount = Number(form12B.tdsDeducted) || 0;
                 const financialYear = existingDocument.metadata.form12B.financialYear;
 
                 // Call TaxDeclarationService.processForm12BTDS
@@ -2438,385 +2944,940 @@ export class DocumentService extends BaseService {
 
     }
 
-    //generate Form12BB
-    async generateForm12BB(data: IForm12BBGenerate): Promise<IDocument> {
-        console.log(data, "generateForm12BB data");
-        const { employeeId, financialYear } = data;
+    private humanizeForm12BBIdentifier(value: unknown): string {
+        return String(value || '')
+            .trim()
+            .replace(/[_-]+/g, ' ')
+            .replace(/\s+/g, ' ')
+            .replace(/\b\w/g, (character) => character.toUpperCase());
+    }
 
-        if (!employeeId) {
-            throw new Error("Employee ID is required");
+    private mapForm12BBEvidence(declaration: any): string {
+        const evidence = (declaration?.documents || [])
+            .map((document: any) => String(document.documentName || '').trim())
+            .filter(Boolean);
+        return Array.from(new Set(evidence)).join('; ');
+    }
+
+    private mapForm12BBLineItem(declaration: any, includeSection = false): Form12BBLineItem {
+        const section = deductionSections.find((item) => item.id === declaration.section);
+        const subsection = section?.subsections.find((item) => item.id === declaration.subSection);
+        const fallbackLabel = String(declaration.description || '').trim() ||
+            this.humanizeForm12BBIdentifier(declaration.subSection || declaration.section);
+        const itemLabel = subsection?.name || fallbackLabel;
+        const sectionLabel = section?.title || this.humanizeForm12BBIdentifier(declaration.section);
+        const coveredMembers = declaration.section === '80D' && Array.isArray(declaration.coveredMembers)
+            ? declaration.coveredMembers
+                .map((member: any) => ({
+                    name: String(member?.name || '').trim(),
+                    relationship: String(member?.relationship || '').trim(),
+                    age: Number(member?.age),
+                }))
+                .filter((member: any) =>
+                    member.name &&
+                    member.relationship &&
+                    Number.isInteger(member.age) &&
+                    member.age >= 0 &&
+                    member.age <= 120,
+                )
+            : [];
+
+        return {
+            label: includeSection ? `${sectionLabel} - ${itemLabel}` : itemLabel,
+            amount: Number(declaration.verifiedAmount || 0),
+            evidence: this.mapForm12BBEvidence(declaration),
+            coveredMembers,
+        };
+    }
+
+    private mapForm12BBData(user: any, taxDeclaration: any): Form12BBPdfData {
+        const verifiedDeclarations = (taxDeclaration.declarations || []).filter(
+            (declaration: any) => declaration.status === 'verified',
+        );
+        const hra = verifiedDeclarations.find(
+            (declaration: any) => declaration.section === '10_13A' && declaration.subSection === 'rent_paid',
+        );
+        const houseProperty = verifiedDeclarations.find(
+            (declaration: any) => declaration.section === 'income_loss_house_property',
+        );
+        const section80CDeclarations = verifiedDeclarations.filter(
+            (declaration: any) => declaration.section === '80C',
+        );
+        const rentDetails = hra?.rentDetails || [];
+        const uniqueText = (values: unknown[]) => Array.from(
+            new Set(values.map((value) => String(value || '').trim()).filter(Boolean)),
+        ).join(', ');
+        const storedFinancialYear = String(taxDeclaration.financialYear || '').trim();
+        const financialYearMatch = storedFinancialYear.match(/^(\d{4})-(\d{2}|\d{4})$/);
+        let formattedFY = storedFinancialYear;
+        if (financialYearMatch) {
+            const startYear = Number(financialYearMatch[1]);
+            const storedEndYear = financialYearMatch[2];
+            let endYear = Number(storedEndYear);
+            if (storedEndYear.length === 2) {
+                endYear += Math.floor(startYear / 100) * 100;
+                if (endYear < startYear) endYear += 100;
+            }
+            formattedFY = `${startYear}-${endYear}`;
         }
-        const effectiveFY = financialYear || getCurrentFinancialYear();
+        const reportDate = new Intl.DateTimeFormat('en-GB', {
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric',
+            timeZone: 'Asia/Kolkata',
+        }).format(new Date()).replace(/ /g, '-');
+        const place = String(user.location || user.address || '').split(',').map((part: string) => part.trim()).filter(Boolean).pop() || '';
+        const housePropertyVerifiedAmount = Number(houseProperty?.verifiedAmount || 0);
+        const isHousePropertyIncome = houseProperty?.type === 'income' ||
+            (!houseProperty?.type && housePropertyVerifiedAmount < 0);
+        const housePropertyType: 'income' | 'loss' = isHousePropertyIncome ? 'income' : 'loss';
+        const housePropertyEvidence = this.mapForm12BBEvidence(houseProperty);
 
-        // Fetch user
-        const user = await User.findById(employeeId).select("name email").lean();
-        console.log(user, "user generateForm12BB");
-        if (!user) {
-            throw new Error("Employee not found");
+        return {
+            employeeId: user._id.toString(),
+            employeeName: user.name || '',
+            employeeAddress: user.address || '',
+            panOrAadhaar: user.governmentIds?.pan?.number || user.governmentIds?.aadhaar?.number || '',
+            financialYear: formattedFY,
+            // Keep the header presentation identical for both regimes. The same
+            // Puppeteer template renders the rest of the employee and verification data.
+            taxRegime: taxDeclaration.regime === 'new' ? 'NEW REGIME' : 'OLD REGIME',
+            rentPaid: Number(hra?.verifiedAmount || 0),
+            landlordName: uniqueText(rentDetails.map((detail: any) => detail.landlordName)),
+            landlordAddress: '',
+            landlordPan: uniqueText(rentDetails.map((detail: any) => detail.landlordPan)),
+            hraEvidence: this.mapForm12BBEvidence(hra),
+            ltcAmount: 0,
+            ltcEvidence: '',
+            housingLoanInterest: 0,
+            housingLoanEvidence: '',
+            lenderName: '',
+            lenderAddress: '',
+            lenderPan: '',
+            lenderType: '',
+            housePropertyAmount: houseProperty ? Math.abs(housePropertyVerifiedAmount) : 0,
+            housePropertyType,
+            housePropertyEvidence: houseProperty ? housePropertyEvidence : '',
+            housePropertyLenderName: '',
+            housePropertyLenderPan: '',
+            section80C: section80CDeclarations
+                .filter((declaration: any) => !['80CCC', '80CCD1'].includes(declaration.subSection))
+                .map((declaration: any) => this.mapForm12BBLineItem(declaration)),
+            section80CCC: section80CDeclarations
+                .filter((declaration: any) => declaration.subSection === '80CCC')
+                .map((declaration: any) => this.mapForm12BBLineItem(declaration)),
+            section80CCD: verifiedDeclarations
+                .filter((declaration: any) =>
+                    (declaration.section === '80C' && declaration.subSection === '80CCD1') ||
+                    declaration.section === '80CCD2',
+                )
+                .map((declaration: any) => this.mapForm12BBLineItem(declaration)),
+            otherChapterVIA: verifiedDeclarations
+                .filter((declaration: any) =>
+                    !['10_13A', '80C', '80CCD2', 'income_loss_house_property'].includes(declaration.section),
+                )
+                .map((declaration: any) => this.mapForm12BBLineItem(declaration, true)),
+            otherIncome: 0,
+            tdsDeduction: Number(taxDeclaration.taxPaid || 0),
+            fatherName: String(user.fatherName || '').trim(),
+            place,
+            reportDate,
+            designation: user.specificRole || '',
+        };
+    }
+
+    private async getForm12BBSourceData(employeeId: string, financialYear: string): Promise<{ user: any; taxDeclaration: any }> {
+        const [user, taxDeclaration] = await Promise.all([
+            User.findById(employeeId)
+                .select('name email address location fatherName specificRole governmentIds employeeCode departmentId active joiningDate')
+                .lean(),
+            TaxDeclaration.findOne({ employeeId, financialYear }).lean(),
+        ]);
+        if (!user) throw new Error('Employee not found');
+        if (!taxDeclaration) throw new Error(`Tax Declaration not found for FY ${financialYear}`);
+        return { user, taxDeclaration };
+    }
+
+    private validateForm12BBData(data: Form12BBPdfData): void {
+        if (!data.employeeId || !data.employeeName.trim()) {
+            throw new Error('Employee name is required to generate Form 12BB');
         }
+        if (!isValidForm12BBFinancialYear(data.financialYear)) {
+            throw new Error('Financial year must be a consecutive range in YYYY-YYYY format');
+        }
+        const amounts = [
+            data.rentPaid,
+            data.ltcAmount,
+            data.housingLoanInterest,
+            data.housePropertyAmount,
+            data.otherIncome,
+            data.tdsDeduction,
+            ...data.section80C.map((item) => item.amount),
+            ...data.section80CCC.map((item) => item.amount),
+            ...data.section80CCD.map((item) => item.amount),
+            ...data.otherChapterVIA.map((item) => item.amount),
+        ];
+        if (amounts.some((amount) => !Number.isFinite(Number(amount)) || Number(amount) < 0)) {
+            throw new Error('Form 12BB contains an invalid amount');
+        }
+    }
 
-        // Fetch tax declaration
-        const taxDeclaration = await TaxDeclaration.findOne({
+    private async renderForm12BBPdf(data: Form12BBPdfData, outputPath: string): Promise<void> {
+        await generateForm12BBPDF(data, outputPath);
+    }
+
+    private async uploadForm12BBPdf(params: {
+        outputPath: string;
+        fileName: string;
+        employeeId: string;
+    }): Promise<string> {
+        const gcpResult = await uploadFileToGCP({
+            filePath: params.outputPath,
+            fileName: params.fileName,
+            employeeId: params.employeeId,
+            category: 'Tax',
+            type: 'Form12BB',
+            cacheControl: 'no-store, max-age=0',
+        });
+        if (!gcpResult.success || !gcpResult.fileUrl) {
+            throw new Error(`Failed to upload Form 12BB to GCP: ${gcpResult.error || 'unknown error'}`);
+        }
+        return gcpResult.fileUrl;
+    }
+
+    private async saveForm12BBDocument(params: {
+        employeeId: string;
+        financialYear: string;
+        fileName: string;
+        fileUrl: string;
+        nextVersion: number;
+        existingDocument: IDocument | null;
+        user: any;
+        taxDeclaration: any;
+        generationRequestId?: string;
+    }): Promise<IDocument> {
+        const {
             employeeId,
-            financialYear: effectiveFY,
-        }).lean();
-        if (!taxDeclaration) {
-            throw new Error(`Tax Declaration not found for FY ${effectiveFY}`);
+            financialYear,
+            fileName,
+            fileUrl,
+            nextVersion,
+            existingDocument,
+            user,
+            taxDeclaration,
+            generationRequestId,
+        } = params;
+        const performedBy = new Types.ObjectId(this.context.user!._id);
+        const previewEnabled = existingDocument?.metadata?.form12BB?.isPreviewEnabled || false;
+        const generatedAt = new Date();
+        const documentData = {
+            fileName,
+            filePath: fileUrl,
+            status: 'Generated' as const,
+            uploadDate: generatedAt,
+            uploadedBy: performedBy,
+            updatedBy: performedBy,
+            accessLevel: 'Private' as const,
+            tags: ['Form12BB', financialYear],
+            category: 'Tax' as const,
+            type: 'Form12BB' as const,
+            metadata: {
+                form12BB: {
+                    employeeId: new Types.ObjectId(employeeId),
+                    financialYear,
+                    regime: taxDeclaration.regime,
+                    templateVersion: FORM12BB_TEMPLATE_VERSION,
+                    taxDeclarationId: taxDeclaration._id,
+                    totalIncome: Number(taxDeclaration.annualGross || 0),
+                    deductions: Number(taxDeclaration.totalVerifiedAmount || 0),
+                    taxPayable: Number(taxDeclaration.initialTaxBreakdown?.finalTaxWithCess || 0),
+                    isLocked: false,
+                    isPreviewEnabled: previewEnabled,
+                    tdsPaid: Number(taxDeclaration.taxPaid || 0),
+                    generationStatus: 'Completed' as const,
+                    generationRequestId,
+                    generatedAt,
+                    generatedBy: performedBy,
+                    lastRegeneratedAt: existingDocument ? generatedAt : undefined,
+                    generationError: '',
+                },
+            },
+        };
+
+        if (existingDocument) {
+            const previousVersions = existingDocument.metadata?.form12BB?.previousVersions || [];
+            previousVersions.push({
+                version: Number(existingDocument.version || 1),
+                fileName: existingDocument.fileName,
+                filePath: existingDocument.filePath,
+                generatedAt: existingDocument.metadata?.form12BB?.generatedAt || existingDocument.uploadDate || new Date(),
+            });
+            (documentData.metadata.form12BB as any).previousVersions = previousVersions.slice(-20);
+            Object.assign(existingDocument, documentData);
+            existingDocument.version = nextVersion;
+            existingDocument.auditLog ||= [];
+            existingDocument.auditLog.push({
+                action: 'Re-Generate',
+                performedBy,
+                timestamp: generatedAt,
+                details: `Form 12BB re-generated for ${user.name} for FY ${financialYear}`,
+            });
+            return existingDocument.save();
         }
-        console.log(taxDeclaration, "taxDeclaration generateForm12BB");
-        // Map data to Form 12BB structure
-        const form12BBData = {
-            name: user.name,
-            pan: "",
-            fy: taxDeclaration.financialYear,
-            regime: taxDeclaration.regime.toUpperCase(),
-            claims: [
-                {
-                    section: "House Rent Allowance",
-                    details: {
-                        rent_paid:
-                            taxDeclaration.declarations.find(
-                                (d) => d.section === "80GG" && d.subSection === "rent_paid" && d.status === "verified"
-                            )?.verifiedAmount || 0,
-                        landlord_name: "",
-                        // taxDeclaration.declarations.find(
-                        //     (d) => d.section === "80GG" && d.subSection === "rent_paid"
-                        // )?.documents[0]?.landlordName || "Not Provided",
-                        landlord_address: "",
-                        // taxDeclaration.declarations.find(
-                        //     (d) => d.section === "80GG" && d.subSection === "rent_paid"
-                        // )?.documents[0]?.landlordAddress || "Not Provided",
-                        landlord_pan: "",
-                        // taxDeclaration.declarations.find(
-                        //     (d) => d.section === "80GG" && d.subSection === "rent_paid" && (d.verifiedAmount || 0) > 100000
-                        // )?.documents[0]?.landlordPan || "Not Provided",
-                        evidence:
-                            taxDeclaration.declarations.find(
-                                (d) => d.section === "80GG" && d.subSection === "rent_paid"
-                            )?.documents[0]?.documentName || "Not Provided",
-                    },
-                },
-                {
-                    section: "Leave Travel Concession",
-                    details: {
-                        amount:
-                            taxDeclaration.declarations.find(
-                                (d) => d.section === "10(5)" && d.subSection === "ltc" && d.status === "verified"
-                            )?.verifiedAmount || 0,
-                        evidence:
-                            taxDeclaration.declarations.find(
-                                (d) => d.section === "10(5)" && d.subSection === "ltc"
-                            )?.documents[0]?.documentName || "Not Provided",
-                    },
-                },
-                {
-                    section: "Deduction of Interest on Borrowing",
-                    details: {
-                        interest_paid:
-                            taxDeclaration.declarations.find(
-                                (d) => d.section === "24(b)" && d.subSection === "interest_paid" && d.status === "verified"
-                            )?.verifiedAmount || 0,
-                        lender_name: "",
-                        // taxDeclaration.declarations.find(
-                        //     (d) => d.section === "24(b)" && d.subSection === "interest_paid"
-                        // )?.documents[0]?.lenderName || "Not Provided",
-                        lender_address: "",
-                        // taxDeclaration.declarations.find(
-                        //     (d) => d.section === "24(b)" && d.subSection === "interest_paid"
-                        // )?.documents[0]?.lenderAddress || "Not Provided",
-                        lender_pan: "",
-                        // taxDeclaration.declarations.find(
-                        //     (d) => d.section === "24(b)" && d.subSection === "interest_paid"
-                        // )?.documents[0]?.lenderPan || "Not Provided",
-                        lender_type: "",
-                        // taxDeclaration.declarations.find(
-                        //     (d) => d.section === "24(b)" && d.subSection === "interest_paid"
-                        // )?.documents[0]?.lenderType || "Not Provided",
-                        evidence: ""
-                        // taxDeclaration.declarations.find(
-                        //     (d) => d.section === "24(b)" && d.subSection === "interest_paid"
-                        // )?.documents[0]?.documentName || "Not Provided",
-                    },
-                },
-                {
-                    section: "Chapter VI-A",
-                    subsections: [
+
+        return new Document({
+            ...documentData,
+            employeeId: new Types.ObjectId(employeeId),
+            version: 1,
+            auditLog: [{
+                action: 'Generate',
+                performedBy,
+                timestamp: generatedAt,
+                details: `Form 12BB generated for ${user.name} for FY ${financialYear}`,
+            }],
+        }).save();
+    }
+
+    // Generate or regenerate a single Form 12BB with the Puppeteer PDF runtime.
+    async generateForm12BB(data: IForm12BBGenerate): Promise<IDocument> {
+        const { employeeId, financialYear } = data;
+        if (!employeeId || !Types.ObjectId.isValid(employeeId)) {
+            throw new Error('A valid employee ID is required');
+        }
+
+        const effectiveFY = financialYear || getCurrentFinancialYear();
+        if (!isValidForm12BBFinancialYear(effectiveFY)) {
+            throw new Error('Financial year must be a consecutive range in YYYY-YYYY format');
+        }
+        if (!this.context.user?._id) {
+            throw new Error('Authenticated administrator is required');
+        }
+
+        const { user, taxDeclaration } = await this.getForm12BBSourceData(employeeId, effectiveFY);
+        assertForm12BBJoiningDateEligible(user.joiningDate, effectiveFY, user.name || 'Employee');
+
+        const mappedData = this.mapForm12BBData(user, taxDeclaration);
+        // effectiveFY is already validated as YYYY-YYYY. Use it directly so
+        // legacy declaration values cannot shorten the year shown in the PDF.
+        mappedData.financialYear = effectiveFY;
+        this.validateForm12BBData(mappedData);
+        let existingDoc: IDocument | null = await Document.findOne({
+            employeeId: new Types.ObjectId(employeeId),
+            type: 'Form12BB',
+            'metadata.form12BB.financialYear': effectiveFY,
+        });
+        if (data.generationRequestId
+            && existingDoc?.metadata?.form12BB?.generationRequestId === data.generationRequestId) {
+            return existingDoc;
+        }
+        const nextVersion = existingDoc ? Number(existingDoc.version || 1) + 1 : 1;
+        const form12BBDir = path.join(process.cwd(), 'uploads');
+        await fsPromises.mkdir(form12BBDir, { recursive: true });
+        const fileName = form12BBReportFileName(user, employeeId, effectiveFY, nextVersion);
+        const outputPdfPath = path.join(form12BBDir, fileName);
+        let uploadedFileUrl = '';
+
+        try {
+            await this.renderForm12BBPdf(mappedData, outputPdfPath);
+            uploadedFileUrl = await this.uploadForm12BBPdf({
+                outputPath: outputPdfPath,
+                fileName,
+                employeeId,
+            });
+            return await this.saveForm12BBDocument({
+                employeeId,
+                financialYear: effectiveFY,
+                fileName,
+                fileUrl: uploadedFileUrl,
+                nextVersion,
+                existingDocument: existingDoc,
+                user,
+                taxDeclaration,
+                generationRequestId: data.generationRequestId,
+            });
+        } catch (error: any) {
+            if (uploadedFileUrl) {
+                await deleteFileFromGCP(uploadedFileUrl).catch(() => undefined);
+            }
+            // A failed regeneration attempt must not invalidate the previously
+            // generated active report. Bulk-job failure records retain the error.
+            throw new Error(`Failed to generate Form 12BB for ${user.name}: ${error.message}`);
+        } finally {
+            await fsPromises.unlink(outputPdfPath).catch(() => undefined);
+        }
+    }
+
+    async regenerateForm12BB(documentId: string): Promise<IDocument> {
+        if (!Types.ObjectId.isValid(documentId)) {
+            throw new Error('A valid Form 12BB document ID is required');
+        }
+        const document = await Document.findOne({ _id: documentId, type: 'Form12BB' }).lean();
+        if (!document) throw new Error('Form 12BB document not found');
+        const financialYear = document.metadata?.form12BB?.financialYear;
+        if (!financialYear) throw new Error('Form 12BB financial year is missing');
+        return this.generateForm12BB({
+            employeeId: document.employeeId.toString(),
+            financialYear,
+        });
+    }
+
+    private async resolveForm12BBEmployeeIds(data: {
+        financialYear: string;
+        selectionMode: 'explicit' | 'allMatching';
+        employeeIds?: string[];
+        excludedEmployeeIds?: string[];
+        regenerateExisting?: boolean;
+        filters?: { departmentId?: string; activeStatus?: boolean; search?: string; reportStatus?: 'generated' | 'notGenerated' | 'failed' };
+    }): Promise<Types.ObjectId[]> {
+        let employeeIds: Types.ObjectId[] = [];
+        if (data.selectionMode === 'explicit') {
+            const ids = Array.from(new Set(data.employeeIds || []));
+            if (!ids.length || ids.some((id) => !Types.ObjectId.isValid(id))) {
+                throw new Error('At least one valid employee ID is required');
+            }
+            const users = await User.find({ _id: { $in: ids } })
+                .select('_id name joiningDate')
+                .lean();
+            if (users.length !== ids.length) {
+                throw new Error('One or more selected employees no longer exist');
+            }
+            users.forEach((user) => assertForm12BBJoiningDateEligible(
+                user.joiningDate,
+                data.financialYear,
+                user.name || 'Employee',
+            ));
+            employeeIds = users.map((user) => user._id);
+        } else if (data.selectionMode === 'allMatching') {
+            const query: any = {
+                joiningDate: getForm12BBJoiningDateQuery(data.financialYear),
+            };
+            if (data.filters?.departmentId) query.departmentId = data.filters.departmentId;
+            if (typeof data.filters?.activeStatus === 'boolean') query.active = data.filters.activeStatus;
+            if (data.filters?.search?.trim()) {
+                const escapedSearch = data.filters.search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const searchRegex = new RegExp(escapedSearch, 'i');
+                query.$or = [{ name: searchRegex }, { email: searchRegex }, { employeeCode: searchRegex }];
+            }
+            const excludedIds = (data.excludedEmployeeIds || [])
+                .filter((id) => Types.ObjectId.isValid(id))
+                .map((id) => new Types.ObjectId(id));
+            if (excludedIds.length) query._id = { $nin: excludedIds };
+            employeeIds = (await User.find(query).select('_id').lean()).map((user) => user._id);
+
+            if (data.filters?.reportStatus) {
+                const [reportDocuments, failedJobs] = await Promise.all([
+                    Document.find({
+                        employeeId: { $in: employeeIds },
+                        type: 'Form12BB',
+                        'metadata.form12BB.financialYear': data.financialYear,
+                    }).select('employeeId metadata.form12BB.generationStatus').lean(),
+                    Form12BBJob.find({ financialYear: data.financialYear, failed: { $gt: 0 } })
+                        .select('failures.employeeId').lean(),
+                ]);
+                const generated = new Set(
+                    reportDocuments
+                        .filter((document: any) => document.metadata?.form12BB?.generationStatus !== 'Failed')
+                        .map((document: any) => document.employeeId.toString()),
+                );
+                const failed = new Set<string>([
+                    ...reportDocuments
+                        .filter((document: any) => document.metadata?.form12BB?.generationStatus === 'Failed')
+                        .map((document: any) => document.employeeId.toString()),
+                    ...failedJobs.flatMap((job: any) => (job.failures || []).map((failure: any) => failure.employeeId?.toString())),
+                ].filter((id): id is string => Boolean(id)));
+                generated.forEach((id) => failed.delete(id));
+                const known = new Set([...generated, ...failed]);
+                employeeIds = employeeIds.filter((id) =>
+                    data.filters?.reportStatus === 'generated'
+                        ? generated.has(id.toString())
+                        : data.filters?.reportStatus === 'failed'
+                            ? failed.has(id.toString())
+                            : !known.has(id.toString()),
+                );
+            }
+        } else {
+            throw new Error('selectionMode must be explicit or allMatching');
+        }
+        if (data.regenerateExisting === false && employeeIds.length) {
+            const existingEmployeeIds = await Document.find({
+                employeeId: { $in: employeeIds },
+                type: 'Form12BB',
+                'metadata.form12BB.financialYear': data.financialYear,
+            }).distinct('employeeId');
+            const existing = new Set(existingEmployeeIds.map((id: any) => id.toString()));
+            employeeIds = employeeIds.filter((id) => !existing.has(id.toString()));
+        }
+        return employeeIds;
+    }
+
+    async previewForm12BBSelection(data: {
+        financialYear: string;
+        selectionMode: 'explicit' | 'allMatching';
+        employeeIds?: string[];
+        excludedEmployeeIds?: string[];
+        regenerateExisting?: boolean;
+        filters?: { departmentId?: string; activeStatus?: boolean; search?: string; reportStatus?: 'generated' | 'notGenerated' | 'failed' };
+    }): Promise<any> {
+        if (!isValidForm12BBFinancialYear(data.financialYear || '')) {
+            throw new Error('Financial year must be a consecutive range in YYYY-YYYY format');
+        }
+        const employeeIds = await this.resolveForm12BBEmployeeIds(data);
+        if (!employeeIds.length) throw new Error('No employees match the selection');
+        const [declarations, documents] = await Promise.all([
+            TaxDeclaration.find({ employeeId: { $in: employeeIds }, financialYear: data.financialYear }).select('employeeId').lean(),
+            Document.find({ employeeId: { $in: employeeIds }, type: 'Form12BB', 'metadata.form12BB.financialYear': data.financialYear }).select('employeeId').lean(),
+        ]);
+        const declarationIds = new Set(declarations.map((item: any) => item.employeeId.toString()));
+        return {
+            total: employeeIds.length,
+            withDeclaration: declarationIds.size,
+            withoutDeclaration: employeeIds.length - declarationIds.size,
+            alreadyGenerated: new Set(documents.map((item: any) => item.employeeId.toString())).size,
+            employeeIds: employeeIds.map((id) => id.toString()),
+        };
+    }
+
+    async createForm12BBBulkJob(data: {
+        financialYear: string;
+        selectionMode: 'explicit' | 'allMatching';
+        employeeIds?: string[];
+        excludedEmployeeIds?: string[];
+        regenerateExisting?: boolean;
+        filters?: { departmentId?: string; activeStatus?: boolean; search?: string; reportStatus?: 'generated' | 'notGenerated' | 'failed' };
+    }): Promise<any> {
+        if (!isValidForm12BBFinancialYear(data.financialYear || '')) {
+            throw new Error('Financial year must be a consecutive range in YYYY-YYYY format');
+        }
+        if (!this.context.user?._id) throw new Error('Authenticated administrator is required');
+
+        // Production bulk jobs must be handed to a request-driven worker. This
+        // check deliberately happens before writing anything to MongoDB.
+        assertForm12BBDispatcherConfigured();
+
+        const employeeIds = await this.resolveForm12BBEmployeeIds(data);
+
+        if (!employeeIds.length) throw new Error('No employees match the selection');
+
+        const conflictingJob = await Form12BBJob.findOne({
+            requestedBy: new Types.ObjectId(this.context.user._id),
+            status: { $in: ['Queued', 'Processing'] },
+        }).select('_id').lean();
+        if (conflictingJob) throw new Error('Another Form 12BB generation request is already in progress');
+
+        const requesterId = new Types.ObjectId(this.context.user._id);
+        let job: any;
+        try {
+            job = await Form12BBJob.create({
+                activeKey: requesterId.toString(),
+                financialYear: data.financialYear,
+                requestedBy: requesterId,
+                selectionMode: data.selectionMode,
+                employeeIds,
+                filters: data.filters || {},
+                excludedEmployeeIds: (data.excludedEmployeeIds || [])
+                    .filter((id) => Types.ObjectId.isValid(id))
+                    .map((id) => new Types.ObjectId(id)),
+                status: 'Queued',
+                total: employeeIds.length,
+            });
+
+            const employees = await User.find({ _id: { $in: employeeIds } }).select('_id name').lean();
+            const employeeNames = new Map(employees.map((employee) => [employee._id.toString(), employee.name]));
+            await Form12BBJobItem.insertMany(employeeIds.map((employeeId) => ({
+                activeKey: `${employeeId.toString()}:${data.financialYear}`,
+                jobId: job._id,
+                employeeId,
+                employeeName: employeeNames.get(employeeId.toString()),
+                financialYear: data.financialYear,
+                status: 'Queued',
+                attempts: 0,
+            })));
+
+            await this.dispatchForm12BBJob(job._id.toString());
+            return job.toObject();
+        } catch (error: any) {
+            if (job?._id) {
+                await Promise.all([
+                    Form12BBJob.updateOne(
+                        { _id: job._id },
                         {
-                            name: "Section 80C",
-                            details: [
-                                {
-                                    name: "Life Insurance Premium",
-                                    amount:
-                                        taxDeclaration.declarations.find(
-                                            (d) => d.section === "80C" && d.subSection === "life_insurance" && d.status === "verified"
-                                        )?.verifiedAmount || 0,
-                                    evidence:
-                                        taxDeclaration.declarations.find(
-                                            (d) => d.section === "80C" && d.subSection === "life_insurance"
-                                        )?.documents[0]?.documentName || "Not Provided",
-                                },
-                                {
-                                    name: "Employee Provident Fund (EPF)",
-                                    amount:
-                                        taxDeclaration.declarations.find(
-                                            (d) => d.section === "80C" && d.subSection === "epf" && d.status === "verified"
-                                        )?.verifiedAmount || 0,
-                                    evidence:
-                                        taxDeclaration.declarations.find(
-                                            (d) => d.section === "80C" && d.subSection === "epf"
-                                        )?.documents[0]?.documentName || "Not Provided",
-                                },
-                                {
-                                    name: "Public Provident Fund",
-                                    amount:
-                                        taxDeclaration.declarations.find(
-                                            (d) => d.section === "80C" && d.subSection === "ppf" && d.status === "verified"
-                                        )?.verifiedAmount || 0,
-                                    evidence:
-                                        taxDeclaration.declarations.find(
-                                            (d) => d.section === "80C" && d.subSection === "ppf"
-                                        )?.documents[0]?.documentName || "Not Provided",
-                                },
+                            $set: { status: 'Failed', completedAt: new Date() },
+                            $unset: { activeKey: 1 },
+                        },
+                    ),
+                    Form12BBJobItem.updateMany(
+                        { jobId: job._id },
+                        {
+                            $set: { status: 'Failed', completedAt: new Date(), lastError: String(error?.message || error).slice(0, 500) },
+                            $unset: { activeKey: 1, leaseOwner: 1, leaseExpiresAt: 1 },
+                        },
+                    ),
+                ]);
+            }
+            if (error?.code === 11000) {
+                throw new Error('One or more selected employees are already part of an active Form 12BB generation job');
+            }
+            throw error;
+        }
+    }
+
+    private async dispatchForm12BBJob(jobId: string, delaySeconds = 0): Promise<void> {
+        if (isForm12BBCloudTasksMode()) {
+            await enqueueForm12BBJob(jobId, delaySeconds);
+            return;
+        }
+        const run = () => void this.processForm12BBJobChunk(jobId).catch((error) => {
+            console.error('Form 12BB inline worker failed:', error);
+        });
+        if (delaySeconds > 0) setTimeout(run, Math.min(delaySeconds, 5) * 1000);
+        else setImmediate(run);
+    }
+
+    private isRetryableForm12BBError(error: unknown): boolean {
+        const message = String((error as any)?.message || error).toLowerCase();
+        return ![
+            'tax declaration not found',
+            'employee not found',
+            'valid employee id',
+            'financial year must',
+            'required to generate',
+            'invalid amount',
+            'not eligible for form 12bb',
+        ].some((value) => message.includes(value));
+    }
+
+    private async setForm12BBWorkerActor(requestedBy: Types.ObjectId): Promise<void> {
+        const actor: any = await User.findById(requestedBy)
+            .select('_id email name role departmentId active country currency licenseType portalAccess')
+            .lean();
+        if (!actor) throw new Error('The administrator who requested this Form 12BB job no longer exists');
+        this.context.user = {
+            _id: actor._id,
+            email: actor.email || '',
+            name: actor.name || 'Administrator',
+            role: actor.role || 'admin',
+            departmentId: actor.departmentId?.toString() || '',
+            active: actor.active !== false,
+            country: actor.country || 'IN',
+            currency: actor.currency || 'INR',
+            licenseType: actor.licenseType || '',
+            portalAccess: actor.portalAccess !== false,
+        };
+    }
+
+    private async ensureForm12BBJobItems(job: any): Promise<void> {
+        if (await Form12BBJobItem.exists({ jobId: job._id })) return;
+        const employees = await User.find({ _id: { $in: job.employeeIds } }).select('_id name').lean();
+        const employeeNames = new Map(employees.map((employee) => [employee._id.toString(), employee.name]));
+        const records = job.employeeIds.map((employeeId: Types.ObjectId) => ({
+            activeKey: `${employeeId.toString()}:${job.financialYear}`,
+            jobId: job._id,
+            employeeId,
+            employeeName: employeeNames.get(employeeId.toString()),
+            financialYear: job.financialYear,
+            status: 'Queued',
+            attempts: 0,
+        }));
+        try {
+            await Form12BBJobItem.insertMany(records, { ordered: false });
+        } catch (error: any) {
+            if (error?.code !== 11000) throw error;
+            // Jobs created by the old in-memory implementation have no item
+            // records. If an employee is now locked by a newer job, retain a
+            // terminal item so this legacy job can still finish deterministically.
+            const inserted = await Form12BBJobItem.find({ jobId: job._id }).distinct('employeeId');
+            const insertedIds = new Set(inserted.map((id: any) => id.toString()));
+            const blocked = records.filter((record: any) => !insertedIds.has(record.employeeId.toString()));
+            if (blocked.length) {
+                await Form12BBJobItem.insertMany(blocked.map((record: any) => ({
+                    ...record,
+                    activeKey: undefined,
+                    status: 'Failed',
+                    completedAt: new Date(),
+                    lastError: 'Employee is already part of another active Form 12BB generation job',
+                })), { ordered: false });
+            }
+        }
+    }
+
+    private async refreshForm12BBJobProgress(jobId: Types.ObjectId): Promise<{
+        total: number;
+        processed: number;
+        queued: number;
+        processing: number;
+    }> {
+        await Form12BBJobItem.updateMany(
+            { jobId, status: 'Queued', attempts: { $gte: getForm12BBMaxAttempts() } },
+            {
+                $set: { status: 'Failed', completedAt: new Date(), lastError: 'Maximum report generation attempts exceeded' },
+                $unset: { activeKey: 1, leaseOwner: 1, leaseExpiresAt: 1, nextAttemptAt: 1 },
+            },
+        );
+        const counts = await Form12BBJobItem.aggregate([
+            { $match: { jobId } },
+            { $group: { _id: '$status', count: { $sum: 1 } } },
+        ]);
+        const byStatus = new Map(counts.map((item: any) => [item._id, item.count]));
+        const succeeded = Number(byStatus.get('Completed') || 0);
+        const failed = Number(byStatus.get('Failed') || 0);
+        const queued = Number(byStatus.get('Queued') || 0);
+        const processing = Number(byStatus.get('Processing') || 0);
+        const total = succeeded + failed + queued + processing;
+        const processed = succeeded + failed;
+        const failures = await Form12BBJobItem.find({ jobId, status: 'Failed' })
+            .select('employeeId employeeName lastError')
+            .sort({ completedAt: 1 })
+            .limit(100)
+            .lean();
+        const terminal = total > 0 && processed === total;
+        await Form12BBJob.updateOne(
+            { _id: jobId },
+            {
+                $set: {
+                    total,
+                    processed,
+                    succeeded,
+                    failed,
+                    failures: failures.map((item: any) => ({
+                        employeeId: item.employeeId,
+                        employeeName: item.employeeName,
+                        error: item.lastError || 'Report generation failed',
+                    })),
+                    ...(terminal ? {
+                        status: failed ? 'CompletedWithErrors' : 'Completed',
+                        completedAt: new Date(),
+                    } : { status: 'Processing' }),
+                },
+                ...(terminal ? { $unset: { activeKey: 1 } } : {}),
+            },
+        );
+        return { total, processed, queued, processing };
+    }
+
+    private async getNextForm12BBDispatchDelay(jobId: Types.ObjectId): Promise<number> {
+        const now = new Date();
+        const ready = await Form12BBJobItem.exists({
+            jobId,
+            $or: [
+                {
+                    status: 'Queued',
+                    attempts: { $lt: getForm12BBMaxAttempts() },
+                    $or: [
+                        { nextAttemptAt: { $exists: false } },
+                        { nextAttemptAt: { $lte: now } },
+                    ],
+                },
+                {
+                    status: 'Processing',
+                    $or: [
+                        { leaseExpiresAt: { $exists: false } },
+                        { leaseExpiresAt: { $lte: now } },
+                    ],
+                },
+            ],
+        });
+        if (ready) return 0;
+
+        const [queued, processing]: any[] = await Promise.all([
+            Form12BBJobItem.findOne({ jobId, status: 'Queued' }).select('nextAttemptAt').sort({ nextAttemptAt: 1 }).lean(),
+            Form12BBJobItem.findOne({ jobId, status: 'Processing' }).select('leaseExpiresAt').sort({ leaseExpiresAt: 1 }).lean(),
+        ]);
+        const timestamps = [queued?.nextAttemptAt, processing?.leaseExpiresAt]
+            .filter(Boolean)
+            .map((value: Date) => new Date(value).getTime());
+        if (!timestamps.length) return 5;
+        return Math.max(1, Math.min(300, Math.ceil((Math.min(...timestamps) - Date.now()) / 1000)));
+    }
+
+    async processForm12BBJobChunk(jobId: string): Promise<{
+        completed: boolean;
+        processedInRequest: number;
+    }> {
+        if (!Types.ObjectId.isValid(jobId)) throw new Error('Invalid Form 12BB job ID');
+        const jobObjectId = new Types.ObjectId(jobId);
+        const job = await Form12BBJob.findOne({
+            _id: jobObjectId,
+            status: { $in: ['Queued', 'Processing'] },
+        });
+        if (!job) return { completed: true, processedInRequest: 0 };
+
+        await this.setForm12BBWorkerActor(job.requestedBy);
+        await this.ensureForm12BBJobItems(job);
+        await Form12BBJob.updateOne(
+            { _id: jobObjectId, status: 'Queued' },
+            { $set: { status: 'Processing', startedAt: new Date() } },
+        );
+
+        const workerId = randomUUID();
+        const maxAttempts = getForm12BBMaxAttempts();
+        let processedInRequest = 0;
+        for (let index = 0; index < getForm12BBChunkSize(); index += 1) {
+            const now = new Date();
+            const item: any = await Form12BBJobItem.findOneAndUpdate(
+                {
+                    jobId: jobObjectId,
+                    $or: [
+                        {
+                            status: 'Queued',
+                            attempts: { $lt: maxAttempts },
+                            $or: [
+                                { nextAttemptAt: { $exists: false } },
+                                { nextAttemptAt: { $lte: now } },
                             ],
                         },
                         {
-                            name: "Section 80CCC",
-                            details: [
-                                {
-                                    name: "Pension Fund",
-                                    amount:
-                                        taxDeclaration.declarations.find(
-                                            (d) => d.section === "80CCC" && d.status === "verified"
-                                        )?.verifiedAmount || 0,
-                                    evidence:
-                                        taxDeclaration.declarations.find(
-                                            (d) => d.section === "80CCC"
-                                        )?.documents[0]?.documentName || "Not Provided",
-                                },
-                            ],
-                        },
-                        {
-                            name: "Section 80CCD",
-                            details: [
-                                {
-                                    name: "Employer's NPS Contribution",
-                                    amount:
-                                        taxDeclaration.declarations.find(
-                                            (d) => d.section === "80CCD2" && d.subSection === "employer_nps" && d.status === "verified"
-                                        )?.verifiedAmount || 0,
-                                    evidence:
-                                        taxDeclaration.declarations.find(
-                                            (d) => d.section === "80CCD2" && d.subSection === "employer_nps"
-                                        )?.documents[0]?.documentName || "Not Provided",
-                                },
-                            ],
-                        },
-                        {
-                            name: "Other Sections",
-                            details: [
-                                {
-                                    name: "Health Insurance for Self, Spouse, Children",
-                                    amount:
-                                        taxDeclaration.declarations.find(
-                                            (d) => d.section === "80D" && d.subSection === "self_family" && d.status === "verified"
-                                        )?.verifiedAmount || 0,
-                                    evidence:
-                                        taxDeclaration.declarations.find(
-                                            (d) => d.section === "80D" && d.subSection === "self_family"
-                                        )?.documents[0]?.documentName || "Not Provided",
-                                },
-                                {
-                                    name: "Health Insurance for Parents",
-                                    amount:
-                                        taxDeclaration.declarations.find(
-                                            (d) => d.section === "80D" && d.subSection === "parents" && d.status === "verified"
-                                        )?.verifiedAmount || 0,
-                                    evidence:
-                                        taxDeclaration.declarations.find(
-                                            (d) => d.section === "80D" && d.subSection === "parents"
-                                        )?.documents[0]?.documentName || "Not Provided",
-                                },
-                                {
-                                    name: "Rent Paid",
-                                    amount:
-                                        taxDeclaration.declarations.find(
-                                            (d) => d.section === "80GG" && d.subSection === "rent_paid" && d.status === "verified"
-                                        )?.verifiedAmount || 0,
-                                    evidence:
-                                        taxDeclaration.declarations.find(
-                                            (d) => d.section === "80GG" && d.subSection === "rent_paid"
-                                        )?.documents[0]?.documentName || "Not Provided",
-                                },
-                                {
-                                    name: "Interest on Deposits (80TTA)",
-                                    amount:
-                                        taxDeclaration.declarations.find(
-                                            (d) => d.section === "80TTA" && d.status === "verified"
-                                        )?.verifiedAmount || 0,
-                                    evidence:
-                                        taxDeclaration.declarations.find(
-                                            (d) => d.section === "80TTA"
-                                        )?.documents[0]?.documentName || "Not Provided",
-                                },
+                            status: 'Processing',
+                            $or: [
+                                { leaseExpiresAt: { $exists: false } },
+                                { leaseExpiresAt: { $lte: now } },
                             ],
                         },
                     ],
                 },
-            ],
-            other_income:
-                taxDeclaration.declarations.find(
-                    (d) => d.section === "other_income" && d.status === "verified"
-                )?.verifiedAmount || 0,
-            processedTDS: taxDeclaration.taxPaid || 0,
-            verification: {
-                employee_name: user.name || "-",
-                father_name: "",
-                place: user.address?.split(",")[1]?.trim() || "Not Provided",
-                date: new Date().toISOString().split("T")[0],
-                signature: user.name || "-",
-            },
-        };
-
-
-        console.log(JSON.stringify(form12BBData, null, 2), "form12BBData JSON");
-        console.log("first")
-        const flattenedData = {
-            ...form12BBData,
-            rent_paid: form12BBData.claims?.[0]?.details?.rent_paid || 0,
-            landlord_name: form12BBData.claims?.[0]?.details?.landlord_name || "",
-            landlord_address: form12BBData.claims?.[0]?.details?.landlord_address || "",
-            landlord_pan: form12BBData.claims?.[0]?.details?.landlord_pan || "",
-            ltc_amount: form12BBData.claims?.[1]?.details?.amount || 0,
-            interest_paid: form12BBData.claims?.[2]?.details?.interest_paid || 0,
-            lender_name: form12BBData.claims?.[2]?.details?.lender_name || "",
-            lender_address: form12BBData.claims?.[2]?.details?.lender_address || "",
-            lender_pan: form12BBData.claims?.[2]?.details?.lender_pan || "",
-            lender_type: form12BBData.claims?.[2]?.details?.lender_type || "",
-            processedTDS: form12BBData.processedTDS || 0,
-            other_income: form12BBData.other_income || 0,
-            section_80C: form12BBData.claims?.[3]?.subsections?.[0]?.details || [],
-            section_80CCC: form12BBData.claims?.[3]?.subsections?.[1]?.details || [],
-            section_80CCD: form12BBData.claims?.[3]?.subsections?.[2]?.details || [],
-            section_other: form12BBData.claims?.[3]?.subsections?.[3]?.details || [],
-        };
-        console.log(flattenedData, "flattenedData generateForm12BB")
-        console.log(JSON.stringify(flattenedData, null, 2), "flattenedData JSON");
-        // Define paths for input template and output files
-        const form12BBDir = path.join(process.cwd(), 'uploads');
-        console.log(form12BBDir, "1 form12BBDir")
-        // // Create payslips directory if it doesn't exist
-        if (!fs.existsSync("uploads")) {
-            fs.mkdirSync("uploads", { recursive: true });
-        }
-        const form12BBBaseName = `form12bb_${employeeId}_${effectiveFY.replace("-", "_")}`;
-        const outputDocxPath = path.join(form12BBDir, `${form12BBBaseName}.docx`);
-        const outputPdfPath = path.join(form12BBDir, `${form12BBBaseName}.pdf`);
-        try {
-            console.log(outputDocxPath, outputPdfPath, "outputDocxPath outputPdfPath")
-            // Replace placeholders in DOCX template
-            await this.replacePlaceholdersInDocx(
-                path.join(process.cwd(), "form12bb_template.docx"),
-                outputDocxPath,
-                flattenedData
-
+                {
+                    $set: {
+                        status: 'Processing',
+                        leaseOwner: workerId,
+                        leaseExpiresAt: new Date(now.getTime() + getForm12BBLeaseMilliseconds()),
+                        startedAt: now,
+                    },
+                    $inc: { attempts: 1 },
+                    $unset: { nextAttemptAt: 1 },
+                },
+                { new: true, sort: { createdAt: 1 } },
             );
-            // Convert DOCX to PDF
-            await this.convertDocxToPDF(outputDocxPath, outputPdfPath);
+            if (!item) break;
 
-            // Upload to GCP Cloud Storage
-            const gcpResult = await uploadFileToGCP({
-                filePath: outputPdfPath,
-                fileName: `${form12BBBaseName}.pdf`,
-                employeeId: employeeId,
-                category: 'Tax',
-                type: 'Form12BB'
-            });
-
-            if (!gcpResult.success) {
-                throw new Error(`Failed to upload Form12BB to GCP: ${gcpResult.error}`);
-            }
-
-            const fileUrl = gcpResult.fileUrl!;
-            console.log(fileUrl, "fileUrl generateForm12BB")
-
-            // Clean up temp files
             try {
-                await fsPromises.unlink(outputDocxPath);
-                await fsPromises.unlink(outputPdfPath);
-            } catch (err) {
-                console.warn(`Failed to delete temp files:`, err);
-            }
-
-            const existingDoc = await Document.findOne({
-                employeeId: new Types.ObjectId(employeeId),
-                type: 'Form12BB',
-                'metadata.form12BB.financialYear': effectiveFY
-            });
-            console.log(existingDoc, "existingDoc generateForm12BB")
-            const documentData = {
-                fileName: `${form12BBBaseName}.pdf`,
-                filePath: fileUrl,
-                status: 'Generated',
-                uploadDate: new Date(),
-                uploadedBy: new Types.ObjectId(this.context.user?._id),
-                accessLevel: 'Private',
-                tags: ['Form12BB', effectiveFY],
-                category: 'Tax',
-                type: 'Form12BB',
-                metadata: {
-                    form12BB: {
-                        financialYear: effectiveFY,
-                        regime: taxDeclaration.regime,
-                        taxDeclarationId: taxDeclaration._id,
-                        totalIncome: taxDeclaration.annualGross,
-                        deductions: taxDeclaration.totalDeclaredAmount,
-                        taxPayable: taxDeclaration.initialTaxBreakdown?.finalTaxWithCess,
-                        isLocked: false,
-                        isPreviewEnabled: false,
-                        tdsPaid: taxDeclaration.taxPaid
-                    }
-                }
-            };
-
-            let document: IDocument;
-
-            if (existingDoc) {
-                // Update existing document
-                Object.assign(existingDoc, documentData);
-                if (!existingDoc.auditLog) {
-                    existingDoc.auditLog = [];
-                }
-                existingDoc.auditLog.push({
-                    action: 'Re-Generate',
-                    performedBy: new Types.ObjectId(this.context.user?._id),
-                    timestamp: new Date(),
-                    details: `Form 12BB re-generated for ${user.name} for FY ${effectiveFY}`
+                await this.generateForm12BB({
+                    employeeId: item.employeeId.toString(),
+                    financialYear: item.financialYear,
+                    generationRequestId: item._id.toString(),
                 });
-                await existingDoc.save();
-                console.log("Form 12BB document updated successfully:", existingDoc._id);
-                document = existingDoc;
-            } else {
-                // Create new document
-                document = new Document({
-                    ...documentData,
-                    employeeId: new Types.ObjectId(employeeId),
-                    auditLog: [{
-                        action: 'Upload',
-                        performedBy: new Types.ObjectId(this.context.user?._id),
-                        timestamp: new Date(),
-                        details: `Form 12BB generated for ${user.name} for FY ${effectiveFY}`
-                    }]
-                });
-                await document.save();
-                console.log("Form 12BB document created successfully:", document._id);
+                await Form12BBJobItem.updateOne(
+                    { _id: item._id, leaseOwner: workerId },
+                    {
+                        $set: { status: 'Completed', completedAt: new Date(), lastError: '' },
+                        $unset: { activeKey: 1, leaseOwner: 1, leaseExpiresAt: 1, nextAttemptAt: 1 },
+                    },
+                );
+            } catch (error: any) {
+                const errorMessage = String(error?.message || error).slice(0, 500);
+                const retryable = this.isRetryableForm12BBError(error) && item.attempts < maxAttempts;
+                await Form12BBJobItem.updateOne(
+                    { _id: item._id, leaseOwner: workerId },
+                    retryable
+                        ? {
+                            $set: {
+                                status: 'Queued',
+                                lastError: errorMessage,
+                                nextAttemptAt: new Date(Date.now() + Math.min(60, 5 * (2 ** (item.attempts - 1))) * 1000),
+                            },
+                            $unset: { leaseOwner: 1, leaseExpiresAt: 1 },
+                        }
+                        : {
+                            $set: { status: 'Failed', completedAt: new Date(), lastError: errorMessage },
+                            $unset: { activeKey: 1, leaseOwner: 1, leaseExpiresAt: 1, nextAttemptAt: 1 },
+                        },
+                );
             }
-
-            console.log("Form 12BB document saved successfully:", document._id);
-            return document;
-        } catch (error: any) {
-            console.error("Form 12BB Generation Error:", error);
-            throw new Error(`Failed to generate Form 12BB for ${user.name}: ${error.message}`);
+            processedInRequest += 1;
         }
+
+        const progress = await this.refreshForm12BBJobProgress(jobObjectId);
+        const completed = progress.total > 0 && progress.processed === progress.total;
+        if (!completed) {
+            const delaySeconds = await this.getNextForm12BBDispatchDelay(jobObjectId);
+            await this.dispatchForm12BBJob(jobId, delaySeconds);
+        }
+        return { completed, processedInRequest };
+    }
+
+    // Kept as a compatibility wrapper for callers created before durable chunks.
+    async processForm12BBBulkJob(jobId: string): Promise<void> {
+        await this.processForm12BBJobChunk(jobId);
+    }
+
+    async resumeForm12BBBulkJob(jobId: string): Promise<any> {
+        if (!Types.ObjectId.isValid(jobId)) throw new Error('Invalid job ID');
+        if (!this.context.user?._id) throw new Error('Authenticated administrator is required');
+        const job = await Form12BBJob.findOne({
+            _id: new Types.ObjectId(jobId),
+            requestedBy: new Types.ObjectId(this.context.user._id),
+            status: { $in: ['Queued', 'Processing'] },
+        });
+        if (!job) throw new Error('Active Form 12BB generation job not found');
+        assertForm12BBDispatcherConfigured();
+        await this.dispatchForm12BBJob(jobId);
+        return job.toObject();
+    }
+
+    async getForm12BBBulkJob(jobId: string): Promise<any> {
+        if (!Types.ObjectId.isValid(jobId)) throw new Error('Invalid job ID');
+        if (!this.context.user?._id) throw new Error('Authenticated administrator is required');
+        const job = await Form12BBJob.findOne({
+            _id: new Types.ObjectId(jobId),
+            requestedBy: new Types.ObjectId(this.context.user._id),
+        })
+            .select('-employeeIds -excludedEmployeeIds')
+            .lean();
+        if (!job) throw new Error('Form 12BB generation job not found');
+        return job;
+    }
+
+    async getActiveForm12BBBulkJob(): Promise<any | null> {
+        if (!this.context.user?._id) throw new Error('Authenticated administrator is required');
+        return Form12BBJob.findOne({
+            requestedBy: new Types.ObjectId(this.context.user._id),
+            status: { $in: ['Queued', 'Processing'] },
+        })
+            .select('-employeeIds -excludedEmployeeIds')
+            .sort({ createdAt: -1 })
+            .lean();
+    }
+
+    async getForm12BBAccessUrl(
+        documentId: string,
+        user: Partial<IUser>,
+        download: boolean,
+    ): Promise<{ url: string; fileName: string }> {
+        if (!Types.ObjectId.isValid(documentId)) throw new Error('Invalid document ID');
+        const document = await Document.findOne({ _id: documentId, type: 'Form12BB' }).lean();
+        if (!document) throw new Error('Form 12BB document not found');
+
+        const isAdmin = String(user.role || '').toLowerCase() === 'admin';
+        const isOwner = document.employeeId.toString() === user._id?.toString();
+        if (!isAdmin && (!isOwner || !document.metadata?.form12BB?.isPreviewEnabled)) {
+            throw new Error('You are not authorized to access this Form 12BB');
+        }
+
+        let accessFileName = document.fileName;
+        if (download) {
+            const employee = await User.findById(document.employeeId).select('name employeeCode').lean();
+            accessFileName = form12BBReportFileName(
+                employee,
+                document.employeeId.toString(),
+                document.metadata?.form12BB?.financialYear || 'Unknown',
+                Number(document.version || 1),
+            );
+        }
+        const url = await getSignedFileUrl(document.filePath, {
+            downloadFileName: download ? accessFileName : undefined,
+        });
+        await Document.updateOne(
+            { _id: document._id },
+            {
+                $push: {
+                    auditLog: {
+                        action: download ? 'Download' : 'View',
+                        performedBy: new Types.ObjectId(user._id),
+                        timestamp: new Date(),
+                        details: `${download ? 'Downloaded' : 'Viewed'} Form 12BB`,
+                    },
+                },
+            },
+        );
+        return { url, fileName: accessFileName };
     }
 
     //Form12BB preview update
@@ -4075,5 +5136,29 @@ export class DocumentService extends BaseService {
         });
 
         return document;
+    }
+
+    async generatePOIReport(employeeId: string, financialYear: string): Promise<IDocument> {
+        return new POIReportService(this.context).generate(employeeId, financialYear);
+    }
+
+    async regeneratePOIReport(documentId: string): Promise<IDocument> {
+        return new POIReportService(this.context).regenerate(documentId);
+    }
+
+    async getPOIReportDetails(documentId: string): Promise<any> {
+        return new POIReportService(this.context).getDetails(documentId);
+    }
+
+    async getPOIReportDownload(documentId: string): Promise<{ url: string; fileName: string }> {
+        return new POIReportService(this.context).getDownload(documentId);
+    }
+
+    async getPOICandidateStatus(employeeId: string, financialYear: string): Promise<any> {
+        return new POIReportService(this.context).getCandidateStatus(employeeId, financialYear);
+    }
+
+    async getPOICandidateStatuses(employeeIds: string[], financialYear: string): Promise<any> {
+        return new POIReportService(this.context).getCandidateStatuses(employeeIds, financialYear);
     }
 }

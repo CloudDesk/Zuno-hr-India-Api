@@ -11,6 +11,7 @@ import { shiftRoutes } from "./shift.routes";
 import { trainingRoutes } from "./training.routes";
 import { trainingAttendanceRoutes } from "./training-attendance.routes";
 import { organizationRoutes } from "./organization.routes";
+import { organizationProfileRoutes } from "./organization-profile.routes";
 import { salaryStructureRoutes } from "./salary-structure";
 import { salaryAssignmentRoutes } from "./salary-assignment";
 import { taxSlabRoutes } from "./tax-slab.routes";
@@ -53,8 +54,13 @@ import finalSettlementRoutes from "./final-settlement.routes";
 import { communicationRoutes } from "./communication.routes";
 import { leaveReleaseConfigurationRoutes } from "./leave-release-configuration.routes";
 import mongoose from "mongoose";
+import { consolidatedTaxReportRoutes } from "./consolidated-tax-report.routes";
+
+import { consolidatedTaxPdfRoutes } from "./consolidated-tax-pdf.routes";
 
 export async function routes(fastify: FastifyInstance) {
+  fastify.register(consolidatedTaxPdfRoutes, { prefix: "/consolidated-tax-pdf" });
+  fastify.register(consolidatedTaxReportRoutes, { prefix: "/consolidated-tax-report" });
   fastify.register(authRoutes, { prefix: "/auth" });
   fastify.register(userRoutes, { prefix: "/users" });
   fastify.register(userProfileRoutes, { prefix: "/user-profile" });
@@ -75,6 +81,7 @@ export async function routes(fastify: FastifyInstance) {
     prefix: "/training-attendance",
   });
   fastify.register(organizationRoutes, { prefix: "/organizations" });
+  fastify.register(organizationProfileRoutes, { prefix: "/organization-profiles" });
   fastify.register(salaryStructureRoutes, { prefix: "/salary-structure" });
   fastify.register(salaryAssignmentRoutes, { prefix: "/salary-assignment" });
   fastify.register(taxSlabRoutes, { prefix: "/tax-slab" });

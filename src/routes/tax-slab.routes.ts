@@ -376,6 +376,21 @@ export async function taxSlabRoutes(fastify: FastifyInstance): Promise<void> {
         }
     );
 
+    fastify.get('/financial-years',
+        { preHandler: [authenticate] },
+        async (request, reply) => {
+            try {
+                const financialYears = await request.container!.taxSlabService.getFinancialYears();
+                return reply.send({ success: true, data: financialYears });
+            } catch (error: any) {
+                return reply.status(400).send({
+                    success: false,
+                    error: { message: error.message },
+                });
+            }
+        },
+    );
+
     fastify.get('/financial-year/:financialYear',
         { preHandler: [authenticate] },
         async (request, reply) => {

@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Form 16 - {{employeeName}}</title>
+  <style>
+    @page { size: A4; margin: 0; }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: #111; font-family: "Times New Roman", Times, serif; font-size: 11px; }
+    .page { position: relative; width: 210mm; height: 297mm; padding: 8mm 7mm 13mm; page-break-after: always; }
+    .page:last-child { page-break-after: auto; }
+    .title { margin: 0; text-align: center; font-size: 16px; letter-spacing: 1px; font-weight: 700; }
+    .subtitle { margin: 6px 0 8px; text-align: center; font-size: 14px; letter-spacing: 0.8px; font-weight: 700; }
+    .description { margin: 0 0 9px; text-align: center; font-size: 10px; line-height: 1.4; font-weight: 600; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    th, td { border: 0.75px solid #111; padding: 6px 7px; vertical-align: middle; line-height: 1.38; }
+    th { background: #f3f4f6; font-weight: 700; text-align: center; }
+    .center { text-align: center; }
+    .right { text-align: right; white-space: nowrap; }
+    .strong { font-weight: 700; }
+    .section td { background: #f9fafb; font-weight: 700; }
+    .header-label { background: #f9fafb; font-weight: 700; text-align: center; }
+    .header-value { height: 27mm; padding: 10px 11px; vertical-align: top; line-height: 1.5; }
+    .continuation { display: grid; grid-template-columns: 1.3fr 1.2fr 1.2fr 1fr; gap: 8px; margin: 0 0 10px; padding: 0 10px 7px; border-bottom: 0.75px solid #111; font-size: 9px; font-weight: 600; line-height: 1.35; }
+    .footer { position: absolute; right: 7mm; bottom: 5mm; left: 7mm; display: grid; grid-template-columns: 1fr 1fr 1fr; color: #374151; font-size: 9px; line-height: 1.3; }
+    .footer span:nth-child(2) { text-align: center; }
+    .footer span:last-child { text-align: right; }
+    .blank { min-height: 18px; }
+    .note { display: inline-block; margin-top: 3px; font-size: 10px; font-weight: 600; line-height: 1.4; }
+    .note-row td { padding-top: 11px; padding-bottom: 11px; }
+    .page-one table td { padding-top: 5.5px; padding-bottom: 5.5px; }
+    .system-note { margin-top: 12px; border: 0.75px solid #9ca3af; padding: 10px 11px; color: #374151; font-size: 9.5px; line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <section class="page page-one">
+    <h1 class="title">FORM NO. 16</h1>
+    <div class="subtitle">PART B</div>
+    <p class="description">Certificate under section 203 of the Income-tax Act, 1961 for tax deducted at source on salary paid to an employee under section 192</p>
+    <table>
+      <tr><td colspan="3"><span class="strong">Certificate No.</span>&nbsp;</td><td colspan="3"><span class="strong">Last updated on</span>&nbsp;</td></tr>
+      <tr><td colspan="3" class="header-label">Name and address of the Employer</td><td colspan="3" class="header-label">Name and address of the Employee</td></tr>
+      <tr>
+        <td colspan="3" class="header-value"><span class="strong">{{employerName}}</span><br>{{employerAddress}}<br>{{employerEmail}}</td>
+        <td colspan="3" class="header-value"><span class="strong">{{employeeName}}</span><br>{{employeeAddress}}<br>Employee ID: {{employeeCode}}</td>
+      </tr>
+      <tr><td colspan="2" class="header-label">PAN of the Deductor</td><td colspan="2" class="header-label">TAN of the Deductor</td><td colspan="2" class="header-label">PAN of the Employee</td></tr>
+      <tr><td colspan="2" class="center">{{employerPan}}</td><td colspan="2" class="center">{{employerTan}}</td><td colspan="2" class="center">{{employeePan}}</td></tr>
+      <tr><td colspan="3" class="header-label">CIT (TDS)</td><td colspan="1" class="header-label">Assessment Year</td><td colspan="2" class="header-label">Period with the Employer</td></tr>
+      <tr><td colspan="3" class="center">{{citName}}<br>{{citAddress}}</td><td class="center">{{assessmentYear}}</td><td class="center">From<br>{{periodFrom}}</td><td class="center">To<br>{{periodTo}}</td></tr>
+    </table>
+    <div style="text-align:right;margin:4px 0 2px;font-weight:700">Annexure - I</div>
+    <table>
+      <colgroup><col style="width:8%"><col style="width:54%"><col style="width:19%"><col style="width:19%"></colgroup>
+      <tr class="section"><td colspan="4">Details of Salary Paid and any other income and tax deducted</td></tr>
+      <tr><td class="center">A</td><td>Whether opting out of taxation u/s 115BAC(1A)?</td><td colspan="2" class="center">{{#if optedOutOfNewRegime}}Yes{{else}}No{{/if}}</td></tr>
+      <tr class="section"><td>1.</td><td>Gross Salary</td><td class="center">Rs.</td><td class="center">Rs.</td></tr>
+      <tr><td>(a)</td><td>Salary as per provisions contained in section 17(1)</td><td class="right">{{form16Amount calculation.annualGross}}</td><td></td></tr>
+      <tr><td>(b)</td><td>Value of perquisites under section 17(2)</td><td class="right">{{form16Amount calculation.perquisites}}</td><td></td></tr>
+      <tr><td>(c)</td><td>Profits in lieu of salary under section 17(3)</td><td class="right">{{form16Amount calculation.profitsInLieuOfSalary}}</td><td></td></tr>
+      <tr><td>(d)</td><td>Total</td><td></td><td class="right strong">{{form16Amount calculation.totalGrossSalary}}</td></tr>
+      <tr><td>(e)</td><td>Reported total amount of salary received from other employer(s)</td><td></td><td class="right">{{form16Amount calculation.salaryFromOtherEmployers}}</td></tr>
+      <tr class="section"><td>2.</td><td colspan="3">Less: Allowances to the extent exempt under section 10</td></tr>
+      <tr><td>(a)</td><td>Travel concession or assistance under section 10(5)</td><td class="right">0.00</td><td></td></tr>
+      <tr><td>(b)</td><td>Death-cum-retirement gratuity under section 10(10)</td><td class="right">0.00</td><td></td></tr>
+      <tr><td>(c)</td><td>Commuted value of pension under section 10(10A)</td><td class="right">0.00</td><td></td></tr>
+      <tr><td>(d)</td><td>Cash equivalent of leave salary encashment under section 10(10AA)</td><td class="right">0.00</td><td></td></tr>
+      <tr><td>(e)</td><td>House rent allowance under section 10(13A)</td><td class="right">{{form16Amount calculation.hraExemption}}</td><td></td></tr>
+      <tr><td>(f)</td><td>Other special allowances under section 10(14)</td><td class="right">0.00</td><td></td></tr>
+    </table>
+    <div class="footer"><span>Generated: {{generatedAt}}</span><span>Form 16 Part B</span><span>Page 1 of 3</span></div>
+  </section>
+
+  <section class="page">
+    <div class="continuation"><span>Certificate Number:</span><span>TAN of Employer: {{employerTan}}</span><span>PAN of Employee: {{employeePan}}</span><span>AY: {{assessmentYear}}</span></div>
+    <table>
+      <colgroup><col style="width:8%"><col style="width:54%"><col style="width:19%"><col style="width:19%"></colgroup>
+      <tr class="note-row"><td>(g)</td><td>Amount of any other exemption under section 10<br><span class="note">Break-up to be prepared by employer where applicable.</span></td><td class="right">0.00</td><td></td></tr>
+      <tr><td>(h)</td><td>Total amount of any other exemption under section 10</td><td class="right">{{form16Amount calculation.otherSection10Exemptions}}</td><td></td></tr>
+      <tr><td>(i)</td><td>Total amount of exemption claimed under section 10</td><td></td><td class="right">{{form16Amount calculation.totalSection10Exemptions}}</td></tr>
+      <tr><td>3.</td><td>Total amount of salary received from current employer [1(d)-2(i)]</td><td></td><td class="right strong">{{form16Amount calculation.salaryAfterExemptions}}</td></tr>
+      <tr class="section"><td>4.</td><td colspan="3">Less: Deductions under section 16</td></tr>
+      <tr><td>(a)</td><td>Standard deduction under section 16(ia)</td><td class="right">{{form16Amount calculation.standardDeduction}}</td><td></td></tr>
+      <tr><td>(b)</td><td>Entertainment allowance under section 16(ii)</td><td class="right">{{form16Amount calculation.entertainmentAllowance}}</td><td></td></tr>
+      <tr><td>(c)</td><td>Tax on employment under section 16(iii)</td><td class="right">{{form16Amount calculation.professionalTax}}</td><td></td></tr>
+      <tr><td>5.</td><td>Total amount of deductions under section 16</td><td></td><td class="right strong">{{form16Amount calculation.totalSection16Deductions}}</td></tr>
+      <tr><td>6.</td><td>Income chargeable under the head Salaries</td><td></td><td class="right strong">{{form16Amount calculation.salaryIncome}}</td></tr>
+      <tr class="section"><td>7.</td><td colspan="3">Add: Any other income reported by the employee</td></tr>
+      <tr><td>(a)</td><td>Income or admissible loss from house property offered for TDS</td><td class="right">{{form16Amount calculation.housePropertyIncomeOrLoss}}</td><td></td></tr>
+      <tr><td>(b)</td><td>Income under the head Other Sources offered for TDS</td><td class="right">{{form16Amount calculation.otherIncome}}</td><td></td></tr>
+      <tr><td>8.</td><td>Total amount of other income reported by the employee</td><td></td><td class="right">{{form16Amount calculation.totalOtherIncome}}</td></tr>
+      <tr><td>9.</td><td class="strong">Gross total income (6+8)</td><td></td><td class="right strong">{{form16Amount calculation.grossTotalIncome}}</td></tr>
+      <tr class="section"><td>10.</td><td>Deductions under Chapter VI-A</td><td class="center">Gross Amount</td><td class="center">Deductible Amount</td></tr>
+      <tr><td>(a)</td><td>Deduction under section 80C</td><td class="right">{{form16Amount calculation.section80C}}</td><td class="right">{{form16Amount calculation.section80C}}</td></tr>
+      <tr><td>(b)</td><td>Deduction under section 80CCC</td><td class="right">0.00</td><td class="right">0.00</td></tr>
+      <tr><td>(c)</td><td>Deduction under section 80CCD(1)</td><td class="right">0.00</td><td class="right">0.00</td></tr>
+      <tr><td>(d)</td><td>Total deduction under sections 80C, 80CCC and 80CCD(1)</td><td class="right">{{form16Amount calculation.section80C}}</td><td class="right">{{form16Amount calculation.section80C}}</td></tr>
+      <tr><td>(e)</td><td>Deduction under section 80CCD(1B)</td><td class="right">0.00</td><td class="right">0.00</td></tr>
+      <tr><td>(f)</td><td>Deduction under section 80CCD(2)</td><td class="right">0.00</td><td class="right">0.00</td></tr>
+      <tr><td>(g)</td><td>Deduction under section 80D</td><td class="right">{{form16Amount calculation.section80D}}</td><td class="right">{{form16Amount calculation.section80D}}</td></tr>
+    </table>
+    <div class="footer"><span>Generated: {{generatedAt}}</span><span>Form 16 Part B</span><span>Page 2 of 3</span></div>
+  </section>
+
+  <section class="page">
+    <div class="continuation"><span>Certificate Number:</span><span>TAN of Employer: {{employerTan}}</span><span>PAN of Employee: {{employeePan}}</span><span>AY: {{assessmentYear}}</span></div>
+    <table>
+      <colgroup><col style="width:8%"><col style="width:54%"><col style="width:19%"><col style="width:19%"></colgroup>
+      <tr><td>(h)</td><td>Deduction in respect of interest on loan taken for higher education under section 80E</td><td class="right">{{form16Amount calculation.section80E}}</td><td class="right">{{form16Amount calculation.section80E}}</td></tr>
+      <tr><td>(i)</td><td>Deduction in respect of contribution by the employee to Agnipath Scheme under section 80CCH</td><td class="right">0.00</td><td class="right">0.00</td></tr>
+      <tr><td>(j)</td><td>Deduction in respect of contribution by the Central Government to Agnipath Scheme under section 80CCH</td><td class="right">0.00</td><td class="right">0.00</td></tr>
+      <tr><td>(k)</td><td>Total deduction in respect of donations under section 80G</td><td class="right">{{form16Amount calculation.section80G}}</td><td class="right">{{form16Amount calculation.section80G}}</td></tr>
+      <tr><td>(l)</td><td>Deduction in respect of interest on deposits under section 80TTA</td><td class="right">0.00</td><td class="right">0.00</td></tr>
+      <tr><td>(m)</td><td>Amount deductible under any other provision of Chapter VI-A</td><td class="right">0.00</td><td class="right">0.00</td></tr>
+      <tr><td>(n)</td><td>Total amount deductible under any other provision of Chapter VI-A</td><td class="right">0.00</td><td class="right">0.00</td></tr>
+      <tr><td>11.</td><td>Aggregate of deductible amount under Chapter VI-A</td><td></td><td class="right strong">{{form16Amount calculation.totalChapterVIA}}</td></tr>
+      <tr><td>12.</td><td class="strong">Total taxable income (9-11)</td><td></td><td class="right strong">{{form16Amount calculation.totalTaxableIncome}}</td></tr>
+      <tr><td>13.</td><td>Tax on total income</td><td></td><td class="right">{{form16Amount calculation.taxOnTotalIncome}}</td></tr>
+      <tr><td>14.</td><td>Rebate under section 87A, if applicable</td><td></td><td class="right">{{form16Amount calculation.rebate}}</td></tr>
+      <tr><td>15.</td><td>Surcharge, wherever applicable</td><td></td><td class="right">{{form16Amount calculation.surcharge}}</td></tr>
+      <tr><td>16.</td><td>Health and education cess</td><td></td><td class="right">{{form16Amount calculation.healthAndEducationCess}}</td></tr>
+      <tr><td>17.</td><td>Tax payable (13+15+16-14)</td><td></td><td class="right">{{form16Amount calculation.taxPayable}}</td></tr>
+      <tr><td>18.</td><td>Less: Relief under section 89</td><td></td><td class="right">{{form16Amount calculation.relief}}</td></tr>
+      <tr><td>19.</td><td>Less: Tax deducted at source as per Form No. 12BAA</td><td></td><td class="right">{{form16Amount calculation.form12BAATds}}</td></tr>
+      <tr><td>20.</td><td>Less: Tax collected at source as per Form No. 12BAA</td><td></td><td class="right">{{form16Amount calculation.form12BAATcs}}</td></tr>
+      <tr><td>21.</td><td class="strong">Net tax payable (17-18-19-20)</td><td></td><td class="right strong">{{form16Amount calculation.netTaxPayable}}</td></tr>
+    </table>
+    <div class="system-note">
+      This is a system-generated Part B tax computation based on verified HRMS records for FY {{financialYear}}. Certificate Number and Last Updated are intentionally blank as configured.
+    </div>
+    <div class="footer"><span>Generated: {{generatedAt}}</span><span>Form 16 Part B</span><span>Page 3 of 3</span></div>
+  </section>
+</body>
+</html>

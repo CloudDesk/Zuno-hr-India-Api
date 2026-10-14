@@ -64,6 +64,7 @@ export interface IGCPUploadParams {
   category: string;
   type: string;
   public?: boolean;
+  cacheControl?: string;
 }
 
 export interface IGCPUploadResult {
@@ -72,33 +73,43 @@ export interface IGCPUploadResult {
   error?: string;
 }
 
-function parsePositiveInteger(value: string | undefined, fallback: number): number {
-  if (!value) return fallback;
+export async function getSignedFileUrl(
+  fileUrl: string,
+  options: { downloadFileName?: string; expiresInMinutes?: number } = {},
+): Promise<string> {
+  if (!bucketName) throw new Error('GCP_STORAGE_BUCKET is not configured');
+  const prefix = `https://storage.googleapis.com/${bucketName}/`;
+  if (!fileUrl.startsWith(prefix)) throw new Error('Unsupported storage URL');
 
-  const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
+  const objectPath = decodeURIComponent(fileUrl.slice(prefix.length));
+  try {
+    const [signedUrl] = await storage.bucket(bucketName).file(objectPath).getSignedUrl({
+      version: 'v4',
+      action: 'read',
+      expires: Date.now() + (options.expiresInMinutes || 10) * 60 * 1000,
+      ...(options.downloadFileName
+        ? { responseDisposition: `attachment; filename="${options.downloadFileName.replace(/["\r\n]/g, '')}"` }
+        : {}),
+    });
+    return signedUrl;
+  } catch (error: any) {
+    // Local developer credentials and some workload identities can read/write GCS
+    // but cannot cryptographically sign a V4 URL. Existing document URLs already
+    // target the configured bucket, so retain local/public-bucket compatibility.
+    console.warn('Unable to create a signed GCS URL; using the stored object URL.', {
+      objectPath,
+      message: error?.message || String(error),
+    });
+    const fallbackUrl = new URL(fileUrl);
+    // Regenerated reports reuse their object path, so force PDF viewers to
+    // request the latest object when signed URLs are unavailable locally.
+    fallbackUrl.searchParams.set('generated', Date.now().toString());
+    if (!options.downloadFileName) return fallbackUrl.toString();
 
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function isTransientUploadError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error || '');
-  const lowered = message.toLowerCase();
-  const code = typeof error === 'object' && error !== null && 'code' in error
-    ? Number((error as { code?: unknown }).code)
-    : undefined;
-
-  return (
-    lowered.includes('stream was destroyed') ||
-    lowered.includes('socket hang up') ||
-    lowered.includes('connection reset') ||
-    lowered.includes('timeout') ||
-    lowered.includes('econnreset') ||
-    lowered.includes('etimedout') ||
-    (typeof code === 'number' && [408, 429, 500, 502, 503, 504].includes(code))
-  );
+    const safeFileName = options.downloadFileName.replace(/["\r\n]/g, '');
+    fallbackUrl.searchParams.set('response-content-disposition', `attachment; filename="${safeFileName}"`);
+    return fallbackUrl.toString();
+  }
 }
 
 /**
@@ -106,7 +117,7 @@ function isTransientUploadError(error: unknown): boolean {
  */
 export async function uploadFileToGCP(params: IGCPUploadParams): Promise<IGCPUploadResult> {
   try {
-    const { filePath, fileName, employeeId, category, type, public: makePublic } = params;
+    const { filePath, fileName, employeeId, category, type, public: makePublic, cacheControl } = params;
 
     if (!bucketName) {
       return {
@@ -129,46 +140,15 @@ export async function uploadFileToGCP(params: IGCPUploadParams): Promise<IGCPUpl
     const maxAttempts = parsePositiveInteger(process.env.GCP_UPLOAD_MAX_ATTEMPTS, 3);
     let lastUploadError: unknown;
 
-    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      try {
-        const buffer = await fs.promises.readFile(filePath);
-
-        // Use simple upload for generated PDFs and supporting docs; disabling validation
-        // keeps the client from adding extra hash streams around small file uploads.
-        await file.save(buffer, {
-          metadata: {
-            contentType: getContentType(fileName),
-          },
-          resumable: false,
-          validation: false,
-          timeout: uploadTimeoutMs,
-        });
-
-        lastUploadError = undefined;
-        break;
-      } catch (error) {
-        lastUploadError = error;
-        const message = error instanceof Error ? error.message : String(error);
-        const shouldRetry = attempt < maxAttempts && isTransientUploadError(error);
-
-        if (!shouldRetry) {
-          throw error;
-        }
-
-        console.warn('GCP Upload transient error, retrying:', {
-          filePath: gcpFilePath,
-          attempt,
-          maxAttempts,
-          message,
-        });
-
-        await wait(Math.min(1000 * attempt, 5000));
-      }
-    }
-
-    if (lastUploadError) {
-      throw lastUploadError;
-    }
+    // Upload the file (use simple upload for small supporting docs; avoids resumable overhead)
+    await file.save(buffer, {
+      metadata: {
+        contentType: getContentType(fileName),
+        ...(cacheControl ? { cacheControl } : {}),
+      },
+      resumable: false,
+      timeout: uploadTimeoutMs,
+    });
 
     if (makePublic) {
       try {
@@ -255,6 +235,8 @@ function getFolderName(category: string, type: string): string {
           return 'Form12B';
         case 'Form12BB':
           return 'Form12BB';
+        case 'POIReport':
+          return 'POIReport';
         case 'TaxProof':
           return 'TaxProof';
         default:

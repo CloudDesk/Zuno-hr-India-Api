@@ -2,7 +2,7 @@ import { Document as DocumentM, Schema, Types, model } from 'mongoose';
 
 export interface IDocument extends DocumentM {
     employeeId: Types.ObjectId; // Links to the employee
-    type: 'Payslip' | 'TimesheetFile' | 'Form16' | 'Form12B' | 'Form12BB' | 'OfferLetter' | 'HikeLetter' | 'Certificate' | 'AdminUpload' | 'GovernmentId' | 'Academic' | 'Experience' | 'AttendanceFile' | 'TaxProof' | 'FNF Letter'; // Document types
+    type: 'Payslip' | 'TimesheetFile' | 'Form16' | 'Form12B' | 'Form12BB' | 'POIReport' | 'OfferLetter' | 'HikeLetter' | 'Certificate' | 'AdminUpload' | 'GovernmentId' | 'Academic' | 'Experience' | 'AttendanceFile' | 'TaxProof' | 'FNF Letter'; // Document types
     category: 'Payroll' | 'Timesheet' | 'Tax' | 'EmployeeLifecycle' | 'Certification' | 'Attendance' | 'Settlement'; // Document categories
     tags?: string[]; // e.g., ['2025', 'Confidential', 'Exported', 'Degree', 'Aadhaar']
     fileName: string; // e.g., 'ABCDE1234F_2025-06.xlsx'
@@ -46,28 +46,92 @@ export interface IDocument extends DocumentM {
         };
         form16?: {
             financialYear: string; // e.g., '2024-25'
+            assessmentYear?: string;
             pan: string; // e.g., 'ABCDE1234F'
             tdsAmount: number; // Total TDS deducted
+            regime?: 'old' | 'new';
+            taxDeclarationId?: Types.ObjectId;
+            templateVersion?: number;
+            generationStatus?: 'Completed' | 'Failed';
+            generationRequestId?: string;
+            generatedAt?: Date;
+            generatedBy?: Types.ObjectId;
+            calculationSnapshot?: Record<string, unknown>;
+            employerSnapshot?: {
+                organizationProfileId: string;
+                organizationProfileVersion: number;
+                name: string;
+                address: string;
+                email: string;
+                pan: string;
+                tan: string;
+                citName: string;
+                citAddress: string;
+            };
+            previousVersions?: Array<{
+                version: number;
+                fileName: string;
+                filePath: string;
+                generatedAt: Date;
+                employerSnapshot?: {
+                    organizationProfileId: string;
+                    organizationProfileVersion: number;
+                    name: string;
+                    address: string;
+                    email: string;
+                    pan: string;
+                    tan: string;
+                    citName: string;
+                    citAddress: string;
+                };
+            }>;
         };
         form12B?: {
-            previousEmployer: {
+            previousEmployer?: {
                 name: string;
                 pan: string;
                 tan: string;
             };
-            employmentPeriod: {
+            employmentPeriod?: {
                 startDate: Date;
                 endDate: Date;
             };
-            salaryEarned: number;
-            tdsDeducted: number;
+            salaryEarned?: number;
+            tdsDeducted?: number;
             financialYear: string;
             status: 'Pending' | 'Verified' | 'Rejected' | 'ResubmissionRequested';
             isLocked: boolean;
+            workflowStatus?: 'Released' | 'Draft' | 'Submitted' | 'ResubmissionAllowed' | 'Approved' | 'FinalRejected';
+            submissionAttempt?: 1 | 2;
+            reuploadCount?: number;
+            releasedAt?: Date;
+            releasedBy?: Types.ObjectId;
+            submittedAt?: Date;
+            submittedBy?: Types.ObjectId;
+            reviewedAt?: Date;
+            reviewedBy?: Types.ObjectId;
+            detailsUpdatedAt?: Date;
+            detailsUpdatedBy?: Types.ObjectId;
+            comments?: string;
+            template?: {
+                fileName: string;
+                filePath: string;
+                version: number;
+            };
+            previousVersions?: Array<{
+                attempt: number;
+                fileName: string;
+                filePath: string;
+                submittedAt?: Date;
+                rejectedAt?: Date;
+                comments?: string;
+            }>;
         };
         form12BB?: {
+            employeeId: Types.ObjectId;
             financialYear: string; // e.g., '2024-25'
             regime: string
+            templateVersion?: number; // Missing on legacy reports; set on generation/regeneration
             taxDeclarationId: Types.ObjectId; // Reference to TaxDeclaration collection
             totalIncome: number; // Total income for the financial year
             deductions: number; // Total deductions claimed
@@ -75,6 +139,43 @@ export interface IDocument extends DocumentM {
             isLocked: boolean; // Prevents further modifications once submitted
             isPreviewEnabled: boolean; // Allows preview for employees
             tdsPaid: number; // Total TDS paid for the financial year
+            generationStatus?: 'Completed' | 'Failed';
+            generationRequestId?: string;
+            generatedAt?: Date;
+            generatedBy?: Types.ObjectId;
+            lastRegeneratedAt?: Date;
+    generationError?: string;
+    previousVersions?: Array<{
+        version: number;
+        fileName: string;
+        filePath: string;
+        generatedAt: Date;
+    }>;
+        };
+        poiReport?: {
+            employeeId: Types.ObjectId;
+            financialYear: string;
+            regime: string;
+            taxDeclarationId: Types.ObjectId;
+            sourceFingerprint: string;
+            sourceUpdatedAt: Date;
+            generationStatus: 'Completed' | 'Failed' | 'Outdated';
+            generatedAt?: Date;
+            generatedBy?: Types.ObjectId;
+            lastRegeneratedAt?: Date;
+            generationError?: string;
+            outdatedAt?: Date;
+            outdatedReason?: string;
+            declarationCount: number;
+            totalDeclaredAmount: number;
+            totalApprovedAmount: number;
+            previousVersions?: Array<{
+                version: number;
+                fileName: string;
+                filePath: string;
+                generatedAt: Date;
+                sourceFingerprint: string;
+            }>;
         };
         offerLetter?: {
             offerDate?: Date; // Date the offer was issued
@@ -213,7 +314,7 @@ const documentSchema = new Schema<IDocument>(
         employeeId: { type: Schema.Types.ObjectId, required: true, ref: 'User' },
         type: {
             type: String,
-            enum: ['Payslip', 'TimesheetFile', 'Form16', 'OfferLetter', 'HikeLetter', 'Certificate', 'Form12B', 'Form12BB', 'AdminUpload', 'GovernmentId', 'Academic', 'Experience', 'AttendanceFile', 'TaxProof', 'FNF Letter'],
+            enum: ['Payslip', 'TimesheetFile', 'Form16', 'OfferLetter', 'HikeLetter', 'Certificate', 'Form12B', 'Form12BB', 'POIReport', 'AdminUpload', 'GovernmentId', 'Academic', 'Experience', 'AttendanceFile', 'TaxProof', 'FNF Letter'],
             required: true,
         },
         category: {
@@ -271,21 +372,30 @@ const documentSchema = new Schema<IDocument>(
                         return value.hikeLetter && value.hikeLetter.effectiveDate && value.hikeLetter.newCtc;
                     }
                     if (docType === 'Form12B') {
+                        const form12B = value.form12B;
+                        const isReleasedRecord = Boolean(form12B?.workflowStatus);
+                        const hasAdminDetails = Boolean(
+                            form12B?.previousEmployer?.name &&
+                            form12B?.previousEmployer?.pan &&
+                            form12B?.previousEmployer?.tan &&
+                            form12B?.employmentPeriod?.startDate &&
+                            form12B?.employmentPeriod?.endDate &&
+                            typeof form12B?.salaryEarned === 'number' &&
+                            typeof form12B?.tdsDeducted === 'number'
+                        );
                         return (
-                            value.form12B &&
-                            value.form12B.financialYear &&
-                            value.form12B.previousEmployer &&
-                            value.form12B.previousEmployer.name &&
-                            value.form12B.previousEmployer.pan &&
-                            value.form12B.previousEmployer.tan &&
-                            value.form12B.employmentPeriod &&
-                            value.form12B.employmentPeriod.startDate &&
-                            value.form12B.employmentPeriod.endDate &&
-                            typeof value.form12B.salaryEarned === 'number' &&
-                            typeof value.form12B.tdsDeducted === 'number' &&
-                            value.form12B.status &&
-                            ['Pending', 'Verified', 'Rejected', 'ResubmissionRequested'].includes(value.form12B.status) &&
-                            typeof value.form12B.isLocked === 'boolean'
+                            form12B &&
+                            form12B.financialYear &&
+                            form12B.status &&
+                            ['Pending', 'Verified', 'Rejected', 'ResubmissionRequested'].includes(form12B.status) &&
+                            typeof form12B.isLocked === 'boolean' &&
+                            (
+                                !isReleasedRecord ||
+                                Boolean(form12B.template?.fileName && form12B.template?.filePath)
+                            ) &&
+                            (
+                                form12B.workflowStatus !== 'Approved' || hasAdminDetails
+                            )
                         );
                     }
                     if (docType === 'Form12BB') {
@@ -300,6 +410,16 @@ const documentSchema = new Schema<IDocument>(
                             typeof value.form12BB.isLocked === 'boolean' &&
                             typeof value.form12BB.tdsPaid === 'number' &&
                             typeof value.form12BB.isPreviewEnabled === 'boolean'
+                        );
+                    }
+                    if (docType === 'POIReport') {
+                        return Boolean(
+                            value.poiReport &&
+                            value.poiReport.employeeId &&
+                            value.poiReport.financialYear &&
+                            value.poiReport.taxDeclarationId &&
+                            value.poiReport.sourceFingerprint &&
+                            value.poiReport.generationStatus
                         );
                     }
                     if (docType === 'Certificate') {
@@ -371,6 +491,14 @@ const documentSchema = new Schema<IDocument>(
 
 // Indexes for efficient queries
 documentSchema.index({ employeeId: 1, type: 1 });
+documentSchema.index(
+    { employeeId: 1, type: 1, 'metadata.form12BB.financialYear': 1 },
+    { unique: true, partialFilterExpression: { type: 'Form12BB' } },
+);
+documentSchema.index(
+    { employeeId: 1, type: 1, 'metadata.poiReport.financialYear': 1 },
+    { unique: true, partialFilterExpression: { type: 'POIReport' } },
+);
 documentSchema.index({ type: 1, 'metadata.payslip.monthYear': 1 });
 documentSchema.index({ type: 1, 'metadata.timesheet.month': 1, 'metadata.timesheet.year': 1 });
 documentSchema.index({ type: 1, 'metadata.form16.financialYear': 1 });
