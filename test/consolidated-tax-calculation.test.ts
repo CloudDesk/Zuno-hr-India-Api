@@ -13,7 +13,7 @@ const newSlab: TaxSlabSource = { standardDeduction: 75_000, cessRate: 4, slabs: 
 function input(): Parameters<typeof buildConsolidatedRow>[0] {
     return { employee: { _id: 'employee-1', name: 'Arun', employeeCode: 'E001', active: true, joiningDate: '2020-01-01', governmentIds: { pan: { number: 'ABCDE1234F' } } },
         financialYear: '2025-2026', serial: 1, slab: oldSlab,
-        payrolls: Array.from({length:12},(_,offset)=>({year:offset<9?2025:2026,month:(offset+3)%12+1,status:'Completed',basic:40000,hra:20000,otherAllowance:40000})),
+        payrolls: Array.from({length:12},(_,offset)=>({year:offset<9?2025:2026,month:(offset+3)%12+1,status:'Completed',basic:40000,hra:20000,otherAllowance:40000,professionalTax:200})),
         declaration: { regime: 'old', annualGross: 1_200_000, ptDeduction: 2400, declarations: [
             { section: '10_13A', status: 'verified', verifiedAmount: 120_000, rentDetails: [{ amount: 180_000 }] },
             { section: '80C', status: 'verified', verifiedAmount: 150_000 },
@@ -424,34 +424,25 @@ describe('Tax summary cess and Total Tax', () => {
 });
 
 
-describe('Annual professional tax projection', () => {
-    it.each([['half_yearly', 1250, 2500], ['monthly', 200, 2400], ['yearly', 2500, 2500]])(
-        'projects %s installments of %s as %s annually', (term, amount, expected) => {
-            const source = input(); source.financialYear = '2026-2027'; source.employee.joiningDate = '2026-04-01';
-            source.declaration!.ptDeduction = 1250;
-            source.salaries = [{effectiveFrom: '2026-09-01', effectiveTo: '2027-03-31', monthlyGross: 200000,
-                salaryStructureId: {statutoryDeductions: {professionalTax: {term, slabs: [{fromAmount: 0, toAmount: null, taxAmount: amount}]}}}}];
-            expect(buildConsolidatedRow(source).values).toMatchObject({pt: expected, section16: 50000 + expected});
-        });
-    it('does not double stored annual PT when salary PT configuration is unavailable', () => {
-        const source = input(); source.declaration!.ptDeduction = 2500;
-        expect(buildConsolidatedRow(source).values.pt).toBe(2500);
-    });
-    it('keeps PT inapplicable under the new regime', () => {
-        const source = input(); source.declaration!.regime = 'new'; source.slab = newSlab;
-        expect(buildConsolidatedRow(source).values.pt).toBeNull();
-    });
-});
-
-
-describe('Available annual PT is preserved without slab configuration', () => {
-    it.each([0, 2500])('uses stored annual PT %s when the configured slab list is empty', amount => {
-        const source = input(); source.declaration!.ptDeduction = amount;
-        for (const salary of source.salaries) salary.salaryStructureId = {
-            statutoryDeductions: {professionalTax: {term: 'half_yearly', slabs: []}}
-        };
-        expect(buildConsolidatedRow(source).values).toMatchObject({pt: amount, section16: 50000 + amount});
-    });
+describe('Actual payroll professional tax', () => {
+ it.each(['half_yearly','monthly','yearly'])('uses one actual PT deduction instead of projecting %s rates',term=>{
+  const source=input();source.declaration!.ptDeduction=2500;
+  source.salaries[0].salaryStructureId={statutoryDeductions:{professionalTax:{term,slabs:[{fromAmount:0,toAmount:null,taxAmount:1250}]}}};
+  source.payrolls!.forEach(p=>p.professionalTax=0);source.payrolls![10].professionalTax=1250;
+  expect(buildConsolidatedRow(source).values).toMatchObject({pt:1250,section16:51250});
+ });
+ it('does not use stored PT when no payroll PT was deducted',()=>{
+  const source=input();source.declaration!.ptDeduction=2500;source.payrolls!.forEach(p=>p.professionalTax=0);
+  expect(buildConsolidatedRow(source).values).toMatchObject({pt:0,section16:50000});
+ });
+ it('keeps PT inapplicable under the new regime',()=>{
+  const source=input();source.declaration!.regime='new';source.slab=newSlab;
+  expect(buildConsolidatedRow(source).values.pt).toBeNull();
+ });
+ it.each([0,2500])('ignores stored PT %s with empty configured slabs',amount=>{
+  const source=input();source.declaration!.ptDeduction=amount;source.salaries=[];
+  expect(buildConsolidatedRow(source).values).toMatchObject({pt:2400,section16:52400});
+ });
 });
 
 describe('actual Excel payroll salary components',()=>{
@@ -468,4 +459,11 @@ describe('actual Excel payroll salary components',()=>{
 it.each([0,10000,120000,500000])('ignores stored HRA amount %s in Excel calculation',amount=>{
  const source=input();source.declaration!.declarations[0].verifiedAmount=amount;source.declaration!.declarations[0].maxLimit=amount;
  expect(buildConsolidatedRow(source).values.hraExemption).toBe(132000);
+});
+
+it('uses actual EPF and PT in Excel without changing other verified deductions or stored tax',()=>{
+ const source=input();source.declaration!.ptDeduction=2500;source.declaration!.initialTaxBreakdown={totalTaxAmount:50250,cessAmount:2010};
+ source.declaration!.declarations=[{section:'80C',subSection:'epf',status:'verified',verifiedAmount:21600},{section:'80C',subSection:'housing_loan_principal',status:'verified',verifiedAmount:78400},{section:'80C',subSection:'national_savings_certificate',status:'verified',verifiedAmount:50000},{section:'80D',subSection:'self_family',status:'verified',verifiedAmount:25000},{section:'80D',subSection:'medical_checkup_parents',status:'verified',verifiedAmount:5000}];
+ source.payrolls!.forEach((p,i)=>{p.epfEmployee=i===5?2360:i>=6?3000:0;p.professionalTax=i===10?1250:0;});
+ const before=JSON.stringify(source);expect(buildConsolidatedRow(source).values).toMatchObject({pt:1250,section16:51250,chapterVIA:178760,incomeTax:50250,cess:2010,totalTax:52260});expect(JSON.stringify(source)).toBe(before);
 });

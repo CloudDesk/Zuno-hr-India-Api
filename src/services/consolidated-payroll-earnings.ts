@@ -45,5 +45,7 @@ export function actualFinancialYearEarnings(employee: { joiningDate?: Date | str
     });
     return { gross: money(months.reduce((total, month) => total + month.gross, 0)),
         basic: money(months.reduce((total, month) => total + month.basic + month.da, 0)),
-        hraReceived: money(months.reduce((total, month) => total + month.hra, 0)), warnings };
+        hraReceived: money(months.reduce((total, month) => total + month.hra, 0)),
+        pf: money(months.reduce((total, month) => total + month.pf, 0)),
+        pt: money(months.reduce((total, month) => total + month.pt, 0)), warnings };
 }

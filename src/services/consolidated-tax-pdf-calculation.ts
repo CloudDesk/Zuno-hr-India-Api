@@ -1,6 +1,7 @@
+import { withActualEpf } from './consolidated-report-epf';
 import { reportHraExemption } from './consolidated-hra-exemption';
 import { payrollMonthEarnings } from './consolidated-payroll-earnings';
-import { financialYearRange, money, projectFinancialYearPT, SalarySource } from './consolidated-tax-calculation';
+import { financialYearRange, money, SalarySource } from './consolidated-tax-calculation';
 
 export interface PdfMonth { label: string; gross: number; basic: number; hra: number; allowance: number; da: number; travelAllowance: number; airTicketAllowance: number; medicalAllowance: number; reimbursementAllowance: number; pf: number; pt: number; it: number; deductionsTotal: number; }
 export interface PdfEmployee {
@@ -32,7 +33,7 @@ function approved(item: any): number {
 }
 
 /** PDF-only report. Reads source values without changing declarations, payroll or Excel. */
-export function buildPdfEmployee(user: any, declaration: any, salaries: SalarySource[], payrolls: any[], forms: any[], pan: string, financialYear: string): PdfEmployee {
+export function buildPdfEmployee(user: any, declaration: any, _salaries: SalarySource[], payrolls: any[], forms: any[], pan: string, financialYear: string): PdfEmployee {
     const { year, start, end } = financialYearRange(financialYear);
     const warnings: string[] = [];
     const old = declaration?.regime === 'old';
@@ -42,8 +43,6 @@ export function buildPdfEmployee(user: any, declaration: any, salaries: SalarySo
     const joined = day(user.joiningDate || start), left = day(user.separationDate || end);
     const validEmployment = Number.isFinite(joined) && Number.isFinite(left) && joined <= left;
     if (!validEmployment) warnings.push('Employment dates are invalid; earnings are displayed as zero.');
-    const validSalaries = salaries.filter(s => s && Number.isFinite(day(s.effectiveFrom)) && Number.isFinite(day(s.effectiveTo)) && day(s.effectiveFrom) <= day(s.effectiveTo) && Number.isFinite(s.monthlyGross) && s.monthlyGross >= 0);
-    if (validSalaries.length !== salaries.length) warnings.push('Invalid salary assignments are excluded from PDF professional-tax projection.');
     const months: PdfMonth[] = Array.from({ length: 12 }, (_, offset) => {
         const first = new Date(Date.UTC(year, 3 + offset, 1)), last = new Date(Date.UTC(year, 4 + offset, 0));
         const from = Math.max(day(first), joined), to = Math.min(day(last), left);
@@ -60,9 +59,9 @@ export function buildPdfEmployee(user: any, declaration: any, salaries: SalarySo
     const previousIT = previous ? money(positive(previous.tdsDeducted) / 1.04) : 0;
     const previousPT = old ? positive(previous?.professionalTax) : 0;
     const previousPF = positive(previous?.previousPF);
-    const deductions = old ? items.filter(d => normalize(d.section).startsWith('80')).map(d => ({
+    const deductions = old ? withActualEpf(items.filter(d => normalize(d.section).startsWith('80')).map(d => ({
         name: String(d.subSection || d.description || d.section), section: String(d.section), gross: positive(d.declaredAmount), approved: approved(d),
-    })) : [];
+    })), sum('pf')) : [];
     const gross = sum('gross'), basic = money(sum('basic') + sum('da')), hraReceived = sum('hra');
     const rentEntries = verifiedHra.flatMap(item => item.rentDetails || []);
     const validRent = rentEntries.length > 0 && rentEntries.every(entry => typeof entry?.amount === 'number' && Number.isFinite(entry.amount) && entry.amount >= 0);
@@ -70,11 +69,7 @@ export function buildPdfEmployee(user: any, declaration: any, salaries: SalarySo
     const hraExemption = old && verifiedHra.length ? reportHraExemption(basic, hraReceived, exemptionRent, user.location) : 0;
     if (old && verifiedHra.length && !validRent) warnings.push('Verified annual rent details are unavailable; HRA exemption is displayed as zero.');
     const standard = validRegime ? old ? 50000 : 75000 : 0;
-    let pt = 0;
-    if (old) {
-        try { pt = projectFinancialYearPT({ ...user, joiningDate: user.joiningDate ? date(user.joiningDate) : undefined, separationDate: user.separationDate ? date(user.separationDate) : undefined }, validSalaries.map(s => ({ ...s, effectiveFrom: date(s.effectiveFrom), effectiveTo: date(s.effectiveTo) })), financialYear) ?? (Number.isFinite(declaration?.ptDeduction) && declaration.ptDeduction >= 0 ? declaration.ptDeduction : sum('pt')); }
-        catch (error) { pt = positive(declaration?.ptDeduction); warnings.push((error as Error).message); }
-    }
+    const pt = old ? sum('pt') : 0;
     const afterExemption = money(gross - hraExemption + previousIncome), section16 = money(standard + pt);
     const salaryIncome = money(afterExemption - section16);
     let otherIncome = 0;

@@ -152,9 +152,9 @@ describe('PDF calculation: positive and negative cases', () => {
    {...p,type:'FinalSettlement',basic:4000,hra:2000,otherAllowance:4000}
   ]);expect(r.gross).toBe(110000);expect(r.months[0]).toMatchObject({basic:44000,hra:22000,allowance:44000});
  });
- it('preserves stored annual PT when slabs are empty and payroll exists',()=>{
+ it('does not project stored PT when actual payroll PT is zero',()=>{
   const s=clone(salary);s.salaryStructureId.statutoryDeductions.professionalTax.slabs=[];
-  expect(calculate(clone(declaration),clone(employee),[s],[{year:2026,month:4,epfEmployee:3000}]).pt).toBe(2500);
+  expect(calculate(clone(declaration),clone(employee),[s],[{year:2026,month:4,epfEmployee:3000}]).pt).toBe(0);
  });
  it('uses payroll PT when both slab and declaration PT are unavailable',()=>{
   const s=clone(salary);s.salaryStructureId.statutoryDeductions.professionalTax.slabs=[];
@@ -175,7 +175,7 @@ describe('PDF calculation: positive and negative cases', () => {
  it.each(['2026-2026','bad','2026-2028'])('rejects invalid FY %s', year=>{expect(()=>buildPdfEmployee(employee,declaration,[salary],[],[],'',year)).toThrow();});
  it('uses the India calendar boundary for PT on a one-day employment period',()=>{
   const d=clone(declaration);delete d.ptDeduction;
-  const r=calculate(d,{...clone(employee),joiningDate:'2026-04-01T00:00:00+05:30',separationDate:'2026-04-01T00:00:00+05:30'},[clone(salary)]);
+  const r=calculate(d,{...clone(employee),joiningDate:'2026-04-01T00:00:00+05:30',separationDate:'2026-04-01T00:00:00+05:30'},[clone(salary)],[{...clone(storedPayrolls[0]),professionalTax:1250}]);
   expect(r.pt).toBe(1250);
  });
  it('does not mutate source data',()=>{
@@ -194,4 +194,12 @@ it('calculates Pavithra HRA from actual earnings and rent and preserves stored d
 it.each([0,100000,280000,500000])('ignores stored approved HRA %s in the actual HRA formula',approved=>{
  const d=clone(declaration);d.declarations[0].verifiedAmount=approved;d.declarations[0].maxLimit=approved;
  expect(calculate(d).hraExemption).toBe(480000);
+});
+
+it('uses actual EPF 20360 and one PT deduction 1250 consistently in Sections B, H and L',()=>{
+ const d=clone(declaration);d.declarations=[d.declarations[0],d.declarations[1],{section:'80C',subSection:'epf',status:'verified',declaredAmount:21600,verifiedAmount:21600},{section:'80C',subSection:'housing_loan_principal',status:'verified',declaredAmount:78400,verifiedAmount:78400},{section:'80C',subSection:'national_savings_certificate',status:'verified',declaredAmount:50000,verifiedAmount:50000},{section:'80D',subSection:'self_family',status:'verified',declaredAmount:25000,verifiedAmount:25000},{section:'80D',subSection:'medical_checkup_parents',status:'verified',declaredAmount:5000,verifiedAmount:5000}];
+ const p=clone(storedPayrolls.slice(5));p.forEach((m,i)=>{m.epfEmployee=i===0?2360:3000;m.professionalTax=i===5?1250:0;});
+ const before=JSON.stringify({d,p});const r=calculate(d,clone(employee),[clone(salary)],p);
+ expect(r.months.reduce((sum,m)=>sum+m.pf,0)).toBe(20360);expect(r.months.reduce((sum,m)=>sum+m.pt,0)).toBe(1250);
+ expect(r.deductions[0]).toMatchObject({name:'EPF',gross:20360,approved:20360});expect(r).toMatchObject({pt:1250,section16:51250,chapterVIA:178760,incomeTax:50250,cess:2010,totalTax:52260});expect(JSON.stringify({d,p})).toBe(before);
 });

@@ -1,3 +1,4 @@
+import { isReportEpf, withActualEpf } from './consolidated-report-epf';
 import { reportHraExemption } from './consolidated-hra-exemption';
 import { actualFinancialYearEarnings } from './consolidated-payroll-earnings';
 
@@ -9,7 +10,7 @@ export interface ReportColumn { key: string; label: string; type: 'text' | 'date
 export interface ReportRow { employeeId: string; values: Record<string, ReportValue>; warnings: string[]; approvalWarnings?: string[]; form12BApplicable?: boolean; }
 export interface TaxDeclarationSource {
     regime: 'old' | 'new'; annualGross: number; ptDeduction?: number;
-    declarations: Array<{ section: string; status: string; verifiedAmount?: number; maxLimit?: number;
+    declarations: Array<{ section: string; status: string; subSection?: string; description?: string; verifiedAmount?: number; maxLimit?: number;
         type?: string; rentDetails?: Array<{ amount: number }> }>;
     initialTaxBreakdown?: { taxableIncome?: number; taxWithCess?: number; totalTaxAmount?: number; cessAmount?: number; rebateAmount?: number; marginalReliefAmount?: number };
     isMigrationAdjusted?: boolean;
@@ -114,8 +115,8 @@ export const REPORT_NOTES = [
     'Basic DA is actual payroll Basic plus DA; HRA Received is actual payroll HRA. No fixed percentage split is applied to report gross.',
     'Verified rent details establish HRA eligibility. HRA exemption is the lowest of actual HRA received, 40%/50% of actual Basic + DA based on location, and rent less 10% of Basic + DA. The stored approved HRA amount is not a calculation limit. Missing verified rent details give zero exemption. Other deductions continue to use verified amounts. HRA, total exemptions, current professional tax, previous PT and house-property income/loss apply only to the old regime.',
     'Income After Exemption is Gross Salary minus Total Exemptions. Previous-employer income is shown separately and is not added to this formula.',
-    'Old-regime PT retains the existing salary-structure projection and payment frequency: monthly, half-yearly or yearly, with one installment per applicable FY period. Uncovered salary periods use the existing carried salary rate for PT only. If PT configuration is unavailable, stored annual PT is used without multiplying it.',
-    'Deduction Under Section 16 displays the configured FY/regime standard deduction plus old-regime professional tax. Standard Deduction : Sec 16(ia) displays only the configured standard deduction. Chapter VI-A is the sum of approved 80C, 80D, 80DD, 80E, 80GG and 80CCD(2) amounts listed in the PDF; this report projection does not change payroll tax rules.',
+    'Old-regime professional tax uses actual FY payroll professionalTax deductions, with no annual projection or multiplication of stored declaration PT. No payroll PT means zero deduction.',
+    'Deduction Under Section 16 displays the configured FY/regime standard deduction plus old-regime professional tax. Standard Deduction : Sec 16(ia) displays only the configured standard deduction. Chapter VI-A uses actual employee payroll EPF once under 80C, subject to the remaining Rs.1,50,000 combined 80C/80CCC/80CCD(1) limit, plus other approved 80C, 80D, 80DD, 80E, 80GG and 80CCD(2) amounts; this report projection does not change payroll tax rules.',
     'Relief u/s 87A displays the selected FY tax summary rebateAmount plus marginalReliefAmount, or numeric zero when no value is available.',
     'Total Income Tax to be Paid uses the selected FY tax summary Net Tax after Rebate (totalTaxAmount), including zero. If unavailable, the report calculation is used where possible. Total Cess to be Paid uses the selected FY tax summary Cess Amount (cessAmount), including zero; if unavailable, it is calculated at 4% of net income tax. Total Tax sums net income tax and cess.',
     'Rounded taxable income equals taxable income. Cess is 4% of net income tax and Total Tax is income tax plus cess.',
@@ -262,7 +263,7 @@ export function buildConsolidatedRow(input: {
     employee: ReportEmployee; declaration?: TaxDeclarationSource; slab?: TaxSlabSource;
     salaries: SalarySource[]; payrolls?: any[]; previous?: PreviousEmploymentSource; financialYear: string; serial: number; asOf?: Date;
 }): ReportRow {
-    const { employee, declaration: declaration, slab, salaries, previous, financialYear } = input;
+    const { employee, declaration: declaration, slab, previous, financialYear } = input;
     const approvalWarnings = declarationApprovalWarnings(declaration, previous);
     const warnings: string[] = [...approvalWarnings];
     const values: Record<string, ReportValue> = Object.fromEntries(CALCULATION_COLUMNS.map(column => [column.key, column.zeroDefault ? 0 : null]));
@@ -364,14 +365,7 @@ export function buildConsolidatedRow(input: {
         if (!slab || !numeric(slab.standardDeduction) || slab.standardDeduction < 0) throw new Error('Active FY tax slab / standard deduction is missing or ambiguous.');
         values.standardDeduction = slab.standardDeduction;
     });
-    if (old) attempt(() => {
-        const projectedPT = projectFinancialYearPT(employee, salaries, financialYear);
-        if (projectedPT !== undefined) values.pt = projectedPT;
-        else {
-            if (!numeric(declaration.ptDeduction) || declaration.ptDeduction < 0) throw new Error('Annual professional tax is missing or invalid.');
-            values.pt = declaration.ptDeduction;
-        }
-    });
+    if (old) values.pt = earnings.pt;
     if (old) attempt(() => {
         const propertyItems = verified.filter(d => ['INCOMELOSSHOUSEPROPERTY', '24B'].includes(section(d.section)));
         if (propertyItems.some(d => d.type !== 'income' && d.type !== 'loss')) throw new Error('House-property declaration must specify income or loss.');
@@ -382,7 +376,14 @@ export function buildConsolidatedRow(input: {
     });
     const sections = ['80C', '80D', '80DD', '80E', '80GG', '80CCD2'];
     attempt(() => {
-        values.chapterVIA = money(verified.filter(d => sections.includes(section(d.section))).reduce((total, d) => total + eligible(d), 0));
+        if (!old) {
+            values.chapterVIA = money(verified.filter(d => sections.includes(section(d.section))).reduce((total, d) => total + eligible(d), 0));
+            return;
+        }
+        const otherDeductions = verified.filter(d => sections.includes(section(d.section)) && !isReportEpf(d)).map(d => ({
+            name: String(d.subSection || d.description || d.section), section: d.section, gross: 0, approved: eligible(d),
+        }));
+        values.chapterVIA = money(withActualEpf(otherDeductions, earnings.pf).reduce((total, d) => total + d.approved, 0));
     });
     attempt(() => {
         const unsupported = verified.filter(d => !sections.includes(section(d.section)) && !['1013A', '10A13A', 'INCOMELOSSHOUSEPROPERTY', '24B'].includes(section(d.section)) && eligible(d) > 0);
