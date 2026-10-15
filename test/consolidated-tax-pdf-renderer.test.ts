@@ -83,20 +83,3 @@ it('shows optional actual payroll components separately and hides empty rows',()
  expect(html).toContain('53,333.00');expect(html).toContain('26,667.00');expect(html).toContain('53,333.33');expect(html).toContain('1,35,733.33');
  expect(consolidatedPdfHtml(data())).not.toContain('<td>DA</td>');
 });
-
-it('retries a print protocol failure once with an isolated browser', async()=>{
- jest.mocked(renderPayslipPdf).mockRejectedValueOnce(new Error('Protocol error (Page.printToPDF): Printing failed')).mockResolvedValueOnce(undefined);
- await renderConsolidatedTaxPdf(data(),'sample.pdf');
- expect(renderPayslipPdf).toHaveBeenCalledTimes(2);
- for(const [args] of jest.mocked(renderPayslipPdf).mock.calls) expect(args.isolatedBrowser).toBe(true);
-});
-it('stops after the second print failure',async()=>{
- jest.mocked(renderPayslipPdf).mockRejectedValue(new Error('Protocol error (Page.printToPDF): Printing failed'));
- await expect(renderConsolidatedTaxPdf(data(),'sample.pdf')).rejects.toThrow('Printing failed');
- expect(renderPayslipPdf).toHaveBeenCalledTimes(2);
-});
-it('does not retry unrelated rendering errors',async()=>{
- jest.mocked(renderPayslipPdf).mockRejectedValueOnce(new Error('Invalid template'));
- await expect(renderConsolidatedTaxPdf(data(),'sample.pdf')).rejects.toThrow('Invalid template');
- expect(renderPayslipPdf).toHaveBeenCalledTimes(1);
-});

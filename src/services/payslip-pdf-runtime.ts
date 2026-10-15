@@ -11,7 +11,6 @@ interface PayslipRuntimeLogContext {
 }
 
 interface RenderPayslipPdfParams {
-    isolatedBrowser?: boolean;
     pdfTimeoutMs?: number;
     logContext: PayslipRuntimeLogContext;
     outputPath: string;
@@ -227,10 +226,8 @@ export async function renderPayslipPdf(params: RenderPayslipPdfParams): Promise<
     let browserSession: BrowserSession | null = null;
 
     try {
+        browserSession = await getBrowserSession(logContext);
         const runtimeConfig = getRuntimeConfig();
-        browserSession = params.isolatedBrowser
-            ? { browser: await puppeteer.launch(runtimeConfig.launchOptions), transient: true }
-            : await getBrowserSession(logContext);
 
         const createPageStartedAt = Date.now();
         page = await browserSession.browser.newPage();
