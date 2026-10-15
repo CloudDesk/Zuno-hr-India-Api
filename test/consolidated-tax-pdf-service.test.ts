@@ -1,4 +1,4 @@
-import { loadConsolidatedPdfData, generateConsolidatedPdf, getConsolidatedPdfStatus, getConsolidatedPdfUrl } from '../src/services/consolidated-tax-pdf.service';
+import { downloadConsolidatedPdfFile, loadConsolidatedPdfData, generateConsolidatedPdf, getConsolidatedPdfStatus, getConsolidatedPdfUrl } from '../src/services/consolidated-tax-pdf.service';
 import { User } from '../src/models/user.model';
 import { TaxDeclaration } from '../src/models/tax-declaration';
 import { SalaryAssignment } from '../src/models/salary-assignments.model';
@@ -7,7 +7,7 @@ import { Document } from '../src/models/document.model';
 import { OrganizationProfile } from '../src/models/organization-profile.model';
 import { ConsolidatedTaxPdf } from '../src/models/consolidated-tax-pdf.model';
 import { renderConsolidatedTaxPdf } from '../src/services/consolidated-tax-pdf-renderer';
-import { uploadFileToGCP, deleteFileFromGCP, getSignedFileUrl } from '../src/utilis/gcpStorage';
+import { readPrivateFileFromGCP, uploadFileToGCP, deleteFileFromGCP, getSignedFileUrl } from '../src/utilis/gcpStorage';
 import * as fs from 'fs/promises';
 import { fy, employee, salary, declaration, payrolls, clone } from './helpers/consolidated-pdf-fixture';
 jest.mock('../src/models/user.model',()=>({User:{find:jest.fn()}}));
@@ -18,7 +18,7 @@ jest.mock('../src/models/document.model',()=>({Document:{find:jest.fn()}}));
 jest.mock('../src/models/organization-profile.model',()=>({OrganizationProfile:{find:jest.fn()}}));
 jest.mock('../src/models/consolidated-tax-pdf.model',()=>({ConsolidatedTaxPdf:{findById:jest.fn(),findOneAndUpdate:jest.fn(),updateOne:jest.fn()}}));
 jest.mock('../src/services/consolidated-tax-pdf-renderer',()=>({renderConsolidatedTaxPdf:jest.fn()}));
-jest.mock('../src/utilis/gcpStorage',()=>({uploadFileToGCP:jest.fn(),deleteFileFromGCP:jest.fn(),getSignedFileUrl:jest.fn()}));
+jest.mock('../src/utilis/gcpStorage',()=>({readPrivateFileFromGCP:jest.fn(),uploadFileToGCP:jest.fn(),deleteFileFromGCP:jest.fn(),getSignedFileUrl:jest.fn()}));
 jest.mock('fs/promises',()=>({mkdir:jest.fn(),unlink:jest.fn(),rmdir:jest.fn()}));
 function query(data: unknown) { const chain:any={lean:jest.fn().mockResolvedValue(data)};for(const name of ['select','sort','limit','populate'])chain[name]=jest.fn().mockReturnValue(chain);return chain; }
 const profile={legalName:'Organisation Legal Name',addresses:[{isPrimary:true,type:'payroll',line1:'Office Road',line2:'Floor 2',city:'Chennai',state:'Tamil Nadu',postalCode:'600119',country:'IN'},{isPrimary:true,type:'registered',line1:'Registered Road'}]};
@@ -254,4 +254,12 @@ describe('selected PDF part generation',()=>{
  it.each([0,-1,1.5,3])('rejects invalid or unavailable selected part %s',async part=>{
   (User.find as jest.Mock).mockReturnValue(query(users()));await expect(generateConsolidatedPdf(fy,'Admin',part)).rejects.toThrow();expect(renderConsolidatedTaxPdf).not.toHaveBeenCalled();
  });
+});
+
+it('downloads the saved legacy object through server credentials',async()=>{
+ const stream=require('stream').Readable.from(['%PDF-']);jest.mocked(readPrivateFileFromGCP).mockResolvedValueOnce(stream);
+ const result=await downloadConsolidatedPdfFile(fy);expect(result.stream).toBe(stream);expect(result.fileName).toBe('Consolidated_Tax_Report_'+fy+'.pdf');expect(readPrivateFileFromGCP).toHaveBeenCalledWith(oldUrl);expect(getSignedFileUrl).not.toHaveBeenCalled();
+});
+it('rejects a missing part without reading storage',async()=>{
+ await expect(downloadConsolidatedPdfFile(fy,2)).rejects.toThrow('unavailable');expect(readPrivateFileFromGCP).not.toHaveBeenCalled();
 });

@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { authenticate } from '../middleware/auth';
-import { generateConsolidatedPdf, getConsolidatedPdfStatus, getConsolidatedPdfUrl } from '../services/consolidated-tax-pdf.service';
+import { generateConsolidatedPdf, getConsolidatedPdfStatus, getConsolidatedPdfUrl, downloadConsolidatedPdfFile } from '../services/consolidated-tax-pdf.service';
 const yearSchema = { type: 'object', required: ['financialYear'], additionalProperties: false,
     properties: { financialYear: { type: 'string', pattern: '^\\d{4}-\\d{4}$' }, testDate: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' } } };
 const partSchema = { ...yearSchema, properties: { ...yearSchema.properties, part: { type: 'integer', minimum: 1 } } };
@@ -32,6 +32,17 @@ export async function consolidatedTaxPdfRoutes(app: FastifyInstance): Promise<vo
     app.post<{ Body: ReportDate & { part?: number } }>('/generate', { schema: { body: partSchema } }, async (request, reply) => {
         try { return { success: true, data: await (request.body.part === undefined ? generateConsolidatedPdf(request.body.financialYear, request.user.name) : generateConsolidatedPdf(request.body.financialYear, request.user.name, request.body.part)) }; }
         catch (error) { return reply.code(400).send({ success: false, message: (error as Error).message }); }
+    });
+    app.get<{ Querystring: ReportDate & { part?: number } }>('/file', { schema: { querystring: partSchema } }, async (request, reply) => {
+        try {
+            const { stream, fileName } = await downloadConsolidatedPdfFile(request.query.financialYear, request.query.part);
+            return reply.type('application/pdf')
+                .header('Content-Disposition', `attachment; filename="${fileName}"`)
+                .header('X-Content-Type-Options', 'nosniff').send(stream);
+        } catch (error) {
+            request.log.error({ err: error }, 'Consolidated PDF download failed');
+            return reply.code(400).send({ success: false, message: 'Unable to download the saved PDF. Please refresh and try again.' });
+        }
     });
     for (const action of ['preview', 'download']) {
         app.get<{ Querystring: ReportDate & { part?: number } }>(`/${action}`, { schema: { querystring: partSchema } }, async (request, reply) => {
