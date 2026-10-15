@@ -89,7 +89,11 @@ export function consolidatedPdfHtml(data: ConsolidatedPdfData): string {
 }
 export async function renderConsolidatedTaxPdf(data: ConsolidatedPdfData, outputPath: string): Promise<void> {
     const generated = new Date(data.generatedAt).toLocaleString('en-GB', { timeZone: 'Asia/Kolkata', hour12: true });
-    await renderPayslipPdf({
+    // Large reports must not reuse Chromium state left by earlier print jobs.
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+       await renderPayslipPdf({
+        isolatedBrowser: true,
         logContext: { userId: 'consolidated-tax-pdf', month: 0, year: Number(data.financialYear.slice(0, 4)) }, outputPath,
         pdfTimeoutMs: 180000,
         renderPage: async page => {
@@ -99,5 +103,15 @@ export async function renderConsolidatedTaxPdf(data: ConsolidatedPdfData, output
                 headerTemplate: '<span></span>', footerTemplate: `<div style="width:100%;font-size:8px;padding:0 38px;display:flex;justify-content:space-between;font-family:Arial"><span>Created on: ${escape(generated)} (India time)</span><span>Page <span class="pageNumber"></span> of <span class="totalPages"></span></span></div>`,
                 margin: { top: '10mm', right: '10mm', bottom: '15mm', left: '10mm' }, timeout: 180000 };
         },
-    });
+       });
+       return;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const retryable = /Page\.printToPDF|Printing failed|Target closed|Session closed|browser has disconnected/i.test(message);
+        console.error(JSON.stringify({ scope: 'consolidated_tax_pdf', step: 'render_failed', attempt,
+            financialYear: data.financialYear, employeeCount: data.employees.length, message }));
+        if (attempt === 2 || !retryable) throw error;
+        // The runtime closes the failed page and browser before this fresh attempt.
+      }
+    }
 }
