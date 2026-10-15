@@ -12,7 +12,7 @@ import { ConsolidatedTaxPdf, IConsolidatedTaxPdf, ConsolidatedTaxPdfPart } from 
 import { financialYearRange, SalarySource } from './consolidated-tax-calculation';
 import { buildPdfEmployee } from './consolidated-tax-pdf-calculation';
 import { ConsolidatedPdfData, renderConsolidatedTaxPdf } from './consolidated-tax-pdf-renderer';
-import { deleteFileFromGCP, getSignedFileUrl, uploadFileToGCP } from '../utilis/gcpStorage';
+import { deleteFileFromGCP, getSignedFileUrl, uploadFileToGCP, readPrivateFileFromGCP } from '../utilis/gcpStorage';
 
 function group<T extends { employeeId: unknown }>(items: T[]): Map<string, T[]> {
     const result = new Map<string, T[]>();
@@ -104,6 +104,17 @@ export async function getConsolidatedPdfUrl(financialYear: string, download = fa
     if (!selected) throw new Error('This PDF part is unavailable. Refresh the saved reports.');
     const fileName = `Consolidated_Tax_Report_${financialYear}${record?.parts?.length ? `_Part_${part}` : ''}.pdf`;
     return getSignedFileUrl(selected.fileUrl, download ? { downloadFileName: fileName } : {});
+}
+export async function downloadConsolidatedPdfFile(financialYear: string, part = 1) {
+    financialYearRange(financialYear);
+    if (!Number.isInteger(part) || part < 1) throw new Error('Invalid PDF part.');
+    const record = await ConsolidatedTaxPdf.findById(financialYear).lean();
+    const parts = savedParts(record);
+    if (!parts.length) throw new Error('Generate the PDF for this financial year first.');
+    const selected = parts.find(item => item.part === part);
+    if (!selected) throw new Error('This PDF part is unavailable. Refresh the saved reports.');
+    const fileName = `Consolidated_Tax_Report_${financialYear}${record?.parts?.length ? `_Part_${part}` : ''}.pdf`;
+    return { stream: await readPrivateFileFromGCP(selected.fileUrl), fileName };
 }
 export async function generateConsolidatedPdf(financialYear: string, adminName: string, selectedPart?: number) {
     financialYearRange(financialYear);

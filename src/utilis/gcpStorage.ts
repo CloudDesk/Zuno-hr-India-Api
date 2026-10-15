@@ -57,6 +57,17 @@ function buildStorageClient(): Storage {
 const storage = buildStorageClient();
 const bucketName = process.env.GCP_STORAGE_BUCKET;
 
+/** Read private objects with server credentials, without signed URLs or browser CORS. */
+export async function readPrivateFileFromGCP(fileUrl: string) {
+  if (!bucketName) throw new Error('GCP_STORAGE_BUCKET is not configured');
+  const prefix = `https://storage.googleapis.com/${bucketName}/`;
+  if (!fileUrl.startsWith(prefix)) throw new Error('Unsupported storage URL');
+  const file = storage.bucket(bucketName).file(decodeURIComponent(fileUrl.slice(prefix.length)));
+  // Resolve missing objects and permission errors before sending PDF response headers.
+  await file.getMetadata();
+  return file.createReadStream();
+}
+
 export interface IGCPUploadParams {
   filePath: string;
   fileName: string;

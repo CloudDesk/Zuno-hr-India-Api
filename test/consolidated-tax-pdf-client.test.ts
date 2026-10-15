@@ -4,9 +4,10 @@ import vm from 'vm';
 import ts from 'typescript';
 const source = fs.readFileSync(path.resolve(__dirname,'../../Zuno-hr-India/src/lib/services/api/consolidatedTaxPdf.ts'),'utf8');
 const fetchApi=jest.fn();
+const fetchApiBlob=jest.fn();
 const output=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText;
 const exportsObject:any={};
-vm.runInNewContext(output,{exports:exportsObject,require:(name:string)=>{if(name!=='./base')throw new Error('Unexpected dependency');return {fetchApi};},URLSearchParams});
+vm.runInNewContext(output,{exports:exportsObject,require:(name:string)=>{if(name!=='./base')throw new Error('Unexpected dependency');return {fetchApi,fetchApiBlob};},URLSearchParams});
 const api=exportsObject.consolidatedTaxPdfApi;
 it.each(['status','preview','download'])('passes testing date to %s availability checks',async action=>{
  await api[action]('2026-2027','2027-04-01');expect(fetchApi).toHaveBeenCalledWith(`/consolidated-tax-pdf/${action}?financialYear=2026-2027&testDate=2027-04-01`);
@@ -35,4 +36,10 @@ it.each(['preview','download'])('requests selected part for %s',async action=>{
 
 it('generates only the selected PDF part',async()=>{
  await api.generate('2026-2027','2027-04-01',2);expect(fetchApi).toHaveBeenCalledWith('/consolidated-tax-pdf/generate',{method:'POST',body:JSON.stringify({financialYear:'2026-2027',testDate:'2027-04-01',part:2})});
+});
+
+it('downloads bytes through the authenticated API with year, date and part', async()=>{
+ const blob=new Blob(['%PDF-1.7']);fetchApiBlob.mockResolvedValueOnce(blob);
+ expect(await api.downloadFile('2026-2027','2027-04-01',2)).toBe(blob);
+ expect(fetchApiBlob).toHaveBeenCalledWith('/consolidated-tax-pdf/file?financialYear=2026-2027&testDate=2027-04-01&part=2');
 });
