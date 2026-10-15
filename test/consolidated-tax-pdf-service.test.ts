@@ -1,4 +1,4 @@
-import { loadConsolidatedPdfData, generateConsolidatedPdf, getConsolidatedPdfStatus, getConsolidatedPdfUrl } from '../src/services/consolidated-tax-pdf.service';
+import { loadConsolidatedPdfData, generateConsolidatedPdf, getConsolidatedPdfStatus, getConsolidatedPdfUrl, getConsolidatedPdfFile } from '../src/services/consolidated-tax-pdf.service';
 import { User } from '../src/models/user.model';
 import { TaxDeclaration } from '../src/models/tax-declaration';
 import { SalaryAssignment } from '../src/models/salary-assignments.model';
@@ -7,7 +7,7 @@ import { Document } from '../src/models/document.model';
 import { OrganizationProfile } from '../src/models/organization-profile.model';
 import { ConsolidatedTaxPdf } from '../src/models/consolidated-tax-pdf.model';
 import { renderConsolidatedTaxPdf } from '../src/services/consolidated-tax-pdf-renderer';
-import { uploadFileToGCP, deleteFileFromGCP, getSignedFileUrl } from '../src/utilis/gcpStorage';
+import { uploadFileToGCP, deleteFileFromGCP, getSignedFileUrl, readFileFromGCP } from '../src/utilis/gcpStorage';
 import * as fs from 'fs/promises';
 import { fy, employee, salary, declaration, payrolls, clone } from './helpers/consolidated-pdf-fixture';
 jest.mock('../src/models/user.model',()=>({User:{find:jest.fn()}}));
@@ -18,7 +18,7 @@ jest.mock('../src/models/document.model',()=>({Document:{find:jest.fn()}}));
 jest.mock('../src/models/organization-profile.model',()=>({OrganizationProfile:{find:jest.fn()}}));
 jest.mock('../src/models/consolidated-tax-pdf.model',()=>({ConsolidatedTaxPdf:{findById:jest.fn(),findOneAndUpdate:jest.fn(),updateOne:jest.fn()}}));
 jest.mock('../src/services/consolidated-tax-pdf-renderer',()=>({renderConsolidatedTaxPdf:jest.fn()}));
-jest.mock('../src/utilis/gcpStorage',()=>({uploadFileToGCP:jest.fn(),deleteFileFromGCP:jest.fn(),getSignedFileUrl:jest.fn()}));
+jest.mock('../src/utilis/gcpStorage',()=>({uploadFileToGCP:jest.fn(),deleteFileFromGCP:jest.fn(),getSignedFileUrl:jest.fn(),readFileFromGCP:jest.fn()}));
 jest.mock('fs/promises',()=>({mkdir:jest.fn(),unlink:jest.fn(),rmdir:jest.fn()}));
 function query(data: unknown) { const chain:any={lean:jest.fn().mockResolvedValue(data)};for(const name of ['select','sort','limit','populate'])chain[name]=jest.fn().mockReturnValue(chain);return chain; }
 const profile={legalName:'Organisation Legal Name',addresses:[{isPrimary:true,type:'payroll',line1:'Office Road',line2:'Floor 2',city:'Chennai',state:'Tamil Nadu',postalCode:'600119',country:'IN'},{isPrimary:true,type:'registered',line1:'Registered Road'}]};
@@ -253,5 +253,23 @@ describe('selected PDF part generation',()=>{
  });
  it.each([0,-1,1.5,3])('rejects invalid or unavailable selected part %s',async part=>{
   (User.find as jest.Mock).mockReturnValue(query(users()));await expect(generateConsolidatedPdf(fy,'Admin',part)).rejects.toThrow();expect(renderConsolidatedTaxPdf).not.toHaveBeenCalled();
+ });
+});
+
+describe('Authenticated PDF byte access',()=>{
+ it('reads the saved selected part through backend credentials without generating or signing',async()=>{
+  (ConsolidatedTaxPdf.findById as jest.Mock).mockReturnValue(query({parts:[{part:1,fileUrl:oldUrl},{part:2,fileUrl:newUrl}]}));
+  jest.mocked(readFileFromGCP).mockResolvedValue(Buffer.from('%PDF-1.7 sample'));
+  const result=await getConsolidatedPdfFile(fy,2);
+  expect(result.fileName).toBe(`Consolidated_Tax_Report_${fy}_Part_2.pdf`);expect(result.buffer.toString()).toBe('%PDF-1.7 sample');
+  expect(readFileFromGCP).toHaveBeenCalledWith(newUrl);expect(getSignedFileUrl).not.toHaveBeenCalled();expect(renderConsolidatedTaxPdf).not.toHaveBeenCalled();
+ });
+ it('rejects non-PDF bytes',async()=>{
+  jest.mocked(readFileFromGCP).mockResolvedValue(Buffer.from('<Error>Access denied</Error>'));
+  await expect(getConsolidatedPdfFile(fy)).rejects.toThrow('not a PDF');
+ });
+ it('rejects invalid and missing parts before reading storage',async()=>{
+  await expect(getConsolidatedPdfFile(fy,0)).rejects.toThrow('Invalid PDF part');
+  await expect(getConsolidatedPdfFile(fy,2)).rejects.toThrow('unavailable');expect(readFileFromGCP).not.toHaveBeenCalled();
  });
 });

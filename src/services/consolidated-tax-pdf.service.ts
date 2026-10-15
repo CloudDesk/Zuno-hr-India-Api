@@ -12,7 +12,7 @@ import { ConsolidatedTaxPdf, IConsolidatedTaxPdf, ConsolidatedTaxPdfPart } from 
 import { financialYearRange, SalarySource } from './consolidated-tax-calculation';
 import { buildPdfEmployee } from './consolidated-tax-pdf-calculation';
 import { ConsolidatedPdfData, renderConsolidatedTaxPdf } from './consolidated-tax-pdf-renderer';
-import { deleteFileFromGCP, getSignedFileUrl, uploadFileToGCP } from '../utilis/gcpStorage';
+import { deleteFileFromGCP, getSignedFileUrl, readFileFromGCP, uploadFileToGCP } from '../utilis/gcpStorage';
 
 function group<T extends { employeeId: unknown }>(items: T[]): Map<string, T[]> {
     const result = new Map<string, T[]>();
@@ -104,6 +104,18 @@ export async function getConsolidatedPdfUrl(financialYear: string, download = fa
     if (!selected) throw new Error('This PDF part is unavailable. Refresh the saved reports.');
     const fileName = `Consolidated_Tax_Report_${financialYear}${record?.parts?.length ? `_Part_${part}` : ''}.pdf`;
     return getSignedFileUrl(selected.fileUrl, download ? { downloadFileName: fileName } : {});
+}
+export async function getConsolidatedPdfFile(financialYear: string, part = 1): Promise<{ buffer: Buffer; fileName: string }> {
+    financialYearRange(financialYear);
+    if (!Number.isInteger(part) || part < 1) throw new Error('Invalid PDF part.');
+    const record = await ConsolidatedTaxPdf.findById(financialYear).lean();
+    const parts = savedParts(record);
+    if (!parts.length) throw new Error('Generate the PDF for this financial year first.');
+    const selected = parts.find(item => item.part === part);
+    if (!selected) throw new Error('This PDF part is unavailable. Refresh the saved reports.');
+    const buffer = await readFileFromGCP(selected.fileUrl);
+    if (buffer.subarray(0, 5).toString('ascii') !== '%PDF-') throw new Error('The saved report is not a PDF. Please regenerate this part.');
+    return { buffer, fileName: `Consolidated_Tax_Report_${financialYear}${record?.parts?.length ? `_Part_${part}` : ''}.pdf` };
 }
 export async function generateConsolidatedPdf(financialYear: string, adminName: string, selectedPart?: number) {
     financialYearRange(financialYear);
