@@ -112,17 +112,6 @@ export async function getSignedFileUrl(
   }
 }
 
-/** Read a stored object using backend credentials; browser bucket CORS and URL signing are not needed. */
-export async function readFileFromGCP(fileUrl: string): Promise<Buffer> {
-  if (!bucketName) throw new Error('GCP_STORAGE_BUCKET is not configured');
-  const prefix = `https://storage.googleapis.com/${bucketName}/`;
-  if (!fileUrl.startsWith(prefix)) throw new Error('Unsupported storage URL');
-  const objectPath = decodeURIComponent(fileUrl.slice(prefix.length));
-  if (!objectPath || objectPath.includes('?') || objectPath.includes('#')) throw new Error('Invalid storage object path');
-  const [buffer] = await storage.bucket(bucketName).file(objectPath).download();
-  return buffer;
-}
-
 /**
  * Upload file to GCP Cloud Storage with organized folder structure
  */

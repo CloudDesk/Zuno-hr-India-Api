@@ -1,12 +1,12 @@
 import Fastify from 'fastify';
 import { consolidatedTaxPdfRoutes } from '../src/routes/consolidated-tax-pdf.routes';
-import { generateConsolidatedPdf, getConsolidatedPdfStatus, getConsolidatedPdfUrl, getConsolidatedPdfFile } from '../src/services/consolidated-tax-pdf.service';
+import { generateConsolidatedPdf, getConsolidatedPdfStatus, getConsolidatedPdfUrl } from '../src/services/consolidated-tax-pdf.service';
 import { financialYearRange } from '../src/services/consolidated-tax-calculation';
 jest.mock('../src/middleware/auth',()=>({authenticate:jest.fn(async(request:any,reply:any)=>{
  if(request.headers.authorization!=='Bearer test')return reply.code(401).send({success:false,message:'Unauthenticated'});
  request.user={role:request.headers['x-test-role']||'admin',name:'Test Admin',_id:'admin-1'};
 })}));
-jest.mock('../src/services/consolidated-tax-pdf.service',()=>({generateConsolidatedPdf:jest.fn(),getConsolidatedPdfStatus:jest.fn(),getConsolidatedPdfUrl:jest.fn(),getConsolidatedPdfFile:jest.fn()}));
+jest.mock('../src/services/consolidated-tax-pdf.service',()=>({generateConsolidatedPdf:jest.fn(),getConsolidatedPdfStatus:jest.fn(),getConsolidatedPdfUrl:jest.fn()}));
 const headers={authorization:'Bearer test'};
 const app=Fastify();
 beforeAll(async()=>{await app.register(consolidatedTaxPdfRoutes,{prefix:'/consolidated-tax-pdf'});await app.ready();});
@@ -107,23 +107,4 @@ it.each(['0','-1','1.5','bad'])('rejects invalid PDF part %s',async part=>{
 it('passes the selected part for generation',async()=>{
  const r=await app.inject({method:'POST',url:'/consolidated-tax-pdf/generate',headers,payload:{financialYear:'2026-2027',part:2}});
  expect(r.statusCode).toBe(200);expect(generateConsolidatedPdf).toHaveBeenCalledWith('2026-2027','Test Admin',2);
-});
-
-it('serves only the selected PDF bytes through the authenticated file route',async()=>{
- jest.mocked(getConsolidatedPdfFile).mockResolvedValue({buffer:Buffer.from('%PDF-1.7 sample'),fileName:'Consolidated_Tax_Report_2026-2027_Part_2.pdf'});
- const r=await app.inject({method:'GET',url:'/consolidated-tax-pdf/file?financialYear=2026-2027&part=2',headers});
- expect(r.statusCode).toBe(200);expect(r.headers['content-type']).toBe('application/pdf');expect(r.headers['cache-control']).toBe('no-store');expect(r.headers['content-disposition']).toContain('Part_2.pdf');expect(r.body).toBe('%PDF-1.7 sample');expect(getConsolidatedPdfFile).toHaveBeenCalledWith('2026-2027',2);
-});
-it.each([undefined,'staff','manager'])('protects PDF byte access for role %s',async role=>{
- const r=await app.inject({method:'GET',url:'/consolidated-tax-pdf/file?financialYear=2026-2027',headers:role?{...headers,'x-test-role':role}:{}});
- expect(r.statusCode).toBe(role?403:401);expect(getConsolidatedPdfFile).not.toHaveBeenCalled();
-});
-it('keeps the FY availability guard on the file endpoint',async()=>{
- const r=await app.inject({method:'GET',url:'/consolidated-tax-pdf/file?financialYear=2026-2027&testDate=2027-03-31',headers});
- expect(r.statusCode).toBe(400);expect(getConsolidatedPdfFile).not.toHaveBeenCalled();
-});
-it('returns an actionable JSON error when storage access fails',async()=>{
- jest.mocked(getConsolidatedPdfFile).mockRejectedValue(new Error('storage credentials failure'));
- const r=await app.inject({method:'GET',url:'/consolidated-tax-pdf/file?financialYear=2026-2027',headers});
- expect(r.statusCode).toBe(400);expect(r.json().message).toContain('storage access');expect(r.body).not.toContain('credentials failure');
 });

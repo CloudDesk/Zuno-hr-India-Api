@@ -36,8 +36,3 @@ it.each(['preview','download'])('requests selected part for %s',async action=>{
 it('generates only the selected PDF part',async()=>{
  await api.generate('2026-2027','2027-04-01',2);expect(fetchApi).toHaveBeenCalledWith('/consolidated-tax-pdf/generate',{method:'POST',body:JSON.stringify({financialYear:'2026-2027',testDate:'2027-04-01',part:2})});
 });
-
-it('requests PDF bytes from the authenticated API rather than browser storage fetch',async()=>{
- await api.file('2026-2027','2027-04-01',2);
- expect(fetchApi).toHaveBeenCalledWith('/consolidated-tax-pdf/file?financialYear=2026-2027&testDate=2027-04-01&part=2',{},'blob');
-});

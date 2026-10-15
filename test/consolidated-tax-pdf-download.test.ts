@@ -38,8 +38,3 @@ it('saves the distinct PDF part filename',async()=>{
  const r=setup();await r.download('url','2026-2027','Consolidated_Tax_Report_2026-2027_Part_2.pdf');
  expect(r.link.download).toBe('Consolidated_Tax_Report_2026-2027_Part_2.pdf');
 });
-
-it('downloads backend PDF blobs without a cross-origin fetch',async()=>{
- const r=setup();await r.download(new Blob(['%PDF-1.7 backend']),'2026-2027','Part_2.pdf');
- expect(r.fetch).not.toHaveBeenCalled();expect(r.link.click).toHaveBeenCalledTimes(1);expect(r.link.download).toBe('Part_2.pdf');
-});
