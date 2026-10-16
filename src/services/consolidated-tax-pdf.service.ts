@@ -12,7 +12,7 @@ import { ConsolidatedTaxPdf, IConsolidatedTaxPdf, ConsolidatedTaxPdfPart } from 
 import { financialYearRange, SalarySource } from './consolidated-tax-calculation';
 import { buildPdfEmployee } from './consolidated-tax-pdf-calculation';
 import { ConsolidatedPdfData, renderConsolidatedTaxPdf } from './consolidated-tax-pdf-renderer';
-import { deleteFileFromGCP, getSignedFileUrl, uploadFileToGCP } from '../utilis/gcpStorage';
+import { deleteFileFromGCP, getSignedFileUrl, uploadFileToGCP, readPrivateFileFromGCP } from '../utilis/gcpStorage';
 
 function group<T extends { employeeId: unknown }>(items: T[]): Map<string, T[]> {
     const result = new Map<string, T[]>();
@@ -68,7 +68,8 @@ export async function loadConsolidatedPdfData(financialYear: string, part?: numb
     return { employeeIds, totalEmployeeCount: allUsers.length, financialYear, generatedAt: new Date().toISOString(), employer: { name: profile.legalName,
         address: [address.line1, address.line2, address.city, address.state, address.postalCode, address.country].filter(Boolean).join(', ') }, employees };
 }
-export const CONSOLIDATED_PDF_BATCH_SIZE = 100;
+// Keep each Chromium print job small enough for the 1 GiB Cloud Run container.
+export const CONSOLIDATED_PDF_BATCH_SIZE = 10;
 function savedParts(record: IConsolidatedTaxPdf | null): ConsolidatedTaxPdfPart[] {
     if (record?.parts?.length) return record.parts;
     return record?.fileUrl ? [{ part: 1, fileUrl: record.fileUrl, fileName: record.fileName || '', employeeCount: record.employeeCount || 0, firstEmployee: 1, lastEmployee: record.employeeCount || 0 }] : [];
@@ -105,6 +106,17 @@ export async function getConsolidatedPdfUrl(financialYear: string, download = fa
     const fileName = `Consolidated_Tax_Report_${financialYear}${record?.parts?.length ? `_Part_${part}` : ''}.pdf`;
     return getSignedFileUrl(selected.fileUrl, download ? { downloadFileName: fileName } : {});
 }
+export async function downloadConsolidatedPdfFile(financialYear: string, part = 1) {
+    financialYearRange(financialYear);
+    if (!Number.isInteger(part) || part < 1) throw new Error('Invalid PDF part.');
+    const record = await ConsolidatedTaxPdf.findById(financialYear).lean();
+    const parts = savedParts(record);
+    if (!parts.length) throw new Error('Generate the PDF for this financial year first.');
+    const selected = parts.find(item => item.part === part);
+    if (!selected) throw new Error('This PDF part is unavailable. Refresh the saved reports.');
+    const fileName = `Consolidated_Tax_Report_${financialYear}${record?.parts?.length ? `_Part_${part}` : ''}.pdf`;
+    return { stream: await readPrivateFileFromGCP(selected.fileUrl), fileName };
+}
 export async function generateConsolidatedPdf(financialYear: string, adminName: string, selectedPart?: number) {
     financialYearRange(financialYear);
     if (selectedPart !== undefined && (!Number.isInteger(selectedPart) || selectedPart < 1)) throw new Error('Invalid PDF part.');
@@ -138,10 +150,18 @@ export async function generateConsolidatedPdf(financialYear: string, adminName: 
         await fs.mkdir(directory);
         const dataStartedAt = Date.now();
         const data = await loadConsolidatedPdfData(financialYear, selectedPart);
-        if (selectedPart !== undefined && ((previous.employeeIds && JSON.stringify(previous.employeeIds) !== JSON.stringify(data.employeeIds))
-            || (previous.fileUrl && previous.employeeCount !== undefined && previous.employeeCount !== data.totalEmployeeCount))) {
-            throw new Error('The eligible employee list changed. Select All parts to refresh the PDF groups.');
-        }
+        const previousParts = savedParts(previous);
+        const previousPartsMatchCurrentBatch = previousParts.every(part => {
+            const firstEmployee = (part.part - 1) * CONSOLIDATED_PDF_BATCH_SIZE + 1;
+            const lastEmployee = Math.min(data.totalEmployeeCount, part.part * CONSOLIDATED_PDF_BATCH_SIZE);
+            return part.firstEmployee === firstEmployee && part.lastEmployee === lastEmployee
+                && part.employeeCount === lastEmployee - firstEmployee + 1;
+        });
+        const previousRosterMatches = (!previous.employeeIds || JSON.stringify(previous.employeeIds) === JSON.stringify(data.employeeIds))
+            && (!previous.fileUrl || previous.employeeCount === undefined || previous.employeeCount === data.totalEmployeeCount);
+        // A selected 10-employee part starts a fresh set when older saved PDFs use
+        // different boundaries or an outdated employee roster.
+        const resetPreviousParts = selectedPart !== undefined && (!previousPartsMatchCurrentBatch || !previousRosterMatches);
         timing('load_report_data', dataStartedAt);
         for (let offset = 0; offset < data.employees.length; offset += CONSOLIDATED_PDF_BATCH_SIZE) {
             // Refresh ownership between bounded renders so large employee sets retain their lease.
@@ -172,7 +192,7 @@ export async function generateConsolidatedPdf(financialYear: string, adminName: 
         }
         await finishUpload();
         const parts = selectedPart === undefined ? uploadedParts : [
-            ...savedParts(previous).filter(part => part.part !== selectedPart && part.employeeCount <= CONSOLIDATED_PDF_BATCH_SIZE),
+            ...(resetPreviousParts ? [] : previousParts.filter(part => part.part !== selectedPart && part.employeeCount <= CONSOLIDATED_PDF_BATCH_SIZE)),
             ...uploadedParts,
         ].sort((a, b) => a.part - b.part);
         const record = await ConsolidatedTaxPdf.findOneAndUpdate({ _id: financialYear, generationToken: token }, {
