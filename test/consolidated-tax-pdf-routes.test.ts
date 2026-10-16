@@ -42,17 +42,17 @@ it.each(['status','preview','download'])('blocks %s before FY closes and allows 
 });
 it('uses actual date again when testing date is omitted',async()=>{
  jest.spyOn(Date,'now').mockReturnValue(Date.parse('2026-10-08T12:00:00+05:30'));
- const test=await app.inject({method:'POST',url:'/consolidated-tax-pdf/generate',headers,payload:{financialYear:'2026-2027',testDate:'2027-04-01'}});
- expect(test.statusCode).toBe(200);expect(generateConsolidatedPdf).toHaveBeenCalledWith('2026-2027','Test Admin');jest.mocked(generateConsolidatedPdf).mockClear();
- const actual=await app.inject({method:'POST',url:'/consolidated-tax-pdf/generate',headers,payload:{financialYear:'2026-2027'}});
+ const test=await app.inject({method:'POST',url:'/consolidated-tax-pdf/generate',headers,payload:{financialYear:'2026-2027',testDate:'2027-04-01',part:1}});
+ expect(test.statusCode).toBe(200);expect(generateConsolidatedPdf).toHaveBeenCalledWith('2026-2027','Test Admin',1);jest.mocked(generateConsolidatedPdf).mockClear();
+ const actual=await app.inject({method:'POST',url:'/consolidated-tax-pdf/generate',headers,payload:{financialYear:'2026-2027',part:1}});
  expect(actual.statusCode).toBe(400);expect(generateConsolidatedPdf).not.toHaveBeenCalled();
 });
 it('blocks generation before the testing date reaches FY close',async()=>{
- const r=await app.inject({method:'POST',url:'/consolidated-tax-pdf/generate',headers,payload:{financialYear:'2026-2027',testDate:'2027-03-31'}});
+ const r=await app.inject({method:'POST',url:'/consolidated-tax-pdf/generate',headers,payload:{financialYear:'2026-2027',testDate:'2027-03-31',part:1}});
  expect(r.statusCode).toBe(400);expect(generateConsolidatedPdf).not.toHaveBeenCalled();
 });
 it.each(['2027-02-29','2027-04-31','2027-13-01','not-a-date'])('rejects invalid testing date %s',async testDate=>{
- const r=await app.inject({method:'POST',url:'/consolidated-tax-pdf/generate',headers,payload:{financialYear:'2026-2027',testDate}});
+ const r=await app.inject({method:'POST',url:'/consolidated-tax-pdf/generate',headers,payload:{financialYear:'2026-2027',testDate,part:1}});
  expect(r.statusCode).toBe(400);expect(generateConsolidatedPdf).not.toHaveBeenCalled();
 });
 it('accepts a real leap-day testing date for a closed FY',async()=>{
@@ -62,14 +62,14 @@ it.each(['status','preview','download'])('allows an authenticated admin to acces
  const r=await app.inject({method:'GET',url:`/consolidated-tax-pdf/${action}?financialYear=2026-2027`,headers});expect(r.statusCode).toBe(200);expect(r.headers['cache-control']).toBe('no-store');expect(r.json().success).toBe(true);
 });
 it('allows admin PDF generation with validated JSON',async()=>{
- const r=await app.inject({method:'POST',url:'/consolidated-tax-pdf/generate',headers,payload:{financialYear:'2026-2027'}});
- expect(r.statusCode).toBe(200);expect(generateConsolidatedPdf).toHaveBeenCalledWith('2026-2027','Test Admin');
+ const r=await app.inject({method:'POST',url:'/consolidated-tax-pdf/generate',headers,payload:{financialYear:'2026-2027',part:1}});
+ expect(r.statusCode).toBe(200);expect(generateConsolidatedPdf).toHaveBeenCalledWith('2026-2027','Test Admin',1);
 });
 it.each(['status','preview','download'])('rejects unauthenticated %s requests',async action=>{
  const r=await app.inject({method:'GET',url:`/consolidated-tax-pdf/${action}?financialYear=2026-2027`});expect(r.statusCode).toBe(401);expect(getConsolidatedPdfUrl).not.toHaveBeenCalled();expect(getConsolidatedPdfStatus).not.toHaveBeenCalled();
 });
 it.each(['employee','manager','staff'])('rejects the %s role without generating',async role=>{
- const r=await app.inject({method:'POST',url:'/consolidated-tax-pdf/generate',headers:{...headers,'x-test-role':role},payload:{financialYear:'2026-2027'}});
+ const r=await app.inject({method:'POST',url:'/consolidated-tax-pdf/generate',headers:{...headers,'x-test-role':role},payload:{financialYear:'2026-2027',part:1}});
  expect(r.statusCode).toBe(403);expect(generateConsolidatedPdf).not.toHaveBeenCalled();
 });
 it.each(['','invalid','2026/2027','<script>'])('rejects missing or malformed FY %s',async year=>{
@@ -79,11 +79,14 @@ it('rejects a non-consecutive financial year through service validation',async()
  const r=await app.inject({method:'GET',url:'/consolidated-tax-pdf/status?financialYear=2026-2028',headers});expect(r.statusCode).toBe(400);
 });
 it('rejects a generation request without its required financial year',async()=>{
- const r=await app.inject({method:'POST',url:'/consolidated-tax-pdf/generate',headers,payload:{}});expect(r.statusCode).toBe(400);expect(generateConsolidatedPdf).not.toHaveBeenCalled();
+ const r=await app.inject({method:'POST',url:'/consolidated-tax-pdf/generate',headers,payload:{part:1}});expect(r.statusCode).toBe(400);expect(generateConsolidatedPdf).not.toHaveBeenCalled();
+});
+it('rejects generation without one selected 10-employee part',async()=>{
+ const r=await app.inject({method:'POST',url:'/consolidated-tax-pdf/generate',headers,payload:{financialYear:'2026-2027'}});expect(r.statusCode).toBe(400);expect(generateConsolidatedPdf).not.toHaveBeenCalled();
 });
 it('reports generation errors without claiming success',async()=>{
  jest.mocked(generateConsolidatedPdf).mockRejectedValueOnce(new Error('Upload failed'));
- const r=await app.inject({method:'POST',url:'/consolidated-tax-pdf/generate',headers,payload:{financialYear:'2026-2027'}});expect(r.statusCode).toBe(400);expect(r.json()).toMatchObject({success:false,message:'Upload failed'});
+ const r=await app.inject({method:'POST',url:'/consolidated-tax-pdf/generate',headers,payload:{financialYear:'2026-2027',part:1}});expect(r.statusCode).toBe(400);expect(r.json()).toMatchObject({success:false,message:'Upload failed'});
 });
 it('reports a missing saved PDF on download',async()=>{
  jest.mocked(getConsolidatedPdfUrl).mockRejectedValueOnce(new Error('Generate the PDF first'));
